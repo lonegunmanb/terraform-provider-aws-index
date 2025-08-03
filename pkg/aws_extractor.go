@@ -867,13 +867,63 @@ func extractAWSEphemeralResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 
 // Helper function placeholders - these will be implemented in aws_extractor.go
 func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *AWSFactoryCRUDMethods {
-	// This function needs to be implemented in aws_extractor.go
-	// It should:
-	// 1. Find the factory function by name
-	// 2. Determine the factory type (SDK Resource, SDK DataSource, Framework Resource, Framework DataSource, Ephemeral)
-	// 3. Extract CRUD methods based on the factory type
-	// 4. Return the extracted methods
+	// Find the factory function by name
+	factoryFunc := findFactoryFunction(node, factoryFunctionName)
+	if factoryFunc == nil {
+		// Function not found - return empty struct
+		return &AWSFactoryCRUDMethods{}
+	}
 
-	// For now, return empty to make tests compile
+	// TODO: Sub-Task 2-5 will implement the actual extraction logic
+	// For now, we have the foundation in place with helper functions
+	
 	return &AWSFactoryCRUDMethods{}
+}
+
+// Helper function to find a factory function by name in the AST
+func findFactoryFunction(node *ast.File, functionName string) *ast.FuncDecl {
+	for _, decl := range node.Decls {
+		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+			if funcDecl.Name.Name == functionName {
+				return funcDecl
+			}
+		}
+	}
+	return nil
+}
+
+// Helper function to navigate AST and find return statements in a function
+func findReturnStatements(funcDecl *ast.FuncDecl) []*ast.ReturnStmt {
+	var returns []*ast.ReturnStmt
+	
+	if funcDecl.Body == nil {
+		return returns
+	}
+	
+	ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+		if ret, ok := n.(*ast.ReturnStmt); ok {
+			returns = append(returns, ret)
+		}
+		return true
+	})
+	
+	return returns
+}
+
+// Helper function to find variable assignments in a function body
+func findVariableAssignments(funcDecl *ast.FuncDecl) []*ast.AssignStmt {
+	var assignments []*ast.AssignStmt
+	
+	if funcDecl.Body == nil {
+		return assignments
+	}
+	
+	ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+		if assign, ok := n.(*ast.AssignStmt); ok {
+			assignments = append(assignments, assign)
+		}
+		return true
+	})
+	
+	return assignments
 }
