@@ -874,10 +874,34 @@ func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *
 		return &AWSFactoryCRUDMethods{}
 	}
 
-	// TODO: Sub-Task 2-5 will implement the actual extraction logic
-	// For now, we have the foundation in place with helper functions
+	// Initialize result
+	result := &AWSFactoryCRUDMethods{}
 	
-	return &AWSFactoryCRUDMethods{}
+	// Try to extract from direct return statements first
+	returnStmts := findReturnStatements(factoryFunc)
+	for _, returnStmt := range returnStmts {
+		for _, expr := range returnStmt.Results {
+			switch e := expr.(type) {
+			case *ast.UnaryExpr:
+				// Handle &schema.Resource{...} pattern (UnaryExpr with & operator)
+				if e.Op == token.AND {
+					if compositeLit, ok := e.X.(*ast.CompositeLit); ok {
+						extractSDKCRUDFromCompositeLit(compositeLit, result)
+					}
+				}
+			case *ast.CompositeLit:
+				// Direct return pattern: return schema.Resource{...} (without &)
+				extractSDKCRUDFromCompositeLit(e, result)
+			case *ast.Ident:
+				// Variable reference pattern: return resource
+				extractFromVariableAssignment(factoryFunc, e.Name, result)
+			}
+		}
+	}
+	
+	// TODO: Sub-Task 3-5 will implement Framework and Ephemeral extraction logic
+	
+	return result
 }
 
 // Helper function to find a factory function by name in the AST
@@ -926,4 +950,71 @@ func findVariableAssignments(funcDecl *ast.FuncDecl) []*ast.AssignStmt {
 	})
 	
 	return assignments
+}
+
+// extractFromVariableAssignment extracts CRUD methods from variable assignments
+func extractFromVariableAssignment(factoryFunc *ast.FuncDecl, variableName string, result *AWSFactoryCRUDMethods) {
+	assignments := findVariableAssignments(factoryFunc)
+	for _, assign := range assignments {
+		// Look for assignments where the left side matches our identifier
+		for i, lhs := range assign.Lhs {
+			lhsIdent, ok := lhs.(*ast.Ident)
+			if !ok || lhsIdent.Name != variableName {
+				continue
+			}
+			
+			// Found the assignment, check the right hand side
+			if i >= len(assign.Rhs) {
+				continue
+			}
+			
+			switch rhs := assign.Rhs[i].(type) {
+			case *ast.UnaryExpr:
+				// Handle &schema.Resource{...} pattern in assignment
+				if rhs.Op == token.AND {
+					if compositeLit, ok := rhs.X.(*ast.CompositeLit); ok {
+						extractSDKCRUDFromCompositeLit(compositeLit, result)
+					}
+				}
+			case *ast.CompositeLit:
+				extractSDKCRUDFromCompositeLit(rhs, result)
+			}
+		}
+	}
+}
+
+// extractSDKCRUDFromCompositeLit extracts CRUD method names from a schema.Resource composite literal
+func extractSDKCRUDFromCompositeLit(compositeLit *ast.CompositeLit, result *AWSFactoryCRUDMethods) {
+	// Look through the elements of the composite literal
+	for _, elt := range compositeLit.Elts {
+		if keyValue, ok := elt.(*ast.KeyValueExpr); ok {
+			// Get the field name
+			var fieldName string
+			if ident, ok := keyValue.Key.(*ast.Ident); ok {
+				fieldName = ident.Name
+			}
+			
+			// Get the function name from the value
+			var functionName string
+			if ident, ok := keyValue.Value.(*ast.Ident); ok {
+				functionName = ident.Name
+			}
+			
+			// Map SDK field names to CRUD methods
+			switch fieldName {
+			// Create method variants
+			case "Create", "CreateWithoutTimeout", "CreateContext":
+				result.CreateMethod = functionName
+			// Read method variants  
+			case "Read", "ReadWithoutTimeout", "ReadContext":
+				result.ReadMethod = functionName
+			// Update method variants
+			case "Update", "UpdateWithoutTimeout", "UpdateContext":
+				result.UpdateMethod = functionName
+			// Delete method variants
+			case "Delete", "DeleteWithoutTimeout", "DeleteContext":
+				result.DeleteMethod = functionName
+			}
+		}
+	}
 }

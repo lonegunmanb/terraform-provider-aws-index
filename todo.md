@@ -417,7 +417,7 @@ Based on analysis of `factory_function_analysis_test.go`, the `extractFactoryFun
 
 #### ✅ Sub-Tasks Breakdown:
 - [x] **Sub-Task 1**: Core Data Structure & Basic Function Signature (100%) ✅ **COMPLETED**
-- [ ] **Sub-Task 2**: SDK Resource CRUD Method Extraction (0%) ⏳
+- [x] **Sub-Task 2**: SDK Resource CRUD Method Extraction (100%) ✅ **COMPLETED**
 - [ ] **Sub-Task 3**: SDK Data Source Method Extraction (0%) ⏳  
 - [ ] **Sub-Task 4**: Framework Resource/DataSource Method Extraction (0%) ⏳
 - [ ] **Sub-Task 5**: Ephemeral Resource Lifecycle Method Extraction (0%) ⏳
@@ -431,11 +431,24 @@ Based on analysis of `factory_function_analysis_test.go`, the `extractFactoryFun
 - ✅ Code compilation verified
 - ✅ Test coverage for "function not found" scenarios
 
-#### 🎯 Current Focus: Sub-Task 2 (SDK Resource CRUD Method Extraction)
-**Next Action**: Implement CRUD method extraction from Legacy SDK resource factory functions
+#### ✅ Sub-Task 2 COMPLETED: SDK Resource CRUD Method Extraction
+**Completed Requirements**:
+- ✅ Extract CRUD methods from Legacy SDK resource factory functions (`schema.Resource`)
+- ✅ Support for multiple field name variants (Create/CreateWithoutTimeout/CreateContext, etc.)
+- ✅ Handle direct return patterns: `return &schema.Resource{...}`
+- ✅ Handle variable assignment patterns: `resource := &schema.Resource{...}; return resource`
+- ✅ Support for partial CRUD implementations (missing methods handled gracefully)
+- ✅ `UnaryExpr` handling for `&` operator in AST parsing
+- ✅ Type switch implementation for cleaner code structure
+- ✅ Reduced nesting depth with `extractFromVariableAssignment()` helper function
+- ✅ All 4 test scenarios passing (direct return, legacy fields, partial CRUD, function not found)
+- ✅ Code refactoring for maintainability (switch statements, helper function extraction)
+
+#### 🎯 Current Focus: Sub-Task 3 (SDK Data Source Method Extraction)
+**Next Action**: Implement read method extraction from Legacy SDK data source factory functions
 
 #### 📊 Phase 2.2 Progress Summary:
 - **Foundation Tasks**: 1/1 completed (100%) ✅
-- **SDK Analysis Tasks**: 0/2 completed (0%) ⏳  
+- **SDK Analysis Tasks**: 1/2 completed (50%) 🚧  
 - **Framework Analysis Tasks**: 0/2 completed (0%) ⏳
-- **Overall Phase 2.2**: 1/5 sub-tasks completed (20%) 🚧
+- **Overall Phase 2.2**: 2/5 sub-tasks completed (40%) 🚧
