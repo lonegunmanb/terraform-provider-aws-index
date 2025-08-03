@@ -575,3 +575,138 @@ func extractAWSFrameworkResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 
 	return resourceInfo
 }
+
+// extractAWSFrameworkDataSources extracts Framework data sources from the FrameworkDataSources method in AWS service packages
+func extractAWSFrameworkDataSources(node *ast.File) map[string]AWSResourceInfo {
+	dataSources := make(map[string]AWSResourceInfo)
+
+	// Find the FrameworkDataSources method
+	for _, decl := range node.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Name.Name != "FrameworkDataSources" {
+			continue
+		}
+
+		// Look for return statements in the function body
+		for _, stmt := range funcDecl.Body.List {
+			switch s := stmt.(type) {
+			case *ast.ReturnStmt:
+				// Handle direct return
+				if len(s.Results) > 0 {
+					if sliceLit, ok := s.Results[0].(*ast.CompositeLit); ok {
+						extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
+						for k, v := range extractedDataSources {
+							dataSources[k] = v
+						}
+					}
+				}
+			case *ast.AssignStmt:
+				// Handle variable assignment pattern: dataSources := []*inttypes.ServicePackageFrameworkDataSource{...}
+				if len(s.Rhs) > 0 {
+					if sliceLit, ok := s.Rhs[0].(*ast.CompositeLit); ok {
+						extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
+						for k, v := range extractedDataSources {
+							dataSources[k] = v
+						}
+					}
+				}
+			case *ast.DeclStmt:
+				// Handle variable declaration: var dataSources = []*inttypes.ServicePackageFrameworkDataSource{...}
+				if genDecl, ok := s.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
+					for _, spec := range genDecl.Specs {
+						if valueSpec, ok := spec.(*ast.ValueSpec); ok && len(valueSpec.Values) > 0 {
+							if sliceLit, ok := valueSpec.Values[0].(*ast.CompositeLit); ok {
+								extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
+								for k, v := range extractedDataSources {
+									dataSources[k] = v
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		break
+	}
+
+	return dataSources
+}
+
+// extractAWSFrameworkDataSourcesFromSlice extracts AWS Framework data sources from a slice literal
+func extractAWSFrameworkDataSourcesFromSlice(sliceLit *ast.CompositeLit) map[string]AWSResourceInfo {
+	dataSources := make(map[string]AWSResourceInfo)
+
+	for _, elt := range sliceLit.Elts {
+		if structLit, ok := elt.(*ast.CompositeLit); ok {
+			dataSourceInfo := extractAWSFrameworkDataSourceInfo(structLit)
+			if dataSourceInfo.TerraformType != "" {
+				dataSources[dataSourceInfo.TerraformType] = dataSourceInfo
+			}
+		}
+	}
+
+	return dataSources
+}
+
+// extractAWSFrameworkDataSourceInfo extracts individual AWS Framework data source information from a struct literal
+func extractAWSFrameworkDataSourceInfo(structLit *ast.CompositeLit) AWSResourceInfo {
+	dataSourceInfo := AWSResourceInfo{
+		SDKType: "framework",
+		HasTags: false,
+	}
+
+	for _, elt := range structLit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		switch key.Name {
+		case "Factory":
+			if ident, ok := kv.Value.(*ast.Ident); ok {
+				dataSourceInfo.FactoryFunction = ident.Name
+			}
+		case "TypeName":
+			if basicLit, ok := kv.Value.(*ast.BasicLit); ok {
+				terraformType := strings.Trim(basicLit.Value, `"`)
+				dataSourceInfo.TerraformType = terraformType
+			}
+		case "Name":
+			if basicLit, ok := kv.Value.(*ast.BasicLit); ok {
+				name := strings.Trim(basicLit.Value, `"`)
+				dataSourceInfo.Name = name
+			}
+		case "Tags":
+			// Check if Tags field exists and is not nil
+			if kv.Value != nil {
+				dataSourceInfo.HasTags = true
+				tagsConfig := extractAWSTagsConfig(kv.Value)
+				if tagsConfig != nil {
+					dataSourceInfo.TagsConfig = tagsConfig
+				}
+			}
+		case "Region":
+			regionConfig := extractAWSRegionConfig(kv.Value)
+			if regionConfig != nil {
+				dataSourceInfo.Region = regionConfig
+			}
+		case "Identity":
+			identityConfig := extractAWSIdentityConfig(kv.Value)
+			if identityConfig != nil {
+				dataSourceInfo.Identity = identityConfig
+			}
+		case "Import":
+			importConfig := extractAWSImportConfig(kv.Value)
+			if importConfig != nil {
+				dataSourceInfo.Import = importConfig
+			}
+		}
+	}
+
+	return dataSourceInfo
+}

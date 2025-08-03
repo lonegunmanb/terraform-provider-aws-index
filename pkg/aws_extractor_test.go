@@ -498,3 +498,173 @@ func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePa
 		assert.Equal(t, expected, result)
 	})
 }
+
+func TestExtractAWSFrameworkDataSources(t *testing.T) {
+	t.Run("extract Framework data sources from single method", func(t *testing.T) {
+		source := `package s3
+
+import (
+	"context"
+	"unique"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.ServicePackageFrameworkDataSource {
+	return []*inttypes.ServicePackageFrameworkDataSource{
+		{
+			Factory:  newBucketDataSource,
+			TypeName: "aws_s3_bucket",
+			Name:     "Bucket",
+			Region:   unique.Make(inttypes.ResourceRegionDefault()),
+		},
+		{
+			Factory:  newDirectoryBucketDataSource,
+			TypeName: "aws_s3_directory_bucket",
+			Name:     "Directory Bucket",
+			Tags: unique.Make(inttypes.ServicePackageResourceTags{
+				IdentifierAttribute: names.AttrARN,
+				ResourceType:        "DirectoryBucket",
+			}),
+			Region: unique.Make(inttypes.ResourceRegionDefault()),
+		},
+	}
+}`
+
+		expected := map[string]AWSResourceInfo{
+			"aws_s3_bucket": {
+				TerraformType:   "aws_s3_bucket",
+				FactoryFunction: "newBucketDataSource",
+				Name:            "Bucket",
+				SDKType:         "framework",
+				HasTags:         false,
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+			"aws_s3_directory_bucket": {
+				TerraformType:   "aws_s3_directory_bucket",
+				FactoryFunction: "newDirectoryBucketDataSource",
+				Name:            "Directory Bucket",
+				SDKType:         "framework",
+				HasTags:         true,
+				TagsConfig: &AWSTagsConfig{
+					IdentifierAttribute: "arn",
+					ResourceType:        "DirectoryBucket",
+				},
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+		}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSFrameworkDataSources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract Framework data sources with empty method", func(t *testing.T) {
+		source := `package s3
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.ServicePackageFrameworkDataSource {
+	return []*inttypes.ServicePackageFrameworkDataSource{}
+}`
+
+		expected := map[string]AWSResourceInfo{}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSFrameworkDataSources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract Framework data sources with variable assignment", func(t *testing.T) {
+		source := `package lambda
+
+import (
+	"context"
+	"unique"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.ServicePackageFrameworkDataSource {
+	dataSources := []*inttypes.ServicePackageFrameworkDataSource{
+		{
+			Factory:  newFunctionDataSource,
+			TypeName: "aws_lambda_function",
+			Name:     "Function",
+			Tags: unique.Make(inttypes.ServicePackageResourceTags{
+				IdentifierAttribute: names.AttrARN,
+				ResourceType:        "Function",
+			}),
+			Region: unique.Make(inttypes.ResourceRegionDefault()),
+		},
+	}
+	return dataSources
+}`
+
+		expected := map[string]AWSResourceInfo{
+			"aws_lambda_function": {
+				TerraformType:   "aws_lambda_function",
+				FactoryFunction: "newFunctionDataSource",
+				Name:            "Function",
+				SDKType:         "framework",
+				HasTags:         true,
+				TagsConfig: &AWSTagsConfig{
+					IdentifierAttribute: "arn",
+					ResourceType:        "Function",
+				},
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+		}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSFrameworkDataSources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract Framework data sources with method not found", func(t *testing.T) {
+		source := `package ec2
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.ServicePackageSDKDataSource {
+	return []*inttypes.ServicePackageSDKDataSource{}
+}`
+
+		expected := map[string]AWSResourceInfo{}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSFrameworkDataSources(node)
+		assert.Equal(t, expected, result)
+	})
+}

@@ -116,7 +116,7 @@ The structured nature of AWS provider registration means:
 - [x] `extractAWSSDKResources()` - Extract from `SDKResources()` method **✅ COMPLETED**
 - [x] `extractAWSSDKDataSources()` - Extract from `SDKDataSources()` method **✅ COMPLETED**
 - [x] `extractAWSFrameworkResources()` - Extract from `FrameworkResources()` method **✅ COMPLETED**
-- [ ] `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method
+- [x] `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method **✅ COMPLETED**
 - [ ] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
 
 #### 2.2 Factory Function Analysis
@@ -274,7 +274,7 @@ The structured nature of AWS provider registration means:
 
 ## Current Implementation Status (August 3, 2025)
 
-### Phase 2.1: AWS Extraction Functions - 🚧 60% COMPLETED
+### Phase 2.1: AWS Extraction Functions - 🚧 80% COMPLETED
 
 #### ✅ Completed Functions:
 
@@ -293,12 +293,16 @@ The structured nature of AWS provider registration means:
    - **Implementation**: Complete AST parsing for Framework resource structures  
    - **Status**: All tests passing ✅
 
-#### 🔄 Next Implementation (Phase 2.1 Continued):
+4. **✅ extractAWSFrameworkDataSources()**: Extracts Framework data sources from `FrameworkDataSources()` method
+   - **Test Coverage**: 4 comprehensive test scenarios
+   - **Implementation**: Complete AST parsing for Framework data source structures
+   - **Status**: All tests passing ✅
 
-**🎯 Current Target**: `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method
+#### 🔄 Next Implementation (Phase 2.1 Final):
+
+**🎯 Current Target**: `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
 
 #### ⏳ Remaining Functions:
-- [ ] `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method
 - [ ] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
 
 #### 📁 Files Structure:
@@ -314,6 +318,6 @@ The structured nature of AWS provider registration means:
 
 #### 📊 Progress Summary:
 - **SDK Functions**: 2/2 completed (100%) ✅
-- **Framework Functions**: 1/2 completed (50%) 🚧  
+- **Framework Functions**: 2/2 completed (100%) ✅  
 - **Ephemeral Functions**: 0/1 completed (0%) ⏳
-- **Overall Progress**: 3/5 functions completed (60%) 🚧
+- **Overall Progress**: 4/5 functions completed (80%) 🚧
