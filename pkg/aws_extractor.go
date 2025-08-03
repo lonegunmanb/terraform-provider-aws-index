@@ -877,7 +877,7 @@ func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *
 	// Initialize result
 	result := &AWSFactoryCRUDMethods{}
 	
-	// Try to extract from direct return statements first
+	// Try to extract from direct return statements first (SDK pattern)
 	returnStmts := findReturnStatements(factoryFunc)
 	for _, returnStmt := range returnStmts {
 		for _, expr := range returnStmt.Results {
@@ -899,7 +899,13 @@ func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *
 		}
 	}
 	
-	// TODO: Sub-Task 3-5 will implement Framework and Ephemeral extraction logic
+	// Try Framework pattern extraction if no SDK methods found
+	if isEmptyResult(result) {
+		structType := findFrameworkStructType(factoryFunc)
+		if structType != "" {
+			extractFrameworkMethods(node, structType, result)
+		}
+	}
 	
 	return result
 }
@@ -1016,5 +1022,96 @@ func extractSDKCRUDFromCompositeLit(compositeLit *ast.CompositeLit, result *AWSF
 				result.DeleteMethod = functionName
 			}
 		}
+	}
+}
+
+// isEmptyResult checks if the CRUD methods result is empty (no SDK methods found)
+func isEmptyResult(result *AWSFactoryCRUDMethods) bool {
+	return result.CreateMethod == "" && result.ReadMethod == "" && 
+		   result.UpdateMethod == "" && result.DeleteMethod == ""
+}
+
+// findFrameworkStructType extracts the struct type name from Framework factory function
+func findFrameworkStructType(factoryFunc *ast.FuncDecl) string {
+	if factoryFunc.Body == nil {
+		return ""
+	}
+	
+	var structType string
+	
+	// Look for assignment patterns like: r := &structName{}
+	ast.Inspect(factoryFunc.Body, func(n ast.Node) bool {
+		if assign, ok := n.(*ast.AssignStmt); ok {
+			for _, rhs := range assign.Rhs {
+				// Look for &structName{} pattern
+				if unaryExpr, ok := rhs.(*ast.UnaryExpr); ok && unaryExpr.Op == token.AND {
+					if compositeLit, ok := unaryExpr.X.(*ast.CompositeLit); ok {
+						if ident, ok := compositeLit.Type.(*ast.Ident); ok {
+							structType = ident.Name
+							return false // Stop inspection, we found it
+						}
+					}
+				}
+				// Look for direct struct creation: structName{}
+				if compositeLit, ok := rhs.(*ast.CompositeLit); ok {
+					if ident, ok := compositeLit.Type.(*ast.Ident); ok {
+						structType = ident.Name
+						return false // Stop inspection, we found it
+					}
+				}
+			}
+		}
+		return true
+	})
+	
+	return structType
+}
+
+// extractFrameworkMethods finds method implementations on a struct type
+func extractFrameworkMethods(node *ast.File, structTypeName string, result *AWSFactoryCRUDMethods) {
+	ast.Inspect(node, func(n ast.Node) bool {
+		// Look for method declarations
+		if funcDecl, ok := n.(*ast.FuncDecl); ok && funcDecl.Recv != nil {
+			// Check if this method belongs to our struct type
+			for _, field := range funcDecl.Recv.List {
+				// Handle receiver patterns like (r *structName)
+				if starExpr, ok := field.Type.(*ast.StarExpr); ok {
+					if ident, ok := starExpr.X.(*ast.Ident); ok && ident.Name == structTypeName {
+						methodName := funcDecl.Name.Name
+						mapFrameworkMethod(methodName, result)
+					}
+				}
+				// Handle receiver patterns like (r structName) 
+				if ident, ok := field.Type.(*ast.Ident); ok && ident.Name == structTypeName {
+					methodName := funcDecl.Name.Name
+					mapFrameworkMethod(methodName, result)
+				}
+			}
+		}
+		return true
+	})
+}
+
+// mapFrameworkMethod maps Framework method names to CRUD result fields
+func mapFrameworkMethod(methodName string, result *AWSFactoryCRUDMethods) {
+	switch methodName {
+	case "Schema":
+		result.SchemaMethod = methodName
+	case "Create":
+		result.CreateMethod = methodName
+	case "Read":
+		result.ReadMethod = methodName
+	case "Update":
+		result.UpdateMethod = methodName
+	case "Delete":
+		result.DeleteMethod = methodName
+	case "Configure":
+		result.ConfigureMethod = methodName
+	case "Open":
+		result.OpenMethod = methodName
+	case "Renew":
+		result.RenewMethod = methodName
+	case "Close":
+		result.CloseMethod = methodName
 	}
 }

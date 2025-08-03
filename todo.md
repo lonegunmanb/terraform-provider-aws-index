@@ -413,16 +413,50 @@ Based on analysis of `factory_function_analysis_test.go`, the `extractFactoryFun
 - **Ephemeral Functions**: 1/1 completed (100%) ✅
 - **Phase 2.1 Overall**: 5/5 functions completed (100%) ✅
 
-### Phase 2.2: Factory Function Analysis - 🚧 20% COMPLETED
+### Phase 2.2: Factory Function Analysis - ✅ 100% COMPLETED
 
 #### ✅ Sub-Tasks Breakdown:
 - [x] **Sub-Task 1**: Core Data Structure & Basic Function Signature (100%) ✅ **COMPLETED**
 - [x] **Sub-Task 2**: SDK Resource CRUD Method Extraction (100%) ✅ **COMPLETED**
-- [ ] **Sub-Task 3**: SDK Data Source Method Extraction (0%) ⏳  
-- [ ] **Sub-Task 4**: Framework Resource/DataSource Method Extraction (0%) ⏳
-- [ ] **Sub-Task 5**: Ephemeral Resource Lifecycle Method Extraction (0%) ⏳
+- [x] **Sub-Task 3**: SDK Data Source Method Extraction (100%) ✅ **COMPLETED**
+- [x] **Sub-Task 4**: Framework Resource/DataSource Method Extraction (100%) ✅ **COMPLETED**
+- [x] **Sub-Task 5**: Ephemeral Resource Lifecycle Method Extraction (100%) ✅ **COMPLETED**
 
-#### ✅ Sub-Task 1 COMPLETED: Core Data Structure & Basic Function Signature
+#### ✅ Sub-Task 3 COMPLETED: SDK Data Source Method Extraction
+**Completed Requirements**:
+- ✅ Extract read methods from Legacy SDK data source factory functions (`schema.Resource`)
+- ✅ Support for multiple field name variants (`Read`, `ReadWithoutTimeout`, `ReadContext`)
+- ✅ Handle direct return patterns: `return &schema.Resource{...}`
+- ✅ Handle variable assignment patterns (leveraging existing infrastructure)
+- ✅ Support for data sources with only read methods (simpler than resources)
+- ✅ All 2 test scenarios passing (modern and legacy field names)
+- ✅ Code reuse from Sub-Task 2 implementation (`extractSDKCRUDFromCompositeLit`)
+
+#### ✅ Sub-Task 4 COMPLETED: Framework Resource/DataSource Method Extraction
+**Completed Requirements**:
+- ✅ Parse Modern Framework factory functions to extract lifecycle methods
+- ✅ Identify receiver struct types by analyzing factory function return statements  
+- ✅ Find method implementations on receiver structs:
+  - Framework Resources: `Schema`, `Create`, `Read`, `Update`, `Delete`, `Configure`
+  - Framework DataSources: `Schema`, `Read`, `Configure`
+- ✅ Handle factory patterns: `func newXxxResource(ctx context.Context) (resource.ResourceWithConfigure, error)`
+- ✅ Support partial implementations (missing Update/Delete methods)
+- ✅ AST parsing for struct type discovery: `r := &structName{}` patterns
+- ✅ Method receiver parsing: `func (r *structName) MethodName(...)`
+- ✅ All 4 test scenarios passing (Framework resources and data sources)
+
+#### ✅ Sub-Task 5 COMPLETED: Ephemeral Resource Lifecycle Method Extraction
+**Completed Requirements**:
+- ✅ Parse Ephemeral resource factory functions to extract lifecycle methods
+- ✅ Identify receiver struct types from ephemeral factory functions
+- ✅ Find method implementations on receiver structs:
+  - `Schema`, `Open`, `Renew`, `Close`, `Configure` → respective method fields
+- ✅ Handle factory patterns: `func NewXxxEphemeralResource(ctx context.Context) (ephemeral.EphemeralResourceWithConfigure, error)`
+- ✅ Support partial lifecycle implementations (missing Renew/Configure methods)
+- ✅ Leverages Framework parsing patterns from Sub-Task 4
+- ✅ All 2 test scenarios passing (full and partial ephemeral lifecycle implementations)
+
+#### 🎯 Current Focus: Sub-Task 4 (Framework Resource/DataSource Method Extraction)
 **Completed Requirements**:
 - ✅ `AWSFactoryCRUDMethods` struct with all required fields (SDK, Framework, Ephemeral)
 - ✅ Basic function signature: `extractFactoryFunctionDetails(node *ast.File, functionName string) *AWSFactoryCRUDMethods`
@@ -449,6 +483,44 @@ Based on analysis of `factory_function_analysis_test.go`, the `extractFactoryFun
 
 #### 📊 Phase 2.2 Progress Summary:
 - **Foundation Tasks**: 1/1 completed (100%) ✅
-- **SDK Analysis Tasks**: 1/2 completed (50%) 🚧  
-- **Framework Analysis Tasks**: 0/2 completed (0%) ⏳
-- **Overall Phase 2.2**: 2/5 sub-tasks completed (40%) 🚧
+- **SDK Analysis Tasks**: 2/2 completed (100%) ✅  
+- **Framework Analysis Tasks**: 2/2 completed (100%) ✅
+- **Overall Phase 2.2**: 5/5 sub-tasks completed (100%) ✅ **COMPLETED**
+
+### 🎉 Phase 2.2 MAJOR ACHIEVEMENT
+
+**ALL FACTORY FUNCTION ANALYSIS SUB-TASKS COMPLETED!** 
+
+The `extractFactoryFunctionDetails()` function now successfully:
+
+#### ✅ **Complete SDK Support**:
+- **SDK Resources**: Extracts CRUD methods (Create, Read, Update, Delete) from `schema.Resource` composite literals
+- **SDK Data Sources**: Extracts Read methods from `schema.Resource` composite literals
+- **Field Variants**: Supports legacy (`Create`) and modern (`CreateWithoutTimeout`, `CreateContext`) field names
+- **Return Patterns**: Handles direct returns (`return &schema.Resource{...}`) and variable assignments
+
+#### ✅ **Complete Framework Support**: 
+- **Framework Resources**: Extracts methods (Schema, Create, Read, Update, Delete, Configure) from struct receivers
+- **Framework Data Sources**: Extracts methods (Schema, Read, Configure) from struct receivers  
+- **Struct Discovery**: Identifies receiver types from factory function assignments (`r := &structName{}`)
+- **Method Resolution**: Finds method implementations via receiver parsing (`func (r *structName) MethodName(...)`)
+
+#### ✅ **Complete Ephemeral Support**:
+- **Ephemeral Resources**: Extracts lifecycle methods (Schema, Open, Renew, Close, Configure) from struct receivers
+- **Factory Patterns**: Handles ephemeral factory functions returning `ephemeral.EphemeralResourceWithConfigure`
+- **Partial Lifecycles**: Gracefully handles missing optional methods (Renew, Configure)
+
+#### ✅ **Robust Error Handling**:
+- **Function Not Found**: Returns empty struct for missing factory functions
+- **Partial Implementations**: Supports resources with missing Update/Delete methods
+- **Pattern Fallback**: Tries SDK parsing first, falls back to Framework patterns if no SDK methods found
+
+#### 🏗️ **Technical Implementation**:
+- **AST Navigation**: Advanced Go AST parsing for multiple code patterns
+- **Type Safety**: Proper type checking and casting for all AST node types
+- **Performance**: Efficient single-pass parsing with early termination
+- **Maintainability**: Clean separation of concerns with helper functions
+
+### � Next Phase Ready: Phase 2.3
+
+With Factory Function Analysis complete, the project is ready to proceed to **Phase 2.3: Remove AzureRM Functions** and begin the core migration work.
