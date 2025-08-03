@@ -285,3 +285,158 @@ func extractAWSImportConfig(expr ast.Expr) *AWSImportConfig {
 	// TODO: Implement when we encounter actual import configurations in tests
 	return nil
 }
+
+// extractAWSSDKDataSources extracts SDK data sources from the SDKDataSources method in AWS service packages
+func extractAWSSDKDataSources(node *ast.File) map[string]AWSResourceInfo {
+	dataSources := make(map[string]AWSResourceInfo)
+
+	ast.Inspect(node, func(n ast.Node) bool {
+		// Look for function declarations
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "SDKDataSources" {
+			return true
+		}
+
+		// Look for return statements in the function body
+		ast.Inspect(fn.Body, func(inner ast.Node) bool {
+			returnStmt, ok := inner.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+
+			// Process each return expression
+			for _, result := range returnStmt.Results {
+				// Handle direct slice literal return
+				if sliceLit, ok := result.(*ast.CompositeLit); ok {
+					extractedDataSources := extractAWSSDKDataSourcesFromSlice(sliceLit)
+					for k, v := range extractedDataSources {
+						dataSources[k] = v
+					}
+				}
+
+				// Handle variable reference (like "dataSources" variable)
+				ident, ok := result.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				// Find the variable definition in the function
+				ast.Inspect(fn.Body, func(varNode ast.Node) bool {
+					assignStmt, ok := varNode.(*ast.AssignStmt)
+					if !ok {
+						return true
+					}
+					for i, lhs := range assignStmt.Lhs {
+						lhsIdent, ok := lhs.(*ast.Ident)
+						if !ok || lhsIdent.Name != ident.Name {
+							return true
+						}
+						if i >= len(assignStmt.Rhs) {
+							return true
+						}
+						if sliceLit, ok := assignStmt.Rhs[i].(*ast.CompositeLit); ok {
+							extractedDataSources := extractAWSSDKDataSourcesFromSlice(sliceLit)
+							for k, v := range extractedDataSources {
+								dataSources[k] = v
+							}
+						}
+					}
+					return true
+				})
+			}
+			return true
+		})
+
+		return true
+	})
+
+	return dataSources
+}
+
+// extractAWSSDKDataSourcesFromSlice extracts AWS SDK data sources from a slice literal
+func extractAWSSDKDataSourcesFromSlice(sliceLit *ast.CompositeLit) map[string]AWSResourceInfo {
+	dataSources := make(map[string]AWSResourceInfo)
+
+	for _, elt := range sliceLit.Elts {
+		// Handle struct literals like &ServicePackageSDKDataSource{...}
+		var compLit *ast.CompositeLit
+
+		// Check if it's a pointer to struct (&StructName{...})
+		if unaryExpr, ok := elt.(*ast.UnaryExpr); ok && unaryExpr.Op == token.AND {
+			if cl, ok := unaryExpr.X.(*ast.CompositeLit); ok {
+				compLit = cl
+			}
+		} else if cl, ok := elt.(*ast.CompositeLit); ok {
+			// Direct struct literal (StructName{...})
+			compLit = cl
+		}
+
+		if compLit == nil {
+			continue
+		}
+
+		dataSourceInfo := extractAWSDataSourceInfoFromStruct(compLit)
+		if dataSourceInfo.TerraformType != "" {
+			dataSources[dataSourceInfo.TerraformType] = dataSourceInfo
+		}
+	}
+
+	return dataSources
+}
+
+// extractAWSDataSourceInfoFromStruct extracts data source information from a ServicePackageSDKDataSource struct literal
+func extractAWSDataSourceInfoFromStruct(compLit *ast.CompositeLit) AWSResourceInfo {
+	dataSourceInfo := AWSResourceInfo{
+		SDKType: "sdk",
+	}
+
+	for _, elt := range compLit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+
+		// Get the field name
+		fieldName := ""
+		if ident, ok := kv.Key.(*ast.Ident); ok {
+			fieldName = ident.Name
+		}
+
+		switch fieldName {
+		case "Factory":
+			if ident, ok := kv.Value.(*ast.Ident); ok {
+				dataSourceInfo.FactoryFunction = ident.Name
+			}
+		case "TypeName":
+			if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
+				dataSourceInfo.TerraformType = strings.Trim(basicLit.Value, `"`)
+			}
+		case "Name":
+			if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
+				dataSourceInfo.Name = strings.Trim(basicLit.Value, `"`)
+			}
+		case "Tags":
+			tagsConfig := extractAWSTagsConfig(kv.Value)
+			if tagsConfig != nil {
+				dataSourceInfo.HasTags = true
+				dataSourceInfo.TagsConfig = tagsConfig
+			}
+		case "Region":
+			regionConfig := extractAWSRegionConfig(kv.Value)
+			if regionConfig != nil {
+				dataSourceInfo.Region = regionConfig
+			}
+		case "Identity":
+			identityConfig := extractAWSIdentityConfig(kv.Value)
+			if identityConfig != nil {
+				dataSourceInfo.Identity = identityConfig
+			}
+		case "Import":
+			importConfig := extractAWSImportConfig(kv.Value)
+			if importConfig != nil {
+				dataSourceInfo.Import = importConfig
+			}
+		}
+	}
+
+	return dataSourceInfo
+}

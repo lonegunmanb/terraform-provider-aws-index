@@ -166,3 +166,165 @@ func (p *servicePackage) SomeOtherMethod(ctx context.Context) string {
 		assert.Equal(t, expected, result)
 	})
 }
+
+func TestExtractAWSSDKDataSources(t *testing.T) {
+	t.Run("extract SDK data sources from single method", func(t *testing.T) {
+		source := `package s3
+
+import (
+	"context"
+	"unique"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.ServicePackageSDKDataSource {
+	return []*inttypes.ServicePackageSDKDataSource{
+		{
+			Factory:  dataSourceBucket,
+			TypeName: "aws_s3_bucket",
+			Name:     "Bucket",
+			Tags: unique.Make(inttypes.ServicePackageResourceTags{
+				IdentifierAttribute: names.AttrBucket,
+				ResourceType:        "Bucket",
+			}),
+			Region: unique.Make(inttypes.ResourceRegionDefault()),
+		},
+		{
+			Factory:  dataSourceBucketObject,
+			TypeName: "aws_s3_bucket_object",
+			Name:     "Bucket Object",
+			Region:   unique.Make(inttypes.ResourceRegionDefault()),
+		},
+	}
+}`
+
+		expected := map[string]AWSResourceInfo{
+			"aws_s3_bucket": {
+				TerraformType:   "aws_s3_bucket",
+				FactoryFunction: "dataSourceBucket",
+				Name:            "Bucket",
+				SDKType:         "sdk",
+				HasTags:         true,
+				TagsConfig: &AWSTagsConfig{
+					IdentifierAttribute: "bucket",
+					ResourceType:        "Bucket",
+				},
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+			"aws_s3_bucket_object": {
+				TerraformType:   "aws_s3_bucket_object",
+				FactoryFunction: "dataSourceBucketObject",
+				Name:            "Bucket Object",
+				SDKType:         "sdk",
+				HasTags:         false,
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+		}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSSDKDataSources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract SDK data sources with empty method", func(t *testing.T) {
+		source := `package emptyservice
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.ServicePackageSDKDataSource {
+	return []*inttypes.ServicePackageSDKDataSource{}
+}`
+
+		expected := map[string]AWSResourceInfo{}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSSDKDataSources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract SDK data sources with variable assignment", func(t *testing.T) {
+		source := `package iam
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.ServicePackageSDKDataSource {
+	dataSources := []*inttypes.ServicePackageSDKDataSource{
+		{
+			Factory:  dataSourceUser,
+			TypeName: "aws_iam_user",
+			Name:     "User",
+		},
+		{
+			Factory:  dataSourceRole,
+			TypeName: "aws_iam_role",
+			Name:     "Role",
+		},
+	}
+	return dataSources
+}`
+
+		expected := map[string]AWSResourceInfo{
+			"aws_iam_user": {
+				TerraformType:   "aws_iam_user",
+				FactoryFunction: "dataSourceUser",
+				Name:            "User",
+				SDKType:         "sdk",
+				HasTags:         false,
+			},
+			"aws_iam_role": {
+				TerraformType:   "aws_iam_role",
+				FactoryFunction: "dataSourceRole",
+				Name:            "Role",
+				SDKType:         "sdk",
+				HasTags:         false,
+			},
+		}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSSDKDataSources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("no SDKDataSources method found", func(t *testing.T) {
+		source := `package nomethod
+
+type servicePackage struct{}
+
+func (p *servicePackage) SomeOtherMethod() {
+	// This service package doesn't have SDKDataSources method
+}`
+
+		expected := map[string]AWSResourceInfo{}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSSDKDataSources(node)
+		assert.Equal(t, expected, result)
+	})
+}

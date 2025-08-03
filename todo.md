@@ -113,8 +113,8 @@ The structured nature of AWS provider registration means:
 
 #### 2.1 New AWS Extraction Functions Required
 
-- [x] `extractAWSSDKResources()` - Extract from `SDKResources()` method **🚧 IN PROGRESS**
-- [ ] `extractAWSSDKDataSources()` - Extract from `SDKDataSources()` method  
+- [x] `extractAWSSDKResources()` - Extract from `SDKResources()` method **✅ COMPLETED**
+- [x] `extractAWSSDKDataSources()` - Extract from `SDKDataSources()` method **✅ COMPLETED**
 - [ ] `extractAWSFrameworkResources()` - Extract from `FrameworkResources()` method
 - [ ] `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method
 - [ ] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
