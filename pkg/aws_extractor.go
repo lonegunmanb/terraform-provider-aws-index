@@ -47,6 +47,25 @@ type AWSImportConfig struct {
 	ImportStateFunc string `json:"import_state_func,omitempty"`
 }
 
+// AWSFactoryCRUDMethods represents CRUD methods extracted from AWS factory functions
+type AWSFactoryCRUDMethods struct {
+	CreateMethod string `json:"create_method,omitempty"` // "resourceBucketCreate"
+	ReadMethod   string `json:"read_method,omitempty"`   // "resourceBucketRead"
+	UpdateMethod string `json:"update_method,omitempty"` // "resourceBucketUpdate"
+	DeleteMethod string `json:"delete_method,omitempty"` // "resourceBucketDelete"
+
+	// Framework resource methods (for struct-based resources)
+	SchemaMethod string `json:"schema_method,omitempty"` // "Schema"
+
+	// Data source specific methods
+	ConfigureMethod string `json:"configure_method,omitempty"` // "Configure"
+
+	// Ephemeral resource specific methods
+	OpenMethod  string `json:"open_method,omitempty"`  // "Open"
+	RenewMethod string `json:"renew_method,omitempty"` // "Renew"
+	CloseMethod string `json:"close_method,omitempty"` // "Close"
+}
+
 // extractAWSSDKResources extracts SDK resources from the SDKResources method in AWS service packages
 func extractAWSSDKResources(node *ast.File) map[string]AWSResourceInfo {
 	resources := make(map[string]AWSResourceInfo)
@@ -844,4 +863,17 @@ func extractAWSEphemeralResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 	}
 
 	return resourceInfo
+}
+
+// Helper function placeholders - these will be implemented in aws_extractor.go
+func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *AWSFactoryCRUDMethods {
+	// This function needs to be implemented in aws_extractor.go
+	// It should:
+	// 1. Find the factory function by name
+	// 2. Determine the factory type (SDK Resource, SDK DataSource, Framework Resource, Framework DataSource, Ephemeral)
+	// 3. Extract CRUD methods based on the factory type
+	// 4. Return the extracted methods
+
+	// For now, return empty to make tests compile
+	return &AWSFactoryCRUDMethods{}
 }

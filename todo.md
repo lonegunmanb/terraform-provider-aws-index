@@ -305,6 +305,97 @@ The structured nature of AWS provider registration means:
 #### ⏳ Remaining Functions:
 - [x] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method **✅ COMPLETED**
 
+### Phase 2.2: Factory Function Analysis - 🎯 CURRENT PRIORITY
+
+Based on analysis of `factory_function_analysis_test.go`, the `extractFactoryFunctionDetails()` function needs to be implemented to analyze factory functions and extract CRUD method details. This has been broken down into 5 focused sub-tasks:
+
+#### Sub-Task 1: 📋 Core Data Structure & Basic Function Signature
+**Objective**: Establish the foundation for factory function analysis
+**Scope**: 
+- Define or verify `AWSFactoryCRUDMethods` struct with all required fields
+- Implement basic function signature: `extractFactoryFunctionDetails(node *ast.File, functionName string) *AWSFactoryCRUDMethods`
+- Create helper functions for AST navigation and function discovery
+- Handle "function not found" cases (return empty struct)
+
+**Test Coverage**: Tests for factory function not found scenarios
+**Dependencies**: None (foundation task)
+**Estimated Complexity**: Low
+
+#### Sub-Task 2: 🔧 SDK Resource CRUD Method Extraction  
+**Objective**: Parse Legacy SDK resource factory functions to extract CRUD methods
+**Scope**:
+- Extract from `schema.Resource` composite literals with fields like:
+  - `CreateWithoutTimeout`, `Create`, `CreateContext` → `CreateMethod`
+  - `ReadWithoutTimeout`, `Read`, `ReadContext` → `ReadMethod` 
+  - `UpdateWithoutTimeout`, `Update`, `UpdateContext` → `UpdateMethod`
+  - `DeleteWithoutTimeout`, `Delete`, `DeleteContext` → `DeleteMethod`
+- Handle direct return patterns: `return &schema.Resource{...}`
+- Handle variable assignment patterns: `resource := &schema.Resource{...}; return resource`
+- Support partial CRUD implementations (some methods missing)
+
+**Test Coverage**: 4 test scenarios covering SDK resources with various field combinations
+**Dependencies**: Sub-Task 1 (basic function structure)
+**Estimated Complexity**: Medium-High
+
+#### Sub-Task 3: 🗃️ SDK Data Source Method Extraction
+**Objective**: Parse Legacy SDK data source factory functions to extract read methods
+**Scope**:
+- Extract from `schema.Resource` composite literals for data sources:
+  - `ReadWithoutTimeout`, `Read`, `ReadContext` → `ReadMethod`
+- Handle same return patterns as Sub-Task 2 (direct return vs variable assignment)
+- Data sources typically only have Read methods (simpler than resources)
+
+**Test Coverage**: 2 test scenarios for SDK data sources with legacy and modern field names
+**Dependencies**: Sub-Task 2 (SDK parsing patterns established)  
+**Estimated Complexity**: Low-Medium
+
+#### Sub-Task 4: 🚀 Framework Resource/DataSource Method Extraction
+**Objective**: Parse Modern Framework factory functions to extract lifecycle methods
+**Scope**:
+- Identify receiver struct types by analyzing factory function return statements
+- Find method implementations on receiver structs:
+  - Framework Resources: `Schema`, `Create`, `Read`, `Update`, `Delete`, `Configure`
+  - Framework DataSources: `Schema`, `Read`, `Configure`
+- Handle factory patterns: `func newXxxResource(ctx context.Context) (resource.ResourceWithConfigure, error)`
+- Support partial implementations (missing Update/Delete methods)
+
+**Test Coverage**: 4 test scenarios covering Framework resources and data sources
+**Dependencies**: Sub-Task 1 (AST navigation), different from Sub-Tasks 2-3 (new parsing approach)
+**Estimated Complexity**: High
+
+#### Sub-Task 5: ⚡ Ephemeral Resource Lifecycle Method Extraction  
+**Objective**: Parse Ephemeral resource factory functions to extract lifecycle methods
+**Scope**:
+- Identify receiver struct types from ephemeral factory functions
+- Find method implementations on receiver structs:
+  - `Schema`, `Open`, `Renew`, `Close`, `Configure` → respective method fields
+- Handle factory patterns: `func NewXxxEphemeralResource(ctx context.Context) (ephemeral.EphemeralResourceWithConfigure, error)`
+- Support partial lifecycle implementations (missing Renew/Configure methods)
+
+**Test Coverage**: 2 test scenarios covering full and partial ephemeral lifecycle implementations
+**Dependencies**: Sub-Task 4 (Framework parsing patterns)
+**Estimated Complexity**: Medium
+
+#### 🎯 Implementation Strategy:
+1. **Sequential Development**: Complete sub-tasks in order (1→2→3→4→5)
+2. **TDD Approach**: Each sub-task must pass its specific test cases before moving to next
+3. **Incremental Testing**: Run full test suite after each sub-task completion
+4. **Pattern Reuse**: Leverage parsing patterns from previous sub-tasks where applicable
+
+#### 📊 Complexity Assessment:
+- **Sub-Task 1**: Low (foundation setup)
+- **Sub-Task 2**: Medium-High (SDK parsing complexity)  
+- **Sub-Task 3**: Low-Medium (leverages Sub-Task 2 patterns)
+- **Sub-Task 4**: High (new Framework parsing approach)
+- **Sub-Task 5**: Medium (leverages Sub-Task 4 patterns)
+
+#### ⚠️ Key Technical Challenges:
+- **AST Pattern Matching**: Distinguishing between direct returns vs variable assignments
+- **Receiver Type Discovery**: Mapping factory functions to their struct implementations  
+- **Method Resolution**: Finding method implementations across different struct types
+- **Field Name Variants**: Supporting both legacy (`Create`) and modern (`CreateWithoutTimeout`) field names
+- **Partial Implementations**: Gracefully handling missing methods without errors
+
 #### 📁 Files Structure:
 - `pkg/aws_extractor_test.go` - Comprehensive test cases for all AWS extraction functions
 - `pkg/aws_extractor.go` - Implementation of AWS-specific extraction functions
@@ -319,5 +410,23 @@ The structured nature of AWS provider registration means:
 #### 📊 Progress Summary:
 - **SDK Functions**: 2/2 completed (100%) ✅
 - **Framework Functions**: 2/2 completed (100%) ✅  
-- **Ephemeral Functions**: 0/1 completed (0%) ⏳
-- **Overall Progress**: 4/5 functions completed (80%) 🚧
+- **Ephemeral Functions**: 1/1 completed (100%) ✅
+- **Phase 2.1 Overall**: 5/5 functions completed (100%) ✅
+
+### Phase 2.2: Factory Function Analysis - 🚧 0% COMPLETED
+
+#### ⏳ Sub-Tasks Breakdown:
+- [ ] **Sub-Task 1**: Core Data Structure & Basic Function Signature (0%) ⏳
+- [ ] **Sub-Task 2**: SDK Resource CRUD Method Extraction (0%) ⏳
+- [ ] **Sub-Task 3**: SDK Data Source Method Extraction (0%) ⏳  
+- [ ] **Sub-Task 4**: Framework Resource/DataSource Method Extraction (0%) ⏳
+- [ ] **Sub-Task 5**: Ephemeral Resource Lifecycle Method Extraction (0%) ⏳
+
+#### 🎯 Current Focus: Sub-Task 1 (Core Data Structure & Basic Function Signature)
+**Next Action**: Implement `AWSFactoryCRUDMethods` struct and basic `extractFactoryFunctionDetails()` function skeleton
+
+#### 📊 Phase 2.2 Progress Summary:
+- **Foundation Tasks**: 0/1 completed (0%) ⏳
+- **SDK Analysis Tasks**: 0/2 completed (0%) ⏳  
+- **Framework Analysis Tasks**: 0/2 completed (0%) ⏳
+- **Overall Phase 2.2**: 0/5 sub-tasks completed (0%) 🚧
