@@ -117,7 +117,7 @@ The structured nature of AWS provider registration means:
 - [x] `extractAWSSDKDataSources()` - Extract from `SDKDataSources()` method **✅ COMPLETED**
 - [x] `extractAWSFrameworkResources()` - Extract from `FrameworkResources()` method **✅ COMPLETED**
 - [x] `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method **✅ COMPLETED**
-- [ ] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
+- [x] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method **✅ COMPLETED**
 
 #### 2.2 Factory Function Analysis
 - [ ] `extractFactoryFunctionDetails()` - Parse Factory functions for CRUD methods
@@ -300,10 +300,10 @@ The structured nature of AWS provider registration means:
 
 #### 🔄 Next Implementation (Phase 2.1 Final):
 
-**🎯 Current Target**: `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
+**🎯 Current Target**: All Phase 2.1 functions completed! **✅ COMPLETED**
 
 #### ⏳ Remaining Functions:
-- [ ] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
+- [x] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method **✅ COMPLETED**
 
 #### 📁 Files Structure:
 - `pkg/aws_extractor_test.go` - Comprehensive test cases for all AWS extraction functions

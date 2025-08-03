@@ -668,3 +668,155 @@ func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.Service
 		assert.Equal(t, expected, result)
 	})
 }
+
+func TestExtractAWSEphemeralResources(t *testing.T) {
+	t.Run("extract ephemeral resources from single method", func(t *testing.T) {
+		source := `package secretsmanager
+
+import (
+	"context"
+	"unique"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.ServicePackageEphemeralResource {
+	return []*inttypes.ServicePackageEphemeralResource{
+		{
+			Factory:  newSecretValueEphemeralResource,
+			TypeName: "aws_secretsmanager_secret_value",
+			Name:     "Secret Value",
+			Region:   unique.Make(inttypes.ResourceRegionDefault()),
+		},
+		{
+			Factory:  newRandomPasswordEphemeralResource,
+			TypeName: "aws_secretsmanager_random_password",
+			Name:     "Random Password",
+			Region:   unique.Make(inttypes.ResourceRegionDisabled()),
+		},
+	}
+}`
+
+		expected := map[string]AWSResourceInfo{
+			"aws_secretsmanager_secret_value": {
+				TerraformType:   "aws_secretsmanager_secret_value",
+				FactoryFunction: "newSecretValueEphemeralResource",
+				Name:            "Secret Value",
+				SDKType:         "ephemeral",
+				HasTags:         false,
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+			"aws_secretsmanager_random_password": {
+				TerraformType:   "aws_secretsmanager_random_password",
+				FactoryFunction: "newRandomPasswordEphemeralResource",
+				Name:            "Random Password",
+				SDKType:         "ephemeral",
+				HasTags:         false,
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             false,
+					IsValidateOverrideInPartition: false,
+				},
+			},
+		}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSEphemeralResources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract ephemeral resources with empty method", func(t *testing.T) {
+		source := `package secretsmanager
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.ServicePackageEphemeralResource {
+	return []*inttypes.ServicePackageEphemeralResource{}
+}`
+
+		expected := map[string]AWSResourceInfo{}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSEphemeralResources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract ephemeral resources with variable assignment", func(t *testing.T) {
+		source := `package secretsmanager
+
+import (
+	"context"
+	"unique"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.ServicePackageEphemeralResource {
+	resources := []*inttypes.ServicePackageEphemeralResource{
+		{
+			Factory:  newSecretValueEphemeralResource,
+			TypeName: "aws_secretsmanager_secret_value",
+			Name:     "Secret Value",
+			Region:   unique.Make(inttypes.ResourceRegionDefault()),
+		},
+	}
+	return resources
+}`
+
+		expected := map[string]AWSResourceInfo{
+			"aws_secretsmanager_secret_value": {
+				TerraformType:   "aws_secretsmanager_secret_value",
+				FactoryFunction: "newSecretValueEphemeralResource",
+				Name:            "Secret Value",
+				SDKType:         "ephemeral",
+				HasTags:         false,
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+		}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSEphemeralResources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract ephemeral resources with method not found", func(t *testing.T) {
+		source := `package secretsmanager
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePackageSDKResource {
+	return []*inttypes.ServicePackageSDKResource{}
+}`
+
+		expected := map[string]AWSResourceInfo{}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSEphemeralResources(node)
+		assert.Equal(t, expected, result)
+	})
+}
