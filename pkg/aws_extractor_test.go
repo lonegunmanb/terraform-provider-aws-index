@@ -328,3 +328,173 @@ func (p *servicePackage) SomeOtherMethod() {
 		assert.Equal(t, expected, result)
 	})
 }
+
+func TestExtractAWSFrameworkResources(t *testing.T) {
+	t.Run("extract Framework resources from single method", func(t *testing.T) {
+		source := `package s3
+
+import (
+	"context"
+	"unique"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.ServicePackageFrameworkResource {
+	return []*inttypes.ServicePackageFrameworkResource{
+		{
+			Factory:  newBucketLifecycleConfigurationResource,
+			TypeName: "aws_s3_bucket_lifecycle_configuration",
+			Name:     "Bucket Lifecycle Configuration",
+			Region:   unique.Make(inttypes.ResourceRegionDefault()),
+		},
+		{
+			Factory:  newDirectoryBucketResource,
+			TypeName: "aws_s3_directory_bucket",
+			Name:     "Directory Bucket",
+			Tags: unique.Make(inttypes.ServicePackageResourceTags{
+				IdentifierAttribute: names.AttrARN,
+				ResourceType:        "DirectoryBucket",
+			}),
+			Region: unique.Make(inttypes.ResourceRegionDefault()),
+		},
+	}
+}`
+
+		expected := map[string]AWSResourceInfo{
+			"aws_s3_bucket_lifecycle_configuration": {
+				TerraformType:   "aws_s3_bucket_lifecycle_configuration",
+				FactoryFunction: "newBucketLifecycleConfigurationResource",
+				Name:            "Bucket Lifecycle Configuration",
+				SDKType:         "framework",
+				HasTags:         false,
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+			"aws_s3_directory_bucket": {
+				TerraformType:   "aws_s3_directory_bucket",
+				FactoryFunction: "newDirectoryBucketResource",
+				Name:            "Directory Bucket",
+				SDKType:         "framework",
+				HasTags:         true,
+				TagsConfig: &AWSTagsConfig{
+					IdentifierAttribute: "arn",
+					ResourceType:        "DirectoryBucket",
+				},
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+		}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSFrameworkResources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract Framework resources with empty method", func(t *testing.T) {
+		source := `package s3
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.ServicePackageFrameworkResource {
+	return []*inttypes.ServicePackageFrameworkResource{}
+}`
+
+		expected := map[string]AWSResourceInfo{}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSFrameworkResources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract Framework resources with variable assignment", func(t *testing.T) {
+		source := `package lambda
+
+import (
+	"context"
+	"unique"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.ServicePackageFrameworkResource {
+	resources := []*inttypes.ServicePackageFrameworkResource{
+		{
+			Factory:  newFunctionResource,
+			TypeName: "aws_lambda_function",
+			Name:     "Function",
+			Tags: unique.Make(inttypes.ServicePackageResourceTags{
+				IdentifierAttribute: names.AttrARN,
+				ResourceType:        "Function",
+			}),
+			Region: unique.Make(inttypes.ResourceRegionDefault()),
+		},
+	}
+	return resources
+}`
+
+		expected := map[string]AWSResourceInfo{
+			"aws_lambda_function": {
+				TerraformType:   "aws_lambda_function",
+				FactoryFunction: "newFunctionResource",
+				Name:            "Function",
+				SDKType:         "framework",
+				HasTags:         true,
+				TagsConfig: &AWSTagsConfig{
+					IdentifierAttribute: "arn",
+					ResourceType:        "Function",
+				},
+				Region: &AWSRegionConfig{
+					IsOverrideEnabled:             true,
+					IsValidateOverrideInPartition: true,
+				},
+			},
+		}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSFrameworkResources(node)
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("extract Framework resources with method not found", func(t *testing.T) {
+		source := `package ec2
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePackageSDKResource {
+	return []*inttypes.ServicePackageSDKResource{}
+}`
+
+		expected := map[string]AWSResourceInfo{}
+
+		node, err := parseSource(source)
+		require.NoError(t, err)
+
+		result := extractAWSFrameworkResources(node)
+		assert.Equal(t, expected, result)
+	})
+}

@@ -115,7 +115,7 @@ The structured nature of AWS provider registration means:
 
 - [x] `extractAWSSDKResources()` - Extract from `SDKResources()` method **✅ COMPLETED**
 - [x] `extractAWSSDKDataSources()` - Extract from `SDKDataSources()` method **✅ COMPLETED**
-- [ ] `extractAWSFrameworkResources()` - Extract from `FrameworkResources()` method
+- [x] `extractAWSFrameworkResources()` - Extract from `FrameworkResources()` method **✅ COMPLETED**
 - [ ] `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method
 - [ ] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
 
@@ -274,38 +274,46 @@ The structured nature of AWS provider registration means:
 
 ## Current Implementation Status (August 3, 2025)
 
-### Phase 2.1: extractAWSSDKResources() - 🚧 IN PROGRESS
+### Phase 2.1: AWS Extraction Functions - 🚧 60% COMPLETED
 
-#### ✅ Completed Steps:
+#### ✅ Completed Functions:
 
-1. **Test Framework Created**: `pkg/aws_extractor_test.go` with comprehensive test cases
-2. **Implementation Created**: `pkg/aws_extractor.go` with `extractAWSSDKResources()` function
-3. **Data Structures Defined**: 
-   - `AWSResourceInfo` - Main resource information structure
-   - `AWSTagsConfig` - AWS-specific tags configuration
-   - `AWSRegionConfig` - AWS-specific region configuration
-   - `AWSIdentityConfig` - AWS-specific identity configuration
-   - `AWSImportConfig` - AWS-specific import configuration
-4. **Test Coverage**: 4 comprehensive test scenarios:
-   - Direct return from `SDKResources()` method with tags and regions
-   - Empty method handling
-   - Variable assignment pattern
-   - Method not found scenario
-5. **AST Parsing Logic**: Complete implementation for AWS service package structure parsing
+1. **✅ extractAWSSDKResources()**: Extracts SDK resources from `SDKResources()` method
+   - **Test Coverage**: 4 comprehensive test scenarios 
+   - **Implementation**: Complete AST parsing for SDK resource structures
+   - **Status**: All tests passing ✅
 
-#### 📁 Files Created:
-- `pkg/aws_extractor_test.go` - Test cases for AWS extraction functions
+2. **✅ extractAWSSDKDataSources()**: Extracts SDK data sources from `SDKDataSources()` method  
+   - **Test Coverage**: 4 comprehensive test scenarios
+   - **Implementation**: Complete AST parsing for SDK data source structures
+   - **Status**: All tests passing ✅
+
+3. **✅ extractAWSFrameworkResources()**: Extracts Framework resources from `FrameworkResources()` method
+   - **Test Coverage**: 4 comprehensive test scenarios
+   - **Implementation**: Complete AST parsing for Framework resource structures  
+   - **Status**: All tests passing ✅
+
+#### 🔄 Next Implementation (Phase 2.1 Continued):
+
+**🎯 Current Target**: `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method
+
+#### ⏳ Remaining Functions:
+- [ ] `extractAWSFrameworkDataSources()` - Extract from `FrameworkDataSources()` method
+- [ ] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method
+
+#### 📁 Files Structure:
+- `pkg/aws_extractor_test.go` - Comprehensive test cases for all AWS extraction functions
 - `pkg/aws_extractor.go` - Implementation of AWS-specific extraction functions
 
-#### ⏳ Next Steps:
+#### 🔍 Key Implementation Patterns Established:
+- **TDD Approach**: Write tests first, then implement functionality
+- **AST Parsing**: Robust parsing of AWS service package structures
+- **Multiple Return Patterns**: Support for direct returns, variable assignments, and declarations
+- **Rich Metadata Extraction**: Tags, Region, Identity, and Import configurations
+- **Error Handling**: Graceful handling of missing methods and malformed structures
 
-1. **✅ COMPLETED**: Create Implementation File - `pkg/aws_extractor.go` with `extractAWSSDKResources()` function
-2. **🔄 TESTING**: Run tests to validate implementation passes all test cases
-3. **🚀 VALIDATION**: Test with actual AWS provider service packages from `tmp/terraform-provider-aws/`
-4. **📋 NEXT FUNCTION**: Begin implementing `extractAWSSDKDataSources()` following the same TDD approach
-
-#### 🔍 Implementation Requirements:
-- Parse `SDKResources(ctx context.Context) []*inttypes.ServicePackageSDKResource` method
-- Extract structured resource information from slice literals
-- Handle both direct returns and variable assignments
-- Parse Tags, Region, Identity, and Import configurations from struct literals
+#### 📊 Progress Summary:
+- **SDK Functions**: 2/2 completed (100%) ✅
+- **Framework Functions**: 1/2 completed (50%) 🚧  
+- **Ephemeral Functions**: 0/1 completed (0%) ⏳
+- **Overall Progress**: 3/5 functions completed (60%) 🚧
