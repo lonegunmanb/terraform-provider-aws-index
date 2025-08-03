@@ -3,6 +3,12 @@
 ## Overview
 This project was originally designed for indexing the AzureRM Terraform provider but needs to be adapted for the AWS Terraform provider. The main challenge is that AWS provider uses a completely different service registration pattern compared to AzureRM.
 
+## ⚠️ CRITICAL COMPATIBILITY WARNING
+
+**DO NOT CHANGE THE FOLLOWING TYPES**: `TerraformResource`, `TerraformDataSource`, and `TerraformEphemeral`
+
+These types represent the **public API** of this tool and are used by external consumers. Any changes to their structure will break backward compatibility and cause integration failures. The AWS migration must work **within** the constraints of these existing types, using internal data structure changes and mapping layers to bridge between AWS patterns and the existing API.
+
 ## Current Issues
 
 ### 1. AzureRM-Specific Extraction Functions
@@ -120,8 +126,8 @@ The structured nature of AWS provider registration means:
 - [x] `extractAWSEphemeralResources()` - Extract from `EphemeralResources()` method **✅ COMPLETED**
 
 #### 2.2 Factory Function Analysis
-- [ ] `extractFactoryFunctionDetails()` - Parse Factory functions for CRUD methods
-- [ ] Update CRUD extraction to handle both Legacy SDK and Framework patterns
+- [x] `extractFactoryFunctionDetails()` - Parse Factory functions for CRUD methods **✅ COMPLETED**
+- [x] Update CRUD extraction to handle both Legacy SDK and Framework patterns **✅ COMPLETED**
 
 #### 2.3 Remove AzureRM Functions
 - [ ] Remove `extractSupportedResourcesMappings()`
@@ -129,6 +135,7 @@ The structured nature of AWS provider registration means:
 - [ ] Remove `extractResourcesStructTypes()`
 - [ ] Remove `extractDataSourcesStructTypes()`
 - [ ] Remove `extractEphemeralResourcesFunctions()`
+- [x] Remove AzureRM-specific integration test (`integration_test.go`) **✅ COMPLETED**
 
 ### Phase 3: Architecture Adaptation
 
@@ -136,11 +143,6 @@ The structured nature of AWS provider registration means:
 - [ ] Update service discovery to scan `internal/service/*/service_package_gen.go`
 - [ ] Handle the new 5-category classification system
 - [ ] Maintain backward compatibility for output formats
-
-#### 3.2 Metadata Enhancement
-- [ ] Leverage AWS's rich metadata (Tags, Region, Identity, Import)
-- [ ] Add new fields to output JSON for AWS-specific features
-- [ ] Update progress tracking for 5 categories instead of 3
 
 ### Phase 4: Configuration Updates
 

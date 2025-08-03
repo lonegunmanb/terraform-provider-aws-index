@@ -96,46 +96,82 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 						continue
 					}
 
-					// Extract all registration methods from this file
-					supportedResources := extractSupportedResourcesMappings(fileInfo.File)
-					supportedDataSources := extractSupportedDataSourcesMappings(fileInfo.File)
-					resources := extractResourcesStructTypes(fileInfo.File)
-					dataSources := extractDataSourcesStructTypes(fileInfo.File)
-					ephemeralFunctions := extractEphemeralResourcesFunctions(fileInfo.File)
+					// Extract all registration methods from this file using AWS-specific functions
+					awsSDKResources := extractAWSSDKResources(fileInfo.File)
+					awsSDKDataSources := extractAWSSDKDataSources(fileInfo.File)
+					awsFrameworkResources := extractAWSFrameworkResources(fileInfo.File)
+					awsFrameworkDataSources := extractAWSFrameworkDataSources(fileInfo.File)
+					awsEphemeralResources := extractAWSEphemeralResources(fileInfo.File)
 
-					// Merge results into service registration
-					serviceReg.SupportedResources = mergeMap(serviceReg.SupportedResources, supportedResources)
-					serviceReg.SupportedDataSources = mergeMap(serviceReg.SupportedDataSources, supportedDataSources)
-					serviceReg.Resources = append(serviceReg.Resources, resources...)
-					serviceReg.DataSources = append(serviceReg.DataSources, dataSources...)
-					serviceReg.EphemeralFunctions = append(serviceReg.EphemeralFunctions, ephemeralFunctions...)
-				}
-
-				// After processing all files, extract Terraform types for modern resources and data sources
-				serviceReg.ResourceTerraformTypes = extractResourceTerraformTypes(packageInfo, serviceReg.Resources)
-				serviceReg.DataSourceTerraformTypes = extractDataSourceTerraformTypes(packageInfo, serviceReg.DataSources)
-
-				// Convert ephemeral function names to struct names for Terraform type extraction
-				ephemeralStructs := convertFunctionNamesToStructNames(serviceReg.EphemeralFunctions, packageInfo)
-				serviceReg.EphemeralTerraformTypes = extractEphemeralTerraformTypes(packageInfo, ephemeralStructs)
-
-				// Extract CRUD methods for legacy resources using gophon function data
-				for terraformType, registrationMethod := range serviceReg.SupportedResources {
-					if crudMethods := extractCRUDFromPackage(registrationMethod, packageInfo); crudMethods != nil {
-						serviceReg.ResourceCRUDMethods[terraformType] = crudMethods
+					// Merge AWS results into service registration
+					for terraformType, resourceInfo := range awsSDKResources {
+						serviceReg.AWSSDKResources[terraformType] = resourceInfo
+					}
+					for terraformType, resourceInfo := range awsSDKDataSources {
+						serviceReg.AWSSDKDataSources[terraformType] = resourceInfo
+					}
+					for terraformType, resourceInfo := range awsFrameworkResources {
+						serviceReg.AWSFrameworkResources[terraformType] = resourceInfo
+					}
+					for terraformType, resourceInfo := range awsFrameworkDataSources {
+						serviceReg.AWSFrameworkDataSources[terraformType] = resourceInfo
+					}
+					for terraformType, resourceInfo := range awsEphemeralResources {
+						serviceReg.AWSEphemeralResources[terraformType] = resourceInfo
 					}
 				}
 
-				// Extract methods for legacy data sources
-				for terraformType, registrationMethod := range serviceReg.SupportedDataSources {
-					if methods := extractDataSourceMethodsFromPackage(registrationMethod, packageInfo); methods != nil {
-						serviceReg.DataSourceMethods[terraformType] = methods
+				// Extract CRUD methods for AWS factory functions
+				allAWSResources := make(map[string]AWSResourceInfo)
+				
+				// Merge all AWS resource types for CRUD analysis
+				for terraformType, resourceInfo := range serviceReg.AWSSDKResources {
+					allAWSResources[terraformType] = resourceInfo
+				}
+				for terraformType, resourceInfo := range serviceReg.AWSSDKDataSources {
+					allAWSResources[terraformType] = resourceInfo
+				}
+				for terraformType, resourceInfo := range serviceReg.AWSFrameworkResources {
+					allAWSResources[terraformType] = resourceInfo
+				}
+				for terraformType, resourceInfo := range serviceReg.AWSFrameworkDataSources {
+					allAWSResources[terraformType] = resourceInfo
+				}
+				for terraformType, resourceInfo := range serviceReg.AWSEphemeralResources {
+					allAWSResources[terraformType] = resourceInfo
+				}
+
+				// Extract CRUD methods for each AWS resource/data source/ephemeral
+				for terraformType, resourceInfo := range allAWSResources {
+					if resourceInfo.FactoryFunction != "" {
+						// Find the factory function and extract CRUD details
+						for _, fileInfo := range packageInfo.Files {
+							if fileInfo.File != nil {
+								if crudMethods := extractFactoryFunctionDetails(fileInfo.File, resourceInfo.FactoryFunction); crudMethods != nil {
+									// Store CRUD methods in the resource info or service registration
+									// For now, we can add this to legacy structure for compatibility
+									if resourceInfo.SDKType == "sdk" {
+										if crudMethods.CreateMethod != "" || crudMethods.ReadMethod != "" {
+											legacyCRUD := &LegacyResourceCRUDFunctions{
+												CreateMethod: crudMethods.CreateMethod,
+												ReadMethod:   crudMethods.ReadMethod,
+												UpdateMethod: crudMethods.UpdateMethod,
+												DeleteMethod: crudMethods.DeleteMethod,
+											}
+											serviceReg.ResourceCRUDMethods[terraformType] = legacyCRUD
+										}
+									}
+									break
+								}
+							}
+						}
 					}
 				}
 
-				// Only include services that have at least one registration method
-				if len(serviceReg.SupportedResources) > 0 || len(serviceReg.SupportedDataSources) > 0 ||
-					len(serviceReg.Resources) > 0 || len(serviceReg.DataSources) > 0 || len(serviceReg.EphemeralFunctions) > 0 {
+				// Only include services that have at least one AWS registration method
+				if len(serviceReg.AWSSDKResources) > 0 || len(serviceReg.AWSSDKDataSources) > 0 ||
+					len(serviceReg.AWSFrameworkResources) > 0 || len(serviceReg.AWSFrameworkDataSources) > 0 || 
+					len(serviceReg.AWSEphemeralResources) > 0 {
 					resultChan <- serviceReg
 				}
 			}
