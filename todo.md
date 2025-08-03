@@ -9,6 +9,41 @@ This project was originally designed for indexing the AzureRM Terraform provider
 
 These types represent the **public API** of this tool and are used by external consumers. Any changes to their structure will break backward compatibility and cause integration failures. The AWS migration must work **within** the constraints of these existing types, using internal data structure changes and mapping layers to bridge between AWS patterns and the existing API.
 
+## 🎯 **Current Status Summary (Post-Commit)**
+
+### ✅ **Completed Phases**:
+- **Phase 2.1**: AWS Extraction Functions (100%) - All 5 AWS extraction functions implemented and tested
+- **Phase 2.2**: Factory Function Analysis (100%) - Complete CRUD method extraction for all AWS patterns
+- **Integration Test Cleanup**: Removed AzureRM-specific integration test
+
+### 🚧 **Current Phase**: 
+- **Phase 2.3**: Remove AzureRM Functions (20% complete)
+  - ✅ Updated ServiceRegistration struct for AWS 5-category system
+  - ✅ Modified main scanning logic to use AWS extraction functions  
+  - ✅ Updated post-processing for AWS factory function analysis
+  - ✅ Removed AzureRM integration test
+  - ⏳ **Next**: Remove legacy AzureRM extraction functions
+
+### 📊 **Test Status**: 95/95 tests passing (100%)
+
+## Current Issues
+
+### 1. AzureRM-Specific Extraction Functions
+The following functions in `pkg/terraform_provider_index.go` are specifically designed for AzureRM patterns and won't work with AWS:
+
+- `extractSupportedResourcesMappings()`
+- `extractSupportedDataSourcesMappings()`
+- `extractResourcesStructTypes()`
+- `extractDataSourcesStructTypes()`
+- `extractEphemeralResourcesFunctions()`
+
+### 2. File Naming References
+- `WriteMainIndexFile()` still references "terraform-provider-azurerm-index.json" (Line 190)
+
+### 3. Documentation Updates Needed
+- `README.md` contains AzureRM-specific references
+- Project description needs updating
+
 ## Current Issues
 
 ### 1. AzureRM-Specific Extraction Functions
