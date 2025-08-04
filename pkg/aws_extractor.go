@@ -238,12 +238,15 @@ func extractAWSTagsConfig(expr ast.Expr) *AWSTagsConfig {
 						switch fieldName {
 						case "IdentifierAttribute":
 							// Handle both string literals and names.AttrBucket references
-							if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
-								tagsConfig.IdentifierAttribute = strings.Trim(basicLit.Value, `"`)
-							} else if selectorExpr, ok := kv.Value.(*ast.SelectorExpr); ok {
+							switch v := kv.Value.(type) {
+							case *ast.BasicLit:
+								if v.Kind == token.STRING {
+									tagsConfig.IdentifierAttribute = strings.Trim(v.Value, `"`)
+								}
+							case *ast.SelectorExpr:
 								// Handle names.AttrBucket -> "bucket"
-								if x, ok := selectorExpr.X.(*ast.Ident); ok && x.Name == "names" {
-									attrName := selectorExpr.Sel.Name
+								if x, ok := v.X.(*ast.Ident); ok && x.Name == "names" {
+									attrName := v.Sel.Name
 									// Convert AttrBucket to "bucket"
 									if strings.HasPrefix(attrName, "Attr") {
 										tagsConfig.IdentifierAttribute = strings.ToLower(attrName[4:])
@@ -267,29 +270,40 @@ func extractAWSTagsConfig(expr ast.Expr) *AWSTagsConfig {
 // extractAWSRegionConfig extracts region configuration from unique.Make call
 func extractAWSRegionConfig(expr ast.Expr) *AWSRegionConfig {
 	// Handle unique.Make(inttypes.ResourceRegionDefault()) or similar
-	if callExpr, ok := expr.(*ast.CallExpr); ok {
-		if len(callExpr.Args) > 0 {
-			// Check for ResourceRegionDefault() call
-			if innerCall, ok := callExpr.Args[0].(*ast.CallExpr); ok {
-				if selectorExpr, ok := innerCall.Fun.(*ast.SelectorExpr); ok {
-					if x, ok := selectorExpr.X.(*ast.Ident); ok && x.Name == "inttypes" {
-						switch selectorExpr.Sel.Name {
-						case "ResourceRegionDefault":
-							return &AWSRegionConfig{
-								IsOverrideEnabled:             true,
-								IsValidateOverrideInPartition: true,
-							}
-						case "ResourceRegionDisabled":
-							return &AWSRegionConfig{
-								IsOverrideEnabled:             false,
-								IsValidateOverrideInPartition: false,
-							}
-						}
-					}
-				}
-			}
+	callExpr, ok := expr.(*ast.CallExpr)
+	if !ok || len(callExpr.Args) == 0 {
+		return nil
+	}
+
+	// Check for ResourceRegionDefault() call
+	innerCall, ok := callExpr.Args[0].(*ast.CallExpr)
+	if !ok {
+		return nil
+	}
+
+	selectorExpr, ok := innerCall.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+
+	x, ok := selectorExpr.X.(*ast.Ident)
+	if !ok || x.Name != "inttypes" {
+		return nil
+	}
+
+	switch selectorExpr.Sel.Name {
+	case "ResourceRegionDefault":
+		return &AWSRegionConfig{
+			IsOverrideEnabled:             true,
+			IsValidateOverrideInPartition: true,
+		}
+	case "ResourceRegionDisabled":
+		return &AWSRegionConfig{
+			IsOverrideEnabled:             false,
+			IsValidateOverrideInPartition: false,
 		}
 	}
+
 	return nil
 }
 
@@ -331,36 +345,16 @@ func extractAWSSDKDataSources(node *ast.File) map[string]AWSResourceInfo {
 					for k, v := range extractedDataSources {
 						dataSources[k] = v
 					}
+					continue
 				}
 
 				// Handle variable reference (like "dataSources" variable)
-				ident, ok := result.(*ast.Ident)
-				if !ok {
-					continue
+				if ident, ok := result.(*ast.Ident); ok {
+					extractedFromVariable := extractFromVariableReference(fn.Body, ident.Name, extractAWSSDKDataSourcesFromSlice)
+					for k, v := range extractedFromVariable {
+						dataSources[k] = v
+					}
 				}
-				// Find the variable definition in the function
-				ast.Inspect(fn.Body, func(varNode ast.Node) bool {
-					assignStmt, ok := varNode.(*ast.AssignStmt)
-					if !ok {
-						return true
-					}
-					for i, lhs := range assignStmt.Lhs {
-						lhsIdent, ok := lhs.(*ast.Ident)
-						if !ok || lhsIdent.Name != ident.Name {
-							return true
-						}
-						if i >= len(assignStmt.Rhs) {
-							return true
-						}
-						if sliceLit, ok := assignStmt.Rhs[i].(*ast.CompositeLit); ok {
-							extractedDataSources := extractAWSSDKDataSourcesFromSlice(sliceLit)
-							for k, v := range extractedDataSources {
-								dataSources[k] = v
-							}
-						}
-					}
-					return true
-				})
 			}
 			return true
 		})
@@ -379,14 +373,17 @@ func extractAWSSDKDataSourcesFromSlice(sliceLit *ast.CompositeLit) map[string]AW
 		// Handle struct literals like &ServicePackageSDKDataSource{...}
 		var compLit *ast.CompositeLit
 
-		// Check if it's a pointer to struct (&StructName{...})
-		if unaryExpr, ok := elt.(*ast.UnaryExpr); ok && unaryExpr.Op == token.AND {
-			if cl, ok := unaryExpr.X.(*ast.CompositeLit); ok {
+		// Extract composite literal from different patterns
+		switch e := elt.(type) {
+		case *ast.UnaryExpr:
+			// Check if it's a pointer to struct (&StructName{...})
+			cl, ok := e.X.(*ast.CompositeLit)
+			if e.Op == token.AND && ok {
 				compLit = cl
 			}
-		} else if cl, ok := elt.(*ast.CompositeLit); ok {
+		case *ast.CompositeLit:
 			// Direct struct literal (StructName{...})
-			compLit = cl
+			compLit = e
 		}
 
 		if compLit == nil {
@@ -476,40 +473,49 @@ func extractAWSFrameworkResources(node *ast.File) map[string]AWSResourceInfo {
 			switch s := stmt.(type) {
 			case *ast.ReturnStmt:
 				// Handle direct return
-				if len(s.Results) > 0 {
-					if sliceLit, ok := s.Results[0].(*ast.CompositeLit); ok {
-						extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
-						for k, v := range extractedResources {
-							resources[k] = v
-						}
+				if len(s.Results) == 0 {
+					continue
+				}
+				if sliceLit, ok := s.Results[0].(*ast.CompositeLit); ok {
+					extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
+					for k, v := range extractedResources {
+						resources[k] = v
 					}
 				}
 			case *ast.AssignStmt:
 				// Handle variable assignment pattern: resources := []*inttypes.ServicePackageFrameworkResource{...}
-				if len(s.Rhs) > 0 {
-					if sliceLit, ok := s.Rhs[0].(*ast.CompositeLit); ok {
-						extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
-						for k, v := range extractedResources {
-							resources[k] = v
-						}
+				if len(s.Rhs) == 0 {
+					continue
+				}
+				if sliceLit, ok := s.Rhs[0].(*ast.CompositeLit); ok {
+					extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
+					for k, v := range extractedResources {
+						resources[k] = v
 					}
 				}
 			case *ast.DeclStmt:
 				// Handle variable declaration: var resources = []*inttypes.ServicePackageFrameworkResource{...}
-				if genDecl, ok := s.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
-					for _, spec := range genDecl.Specs {
-						if valueSpec, ok := spec.(*ast.ValueSpec); ok && len(valueSpec.Values) > 0 {
-							if sliceLit, ok := valueSpec.Values[0].(*ast.CompositeLit); ok {
-								extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
-								for k, v := range extractedResources {
-									resources[k] = v
-								}
-							}
-						}
+				genDecl, ok := s.Decl.(*ast.GenDecl)
+				if !ok || genDecl.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range genDecl.Specs {
+					valueSpec, ok := spec.(*ast.ValueSpec)
+					if !ok && len(valueSpec.Values) == 0 {
+						continue
+					}
+					sliceLit, ok := valueSpec.Values[0].(*ast.CompositeLit)
+					if !ok {
+						continue
+					}
+					extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
+					for k, v := range extractedResources {
+						resources[k] = v
 					}
 				}
 			}
 		}
+
 		break
 	}
 
@@ -521,11 +527,13 @@ func extractAWSFrameworkResourcesFromSlice(sliceLit *ast.CompositeLit) map[strin
 	resources := make(map[string]AWSResourceInfo)
 
 	for _, elt := range sliceLit.Elts {
-		if structLit, ok := elt.(*ast.CompositeLit); ok {
-			resourceInfo := extractAWSFrameworkResourceInfo(structLit)
-			if resourceInfo.TerraformType != "" {
-				resources[resourceInfo.TerraformType] = resourceInfo
-			}
+		structLit, ok := elt.(*ast.CompositeLit)
+		if !ok {
+			continue
+		}
+		resourceInfo := extractAWSFrameworkResourceInfo(structLit)
+		if resourceInfo.TerraformType != "" {
+			resources[resourceInfo.TerraformType] = resourceInfo
 		}
 	}
 
@@ -567,12 +575,13 @@ func extractAWSFrameworkResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 			}
 		case "Tags":
 			// Check if Tags field exists and is not nil
-			if kv.Value != nil {
-				resourceInfo.HasTags = true
-				tagsConfig := extractAWSTagsConfig(kv.Value)
-				if tagsConfig != nil {
-					resourceInfo.TagsConfig = tagsConfig
-				}
+			if kv.Value == nil {
+				continue
+			}
+			resourceInfo.HasTags = true
+			tagsConfig := extractAWSTagsConfig(kv.Value)
+			if tagsConfig != nil {
+				resourceInfo.TagsConfig = tagsConfig
 			}
 		case "Region":
 			regionConfig := extractAWSRegionConfig(kv.Value)
@@ -611,36 +620,44 @@ func extractAWSFrameworkDataSources(node *ast.File) map[string]AWSResourceInfo {
 			switch s := stmt.(type) {
 			case *ast.ReturnStmt:
 				// Handle direct return
-				if len(s.Results) > 0 {
-					if sliceLit, ok := s.Results[0].(*ast.CompositeLit); ok {
-						extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
-						for k, v := range extractedDataSources {
-							dataSources[k] = v
-						}
+				if len(s.Results) == 0 {
+					continue
+				}
+				if sliceLit, ok := s.Results[0].(*ast.CompositeLit); ok {
+					extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
+					for k, v := range extractedDataSources {
+						dataSources[k] = v
 					}
 				}
 			case *ast.AssignStmt:
 				// Handle variable assignment pattern: dataSources := []*inttypes.ServicePackageFrameworkDataSource{...}
-				if len(s.Rhs) > 0 {
-					if sliceLit, ok := s.Rhs[0].(*ast.CompositeLit); ok {
-						extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
-						for k, v := range extractedDataSources {
-							dataSources[k] = v
-						}
+				if len(s.Rhs) == 0 {
+					continue
+				}
+				if sliceLit, ok := s.Rhs[0].(*ast.CompositeLit); ok {
+					extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
+					for k, v := range extractedDataSources {
+						dataSources[k] = v
 					}
 				}
 			case *ast.DeclStmt:
 				// Handle variable declaration: var dataSources = []*inttypes.ServicePackageFrameworkDataSource{...}
-				if genDecl, ok := s.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
-					for _, spec := range genDecl.Specs {
-						if valueSpec, ok := spec.(*ast.ValueSpec); ok && len(valueSpec.Values) > 0 {
-							if sliceLit, ok := valueSpec.Values[0].(*ast.CompositeLit); ok {
-								extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
-								for k, v := range extractedDataSources {
-									dataSources[k] = v
-								}
-							}
-						}
+				genDecl, ok := s.Decl.(*ast.GenDecl)
+				if !ok || genDecl.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range genDecl.Specs {
+					valueSpec, ok := spec.(*ast.ValueSpec)
+					if !ok || len(valueSpec.Values) == 0 {
+						continue
+					}
+					sliceLit, ok := valueSpec.Values[0].(*ast.CompositeLit)
+					if !ok {
+						continue
+					}
+					extractedDataSources := extractAWSFrameworkDataSourcesFromSlice(sliceLit)
+					for k, v := range extractedDataSources {
+						dataSources[k] = v
 					}
 				}
 			}
@@ -656,11 +673,13 @@ func extractAWSFrameworkDataSourcesFromSlice(sliceLit *ast.CompositeLit) map[str
 	dataSources := make(map[string]AWSResourceInfo)
 
 	for _, elt := range sliceLit.Elts {
-		if structLit, ok := elt.(*ast.CompositeLit); ok {
-			dataSourceInfo := extractAWSFrameworkDataSourceInfo(structLit)
-			if dataSourceInfo.TerraformType != "" {
-				dataSources[dataSourceInfo.TerraformType] = dataSourceInfo
-			}
+		structLit, ok := elt.(*ast.CompositeLit)
+		if !ok {
+			continue
+		}
+		dataSourceInfo := extractAWSFrameworkDataSourceInfo(structLit)
+		if dataSourceInfo.TerraformType != "" {
+			dataSources[dataSourceInfo.TerraformType] = dataSourceInfo
 		}
 	}
 
@@ -746,36 +765,50 @@ func extractAWSEphemeralResources(node *ast.File) map[string]AWSResourceInfo {
 			switch s := stmt.(type) {
 			case *ast.ReturnStmt:
 				// Handle direct return
-				if len(s.Results) > 0 {
-					if sliceLit, ok := s.Results[0].(*ast.CompositeLit); ok {
-						extractedResources := extractAWSEphemeralResourcesFromSlice(sliceLit)
-						for k, v := range extractedResources {
-							resources[k] = v
-						}
-					}
+				if len(s.Results) == 0 {
+					continue
+				}
+				sliceLit, ok := s.Results[0].(*ast.CompositeLit)
+				if !ok {
+					continue
+				}
+				extractedResources := extractAWSEphemeralResourcesFromSlice(sliceLit)
+				for k, v := range extractedResources {
+					resources[k] = v
+
 				}
 			case *ast.AssignStmt:
 				// Handle variable assignment pattern: resources := []*inttypes.ServicePackageEphemeralResource{...}
-				if len(s.Rhs) > 0 {
-					if sliceLit, ok := s.Rhs[0].(*ast.CompositeLit); ok {
-						extractedResources := extractAWSEphemeralResourcesFromSlice(sliceLit)
-						for k, v := range extractedResources {
-							resources[k] = v
-						}
-					}
+				if len(s.Rhs) == 0 {
+					continue
 				}
+				sliceLit, ok := s.Rhs[0].(*ast.CompositeLit)
+				if !ok {
+					continue
+				}
+				extractedResources := extractAWSEphemeralResourcesFromSlice(sliceLit)
+				for k, v := range extractedResources {
+					resources[k] = v
+				}
+
 			case *ast.DeclStmt:
 				// Handle variable declaration: var resources = []*inttypes.ServicePackageEphemeralResource{...}
-				if genDecl, ok := s.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
-					for _, spec := range genDecl.Specs {
-						if valueSpec, ok := spec.(*ast.ValueSpec); ok && len(valueSpec.Values) > 0 {
-							if sliceLit, ok := valueSpec.Values[0].(*ast.CompositeLit); ok {
-								extractedResources := extractAWSEphemeralResourcesFromSlice(sliceLit)
-								for k, v := range extractedResources {
-									resources[k] = v
-								}
-							}
-						}
+				genDecl, ok := s.Decl.(*ast.GenDecl)
+				if !ok || genDecl.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range genDecl.Specs {
+					valueSpec, ok := spec.(*ast.ValueSpec)
+					if !ok || len(valueSpec.Values) == 0 {
+						continue
+					}
+					sliceLit, ok := valueSpec.Values[0].(*ast.CompositeLit)
+					if !ok {
+						continue
+					}
+					extractedResources := extractAWSEphemeralResourcesFromSlice(sliceLit)
+					for k, v := range extractedResources {
+						resources[k] = v
 					}
 				}
 			}
@@ -791,11 +824,13 @@ func extractAWSEphemeralResourcesFromSlice(sliceLit *ast.CompositeLit) map[strin
 	resources := make(map[string]AWSResourceInfo)
 
 	for _, elt := range sliceLit.Elts {
-		if structLit, ok := elt.(*ast.CompositeLit); ok {
-			resourceInfo := extractAWSEphemeralResourceInfo(structLit)
-			if resourceInfo.TerraformType != "" {
-				resources[resourceInfo.TerraformType] = resourceInfo
-			}
+		structLit, ok := elt.(*ast.CompositeLit)
+		if !ok {
+			continue
+		}
+		resourceInfo := extractAWSEphemeralResourceInfo(structLit)
+		if resourceInfo.TerraformType != "" {
+			resources[resourceInfo.TerraformType] = resourceInfo
 		}
 	}
 
@@ -876,7 +911,7 @@ func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *
 
 	// Initialize result
 	result := &AWSFactoryCRUDMethods{}
-	
+
 	// Try to extract from direct return statements first (SDK pattern)
 	returnStmts := findReturnStatements(factoryFunc)
 	for _, returnStmt := range returnStmts {
@@ -884,10 +919,9 @@ func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *
 			switch e := expr.(type) {
 			case *ast.UnaryExpr:
 				// Handle &schema.Resource{...} pattern (UnaryExpr with & operator)
-				if e.Op == token.AND {
-					if compositeLit, ok := e.X.(*ast.CompositeLit); ok {
-						extractSDKCRUDFromCompositeLit(compositeLit, result)
-					}
+				compositeLit, ok := e.X.(*ast.CompositeLit)
+				if ok && e.Op == token.AND {
+					extractSDKCRUDFromCompositeLit(compositeLit, result)
 				}
 			case *ast.CompositeLit:
 				// Direct return pattern: return schema.Resource{...} (without &)
@@ -898,7 +932,7 @@ func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *
 			}
 		}
 	}
-	
+
 	// Try Framework pattern extraction if no SDK methods found
 	if isEmptyResult(result) {
 		structType := findFrameworkStructType(factoryFunc)
@@ -906,17 +940,19 @@ func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *
 			extractFrameworkMethods(node, structType, result)
 		}
 	}
-	
+
 	return result
 }
 
 // Helper function to find a factory function by name in the AST
 func findFactoryFunction(node *ast.File, functionName string) *ast.FuncDecl {
 	for _, decl := range node.Decls {
-		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
-			if funcDecl.Name.Name == functionName {
-				return funcDecl
-			}
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		if funcDecl.Name.Name == functionName {
+			return funcDecl
 		}
 	}
 	return nil
@@ -925,36 +961,36 @@ func findFactoryFunction(node *ast.File, functionName string) *ast.FuncDecl {
 // Helper function to navigate AST and find return statements in a function
 func findReturnStatements(funcDecl *ast.FuncDecl) []*ast.ReturnStmt {
 	var returns []*ast.ReturnStmt
-	
+
 	if funcDecl.Body == nil {
 		return returns
 	}
-	
+
 	ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
 		if ret, ok := n.(*ast.ReturnStmt); ok {
 			returns = append(returns, ret)
 		}
 		return true
 	})
-	
+
 	return returns
 }
 
 // Helper function to find variable assignments in a function body
 func findVariableAssignments(funcDecl *ast.FuncDecl) []*ast.AssignStmt {
 	var assignments []*ast.AssignStmt
-	
+
 	if funcDecl.Body == nil {
 		return assignments
 	}
-	
+
 	ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
 		if assign, ok := n.(*ast.AssignStmt); ok {
 			assignments = append(assignments, assign)
 		}
 		return true
 	})
-	
+
 	return assignments
 }
 
@@ -968,19 +1004,17 @@ func extractFromVariableAssignment(factoryFunc *ast.FuncDecl, variableName strin
 			if !ok || lhsIdent.Name != variableName {
 				continue
 			}
-			
+
 			// Found the assignment, check the right hand side
 			if i >= len(assign.Rhs) {
 				continue
 			}
-			
+
 			switch rhs := assign.Rhs[i].(type) {
 			case *ast.UnaryExpr:
 				// Handle &schema.Resource{...} pattern in assignment
-				if rhs.Op == token.AND {
-					if compositeLit, ok := rhs.X.(*ast.CompositeLit); ok {
-						extractSDKCRUDFromCompositeLit(compositeLit, result)
-					}
+				if compositeLit, ok := rhs.X.(*ast.CompositeLit); ok && rhs.Op == token.AND {
+					extractSDKCRUDFromCompositeLit(compositeLit, result)
 				}
 			case *ast.CompositeLit:
 				extractSDKCRUDFromCompositeLit(rhs, result)
@@ -999,19 +1033,19 @@ func extractSDKCRUDFromCompositeLit(compositeLit *ast.CompositeLit, result *AWSF
 			if ident, ok := keyValue.Key.(*ast.Ident); ok {
 				fieldName = ident.Name
 			}
-			
+
 			// Get the function name from the value
 			var functionName string
 			if ident, ok := keyValue.Value.(*ast.Ident); ok {
 				functionName = ident.Name
 			}
-			
+
 			// Map SDK field names to CRUD methods
 			switch fieldName {
 			// Create method variants
 			case "Create", "CreateWithoutTimeout", "CreateContext":
 				result.CreateMethod = functionName
-			// Read method variants  
+			// Read method variants
 			case "Read", "ReadWithoutTimeout", "ReadContext":
 				result.ReadMethod = functionName
 			// Update method variants
@@ -1027,8 +1061,8 @@ func extractSDKCRUDFromCompositeLit(compositeLit *ast.CompositeLit, result *AWSF
 
 // isEmptyResult checks if the CRUD methods result is empty (no SDK methods found)
 func isEmptyResult(result *AWSFactoryCRUDMethods) bool {
-	return result.CreateMethod == "" && result.ReadMethod == "" && 
-		   result.UpdateMethod == "" && result.DeleteMethod == ""
+	return result.CreateMethod == "" && result.ReadMethod == "" &&
+		result.UpdateMethod == "" && result.DeleteMethod == ""
 }
 
 // findFrameworkStructType extracts the struct type name from Framework factory function
@@ -1036,34 +1070,31 @@ func findFrameworkStructType(factoryFunc *ast.FuncDecl) string {
 	if factoryFunc.Body == nil {
 		return ""
 	}
-	
+
 	var structType string
-	
+
 	// Look for assignment patterns like: r := &structName{}
 	ast.Inspect(factoryFunc.Body, func(n ast.Node) bool {
 		if assign, ok := n.(*ast.AssignStmt); ok {
 			for _, rhs := range assign.Rhs {
 				// Look for &structName{} pattern
-				if unaryExpr, ok := rhs.(*ast.UnaryExpr); ok && unaryExpr.Op == token.AND {
-					if compositeLit, ok := unaryExpr.X.(*ast.CompositeLit); ok {
-						if ident, ok := compositeLit.Type.(*ast.Ident); ok {
-							structType = ident.Name
-							return false // Stop inspection, we found it
-						}
-					}
+				unaryExpr, ok := rhs.(*ast.UnaryExpr)
+				if !ok || unaryExpr.Op != token.AND {
+					continue
 				}
-				// Look for direct struct creation: structName{}
-				if compositeLit, ok := rhs.(*ast.CompositeLit); ok {
-					if ident, ok := compositeLit.Type.(*ast.Ident); ok {
-						structType = ident.Name
-						return false // Stop inspection, we found it
-					}
+				compositeLit, ok := unaryExpr.X.(*ast.CompositeLit)
+				if !ok {
+					continue
+				}
+				if ident, ok := compositeLit.Type.(*ast.Ident); ok {
+					structType = ident.Name
+					return false // Stop inspection, we found it
 				}
 			}
 		}
 		return true
 	})
-	
+
 	return structType
 }
 
@@ -1071,21 +1102,25 @@ func findFrameworkStructType(factoryFunc *ast.FuncDecl) string {
 func extractFrameworkMethods(node *ast.File, structTypeName string, result *AWSFactoryCRUDMethods) {
 	ast.Inspect(node, func(n ast.Node) bool {
 		// Look for method declarations
-		if funcDecl, ok := n.(*ast.FuncDecl); ok && funcDecl.Recv != nil {
-			// Check if this method belongs to our struct type
-			for _, field := range funcDecl.Recv.List {
-				// Handle receiver patterns like (r *structName)
-				if starExpr, ok := field.Type.(*ast.StarExpr); ok {
-					if ident, ok := starExpr.X.(*ast.Ident); ok && ident.Name == structTypeName {
-						methodName := funcDecl.Name.Name
-						mapFrameworkMethod(methodName, result)
-					}
-				}
-				// Handle receiver patterns like (r structName) 
-				if ident, ok := field.Type.(*ast.Ident); ok && ident.Name == structTypeName {
-					methodName := funcDecl.Name.Name
-					mapFrameworkMethod(methodName, result)
-				}
+		funcDecl, ok := n.(*ast.FuncDecl)
+		if !ok || funcDecl.Recv == nil {
+			return true
+		}
+		// Check if this method belongs to our struct type
+		for _, field := range funcDecl.Recv.List {
+			// Handle receiver patterns like (r *structName)
+			starExpr, ok := field.Type.(*ast.StarExpr)
+			if !ok {
+				continue
+			}
+			if ident, ok := starExpr.X.(*ast.Ident); ok && ident.Name == structTypeName {
+				methodName := funcDecl.Name.Name
+				mapFrameworkMethod(methodName, result)
+			}
+			// Handle receiver patterns like (r structName)
+			if ident, ok := field.Type.(*ast.Ident); ok && ident.Name == structTypeName {
+				methodName := funcDecl.Name.Name
+				mapFrameworkMethod(methodName, result)
 			}
 		}
 		return true
@@ -1114,4 +1149,41 @@ func mapFrameworkMethod(methodName string, result *AWSFactoryCRUDMethods) {
 	case "Close":
 		result.CloseMethod = methodName
 	}
+}
+
+// extractFromVariableReference is a generic helper function that extracts resources/data sources
+// from variable references in return statements. It finds the variable definition in the function
+// body and applies the provided extraction function to any slice literals found.
+func extractFromVariableReference(fnBody *ast.BlockStmt, variableName string, extractFunc func(*ast.CompositeLit) map[string]AWSResourceInfo) map[string]AWSResourceInfo {
+	result := make(map[string]AWSResourceInfo)
+
+	// Find the variable definition in the function
+	ast.Inspect(fnBody, func(varNode ast.Node) bool {
+		assignStmt, ok := varNode.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+
+		for i, lhs := range assignStmt.Lhs {
+			lhsIdent, ok := lhs.(*ast.Ident)
+			if !ok || lhsIdent.Name != variableName {
+				continue
+			}
+
+			if i >= len(assignStmt.Rhs) {
+				continue
+			}
+			sliceLit, ok := assignStmt.Rhs[i].(*ast.CompositeLit)
+			if !ok {
+				continue
+			}
+			extracted := extractFunc(sliceLit)
+			for k, v := range extracted {
+				result[k] = v
+			}
+		}
+		return true
+	})
+
+	return result
 }
