@@ -94,7 +94,7 @@ func TestTerraformProviderIndex_WriteIndexFiles(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check main index file
-	mainIndexPath := filepath.Join(outputDir, "terraform-provider-azurerm-index.json")
+	mainIndexPath := filepath.Join(outputDir, "terraform-provider-aws-index.json")
 	exists, err := afero.Exists(fs, mainIndexPath)
 	require.NoError(t, err)
 	assert.True(t, exists)
@@ -274,7 +274,7 @@ func TestTerraformProviderIndex_WriteMainIndexFile(t *testing.T) {
 	// Verify
 	require.NoError(t, err)
 
-	mainIndexPath := filepath.Join(outputDir, "terraform-provider-azurerm-index.json")
+	mainIndexPath := filepath.Join(outputDir, "terraform-provider-aws-index.json")
 	exists, err := afero.Exists(fs, mainIndexPath)
 	require.NoError(t, err)
 	assert.True(t, exists)
@@ -376,7 +376,7 @@ func TestTerraformProviderIndex_WriteIndexFiles_EmptyIndex(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check main index file exists
-	mainIndexPath := filepath.Join(outputDir, "terraform-provider-azurerm-index.json")
+	mainIndexPath := filepath.Join(outputDir, "terraform-provider-aws-index.json")
 	exists, err := afero.Exists(fs, mainIndexPath)
 	require.NoError(t, err)
 	assert.True(t, exists)

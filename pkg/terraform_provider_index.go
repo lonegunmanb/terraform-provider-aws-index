@@ -266,9 +266,9 @@ func (index *TerraformProviderIndex) WriteIndexFiles(outputDir string, progressC
 	return nil
 }
 
-// WriteMainIndexFile writes the main terraform-provider-azurerm-index.json file
+// WriteMainIndexFile writes the main terraform-provider-aws-index.json file
 func (index *TerraformProviderIndex) WriteMainIndexFile(outputDir string) error {
-	mainIndexPath := filepath.Join(outputDir, "terraform-provider-azurerm-index.json")
+	mainIndexPath := filepath.Join(outputDir, "terraform-provider-aws-index.json")
 	return index.WriteJSONFile(mainIndexPath, index)
 }
 
