@@ -185,6 +185,13 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 		stats.ModernResources += len(serviceReg.Resources)
 		stats.TotalDataSources += len(serviceReg.DataSources)
 		stats.EphemeralResources += len(serviceReg.EphemeralFunctions)
+		
+		// Add AWS-specific statistics (NEW)
+		stats.TotalResources += len(serviceReg.AWSSDKResources)
+		stats.TotalResources += len(serviceReg.AWSFrameworkResources)
+		stats.TotalDataSources += len(serviceReg.AWSSDKDataSources)
+		stats.TotalDataSources += len(serviceReg.AWSFrameworkDataSources)
+		stats.EphemeralResources += len(serviceReg.AWSEphemeralResources)
 	}
 
 	stats.TotalResources = stats.LegacyResources + stats.ModernResources + stats.EphemeralResources
@@ -210,6 +217,13 @@ func (index *TerraformProviderIndex) WriteIndexFiles(outputDir string, progressC
 		totalFiles += len(service.SupportedDataSources) // legacy data sources
 		totalFiles += len(service.DataSources)          // modern data sources
 		totalFiles += len(service.EphemeralFunctions)   // ephemeral resources
+		
+		// Add AWS-specific file counts (NEW)
+		totalFiles += len(service.AWSSDKResources)          // AWS SDK resources
+		totalFiles += len(service.AWSFrameworkResources)    // AWS Framework resources
+		totalFiles += len(service.AWSSDKDataSources)        // AWS SDK data sources
+		totalFiles += len(service.AWSFrameworkDataSources)  // AWS Framework data sources
+		totalFiles += len(service.AWSEphemeralResources)    // AWS Ephemeral resources
 	}
 
 	// Create progress tracker
@@ -443,6 +457,37 @@ func (index *TerraformProviderIndex) WriteDataSourceFiles(outputDir string, prog
 				}
 
 				progressTracker.UpdateProgress(fmt.Sprintf("data source %s", terraformType))
+				return nil
+			})
+		}
+
+		// Process AWS SDK data sources (NEW)
+		for terraformType, awsDataSourceInfo := range service.AWSSDKDataSources {
+			// Capture variables for closure
+			tfType := terraformType
+			awsDataSource := awsDataSourceInfo
+			svc := service
+
+			tasks = append(tasks, func() error {
+				// Create AWS-specific data source info that includes only core TerraformDataSource fields and essential AWS metadata
+				awsDataSourceData := struct {
+					TerraformDataSource
+					FactoryFunction string `json:"factory_function"`
+					Name            string `json:"name"`
+				}{
+					TerraformDataSource: NewTerraformDataSourceFromAWSSDK(awsDataSource, svc),
+					FactoryFunction:     awsDataSource.FactoryFunction,
+					Name:                awsDataSource.Name,
+				}
+
+				fileName := fmt.Sprintf("%s.json", tfType)
+				filePath := filepath.Join(dataSourcesDir, fileName)
+
+				if err := index.WriteJSONFile(filePath, awsDataSourceData); err != nil {
+					return fmt.Errorf("failed to write AWS SDK data source file %s: %w", fileName, err)
+				}
+
+				progressTracker.UpdateProgress(fmt.Sprintf("data source %s", tfType))
 				return nil
 			})
 		}
