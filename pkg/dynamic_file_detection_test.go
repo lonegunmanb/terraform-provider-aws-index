@@ -299,7 +299,7 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.Ser
 			description:      "Should prefer file with service_package naming convention",
 		},
 		{
-			name: "Multiple files with AWS methods - select by method count",
+			name: "Multiple files with AWS methods - use first found (simplified)",
 			files: map[string]string{
 				"file1.go": `package service
 
@@ -358,9 +358,9 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 	}
 }`,
 			},
-			expectedFileName: "file2.go",
+			expectedFileName: "file1.go",
 			expectError:      false,
-			description:      "Should select file with most AWS methods when no service_package naming",
+			description:      "Should use first file found with AWS methods (simplified approach)",
 		},
 		{
 			name: "No files with AWS methods",
@@ -425,142 +425,6 @@ func AnotherFunction() {
 				assert.NotNil(t, result, "Result should not be nil when no error")
 				assert.Equal(t, tt.expectedFileName, result.FileName, tt.description)
 			}
-		})
-	}
-}
-
-func TestCountAWSMethods(t *testing.T) {
-	tests := []struct {
-		name           string
-		sourceCode     string
-		expectedCount  int
-		description    string
-	}{
-		{
-			name: "File with all 5 AWS methods",
-			sourceCode: `package service
-
-import (
-	"context"
-	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
-)
-
-type servicePackage struct{}
-
-func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePackageSDKResource {
-	return []*inttypes.ServicePackageSDKResource{
-		{
-			Factory:  resourceExample,
-			TypeName: "aws_example",
-			Name:     "Example",
-		},
-	}
-}
-
-func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.ServicePackageSDKDataSource {
-	return []*inttypes.ServicePackageSDKDataSource{
-		{
-			Factory:  dataSourceExample,
-			TypeName: "aws_example",
-			Name:     "Example",
-		},
-	}
-}
-
-func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.ServicePackageFrameworkResource {
-	return []*inttypes.ServicePackageFrameworkResource{
-		{
-			Factory:  newResourceExample,
-			TypeName: "aws_framework_example",
-			Name:     "Framework Example",
-		},
-	}
-}
-
-func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.ServicePackageFrameworkDataSource {
-	return []*inttypes.ServicePackageFrameworkDataSource{
-		{
-			Factory:  newDataSourceExample,
-			TypeName: "aws_framework_datasource",
-			Name:     "Framework DataSource",
-		},
-	}
-}
-
-func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.ServicePackageEphemeralResource {
-	return []*inttypes.ServicePackageEphemeralResource{
-		{
-			Factory:  NewEphemeralExample,
-			TypeName: "aws_ephemeral_example",
-			Name:     "Ephemeral Example",
-		},
-	}
-}`,
-			expectedCount: 5,
-			description:   "Should count all 5 AWS methods",
-		},
-		{
-			name: "File with 2 AWS methods",
-			sourceCode: `package service
-
-import (
-	"context"
-	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
-)
-
-type servicePackage struct{}
-
-func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePackageSDKResource {
-	return []*inttypes.ServicePackageSDKResource{
-		{
-			Factory:  resourceExample,
-			TypeName: "aws_example",
-			Name:     "Example",
-		},
-	}
-}
-
-func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.ServicePackageFrameworkDataSource {
-	return []*inttypes.ServicePackageFrameworkDataSource{
-		{
-			Factory:  newDataSourceExample,
-			TypeName: "aws_framework_datasource",
-			Name:     "Framework DataSource",
-		},
-	}
-}`,
-			expectedCount: 2,
-			description:   "Should count 2 AWS methods",
-		},
-		{
-			name: "File with no AWS methods",
-			sourceCode: `package service
-
-type servicePackage struct{}
-
-func SomeOtherFunction() {
-	// Not an AWS service method
-}`,
-			expectedCount: 0,
-			description:   "Should count 0 AWS methods",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Parse the source code into AST
-			fset := token.NewFileSet()
-			astFile, err := parser.ParseFile(fset, "test.go", tt.sourceCode, parser.ParseComments)
-			require.NoError(t, err, "Failed to parse source code")
-
-			// Create a mock FileInfo
-			fileInfo := &gophon.FileInfo{
-				File: astFile,
-			}
-
-			// Test the countAWSMethods function
-			result := countAWSMethods(fileInfo)
-			assert.Equal(t, tt.expectedCount, result, tt.description)
 		})
 	}
 }

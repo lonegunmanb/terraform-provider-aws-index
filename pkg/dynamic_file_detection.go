@@ -2,33 +2,34 @@ package pkg
 
 import (
 	"fmt"
-	"strings"
 
 	gophon "github.com/lonegunmanb/gophon/pkg"
 )
 
 // identifyServicePackageFile scans a PackageInfo and finds the file containing AWS service registration methods
 // Returns the FileInfo containing AWS service methods, or an error if none found
+// Uses simplified single-file assumption approach
 func identifyServicePackageFile(packageInfo *gophon.PackageInfo) (*gophon.FileInfo, error) {
-	var candidateFiles []*gophon.FileInfo
+	var serviceFile *gophon.FileInfo
 	
-	// Find all files that contain AWS service methods
+	// Find the first file that contains AWS service methods
 	for _, fileInfo := range packageInfo.Files {
 		if hasAWSServiceMethods(fileInfo) {
-			candidateFiles = append(candidateFiles, fileInfo)
+			if serviceFile != nil {
+				// Multiple service files found - this should not happen with simplified assumption
+				fmt.Printf("Warning: Multiple AWS service files found in package, using first: %s\n", serviceFile.FileName)
+				break
+			}
+			serviceFile = fileInfo
 		}
 	}
 	
-	switch len(candidateFiles) {
-	case 0:
+	if serviceFile == nil {
 		return nil, fmt.Errorf("no AWS service methods found in package")
-	case 1:
-		return candidateFiles[0], nil
-	default:
-		// Multiple files with AWS methods - use selection logic
-		primary := selectPrimaryServiceFile(candidateFiles)
-		return primary, nil
 	}
+	
+	fmt.Printf("Found AWS service file: %s\n", serviceFile.FileName)
+	return serviceFile, nil
 }
 
 // hasAWSServiceMethods checks if a FileInfo contains any of the 5 AWS service registration methods
@@ -48,68 +49,4 @@ func hasAWSServiceMethods(fileInfo *gophon.FileInfo) bool {
 	return len(awsSDKResources) > 0 || len(awsSDKDataSources) > 0 || 
 		   len(awsFrameworkResources) > 0 || len(awsFrameworkDataSources) > 0 || 
 		   len(awsEphemeralResources) > 0
-}
-
-// selectPrimaryServiceFile selects the best candidate from multiple files with AWS methods
-// Priority logic:
-// 1. Files named *service_package* (current AWS convention)
-// 2. Files with most AWS methods  
-// 3. Alphabetically first file
-func selectPrimaryServiceFile(candidates []*gophon.FileInfo) *gophon.FileInfo {
-	// Priority 1: Files named *service_package*
-	for _, file := range candidates {
-		if strings.Contains(file.FileName, "service_package") {
-			return file
-		}
-	}
-	
-	// Priority 2: File with most AWS methods
-	bestFile := candidates[0]
-	maxMethods := countAWSMethods(bestFile)
-	
-	for _, file := range candidates[1:] {
-		if count := countAWSMethods(file); count > maxMethods {
-			bestFile = file
-			maxMethods = count
-		}
-	}
-	
-	return bestFile
-}
-
-// countAWSMethods counts how many of the 5 AWS service registration methods are present in a file
-func countAWSMethods(fileInfo *gophon.FileInfo) int {
-	if fileInfo == nil || fileInfo.File == nil {
-		return 0
-	}
-	
-	count := 0
-	
-	// Count each AWS method type
-	awsSDKResources := extractAWSSDKResources(fileInfo.File)
-	if len(awsSDKResources) > 0 {
-		count++
-	}
-	
-	awsSDKDataSources := extractAWSSDKDataSources(fileInfo.File)
-	if len(awsSDKDataSources) > 0 {
-		count++
-	}
-	
-	awsFrameworkResources := extractAWSFrameworkResources(fileInfo.File)
-	if len(awsFrameworkResources) > 0 {
-		count++
-	}
-	
-	awsFrameworkDataSources := extractAWSFrameworkDataSources(fileInfo.File)
-	if len(awsFrameworkDataSources) > 0 {
-		count++
-	}
-	
-	awsEphemeralResources := extractAWSEphemeralResources(fileInfo.File)
-	if len(awsEphemeralResources) > 0 {
-		count++
-	}
-	
-	return count
 }
