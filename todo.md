@@ -214,9 +214,221 @@ The structured nature of AWS provider registration means:
 
 ### Phase 3: Architecture Adaptation
 
-#### 3.1 Service Package Discovery
-- [ ] Update service discovery to scan `internal/service/*/service_package_gen.go`
+#### 💡 **CRITICAL ARCHITECTURE IMPROVEMENT**: Dynamic Service Package Discovery
+
+**Current Problem**: The existing implementation assumes AWS service files are named `service_package_gen.go`, but this is a fragile assumption that could break if AWS changes their naming conventions.
+
+**Improved Solution**: Use `gophon.ScanSinglePackage` (already integrated) to dynamically detect files containing AWS 5-category registration methods, making the system robust against naming changes.
+
+**📋 Current Implementation Analysis**: The codebase already uses `gophon.ScanSinglePackage` in `pkg/terraform_provider_index.go` (line 81) to scan service packages, and then iterates through all files in the package. The proposed improvement focuses this iteration on only the relevant files containing AWS service registration methods.
+
+#### 3.1 Dynamic Service Package Discovery
+- [ ] **Replace hardcoded filename approach with dynamic discovery using `gophon.ScanSinglePackage`**
+- [ ] **Implement intelligent file detection based on AWS 5-category method presence**
 - [ ] Maintain backward compatibility for output formats
+
+**🎯 Improved Discovery Strategy**: Instead of hardcoding `service_package_gen.go`, use `gophon.ScanSinglePackage` to scan each service folder and dynamically identify the correct files containing AWS service registration methods.
+
+##### Sub-Task 3.1.1: 🔍 Dynamic File Detection Function
+**Objective**: Create a function to identify AWS service package files dynamically
+**Implementation Plan**:
+```go
+// New function to be implemented
+func identifyServicePackageFile(packageInfo *gophon.PackageInfo) *gophon.FileInfo {
+    // For each file in the package, check if it contains any of the 5 AWS methods:
+    // - SDKResources()
+    // - SDKDataSources() 
+    // - FrameworkResources()
+    // - FrameworkDataSources()
+    // - EphemeralResources()
+    
+    for _, fileInfo := range packageInfo.Files {
+        if hasAWSServiceMethods(fileInfo) {
+            return fileInfo  // Return the file containing AWS methods
+        }
+    }
+    return nil  // No AWS service package file found
+}
+
+func hasAWSServiceMethods(fileInfo *gophon.FileInfo) bool {
+    // Use existing AWS extraction functions as detection logic
+    // If any extraction function returns non-empty results, this file contains AWS methods
+    
+    awsSDKResources := extractAWSSDKResources(fileInfo.File)
+    awsSDKDataSources := extractAWSSDKDataSources(fileInfo.File)
+    awsFrameworkResources := extractAWSFrameworkResources(fileInfo.File)
+    awsFrameworkDataSources := extractAWSFrameworkDataSources(fileInfo.File)
+    awsEphemeralResources := extractAWSEphemeralResources(fileInfo.File)
+    
+    return len(awsSDKResources) > 0 || len(awsSDKDataSources) > 0 || 
+           len(awsFrameworkResources) > 0 || len(awsFrameworkDataSources) > 0 || 
+           len(awsEphemeralResources) > 0
+}
+```
+
+**Scope**:
+- Create `identifyServicePackageFile()` function to scan `*gophon.PackageInfo` and find AWS service files
+- Implement `hasAWSServiceMethods()` helper to detect AWS registration methods
+- Leverage existing AWS extraction functions as detection logic (if they return results, file contains AWS methods)
+- Handle edge cases: multiple files with AWS methods, no AWS methods found
+- Support future AWS naming convention changes automatically
+
+**Dependencies**: Existing AWS extraction functions (`extractAWSSDKResources`, etc.)
+**Estimated Complexity**: Low-Medium
+**Success Criteria**: Function correctly identifies service package files regardless of filename
+
+##### Sub-Task 3.1.2: 🔄 Update Main Scanning Logic  
+**Objective**: Integrate dynamic file detection into existing scanning pipeline
+**Implementation Plan**:
+```go
+// Update existing ScanProviderPackages logic
+func ScanProviderPackages(dir string, basePkgUrl string) (*ProviderIndex, error) {
+    // ... existing setup ...
+    
+    go func() {
+        defer wg.Done()
+        for entry := range entryChan {
+            servicePath := filepath.Join(dir, entry.Name())
+            
+            // Existing gophon scan
+            packageInfo, err := gophon.ScanSinglePackage(servicePath, basePkgUrl)
+            
+            if err != nil || packageInfo == nil || len(packageInfo.Files) == 0 {
+                continue
+            }
+            
+            // NEW: Dynamic file detection
+            serviceFile := identifyServicePackageFile(packageInfo)
+            if serviceFile == nil {
+                // Skip packages without AWS service methods
+                continue
+            }
+            
+            serviceReg := newServiceRegistration(packageInfo, entry)
+            
+            // Process only the identified service file (not all files)
+            processServiceFile(serviceFile, serviceReg)
+            
+            // ... rest of existing logic ...
+        }
+    }()
+}
+
+func processServiceFile(fileInfo *gophon.FileInfo, serviceReg ServiceRegistration) {
+    // Extract all AWS registration methods from the identified file
+    awsSDKResources := extractAWSSDKResources(fileInfo.File)
+    awsSDKDataSources := extractAWSSDKDataSources(fileInfo.File) 
+    awsFrameworkResources := extractAWSFrameworkResources(fileInfo.File)
+    awsFrameworkDataSources := extractAWSFrameworkDataSources(fileInfo.File)
+    awsEphemeralResources := extractAWSEphemeralResources(fileInfo.File)
+    
+    // Store results in serviceReg for later processing
+    // ... (existing logic updated to use single file)
+}
+```
+
+**Scope**:
+- Replace current "scan all files" approach with targeted single-file processing
+- Update `ScanProviderPackages()` to use `identifyServicePackageFile()`
+- Modify file processing loop to focus on identified service files only
+- Ensure backward compatibility with existing `ServiceRegistration` struct
+- Improve performance by avoiding unnecessary file processing
+
+**Dependencies**: Sub-Task 3.1.1 (dynamic file detection)
+**Estimated Complexity**: Medium
+**Success Criteria**: Scanning pipeline correctly processes only relevant AWS service files
+
+##### Sub-Task 3.1.3: 🛡️ Robust Error Handling & Logging
+**Objective**: Add comprehensive error handling for dynamic discovery edge cases
+**Implementation Plan**:
+```go
+func identifyServicePackageFile(packageInfo *gophon.PackageInfo) (*gophon.FileInfo, error) {
+    var candidateFiles []*gophon.FileInfo
+    
+    for _, fileInfo := range packageInfo.Files {
+        if hasAWSServiceMethods(fileInfo) {
+            candidateFiles = append(candidateFiles, fileInfo)
+        }
+    }
+    
+    switch len(candidateFiles) {
+    case 0:
+        return nil, fmt.Errorf("no AWS service methods found in package")
+    case 1:
+        log.Debugf("Found AWS service file: %s", candidateFiles[0].Filename)
+        return candidateFiles[0], nil
+    default:
+        // Multiple files with AWS methods - choose primary one
+        primary := selectPrimaryServiceFile(candidateFiles)
+        log.Warnf("Multiple AWS service files found, using primary: %s", primary.Filename)
+        return primary, nil
+    }
+}
+
+func selectPrimaryServiceFile(candidates []*gophon.FileInfo) *gophon.FileInfo {
+    // Priority logic:
+    // 1. Files named *service_package* (current convention)
+    // 2. Files with most AWS methods
+    // 3. Alphabetically first file
+    
+    for _, file := range candidates {
+        if strings.Contains(file.Filename, "service_package") {
+            return file
+        }
+    }
+    
+    // Fall back to file with most methods
+    bestFile := candidates[0]
+    maxMethods := countAWSMethods(bestFile)
+    
+    for _, file := range candidates[1:] {
+        if count := countAWSMethods(file); count > maxMethods {
+            bestFile = file
+            maxMethods = count
+        }
+    }
+    
+    return bestFile
+}
+```
+
+**Scope**:
+- Handle zero AWS service files found (skip package gracefully)
+- Handle multiple AWS service files found (select primary file using priority logic)
+- Add debug/warning logging for discovery results
+- Implement `selectPrimaryServiceFile()` with intelligent selection criteria
+- Create `countAWSMethods()` helper for file comparison
+- Ensure graceful degradation when discovery fails
+
+**Dependencies**: Sub-Task 3.1.1 (file detection), Sub-Task 3.1.2 (scanning logic)
+**Estimated Complexity**: Low-Medium
+**Success Criteria**: System handles all edge cases gracefully with appropriate logging
+
+#### 🎯 Key Benefits of Dynamic Discovery Approach:
+
+1. **🔧 Filename Independence**: No longer dependent on `service_package_gen.go` naming convention
+2. **🚀 Future-Proof**: Automatically adapts to AWS provider structural changes
+3. **📊 Intelligent Detection**: Uses actual method presence rather than filename patterns
+4. **⚡ Performance**: Processes only relevant files instead of scanning all files
+5. **🛡️ Robust**: Handles edge cases like multiple service files or naming changes
+6. **🔍 Flexible**: Can detect custom or non-standard service file names
+7. **📋 Better Logging**: Provides clear feedback about discovery results
+
+#### ⚠️ Technical Considerations:
+
+- **Method Detection Logic**: Leverage existing AWS extraction functions as "detectors"
+- **Performance Impact**: Single file processing should improve performance vs current approach
+- **Backward Compatibility**: Maintain existing `ServiceRegistration` struct and API
+- **Error Handling**: Graceful handling of packages without AWS methods
+- **Logging**: Clear visibility into which files are being processed and why
+
+#### 🧪 Testing Strategy:
+
+- **Unit Tests**: Test `identifyServicePackageFile()` with various package structures
+- **Edge Case Tests**: Multiple service files, no service files, malformed packages  
+- **Integration Tests**: Full pipeline with dynamic discovery using real AWS provider
+- **Performance Tests**: Compare processing time vs hardcoded filename approach
+- **Compatibility Tests**: Ensure existing functionality unchanged
 
 #### 3.2 AWS 5-Category Classification System Implementation
 
