@@ -357,6 +357,47 @@ func (index *TerraformProviderIndex) WriteResourceFiles(outputDir string, progre
 				return nil
 			})
 		}
+
+		// Process AWS SDK resources (NEW)
+		for terraformType, awsResourceInfo := range service.AWSSDKResources {
+			// Capture variables for closure
+			tfType := terraformType
+			awsResource := awsResourceInfo
+			svc := service
+
+			tasks = append(tasks, func() error {
+				// Create AWS-specific resource info that includes both TerraformResource fields and AWS metadata
+				awsResourceData := struct {
+					TerraformResource
+					FactoryFunction string             `json:"factory_function"`
+					Name            string             `json:"name"`
+					HasTags         bool               `json:"has_tags,omitempty"`
+					TagsConfig      *AWSTagsConfig     `json:"tags_config,omitempty"`
+					Region          *AWSRegionConfig   `json:"region,omitempty"`
+					Identity        *AWSIdentityConfig `json:"identity,omitempty"`
+					Import          *AWSImportConfig   `json:"import,omitempty"`
+				}{
+					TerraformResource: NewTerraformResourceFromAWSSDK(awsResource, svc),
+					FactoryFunction:   awsResource.FactoryFunction,
+					Name:              awsResource.Name,
+					HasTags:           awsResource.HasTags,
+					TagsConfig:        awsResource.TagsConfig,
+					Region:            awsResource.Region,
+					Identity:          awsResource.Identity,
+					Import:            awsResource.Import,
+				}
+
+				fileName := fmt.Sprintf("%s.json", tfType)
+				filePath := filepath.Join(resourcesDir, fileName)
+
+				if err := index.WriteJSONFile(filePath, awsResourceData); err != nil {
+					return fmt.Errorf("failed to write AWS SDK resource file %s: %w", fileName, err)
+				}
+
+				progressTracker.UpdateProgress(fmt.Sprintf("resource %s", tfType))
+				return nil
+			})
+		}
 	}
 
 	return processCallbacksParallel(tasks)

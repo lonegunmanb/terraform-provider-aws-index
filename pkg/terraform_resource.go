@@ -57,3 +57,21 @@ func NewTerraformResourceInfo(terraformType, structType, registrationMethod, sdk
 		AttributeIndex: fmt.Sprintf("method.%s.Attributes.goindex", structType),
 	}
 }
+
+// NewTerraformResourceFromAWSSDK creates a TerraformResource from AWS SDK resource info
+func NewTerraformResourceFromAWSSDK(awsResource AWSResourceInfo, serviceReg ServiceRegistration) TerraformResource {
+	return TerraformResource{
+		TerraformType:      awsResource.TerraformType,
+		StructType:         "", // AWS SDK resources don't have struct types
+		Namespace:          serviceReg.PackagePath,
+		RegistrationMethod: "SDKResources",
+		SDKType:            "aws_sdk",
+		// Optional fields can be added later when we have more sophisticated AST parsing
+		SchemaIndex:    fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
+		CreateIndex:    fmt.Sprintf("func.%s.create.goindex", awsResource.FactoryFunction),
+		ReadIndex:      fmt.Sprintf("func.%s.read.goindex", awsResource.FactoryFunction),
+		UpdateIndex:    fmt.Sprintf("func.%s.update.goindex", awsResource.FactoryFunction),
+		DeleteIndex:    fmt.Sprintf("func.%s.delete.goindex", awsResource.FactoryFunction),
+		AttributeIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
+	}
+}
