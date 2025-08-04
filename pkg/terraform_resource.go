@@ -60,18 +60,37 @@ func NewTerraformResourceInfo(terraformType, structType, registrationMethod, sdk
 
 // NewTerraformResourceFromAWSSDK creates a TerraformResource from AWS SDK resource info
 func NewTerraformResourceFromAWSSDK(awsResource AWSResourceInfo, serviceReg ServiceRegistration) TerraformResource {
-	return TerraformResource{
+	result := TerraformResource{
 		TerraformType:      awsResource.TerraformType,
 		StructType:         "", // AWS SDK resources don't have struct types
 		Namespace:          serviceReg.PackagePath,
 		RegistrationMethod: "SDKResources",
 		SDKType:            "aws_sdk",
-		// Optional fields can be added later when we have more sophisticated AST parsing
+		// Schema and Attribute indexes always use the factory function
 		SchemaIndex:    fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
-		CreateIndex:    fmt.Sprintf("func.%s.create.goindex", awsResource.FactoryFunction),
-		ReadIndex:      fmt.Sprintf("func.%s.read.goindex", awsResource.FactoryFunction),
-		UpdateIndex:    fmt.Sprintf("func.%s.update.goindex", awsResource.FactoryFunction),
-		DeleteIndex:    fmt.Sprintf("func.%s.delete.goindex", awsResource.FactoryFunction),
 		AttributeIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
+		// Default CRUD indexes to factory function (will be overridden if extracted methods available)
+		CreateIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
+		ReadIndex:   fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
+		UpdateIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
+		DeleteIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
 	}
+
+	// Use extracted CRUD methods if available (same pattern as legacy plugin SDK resources)
+	if crudMethods, exists := serviceReg.ResourceCRUDMethods[awsResource.TerraformType]; exists && crudMethods != nil {
+		if crudMethods.CreateMethod != "" {
+			result.CreateIndex = fmt.Sprintf("func.%s.goindex", crudMethods.CreateMethod)
+		}
+		if crudMethods.ReadMethod != "" {
+			result.ReadIndex = fmt.Sprintf("func.%s.goindex", crudMethods.ReadMethod)
+		}
+		if crudMethods.UpdateMethod != "" {
+			result.UpdateIndex = fmt.Sprintf("func.%s.goindex", crudMethods.UpdateMethod)
+		}
+		if crudMethods.DeleteMethod != "" {
+			result.DeleteIndex = fmt.Sprintf("func.%s.goindex", crudMethods.DeleteMethod)
+		}
+	}
+
+	return result
 }
