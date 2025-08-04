@@ -216,8 +216,90 @@ The structured nature of AWS provider registration means:
 
 #### 3.1 Service Package Discovery
 - [ ] Update service discovery to scan `internal/service/*/service_package_gen.go`
-- [ ] Handle the new 5-category classification system
 - [ ] Maintain backward compatibility for output formats
+
+#### 3.2 AWS 5-Category Classification System Implementation
+
+The AWS provider uses 5 distinct categories that need individual handling. Breaking this into focused sub-tasks to ensure quality implementation:
+
+##### Sub-Task 3.2.1: 🔧 SDK Resources Integration
+**Objective**: Integrate AWS SDK Resources into the main scanning pipeline
+**Scope**:
+- Connect `extractAWSSDKResources()` to main `ScanProviderPackages()` function
+- Update `ServiceRegistration` struct to handle SDK resource arrays
+- Map AWS SDK resource info to existing `TerraformResource` API (backward compatibility)
+- Handle SDK-specific metadata (Tags, Region, Identity configurations)
+- Test with high-volume services (S3, EC2) for performance validation
+
+**Dependencies**: Existing `extractAWSSDKResources()` function (completed)
+**Estimated Complexity**: Medium
+**Success Criteria**: SDK resources appear in generated index files with full metadata
+
+##### Sub-Task 3.2.2: 🗃️ SDK Data Sources Integration  
+**Objective**: Integrate AWS SDK Data Sources into the main scanning pipeline
+**Scope**:
+- Connect `extractAWSSDKDataSources()` to main `ScanProviderPackages()` function
+- Update `ServiceRegistration` struct to handle SDK data source arrays
+- Map AWS SDK data source info to existing `TerraformDataSource` API (backward compatibility)
+- Handle SDK-specific data source patterns and configurations
+- Validate against known AWS data source counts (~400+ data sources)
+
+**Dependencies**: Sub-Task 3.2.1 (SDK integration patterns established)
+**Estimated Complexity**: Low-Medium (leverages SDK Resources patterns)
+**Success Criteria**: SDK data sources appear in generated index files with proper categorization
+
+##### Sub-Task 3.2.3: 🚀 Framework Resources Integration
+**Objective**: Integrate AWS Framework Resources into the main scanning pipeline  
+**Scope**:
+- Connect `extractAWSFrameworkResources()` to main `ScanProviderPackages()` function
+- Update `ServiceRegistration` struct to handle Framework resource arrays
+- Map AWS Framework resource info to existing `TerraformResource` API (backward compatibility)
+- Handle Framework-specific lifecycle methods and configurations
+- Support modern Framework patterns alongside legacy SDK patterns
+
+**Dependencies**: Sub-Task 3.2.1 (resource integration patterns), Sub-Task 3.2.2 (classification structure)
+**Estimated Complexity**: Medium-High (new Framework patterns)
+**Success Criteria**: Framework resources appear in generated index files with Framework-specific metadata
+
+##### Sub-Task 3.2.4: 📊 Framework Data Sources Integration
+**Objective**: Integrate AWS Framework Data Sources into the main scanning pipeline
+**Scope**:
+- Connect `extractAWSFrameworkDataSources()` to main `ScanProviderPackages()` function  
+- Update `ServiceRegistration` struct to handle Framework data source arrays
+- Map AWS Framework data source info to existing `TerraformDataSource` API (backward compatibility)
+- Handle Framework data source patterns and modern lifecycle methods
+- Ensure clear separation between SDK and Framework data sources
+
+**Dependencies**: Sub-Task 3.2.2 (data source patterns), Sub-Task 3.2.3 (Framework integration patterns)
+**Estimated Complexity**: Medium (leverages previous Framework and data source work)
+**Success Criteria**: Framework data sources appear in generated index files with proper Framework categorization
+
+##### Sub-Task 3.2.5: ⚡ Ephemeral Resources Integration
+**Objective**: Integrate AWS Ephemeral Resources into the main scanning pipeline
+**Scope**:
+- Connect `extractAWSEphemeralResources()` to main `ScanProviderPackages()` function
+- Update `ServiceRegistration` struct to handle ephemeral resource arrays  
+- Map AWS ephemeral resource info to existing `TerraformEphemeral` API (backward compatibility)
+- Handle ephemeral lifecycle methods (Schema, Open, Renew, Close, Configure)
+- Support the newest AWS provider ephemeral resource patterns
+
+**Dependencies**: Sub-Tasks 3.2.1-3.2.4 (all integration patterns established)
+**Estimated Complexity**: Medium (newest feature, leverages established patterns)
+**Success Criteria**: Ephemeral resources appear in generated index files with ephemeral-specific lifecycle metadata
+
+#### 🎯 Implementation Strategy for Phase 3.2:
+1. **Sequential Development**: Complete sub-tasks in order (3.2.1→3.2.2→3.2.3→3.2.4→3.2.5)
+2. **Incremental Testing**: Test each category integration independently before proceeding
+3. **Backward Compatibility**: Ensure existing `TerraformResource`, `TerraformDataSource`, `TerraformEphemeral` APIs remain unchanged
+4. **Performance Monitoring**: Track memory usage and processing time with each category addition
+5. **Validation**: Compare generated indexes against known AWS provider resource counts
+
+#### ⚠️ Key Technical Considerations:
+- **API Compatibility**: All changes must work within existing public API constraints
+- **Service Discovery**: Each category requires scanning `internal/service/*/service_package_gen.go` files
+- **Memory Management**: Handle large AWS provider scale (~2000+ resources, ~400+ data sources)
+- **Error Handling**: Graceful degradation when categories are missing or malformed
+- **Classification**: Clear separation and labeling of the 5 AWS categories in output
 
 ### Phase 4: Configuration Updates
 
