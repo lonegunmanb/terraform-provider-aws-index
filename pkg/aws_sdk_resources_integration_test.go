@@ -155,8 +155,6 @@ func TestAWSSDKResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 
 	// Verify that AWS-specific metadata is preserved in indexes
 	assert.Contains(t, terraformResource.SchemaIndex, "resourceBucket")
-	assert.NotEmpty(t, terraformResource.CreateIndex)
-	assert.NotEmpty(t, terraformResource.ReadIndex)
 }
 
 // TestNewTerraformResourceFromAWSSDK_CRUDMethodExtraction tests that the function
@@ -204,10 +202,6 @@ func TestNewTerraformResourceFromAWSSDK_CRUDMethodExtraction(t *testing.T) {
 			crudMethods: nil, // No extracted CRUD methods
 			expectedIndexes: map[string]string{
 				"SchemaIndex":    "func.resourceInstance.goindex",
-				"CreateIndex":    "func.resourceInstance.goindex", // Should fallback to factory function, not ".create"
-				"ReadIndex":      "func.resourceInstance.goindex",
-				"UpdateIndex":    "func.resourceInstance.goindex",
-				"DeleteIndex":    "func.resourceInstance.goindex",
 				"AttributeIndex": "func.resourceInstance.goindex",
 			},
 			description: "When no CRUD methods available, should use factory function name for all operations",
@@ -229,8 +223,8 @@ func TestNewTerraformResourceFromAWSSDK_CRUDMethodExtraction(t *testing.T) {
 				"SchemaIndex":    "func.resourceTable.goindex",
 				"CreateIndex":    "func.resourceTableCreate.goindex",
 				"ReadIndex":      "func.resourceTableRead.goindex",
-				"UpdateIndex":    "func.resourceTable.goindex", // Should fallback to factory function
-				"DeleteIndex":    "func.resourceTable.goindex", // Should fallback to factory function
+				"UpdateIndex":    "",
+				"DeleteIndex":    "",
 				"AttributeIndex": "func.resourceTable.goindex",
 			},
 			description: "When partial CRUD methods available, should use specific methods when available and fallback for missing ones",
@@ -262,17 +256,17 @@ func TestNewTerraformResourceFromAWSSDK_CRUDMethodExtraction(t *testing.T) {
 			assert.Equal(t, "", result.StructType, "StructType should be empty for SDK resources")
 
 			// Verify exact index values - this is the critical test that will catch the bug
-			assert.Equal(t, tt.expectedIndexes["SchemaIndex"], result.SchemaIndex, 
+			assert.Equal(t, tt.expectedIndexes["SchemaIndex"], result.SchemaIndex,
 				"SchemaIndex: %s", tt.description)
-			assert.Equal(t, tt.expectedIndexes["CreateIndex"], result.CreateIndex, 
+			assert.Equal(t, tt.expectedIndexes["CreateIndex"], result.CreateIndex,
 				"CreateIndex: %s", tt.description)
-			assert.Equal(t, tt.expectedIndexes["ReadIndex"], result.ReadIndex, 
+			assert.Equal(t, tt.expectedIndexes["ReadIndex"], result.ReadIndex,
 				"ReadIndex: %s", tt.description)
-			assert.Equal(t, tt.expectedIndexes["UpdateIndex"], result.UpdateIndex, 
+			assert.Equal(t, tt.expectedIndexes["UpdateIndex"], result.UpdateIndex,
 				"UpdateIndex: %s", tt.description)
-			assert.Equal(t, tt.expectedIndexes["DeleteIndex"], result.DeleteIndex, 
+			assert.Equal(t, tt.expectedIndexes["DeleteIndex"], result.DeleteIndex,
 				"DeleteIndex: %s", tt.description)
-			assert.Equal(t, tt.expectedIndexes["AttributeIndex"], result.AttributeIndex, 
+			assert.Equal(t, tt.expectedIndexes["AttributeIndex"], result.AttributeIndex,
 				"AttributeIndex: %s", tt.description)
 		})
 	}

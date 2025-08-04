@@ -69,11 +69,6 @@ func NewTerraformResourceFromAWSSDK(awsResource AWSResourceInfo, serviceReg Serv
 		// Schema and Attribute indexes always use the factory function
 		SchemaIndex:    fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
 		AttributeIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
-		// Default CRUD indexes to factory function (will be overridden if extracted methods available)
-		CreateIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
-		ReadIndex:   fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
-		UpdateIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
-		DeleteIndex: fmt.Sprintf("func.%s.goindex", awsResource.FactoryFunction),
 	}
 
 	// Use extracted CRUD methods if available (same pattern as legacy plugin SDK resources)
