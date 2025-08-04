@@ -90,36 +90,15 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 
 				serviceReg := newServiceRegistration(packageInfo, entry)
 
-				// Process each file in the package
-				for _, fileInfo := range packageInfo.Files {
-					if fileInfo.File == nil {
-						continue
-					}
-
-					// Extract all registration methods from this file using AWS-specific functions
-					awsSDKResources := extractAWSSDKResources(fileInfo.File)
-					awsSDKDataSources := extractAWSSDKDataSources(fileInfo.File)
-					awsFrameworkResources := extractAWSFrameworkResources(fileInfo.File)
-					awsFrameworkDataSources := extractAWSFrameworkDataSources(fileInfo.File)
-					awsEphemeralResources := extractAWSEphemeralResources(fileInfo.File)
-
-					// Merge AWS results into service registration
-					for terraformType, resourceInfo := range awsSDKResources {
-						serviceReg.AWSSDKResources[terraformType] = resourceInfo
-					}
-					for terraformType, resourceInfo := range awsSDKDataSources {
-						serviceReg.AWSSDKDataSources[terraformType] = resourceInfo
-					}
-					for terraformType, resourceInfo := range awsFrameworkResources {
-						serviceReg.AWSFrameworkResources[terraformType] = resourceInfo
-					}
-					for terraformType, resourceInfo := range awsFrameworkDataSources {
-						serviceReg.AWSFrameworkDataSources[terraformType] = resourceInfo
-					}
-					for terraformType, resourceInfo := range awsEphemeralResources {
-						serviceReg.AWSEphemeralResources[terraformType] = resourceInfo
-					}
+				// NEW: Use dynamic file detection to find the service file
+				serviceFile, err := identifyServicePackageFile(packageInfo)
+				if err != nil || serviceFile == nil {
+					// Skip packages without AWS service methods
+					continue
 				}
+
+				// Process only the identified service file
+				processAWSServiceFile(serviceFile, &serviceReg)
 
 				// Extract CRUD methods for AWS factory functions
 				allAWSResources := make(map[string]AWSResourceInfo)
@@ -579,4 +558,35 @@ func extractStructTypeFromEphemeralFunction(funcDecl *ast.FuncDecl) string {
 	}
 
 	return ""
+}
+
+// processAWSServiceFile extracts all AWS registration methods from a single identified service file
+func processAWSServiceFile(fileInfo *gophon.FileInfo, serviceReg *ServiceRegistration) {
+	if fileInfo.File == nil {
+		return
+	}
+
+	// Extract all registration methods from this file using AWS-specific functions
+	awsSDKResources := extractAWSSDKResources(fileInfo.File)
+	awsSDKDataSources := extractAWSSDKDataSources(fileInfo.File)
+	awsFrameworkResources := extractAWSFrameworkResources(fileInfo.File)
+	awsFrameworkDataSources := extractAWSFrameworkDataSources(fileInfo.File)
+	awsEphemeralResources := extractAWSEphemeralResources(fileInfo.File)
+
+	// Merge AWS results into service registration
+	for terraformType, resourceInfo := range awsSDKResources {
+		serviceReg.AWSSDKResources[terraformType] = resourceInfo
+	}
+	for terraformType, resourceInfo := range awsSDKDataSources {
+		serviceReg.AWSSDKDataSources[terraformType] = resourceInfo
+	}
+	for terraformType, resourceInfo := range awsFrameworkResources {
+		serviceReg.AWSFrameworkResources[terraformType] = resourceInfo
+	}
+	for terraformType, resourceInfo := range awsFrameworkDataSources {
+		serviceReg.AWSFrameworkDataSources[terraformType] = resourceInfo
+	}
+	for terraformType, resourceInfo := range awsEphemeralResources {
+		serviceReg.AWSEphemeralResources[terraformType] = resourceInfo
+	}
 }
