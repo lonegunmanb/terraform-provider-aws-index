@@ -29,13 +29,11 @@ func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePa
 				IdentifierAttribute: names.AttrBucket,
 				ResourceType:        "Bucket",
 			}),
-			Region: unique.Make(inttypes.ResourceRegionDefault()),
 		},
 		{
 			Factory:  resourceBucketACL,
 			TypeName: "aws_s3_bucket_acl",
 			Name:     "Bucket ACL",
-			Region:   unique.Make(inttypes.ResourceRegionDefault()),
 		},
 	}
 }`
@@ -46,26 +44,12 @@ func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePa
 				FactoryFunction: "resourceBucket",
 				Name:            "Bucket",
 				SDKType:         "sdk",
-				HasTags:         true,
-				TagsConfig: &AWSTagsConfig{
-					IdentifierAttribute: "bucket",
-					ResourceType:        "Bucket",
-				},
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 			"aws_s3_bucket_acl": {
 				TerraformType:   "aws_s3_bucket_acl",
 				FactoryFunction: "resourceBucketACL",
 				Name:            "Bucket ACL",
 				SDKType:         "sdk",
-				HasTags:         false,
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 		}
 
@@ -117,7 +101,6 @@ func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePa
 			Factory:  resourceBucket,
 			TypeName: "aws_s3_bucket",
 			Name:     "Bucket",
-			Region:   unique.Make(inttypes.ResourceRegionDefault()),
 		},
 	}
 	return resources
@@ -129,11 +112,6 @@ func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePa
 				FactoryFunction: "resourceBucket",
 				Name:            "Bucket",
 				SDKType:         "sdk",
-				HasTags:         false,
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 		}
 
@@ -186,17 +164,11 @@ func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.Service
 			Factory:  dataSourceBucket,
 			TypeName: "aws_s3_bucket",
 			Name:     "Bucket",
-			Tags: unique.Make(inttypes.ServicePackageResourceTags{
-				IdentifierAttribute: names.AttrBucket,
-				ResourceType:        "Bucket",
-			}),
-			Region: unique.Make(inttypes.ResourceRegionDefault()),
 		},
 		{
 			Factory:  dataSourceBucketObject,
 			TypeName: "aws_s3_bucket_object",
 			Name:     "Bucket Object",
-			Region:   unique.Make(inttypes.ResourceRegionDefault()),
 		},
 	}
 }`
@@ -207,26 +179,12 @@ func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.Service
 				FactoryFunction: "dataSourceBucket",
 				Name:            "Bucket",
 				SDKType:         "sdk",
-				HasTags:         true,
-				TagsConfig: &AWSTagsConfig{
-					IdentifierAttribute: "bucket",
-					ResourceType:        "Bucket",
-				},
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 			"aws_s3_bucket_object": {
 				TerraformType:   "aws_s3_bucket_object",
 				FactoryFunction: "dataSourceBucketObject",
 				Name:            "Bucket Object",
 				SDKType:         "sdk",
-				HasTags:         false,
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 		}
 
@@ -292,14 +250,12 @@ func (p *servicePackage) SDKDataSources(ctx context.Context) []*inttypes.Service
 				FactoryFunction: "dataSourceUser",
 				Name:            "User",
 				SDKType:         "sdk",
-				HasTags:         false,
 			},
 			"aws_iam_role": {
 				TerraformType:   "aws_iam_role",
 				FactoryFunction: "dataSourceRole",
 				Name:            "Role",
 				SDKType:         "sdk",
-				HasTags:         false,
 			},
 		}
 
@@ -348,17 +304,11 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.Ser
 			Factory:  newBucketLifecycleConfigurationResource,
 			TypeName: "aws_s3_bucket_lifecycle_configuration",
 			Name:     "Bucket Lifecycle Configuration",
-			Region:   unique.Make(inttypes.ResourceRegionDefault()),
 		},
 		{
 			Factory:  newDirectoryBucketResource,
 			TypeName: "aws_s3_directory_bucket",
 			Name:     "Directory Bucket",
-			Tags: unique.Make(inttypes.ServicePackageResourceTags{
-				IdentifierAttribute: names.AttrARN,
-				ResourceType:        "DirectoryBucket",
-			}),
-			Region: unique.Make(inttypes.ResourceRegionDefault()),
 		},
 	}
 }`
@@ -369,26 +319,12 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.Ser
 				FactoryFunction: "newBucketLifecycleConfigurationResource",
 				Name:            "Bucket Lifecycle Configuration",
 				SDKType:         "framework",
-				HasTags:         false,
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 			"aws_s3_directory_bucket": {
 				TerraformType:   "aws_s3_directory_bucket",
 				FactoryFunction: "newDirectoryBucketResource",
 				Name:            "Directory Bucket",
 				SDKType:         "framework",
-				HasTags:         true,
-				TagsConfig: &AWSTagsConfig{
-					IdentifierAttribute: "arn",
-					ResourceType:        "DirectoryBucket",
-				},
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 		}
 
@@ -440,11 +376,6 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.Ser
 			Factory:  newFunctionResource,
 			TypeName: "aws_lambda_function",
 			Name:     "Function",
-			Tags: unique.Make(inttypes.ServicePackageResourceTags{
-				IdentifierAttribute: names.AttrARN,
-				ResourceType:        "Function",
-			}),
-			Region: unique.Make(inttypes.ResourceRegionDefault()),
 		},
 	}
 	return resources
@@ -456,15 +387,6 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.Ser
 				FactoryFunction: "newFunctionResource",
 				Name:            "Function",
 				SDKType:         "framework",
-				HasTags:         true,
-				TagsConfig: &AWSTagsConfig{
-					IdentifierAttribute: "arn",
-					ResourceType:        "Function",
-				},
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 		}
 
@@ -518,17 +440,11 @@ func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.S
 			Factory:  newBucketDataSource,
 			TypeName: "aws_s3_bucket",
 			Name:     "Bucket",
-			Region:   unique.Make(inttypes.ResourceRegionDefault()),
 		},
 		{
 			Factory:  newDirectoryBucketDataSource,
 			TypeName: "aws_s3_directory_bucket",
 			Name:     "Directory Bucket",
-			Tags: unique.Make(inttypes.ServicePackageResourceTags{
-				IdentifierAttribute: names.AttrARN,
-				ResourceType:        "DirectoryBucket",
-			}),
-			Region: unique.Make(inttypes.ResourceRegionDefault()),
 		},
 	}
 }`
@@ -539,26 +455,12 @@ func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.S
 				FactoryFunction: "newBucketDataSource",
 				Name:            "Bucket",
 				SDKType:         "framework",
-				HasTags:         false,
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 			"aws_s3_directory_bucket": {
 				TerraformType:   "aws_s3_directory_bucket",
 				FactoryFunction: "newDirectoryBucketDataSource",
 				Name:            "Directory Bucket",
 				SDKType:         "framework",
-				HasTags:         true,
-				TagsConfig: &AWSTagsConfig{
-					IdentifierAttribute: "arn",
-					ResourceType:        "DirectoryBucket",
-				},
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 		}
 
@@ -610,11 +512,6 @@ func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.S
 			Factory:  newFunctionDataSource,
 			TypeName: "aws_lambda_function",
 			Name:     "Function",
-			Tags: unique.Make(inttypes.ServicePackageResourceTags{
-				IdentifierAttribute: names.AttrARN,
-				ResourceType:        "Function",
-			}),
-			Region: unique.Make(inttypes.ResourceRegionDefault()),
 		},
 	}
 	return dataSources
@@ -626,15 +523,6 @@ func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.S
 				FactoryFunction: "newFunctionDataSource",
 				Name:            "Function",
 				SDKType:         "framework",
-				HasTags:         true,
-				TagsConfig: &AWSTagsConfig{
-					IdentifierAttribute: "arn",
-					ResourceType:        "Function",
-				},
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 		}
 
@@ -687,13 +575,11 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 			Factory:  newSecretValueEphemeralResource,
 			TypeName: "aws_secretsmanager_secret_value",
 			Name:     "Secret Value",
-			Region:   unique.Make(inttypes.ResourceRegionDefault()),
 		},
 		{
 			Factory:  newRandomPasswordEphemeralResource,
 			TypeName: "aws_secretsmanager_random_password",
 			Name:     "Random Password",
-			Region:   unique.Make(inttypes.ResourceRegionDisabled()),
 		},
 	}
 }`
@@ -704,22 +590,12 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 				FactoryFunction: "newSecretValueEphemeralResource",
 				Name:            "Secret Value",
 				SDKType:         "ephemeral",
-				HasTags:         false,
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 			"aws_secretsmanager_random_password": {
 				TerraformType:   "aws_secretsmanager_random_password",
 				FactoryFunction: "newRandomPasswordEphemeralResource",
 				Name:            "Random Password",
 				SDKType:         "ephemeral",
-				HasTags:         false,
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             false,
-					IsValidateOverrideInPartition: false,
-				},
 			},
 		}
 
@@ -770,7 +646,6 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 			Factory:  newSecretValueEphemeralResource,
 			TypeName: "aws_secretsmanager_secret_value",
 			Name:     "Secret Value",
-			Region:   unique.Make(inttypes.ResourceRegionDefault()),
 		},
 	}
 	return resources
@@ -782,11 +657,6 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 				FactoryFunction: "newSecretValueEphemeralResource",
 				Name:            "Secret Value",
 				SDKType:         "ephemeral",
-				HasTags:         false,
-				Region: &AWSRegionConfig{
-					IsOverrideEnabled:             true,
-					IsValidateOverrideInPartition: true,
-				},
 			},
 		}
 

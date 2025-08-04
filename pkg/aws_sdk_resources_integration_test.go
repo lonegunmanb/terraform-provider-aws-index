@@ -28,11 +28,6 @@ func TestAWSSDKResourcesIntegration_WriteResourceFiles(t *testing.T) {
 					FactoryFunction: "resourceBucket",
 					Name:            "Bucket",
 					SDKType:         "sdk",
-					HasTags:         true,
-					TagsConfig: &AWSTagsConfig{
-						IdentifierAttribute: "bucket",
-						ResourceType:        "Bucket",
-					},
 				},
 			},
 			expectedFiles:       []string{"aws_s3_bucket.json"},
@@ -71,7 +66,7 @@ func TestAWSSDKResourcesIntegration_WriteResourceFiles(t *testing.T) {
 			fs := afero.NewMemMapFs()
 			stub := gostub.Stub(&outputFs, fs)
 			defer stub.Reset()
-			
+
 			outputDir := "/tmp/output"
 			resourcesDir := filepath.Join(outputDir, "resources")
 
@@ -140,14 +135,6 @@ func TestAWSSDKResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 		FactoryFunction: "resourceBucket",
 		Name:            "Bucket",
 		SDKType:         "sdk",
-		HasTags:         true,
-		TagsConfig: &AWSTagsConfig{
-			IdentifierAttribute: "bucket",
-			ResourceType:        "Bucket",
-		},
-		Region: &AWSRegionConfig{
-			IsOverrideEnabled: true,
-		},
 	}
 
 	service := ServiceRegistration{
@@ -165,7 +152,7 @@ func TestAWSSDKResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 	assert.Equal(t, "SDKResources", terraformResource.RegistrationMethod)
 	assert.Equal(t, service.PackagePath, terraformResource.Namespace)
 	assert.Equal(t, "", terraformResource.StructType) // SDK resources don't have struct types
-	
+
 	// Verify that AWS-specific metadata is preserved in indexes
 	assert.Contains(t, terraformResource.SchemaIndex, "resourceBucket")
 	assert.NotEmpty(t, terraformResource.CreateIndex)
@@ -177,7 +164,7 @@ func TestAWSSDKResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 func TestAWSSDKResourcesIntegration_BackwardCompatibility(t *testing.T) {
 	// Setup legacy resource for comparison
 	legacyService := ServiceRegistration{
-		ServiceName:        "keyvault", 
+		ServiceName:        "keyvault",
 		PackagePath:        "github.com/hashicorp/terraform-provider-azurerm/internal/services/keyvault",
 		SupportedResources: map[string]string{"azurerm_key_vault": "resourceKeyVault"},
 	}
@@ -207,7 +194,7 @@ func TestAWSSDKResourcesIntegration_BackwardCompatibility(t *testing.T) {
 
 	// Verify all required fields are present in both
 	requiredFields := []string{"terraform_type", "namespace", "registration_method", "sdk_type"}
-	
+
 	legacyJSON, err := json.Marshal(legacyResource)
 	require.NoError(t, err)
 	var legacyData map[string]interface{}

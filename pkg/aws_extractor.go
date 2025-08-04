@@ -8,43 +8,10 @@ import (
 
 // AWSResourceInfo represents information about an AWS resource extracted from service package
 type AWSResourceInfo struct {
-	TerraformType   string             `json:"terraform_type"`
-	FactoryFunction string             `json:"factory_function"`
-	Name            string             `json:"name"`
-	SDKType         string             `json:"sdk_type"` // "sdk", "framework", "ephemeral"
-	HasTags         bool               `json:"has_tags"`
-	TagsConfig      *AWSTagsConfig     `json:"tags_config,omitempty"`
-	Region          *AWSRegionConfig   `json:"region,omitempty"`
-	Identity        *AWSIdentityConfig `json:"identity,omitempty"`
-	Import          *AWSImportConfig   `json:"import,omitempty"`
-}
-
-// AWSTagsConfig represents AWS-specific tags configuration
-type AWSTagsConfig struct {
-	IdentifierAttribute string `json:"identifier_attribute"`
-	ResourceType        string `json:"resource_type"`
-}
-
-// AWSRegionConfig represents AWS-specific region configuration
-type AWSRegionConfig struct {
-	IsOverrideEnabled             bool `json:"is_override_enabled"`
-	IsValidateOverrideInPartition bool `json:"is_validate_override_in_partition"`
-}
-
-// AWSIdentityConfig represents AWS-specific identity configuration
-type AWSIdentityConfig struct {
-	IsGlobalResource bool     `json:"is_global_resource"`
-	IsSingleton      bool     `json:"is_singleton"`
-	IsARN            bool     `json:"is_arn"`
-	Attributes       []string `json:"attributes,omitempty"`
-}
-
-// AWSImportConfig represents AWS-specific import configuration
-type AWSImportConfig struct {
-	CustomImport    bool   `json:"custom_import"`
-	WrappedImport   bool   `json:"wrapped_import"`
-	ImportID        string `json:"import_id,omitempty"`
-	ImportStateFunc string `json:"import_state_func,omitempty"`
+	TerraformType   string `json:"terraform_type"`
+	FactoryFunction string `json:"factory_function"`
+	Name            string `json:"name"`
+	SDKType         string `json:"sdk_type"` // "sdk", "framework", "ephemeral"
 }
 
 // AWSFactoryCRUDMethods represents CRUD methods extracted from AWS factory functions
@@ -196,137 +163,12 @@ func extractAWSResourceInfoFromStruct(compLit *ast.CompositeLit) AWSResourceInfo
 			if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
 				resourceInfo.Name = strings.Trim(basicLit.Value, `"`)
 			}
-		case "Tags":
-			tagsConfig := extractAWSTagsConfig(kv.Value)
-			if tagsConfig != nil {
-				resourceInfo.HasTags = true
-				resourceInfo.TagsConfig = tagsConfig
-			}
-		case "Region":
-			regionConfig := extractAWSRegionConfig(kv.Value)
-			if regionConfig != nil {
-				resourceInfo.Region = regionConfig
-			}
-		case "Identity":
-			identityConfig := extractAWSIdentityConfig(kv.Value)
-			if identityConfig != nil {
-				resourceInfo.Identity = identityConfig
-			}
-		case "Import":
-			importConfig := extractAWSImportConfig(kv.Value)
-			if importConfig != nil {
-				resourceInfo.Import = importConfig
-			}
+		// Tags, Region, Identity, and Import fields are intentionally ignored
+		// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
 	return resourceInfo
-}
-
-// extractAWSTagsConfig extracts tags configuration from unique.Make call
-func extractAWSTagsConfig(expr ast.Expr) *AWSTagsConfig {
-	// Handle unique.Make(inttypes.ServicePackageResourceTags{...})
-	callExpr, ok := expr.(*ast.CallExpr)
-	if !ok {
-		return nil
-	}
-	if len(callExpr.Args) == 0 {
-		return nil
-	}
-	compLit, ok := callExpr.Args[0].(*ast.CompositeLit)
-	if !ok {
-		return nil
-	}
-	tagsConfig := &AWSTagsConfig{}
-	for _, elt := range compLit.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		fieldName := ""
-		if ident, ok := kv.Key.(*ast.Ident); ok {
-			fieldName = ident.Name
-		}
-
-		switch fieldName {
-		case "IdentifierAttribute":
-			// Handle both string literals and names.AttrBucket references
-			switch v := kv.Value.(type) {
-			case *ast.BasicLit:
-				if v.Kind == token.STRING {
-					tagsConfig.IdentifierAttribute = strings.Trim(v.Value, `"`)
-				}
-			case *ast.SelectorExpr:
-				// Handle names.AttrBucket -> "bucket"
-				x, ok := v.X.(*ast.Ident)
-				if !ok || x.Name != "names" {
-					continue
-				}
-				attrName := v.Sel.Name
-				// Convert AttrBucket to "bucket"
-				if strings.HasPrefix(attrName, "Attr") {
-					tagsConfig.IdentifierAttribute = strings.ToLower(attrName[4:])
-				}
-			}
-		case "ResourceType":
-			if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
-				tagsConfig.ResourceType = strings.Trim(basicLit.Value, `"`)
-			}
-		}
-	}
-	return tagsConfig
-}
-
-// extractAWSRegionConfig extracts region configuration from unique.Make call
-func extractAWSRegionConfig(expr ast.Expr) *AWSRegionConfig {
-	// Handle unique.Make(inttypes.ResourceRegionDefault()) or similar
-	callExpr, ok := expr.(*ast.CallExpr)
-	if !ok || len(callExpr.Args) == 0 {
-		return nil
-	}
-
-	// Check for ResourceRegionDefault() call
-	innerCall, ok := callExpr.Args[0].(*ast.CallExpr)
-	if !ok {
-		return nil
-	}
-
-	selectorExpr, ok := innerCall.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return nil
-	}
-
-	x, ok := selectorExpr.X.(*ast.Ident)
-	if !ok || x.Name != "inttypes" {
-		return nil
-	}
-
-	switch selectorExpr.Sel.Name {
-	case "ResourceRegionDefault":
-		return &AWSRegionConfig{
-			IsOverrideEnabled:             true,
-			IsValidateOverrideInPartition: true,
-		}
-	case "ResourceRegionDisabled":
-		return &AWSRegionConfig{
-			IsOverrideEnabled:             false,
-			IsValidateOverrideInPartition: false,
-		}
-	}
-
-	return nil
-}
-
-// extractAWSIdentityConfig extracts identity configuration (placeholder for future implementation)
-func extractAWSIdentityConfig(expr ast.Expr) *AWSIdentityConfig {
-	// TODO: Implement when we encounter actual identity configurations in tests
-	return nil
-}
-
-// extractAWSImportConfig extracts import configuration (placeholder for future implementation)
-func extractAWSImportConfig(expr ast.Expr) *AWSImportConfig {
-	// TODO: Implement when we encounter actual import configurations in tests
-	return nil
 }
 
 // extractAWSSDKDataSources extracts SDK data sources from the SDKDataSources method in AWS service packages
@@ -438,27 +280,8 @@ func extractAWSDataSourceInfoFromStruct(compLit *ast.CompositeLit) AWSResourceIn
 			if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
 				dataSourceInfo.Name = strings.Trim(basicLit.Value, `"`)
 			}
-		case "Tags":
-			tagsConfig := extractAWSTagsConfig(kv.Value)
-			if tagsConfig != nil {
-				dataSourceInfo.HasTags = true
-				dataSourceInfo.TagsConfig = tagsConfig
-			}
-		case "Region":
-			regionConfig := extractAWSRegionConfig(kv.Value)
-			if regionConfig != nil {
-				dataSourceInfo.Region = regionConfig
-			}
-		case "Identity":
-			identityConfig := extractAWSIdentityConfig(kv.Value)
-			if identityConfig != nil {
-				dataSourceInfo.Identity = identityConfig
-			}
-		case "Import":
-			importConfig := extractAWSImportConfig(kv.Value)
-			if importConfig != nil {
-				dataSourceInfo.Import = importConfig
-			}
+		// Tags, Region, Identity, and Import fields are intentionally ignored
+		// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
@@ -552,7 +375,6 @@ func extractAWSFrameworkResourcesFromSlice(sliceLit *ast.CompositeLit) map[strin
 func extractAWSFrameworkResourceInfo(structLit *ast.CompositeLit) AWSResourceInfo {
 	resourceInfo := AWSResourceInfo{
 		SDKType: "framework",
-		HasTags: false,
 	}
 
 	for _, elt := range structLit.Elts {
@@ -581,31 +403,8 @@ func extractAWSFrameworkResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 				name := strings.Trim(basicLit.Value, `"`)
 				resourceInfo.Name = name
 			}
-		case "Tags":
-			// Check if Tags field exists and is not nil
-			if kv.Value == nil {
-				continue
-			}
-			resourceInfo.HasTags = true
-			tagsConfig := extractAWSTagsConfig(kv.Value)
-			if tagsConfig != nil {
-				resourceInfo.TagsConfig = tagsConfig
-			}
-		case "Region":
-			regionConfig := extractAWSRegionConfig(kv.Value)
-			if regionConfig != nil {
-				resourceInfo.Region = regionConfig
-			}
-		case "Identity":
-			identityConfig := extractAWSIdentityConfig(kv.Value)
-			if identityConfig != nil {
-				resourceInfo.Identity = identityConfig
-			}
-		case "Import":
-			importConfig := extractAWSImportConfig(kv.Value)
-			if importConfig != nil {
-				resourceInfo.Import = importConfig
-			}
+		// Tags, Region, Identity, and Import fields are intentionally ignored
+		// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
@@ -698,7 +497,6 @@ func extractAWSFrameworkDataSourcesFromSlice(sliceLit *ast.CompositeLit) map[str
 func extractAWSFrameworkDataSourceInfo(structLit *ast.CompositeLit) AWSResourceInfo {
 	dataSourceInfo := AWSResourceInfo{
 		SDKType: "framework",
-		HasTags: false,
 	}
 
 	for _, elt := range structLit.Elts {
@@ -727,30 +525,8 @@ func extractAWSFrameworkDataSourceInfo(structLit *ast.CompositeLit) AWSResourceI
 				name := strings.Trim(basicLit.Value, `"`)
 				dataSourceInfo.Name = name
 			}
-		case "Tags":
-			// Check if Tags field exists and is not nil
-			if kv.Value != nil {
-				dataSourceInfo.HasTags = true
-				tagsConfig := extractAWSTagsConfig(kv.Value)
-				if tagsConfig != nil {
-					dataSourceInfo.TagsConfig = tagsConfig
-				}
-			}
-		case "Region":
-			regionConfig := extractAWSRegionConfig(kv.Value)
-			if regionConfig != nil {
-				dataSourceInfo.Region = regionConfig
-			}
-		case "Identity":
-			identityConfig := extractAWSIdentityConfig(kv.Value)
-			if identityConfig != nil {
-				dataSourceInfo.Identity = identityConfig
-			}
-		case "Import":
-			importConfig := extractAWSImportConfig(kv.Value)
-			if importConfig != nil {
-				dataSourceInfo.Import = importConfig
-			}
+		// Tags, Region, Identity, and Import fields are intentionally ignored
+		// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
@@ -849,7 +625,6 @@ func extractAWSEphemeralResourcesFromSlice(sliceLit *ast.CompositeLit) map[strin
 func extractAWSEphemeralResourceInfo(structLit *ast.CompositeLit) AWSResourceInfo {
 	resourceInfo := AWSResourceInfo{
 		SDKType: "ephemeral",
-		HasTags: false,
 	}
 
 	for _, elt := range structLit.Elts {
@@ -878,30 +653,8 @@ func extractAWSEphemeralResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 				name := strings.Trim(basicLit.Value, `"`)
 				resourceInfo.Name = name
 			}
-		case "Tags":
-			// Check if Tags field exists and is not nil
-			if kv.Value != nil {
-				resourceInfo.HasTags = true
-				tagsConfig := extractAWSTagsConfig(kv.Value)
-				if tagsConfig != nil {
-					resourceInfo.TagsConfig = tagsConfig
-				}
-			}
-		case "Region":
-			regionConfig := extractAWSRegionConfig(kv.Value)
-			if regionConfig != nil {
-				resourceInfo.Region = regionConfig
-			}
-		case "Identity":
-			identityConfig := extractAWSIdentityConfig(kv.Value)
-			if identityConfig != nil {
-				resourceInfo.Identity = identityConfig
-			}
-		case "Import":
-			importConfig := extractAWSImportConfig(kv.Value)
-			if importConfig != nil {
-				resourceInfo.Import = importConfig
-			}
+		// Tags, Region, Identity, and Import fields are intentionally ignored
+		// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
