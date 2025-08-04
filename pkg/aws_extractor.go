@@ -113,11 +113,13 @@ func extractAWSSDKResources(node *ast.File) map[string]AWSResourceInfo {
 						if i >= len(assignStmt.Rhs) {
 							return true
 						}
-						if sliceLit, ok := assignStmt.Rhs[i].(*ast.CompositeLit); ok {
-							extractedResources := extractAWSSDKResourcesFromSlice(sliceLit)
-							for k, v := range extractedResources {
-								resources[k] = v
-							}
+						sliceLit, ok := assignStmt.Rhs[i].(*ast.CompositeLit)
+						if !ok {
+							return true
+						}
+						extractedResources := extractAWSSDKResourcesFromSlice(sliceLit)
+						for k, v := range extractedResources {
+							resources[k] = v
 						}
 					}
 					return true
@@ -224,47 +226,55 @@ func extractAWSResourceInfoFromStruct(compLit *ast.CompositeLit) AWSResourceInfo
 // extractAWSTagsConfig extracts tags configuration from unique.Make call
 func extractAWSTagsConfig(expr ast.Expr) *AWSTagsConfig {
 	// Handle unique.Make(inttypes.ServicePackageResourceTags{...})
-	if callExpr, ok := expr.(*ast.CallExpr); ok {
-		if len(callExpr.Args) > 0 {
-			if compLit, ok := callExpr.Args[0].(*ast.CompositeLit); ok {
-				tagsConfig := &AWSTagsConfig{}
-				for _, elt := range compLit.Elts {
-					if kv, ok := elt.(*ast.KeyValueExpr); ok {
-						fieldName := ""
-						if ident, ok := kv.Key.(*ast.Ident); ok {
-							fieldName = ident.Name
-						}
+	callExpr, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return nil
+	}
+	if len(callExpr.Args) == 0 {
+		return nil
+	}
+	compLit, ok := callExpr.Args[0].(*ast.CompositeLit)
+	if !ok {
+		return nil
+	}
+	tagsConfig := &AWSTagsConfig{}
+	for _, elt := range compLit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		fieldName := ""
+		if ident, ok := kv.Key.(*ast.Ident); ok {
+			fieldName = ident.Name
+		}
 
-						switch fieldName {
-						case "IdentifierAttribute":
-							// Handle both string literals and names.AttrBucket references
-							switch v := kv.Value.(type) {
-							case *ast.BasicLit:
-								if v.Kind == token.STRING {
-									tagsConfig.IdentifierAttribute = strings.Trim(v.Value, `"`)
-								}
-							case *ast.SelectorExpr:
-								// Handle names.AttrBucket -> "bucket"
-								if x, ok := v.X.(*ast.Ident); ok && x.Name == "names" {
-									attrName := v.Sel.Name
-									// Convert AttrBucket to "bucket"
-									if strings.HasPrefix(attrName, "Attr") {
-										tagsConfig.IdentifierAttribute = strings.ToLower(attrName[4:])
-									}
-								}
-							}
-						case "ResourceType":
-							if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
-								tagsConfig.ResourceType = strings.Trim(basicLit.Value, `"`)
-							}
-						}
-					}
+		switch fieldName {
+		case "IdentifierAttribute":
+			// Handle both string literals and names.AttrBucket references
+			switch v := kv.Value.(type) {
+			case *ast.BasicLit:
+				if v.Kind == token.STRING {
+					tagsConfig.IdentifierAttribute = strings.Trim(v.Value, `"`)
 				}
-				return tagsConfig
+			case *ast.SelectorExpr:
+				// Handle names.AttrBucket -> "bucket"
+				x, ok := v.X.(*ast.Ident)
+				if !ok || x.Name != "names" {
+					continue
+				}
+				attrName := v.Sel.Name
+				// Convert AttrBucket to "bucket"
+				if strings.HasPrefix(attrName, "Attr") {
+					tagsConfig.IdentifierAttribute = strings.ToLower(attrName[4:])
+				}
+			}
+		case "ResourceType":
+			if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
+				tagsConfig.ResourceType = strings.Trim(basicLit.Value, `"`)
 			}
 		}
 	}
-	return nil
+	return tagsConfig
 }
 
 // extractAWSRegionConfig extracts region configuration from unique.Make call
@@ -339,18 +349,16 @@ func extractAWSSDKDataSources(node *ast.File) map[string]AWSResourceInfo {
 
 			// Process each return expression
 			for _, result := range returnStmt.Results {
-				// Handle direct slice literal return
-				if sliceLit, ok := result.(*ast.CompositeLit); ok {
-					extractedDataSources := extractAWSSDKDataSourcesFromSlice(sliceLit)
+				switch r := result.(type) {
+				case *ast.CompositeLit:
+					// Handle direct slice literal return
+					extractedDataSources := extractAWSSDKDataSourcesFromSlice(r)
 					for k, v := range extractedDataSources {
 						dataSources[k] = v
 					}
-					continue
-				}
-
-				// Handle variable reference (like "dataSources" variable)
-				if ident, ok := result.(*ast.Ident); ok {
-					extractedFromVariable := extractFromVariableReference(fn.Body, ident.Name, extractAWSSDKDataSourcesFromSlice)
+				case *ast.Ident:
+					// Handle variable reference (like "dataSources" variable)
+					extractedFromVariable := extractFromVariableReference(fn.Body, r.Name, extractAWSSDKDataSourcesFromSlice)
 					for k, v := range extractedFromVariable {
 						dataSources[k] = v
 					}
