@@ -90,15 +90,17 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 
 				serviceReg := newServiceRegistration(packageInfo, entry)
 
-				// NEW: Use dynamic file detection to find the service file
-				serviceFile, err := identifyServicePackageFile(packageInfo)
-				if err != nil || serviceFile == nil {
+				// NEW: Use dynamic file detection to find ALL service files
+				serviceFiles, err := identifyServicePackageFiles(packageInfo)
+				if err != nil || len(serviceFiles) == 0 {
 					// Skip packages without AWS service methods
 					continue
 				}
 
-				// Process only the identified service file
-				processAWSServiceFile(serviceFile, &serviceReg)
+				// Process all identified service files and merge results
+				for _, serviceFile := range serviceFiles {
+					processAWSServiceFile(serviceFile, &serviceReg)
+				}
 
 				// Extract CRUD methods for AWS factory functions
 				allAWSResources := make(map[string]AWSResourceInfo)

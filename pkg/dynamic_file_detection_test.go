@@ -214,11 +214,12 @@ func (p *servicePackage) SomeMethod(ctx context.Context) []string {
 	}
 }
 
-func TestIdentifyServicePackageFile(t *testing.T) {
+// TestIdentifyServicePackageFiles tests the new behavior where all files with AWS methods are returned
+func TestIdentifyServicePackageFiles(t *testing.T) {
 	tests := []struct {
 		name                string
 		files               map[string]string
-		expectedFileName    string
+		expectedFileNames   []string
 		expectError         bool
 		expectedErrorSubstr string
 		description         string
@@ -250,12 +251,12 @@ func SomeOtherFunction() {
 	// Not an AWS service file
 }`,
 			},
-			expectedFileName: "service_package_gen.go",
-			expectError:      false,
-			description:      "Should identify the correct AWS service file",
+			expectedFileNames: []string{"service_package_gen.go"},
+			expectError:       false,
+			description:       "Should return single AWS service file",
 		},
 		{
-			name: "Multiple files with AWS methods - prefer service_package naming",
+			name: "Multiple files with AWS methods - return all",
 			files: map[string]string{
 				"service_package_gen.go": `package service
 
@@ -293,13 +294,236 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.Ser
 		},
 	}
 }`,
+				"other_file.go": `package service
+
+func SomeOtherFunction() {
+	// Not an AWS service file
+}`,
 			},
-			expectedFileName: "service_package_gen.go",
-			expectError:      false,
-			description:      "Should prefer file with service_package naming convention",
+			expectedFileNames: []string{"service_package_gen.go", "alternative_service.go"},
+			expectError:       false,
+			description:       "Should return all files with AWS methods",
 		},
 		{
-			name: "Multiple files with AWS methods - use first found (simplified)",
+			name: "Three files with different AWS method types",
+			files: map[string]string{
+				"sdk_resources.go": `package service
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePackageSDKResource {
+	return []*inttypes.ServicePackageSDKResource{
+		{
+			Factory:  resourceExample1,
+			TypeName: "aws_example1",
+			Name:     "Example 1",
+		},
+	}
+}`,
+				"framework_data_sources.go": `package service
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.ServicePackageFrameworkDataSource {
+	return []*inttypes.ServicePackageFrameworkDataSource{
+		{
+			Factory:  newDataSourceExample,
+			TypeName: "aws_example_datasource",
+			Name:     "Example DataSource",
+		},
+	}
+}`,
+				"ephemeral_resources.go": `package service
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.ServicePackageEphemeralResource {
+	return []*inttypes.ServicePackageEphemeralResource{
+		{
+			Factory:  NewExampleEphemeralResource,
+			TypeName: "aws_example_ephemeral",
+			Name:     "Example Ephemeral",
+		},
+	}
+}`,
+				"regular_file.go": `package service
+
+func RegularFunction() {
+	// Not an AWS service file
+}`,
+			},
+			expectedFileNames: []string{"sdk_resources.go", "framework_data_sources.go", "ephemeral_resources.go"},
+			expectError:       false,
+			description:       "Should return all three files with different AWS method types",
+		},
+		{
+			name: "No files with AWS methods",
+			files: map[string]string{
+				"file1.go": `package service
+
+func SomeFunction() {
+	// Not an AWS service file
+}`,
+				"file2.go": `package service
+
+func AnotherFunction() {
+	// Also not an AWS service file
+}`,
+			},
+			expectedFileNames:   []string{},
+			expectError:         true,
+			expectedErrorSubstr: "no AWS service methods found in package",
+			description:         "Should return error when no AWS service files found",
+		},
+		{
+			name:                "Empty package",
+			files:               map[string]string{},
+			expectedFileNames:   []string{},
+			expectError:         true,
+			expectedErrorSubstr: "no AWS service methods found in package",
+			description:         "Should return error for empty package",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock PackageInfo with files
+			var files []*gophon.FileInfo
+
+			for fileName, sourceCode := range tt.files {
+				fset := token.NewFileSet()
+				astFile, err := parser.ParseFile(fset, fileName, sourceCode, parser.ParseComments)
+				require.NoError(t, err, "Failed to parse source code for %s", fileName)
+
+				files = append(files, &gophon.FileInfo{
+					FileName: fileName,
+					File:     astFile,
+				})
+			}
+
+			packageInfo := &gophon.PackageInfo{
+				Files: files,
+			}
+
+			// Test the new identifyServicePackageFiles function (plural)
+			results, err := identifyServicePackageFiles(packageInfo)
+
+			if tt.expectError {
+				assert.Error(t, err, tt.description)
+				if tt.expectedErrorSubstr != "" {
+					assert.Contains(t, err.Error(), tt.expectedErrorSubstr, tt.description)
+				}
+				assert.Empty(t, results, "Results should be empty when error occurs")
+			} else {
+				assert.NoError(t, err, tt.description)
+				assert.NotEmpty(t, results, "Results should not be empty when no error")
+
+				// Extract actual file names from results
+				var actualFileNames []string
+				for _, fileInfo := range results {
+					actualFileNames = append(actualFileNames, fileInfo.FileName)
+				}
+
+				// Sort both slices for comparison (order shouldn't matter)
+				assert.ElementsMatch(t, tt.expectedFileNames, actualFileNames, tt.description)
+			}
+		})
+	}
+}
+
+// TestProcessMultipleAWSServiceFiles tests the integration workflow where multiple AWS service files
+// are processed and their results are merged into a single ServiceRegistration
+func TestProcessMultipleAWSServiceFiles(t *testing.T) {
+	tests := []struct {
+		name                     string
+		files                    map[string]string
+		expectedSDKResourceCount int
+		expectedFwResourceCount  int
+		expectedEphemeralCount   int
+		description              string
+	}{
+		{
+			name: "Process two files with different AWS method types",
+			files: map[string]string{
+				"sdk_file.go": `package service
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePackageSDKResource {
+	return []*inttypes.ServicePackageSDKResource{
+		{
+			Factory:  resourceBucket,
+			TypeName: "aws_s3_bucket",
+			Name:     "Bucket",
+		},
+		{
+			Factory:  resourceBucketPolicy,
+			TypeName: "aws_s3_bucket_policy",
+			Name:     "Bucket Policy",
+		},
+	}
+}`,
+				"framework_file.go": `package service
+
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.ServicePackageFrameworkResource {
+	return []*inttypes.ServicePackageFrameworkResource{
+		{
+			Factory:  newResourceExample,
+			TypeName: "aws_example_resource",
+			Name:     "Example Resource",
+		},
+	}
+}
+
+func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.ServicePackageEphemeralResource {
+	return []*inttypes.ServicePackageEphemeralResource{
+		{
+			Factory:  NewExampleEphemeralResource,
+			TypeName: "aws_example_ephemeral",
+			Name:     "Example Ephemeral",
+		},
+		{
+			Factory:  NewAnotherEphemeralResource,
+			TypeName: "aws_another_ephemeral",
+			Name:     "Another Ephemeral",
+		},
+	}
+}`,
+			},
+			expectedSDKResourceCount: 2,
+			expectedFwResourceCount:  1,
+			expectedEphemeralCount:   2,
+			description:              "Should merge results from multiple files with different method types",
+		},
+		{
+			name: "Process three files with overlapping method types",
 			files: map[string]string{
 				"file1.go": `package service
 
@@ -346,48 +570,30 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.Ser
 			Name:     "Framework Example 2",
 		},
 	}
-}
+}`,
+				"file3.go": `package service
 
-func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.ServicePackageEphemeralResource {
-	return []*inttypes.ServicePackageEphemeralResource{
+import (
+	"context"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+
+type servicePackage struct{}
+
+func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.ServicePackageFrameworkResource {
+	return []*inttypes.ServicePackageFrameworkResource{
 		{
-			Factory:  NewEphemeralExample2,
-			TypeName: "aws_ephemeral_example2",
-			Name:     "Ephemeral Example 2",
+			Factory:  newResourceExample3,
+			TypeName: "aws_framework_example3",
+			Name:     "Framework Example 3",
 		},
 	}
 }`,
 			},
-			expectedFileName: "file1.go",
-			expectError:      false,
-			description:      "Should use first file found with AWS methods (simplified approach)",
-		},
-		{
-			name: "No files with AWS methods",
-			files: map[string]string{
-				"file1.go": `package service
-
-func SomeFunction() {
-	// Not an AWS service file
-}`,
-				"file2.go": `package service
-
-func AnotherFunction() {
-	// Also not an AWS service file
-}`,
-			},
-			expectedFileName:    "",
-			expectError:         true,
-			expectedErrorSubstr: "no AWS service methods found in package",
-			description:         "Should return error when no AWS service files found",
-		},
-		{
-			name: "Empty package",
-			files: map[string]string{},
-			expectedFileName:    "",
-			expectError:         true,
-			expectedErrorSubstr: "no AWS service methods found in package",
-			description:         "Should return error for empty package",
+			expectedSDKResourceCount: 2, // from file1.go and file2.go
+			expectedFwResourceCount:  2, // from file2.go and file3.go
+			expectedEphemeralCount:   0,
+			description:              "Should merge overlapping method types from multiple files",
 		},
 	}
 
@@ -395,12 +601,12 @@ func AnotherFunction() {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create mock PackageInfo with files
 			var files []*gophon.FileInfo
-			
+
 			for fileName, sourceCode := range tt.files {
 				fset := token.NewFileSet()
 				astFile, err := parser.ParseFile(fset, fileName, sourceCode, parser.ParseComments)
 				require.NoError(t, err, "Failed to parse source code for %s", fileName)
-				
+
 				files = append(files, &gophon.FileInfo{
 					FileName: fileName,
 					File:     astFile,
@@ -411,20 +617,34 @@ func AnotherFunction() {
 				Files: files,
 			}
 
-			// Test the identifyServicePackageFile function
-			result, err := identifyServicePackageFile(packageInfo)
+			// Step 1: Identify all AWS service files
+			serviceFiles, err := identifyServicePackageFiles(packageInfo)
+			require.NoError(t, err, "Should identify service files successfully")
+			require.NotEmpty(t, serviceFiles, "Should find service files")
 
-			if tt.expectError {
-				assert.Error(t, err, tt.description)
-				if tt.expectedErrorSubstr != "" {
-					assert.Contains(t, err.Error(), tt.expectedErrorSubstr, tt.description)
-				}
-				assert.Nil(t, result, "Result should be nil when error occurs")
-			} else {
-				assert.NoError(t, err, tt.description)
-				assert.NotNil(t, result, "Result should not be nil when no error")
-				assert.Equal(t, tt.expectedFileName, result.FileName, tt.description)
+			// Step 2: Create a ServiceRegistration and process all files
+			serviceReg := &ServiceRegistration{
+				AWSSDKResources:         make(map[string]AWSResourceInfo),
+				AWSSDKDataSources:       make(map[string]AWSResourceInfo),
+				AWSFrameworkResources:   make(map[string]AWSResourceInfo),
+				AWSFrameworkDataSources: make(map[string]AWSResourceInfo),
+				AWSEphemeralResources:   make(map[string]AWSResourceInfo),
 			}
+
+			// Step 3: Process each AWS service file and merge results
+			for _, fileInfo := range serviceFiles {
+				processAWSServiceFile(fileInfo, serviceReg)
+			}
+
+			// Step 4: Verify merged results
+			assert.Equal(t, tt.expectedSDKResourceCount, len(serviceReg.AWSSDKResources),
+				"SDK Resources count should match expected: %s", tt.description)
+
+			assert.Equal(t, tt.expectedFwResourceCount, len(serviceReg.AWSFrameworkResources),
+				"Framework Resources count should match expected: %s", tt.description)
+
+			assert.Equal(t, tt.expectedEphemeralCount, len(serviceReg.AWSEphemeralResources),
+				"Ephemeral Resources count should match expected: %s", tt.description)
 		})
 	}
 }

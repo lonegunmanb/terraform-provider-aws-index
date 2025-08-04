@@ -6,30 +6,24 @@ import (
 	gophon "github.com/lonegunmanb/gophon/pkg"
 )
 
-// identifyServicePackageFile scans a PackageInfo and finds the file containing AWS service registration methods
-// Returns the FileInfo containing AWS service methods, or an error if none found
-// Uses simplified single-file assumption approach
-func identifyServicePackageFile(packageInfo *gophon.PackageInfo) (*gophon.FileInfo, error) {
-	var serviceFile *gophon.FileInfo
+// identifyServicePackageFiles scans a PackageInfo and finds ALL files containing AWS service registration methods
+// Returns a slice of FileInfo containing AWS service methods, or an error if none found
+func identifyServicePackageFiles(packageInfo *gophon.PackageInfo) ([]*gophon.FileInfo, error) {
+	var serviceFiles []*gophon.FileInfo
 	
-	// Find the first file that contains AWS service methods
+	// Find all files that contain AWS service methods
 	for _, fileInfo := range packageInfo.Files {
 		if hasAWSServiceMethods(fileInfo) {
-			if serviceFile != nil {
-				// Multiple service files found - this should not happen with simplified assumption
-				fmt.Printf("Warning: Multiple AWS service files found in package, using first: %s\n", serviceFile.FileName)
-				break
-			}
-			serviceFile = fileInfo
+			serviceFiles = append(serviceFiles, fileInfo)
 		}
 	}
 	
-	if serviceFile == nil {
+	if len(serviceFiles) == 0 {
 		return nil, fmt.Errorf("no AWS service methods found in package")
 	}
 	
-	fmt.Printf("Found AWS service file: %s\n", serviceFile.FileName)
-	return serviceFile, nil
+	fmt.Printf("Found %d AWS service files\n", len(serviceFiles))
+	return serviceFiles, nil
 }
 
 // hasAWSServiceMethods checks if a FileInfo contains any of the 5 AWS service registration methods
