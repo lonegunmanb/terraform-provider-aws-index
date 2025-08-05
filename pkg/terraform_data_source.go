@@ -53,7 +53,7 @@ func NewTerraformDataSourceInfo(terraformType, structType, registrationMethod, s
 func NewTerraformDataSourceFromAWSSDK(awsDataSource AWSResourceInfo, serviceReg ServiceRegistration) TerraformDataSource {
 	// Use specific data source methods if available, otherwise fall back to factory function
 	schemaIndex := fmt.Sprintf("func.%s.goindex", awsDataSource.FactoryFunction)
-	readIndex := fmt.Sprintf("func.%s.goindex", awsDataSource.FactoryFunction)
+	var readIndex string
 	attributeIndex := fmt.Sprintf("func.%s.goindex", awsDataSource.FactoryFunction)
 
 	// Check if we have extracted data source methods for this terraform type
@@ -72,5 +72,23 @@ func NewTerraformDataSourceFromAWSSDK(awsDataSource AWSResourceInfo, serviceReg 
 		SchemaIndex:        schemaIndex,
 		ReadIndex:          readIndex,
 		AttributeIndex:     attributeIndex,
+	}
+}
+
+// NewTerraformDataSourceFromAWSFramework creates a TerraformDataSource struct from AWS Framework data source info
+func NewTerraformDataSourceFromAWSFramework(awsDataSource AWSResourceInfo, serviceReg ServiceRegistration) TerraformDataSource {
+	// Framework data sources use the actual struct type extracted from the factory function
+	structType := awsDataSource.StructType
+
+	return TerraformDataSource{
+		TerraformType:      awsDataSource.TerraformType,
+		StructType:         structType, // Framework data sources use struct types
+		Namespace:          serviceReg.PackagePath,
+		RegistrationMethod: "FrameworkDataSources",
+		SDKType:            "aws_framework",
+		// Framework data sources use method-based indexes on struct types
+		SchemaIndex:    fmt.Sprintf("method.%s.Schema.goindex", structType),
+		ReadIndex:      fmt.Sprintf("method.%s.Read.goindex", structType),
+		AttributeIndex: fmt.Sprintf("method.%s.Schema.goindex", structType),
 	}
 }

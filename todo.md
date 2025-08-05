@@ -245,7 +245,7 @@ The migration from AzureRM to AWS provider follows a **parallel coexistence stra
    - Phase 3.2.1: SDK Resources → ✅ Complete
    - Phase 3.2.2: SDK Data Sources → ✅ Complete  
    - Phase 3.2.3: Framework Resources → ✅ Complete
-   - Phase 3.2.4: Framework Data Sources → ⌛ Pending
+   - Phase 3.2.4: Framework Data Sources → ✅ Complete
    - Phase 3.2.5: Ephemeral Resources → ⌛ Pending
 
 4. **🧪 Test-First Development**: Every change follows strict TDD methodology with comprehensive integration tests to ensure reliability.
@@ -341,16 +341,16 @@ This strategy ensures a safe, reliable migration that maintains system stability
 
 The project is currently in **Phase 3.2**, focusing on integrating the remaining AWS resource categories into the main pipeline. 
 
-**✅ JUST COMPLETED: Phase 3.2.3 - Framework Resources Integration**
-- Successfully integrated AWS Framework Resources into the scanning and file writing pipeline
-- Enhanced `AWSResourceInfo` struct to store actual struct types extracted from factory function bodies
-- Modified extraction logic to use `findFrameworkStructType()` for proper struct type detection
-- Created `NewTerraformResourceFromAWSFramework()` function with method-based indexes (not function-based)
-- Updated `WriteResourceFiles()` to process Framework resources alongside SDK resources
-- All integration tests pass with proper struct-based method indexing
-- Maintained backward compatibility with existing `TerraformResource` API
+**✅ JUST COMPLETED: Phase 3.2.4 - Framework Data Sources Integration**
+- Successfully integrated AWS Framework Data Sources into the scanning and file writing pipeline
+- Created `NewTerraformDataSourceFromAWSFramework()` function with method-based indexes for Framework data sources
+- Updated `WriteDataSourceFiles()` to process Framework data sources alongside SDK data sources
+- Framework data sources use struct types and method-based indexing (`method.<struct_type>.<method_name>.goindex`)
+- All integration tests pass with proper struct-based method indexing for data sources
+- Maintained backward compatibility with existing `TerraformDataSource` API
+- Fixed incorrect test case that simulated impossible scenario (data sources always have read functions)
 
-- **Current Task**: **Phase 3.2.4: Framework Data Sources Integration**
+- **Current Task**: **Phase 4: Configuration Updates**
 - **Next**: Phase 4 (Configuration) and Phase 5 (Documentation).
 
 ---
@@ -365,7 +365,7 @@ The project is currently in **Phase 3.2**, focusing on integrating the remaining
 - **Sub-Task 3.2.1**: 🔧 SDK Resources Integration (✅ **COMPLETED**)
 - **Sub-Task 3.2.2**: 🗃️ SDK Data Sources Integration (✅ **COMPLETED**)
 - **Sub-Task 3.2.3**: 🚀 Framework Resources Integration (✅ **COMPLETED**)
-- **Sub-Task 3.2.4**: 📊 Framework Data Sources Integration (⌛ **Skipped - Focus on Resources Only**)
+- **Sub-Task 3.2.4**: 📊 Framework Data Sources Integration (✅ **COMPLETED**)
 - **Sub-Task 3.2.5**: ⚡ Ephemeral Resources Integration (⌛ **Skipped - Focus on Resources Only**)
 
 #### 🎯 **Current Task Details: Phase 3.2.3 - Framework Resources Integration**

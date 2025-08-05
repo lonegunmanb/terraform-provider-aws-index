@@ -132,7 +132,22 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 									// Store CRUD methods in the resource info or service registration
 									// For now, we can add this to legacy structure for compatibility
 									if resourceInfo.SDKType == "sdk" {
-										if crudMethods.CreateMethod != "" || crudMethods.ReadMethod != "" {
+										// Check if this is a resource (has CRUD operations) or data source (only read)
+										isDataSource := false
+										
+										// Check if this terraform type is in SDK data sources
+										if _, exists := serviceReg.AWSSDKDataSources[terraformType]; exists {
+											isDataSource = true
+										}
+										
+										if isDataSource && crudMethods.ReadMethod != "" {
+											// Store data source methods
+											legacyDataSource := &LegacyDataSourceMethods{
+												ReadMethod: crudMethods.ReadMethod,
+											}
+											serviceReg.DataSourceMethods[terraformType] = legacyDataSource
+										} else if !isDataSource && (crudMethods.CreateMethod != "" || crudMethods.ReadMethod != "") {
+											// Store resource CRUD methods
 											legacyCRUD := &LegacyResourceCRUDFunctions{
 												CreateMethod: crudMethods.CreateMethod,
 												ReadMethod:   crudMethods.ReadMethod,
@@ -516,6 +531,37 @@ func (index *TerraformProviderIndex) WriteDataSourceFiles(outputDir string, prog
 
 				if err := index.WriteJSONFile(filePath, awsDataSourceData); err != nil {
 					return fmt.Errorf("failed to write AWS SDK data source file %s: %w", fileName, err)
+				}
+
+				progressTracker.UpdateProgress(fmt.Sprintf("data source %s", tfType))
+				return nil
+			})
+		}
+
+		// Process AWS Framework data sources (NEW)
+		for terraformType, awsDataSourceInfo := range service.AWSFrameworkDataSources {
+			// Capture variables for closure
+			tfType := terraformType
+			awsDataSource := awsDataSourceInfo
+			svc := service
+
+			tasks = append(tasks, func() error {
+				// Create AWS Framework-specific data source info that includes only core TerraformDataSource fields and essential AWS metadata
+				awsDataSourceData := struct {
+					TerraformDataSource
+					FactoryFunction string `json:"factory_function"`
+					Name            string `json:"name"`
+				}{
+					TerraformDataSource: NewTerraformDataSourceFromAWSFramework(awsDataSource, svc),
+					FactoryFunction:     awsDataSource.FactoryFunction,
+					Name:                awsDataSource.Name,
+				}
+
+				fileName := fmt.Sprintf("%s.json", tfType)
+				filePath := filepath.Join(dataSourcesDir, fileName)
+
+				if err := index.WriteJSONFile(filePath, awsDataSourceData); err != nil {
+					return fmt.Errorf("failed to write AWS Framework data source file %s: %w", fileName, err)
 				}
 
 				progressTracker.UpdateProgress(fmt.Sprintf("data source %s", tfType))

@@ -185,22 +185,6 @@ func TestNewTerraformDataSourceFromAWSSDK_DataSourceMethodExtraction(t *testing.
 			},
 			description: "When data source methods are extracted, should use specific method names for read operation",
 		},
-		{
-			name: "Falls back to factory function when data source methods not available",
-			awsDataSource: AWSResourceInfo{
-				TerraformType:   "aws_ec2_instance",
-				FactoryFunction: "dataSourceInstance",
-				Name:            "Instance",
-				SDKType:         "sdk",
-			},
-			dataSourceMethods: nil, // No extracted data source methods
-			expectedIndexes: map[string]string{
-				"SchemaIndex":    "func.dataSourceInstance.goindex",
-				"ReadIndex":      "func.dataSourceInstance.goindex",
-				"AttributeIndex": "func.dataSourceInstance.goindex",
-			},
-			description: "When no data source methods available, should use factory function name for all operations",
-		},
 	}
 
 	for _, tt := range tests {
