@@ -42,7 +42,7 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 		// Create a service registration
 		serviceReg := ServiceRegistration{
 			ServiceName:           "secretsmanager",
-			PackagePath:          "github.com/hashicorp/terraform-provider-aws/internal/service/secretsmanager",
+			PackagePath:           "github.com/hashicorp/terraform-provider-aws/internal/service/secretsmanager",
 			AWSEphemeralResources: make(map[string]AWSResourceInfo),
 		}
 
@@ -52,12 +52,12 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 		}
 
 		// Process the AWS service file
-		processAWSServiceFile(fileInfo, &serviceReg)
+		parseAWSServiceFile(fileInfo, &serviceReg)
 
 		// Verify ephemeral resources were extracted
 		require.Len(t, serviceReg.AWSEphemeralResources, 1)
 		assert.Contains(t, serviceReg.AWSEphemeralResources, "aws_secretsmanager_secret_value")
-		
+
 		ephemeralResource := serviceReg.AWSEphemeralResources["aws_secretsmanager_secret_value"]
 		assert.Equal(t, "aws_secretsmanager_secret_value", ephemeralResource.TerraformType)
 		assert.Equal(t, "newSecretValueEphemeralResource", ephemeralResource.FactoryFunction)
@@ -98,7 +98,7 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 		// Create a service registration
 		serviceReg := ServiceRegistration{
 			ServiceName:           "secretsmanager",
-			PackagePath:          "github.com/hashicorp/terraform-provider-aws/internal/service/secretsmanager",
+			PackagePath:           "github.com/hashicorp/terraform-provider-aws/internal/service/secretsmanager",
 			AWSEphemeralResources: make(map[string]AWSResourceInfo),
 		}
 
@@ -108,17 +108,17 @@ func (p *servicePackage) EphemeralResources(ctx context.Context) []*inttypes.Ser
 		}
 
 		// Process the AWS service file
-		processAWSServiceFile(fileInfo, &serviceReg)
+		parseAWSServiceFile(fileInfo, &serviceReg)
 
 		// Verify ephemeral resources were extracted
 		require.Len(t, serviceReg.AWSEphemeralResources, 2)
 		assert.Contains(t, serviceReg.AWSEphemeralResources, "aws_secretsmanager_secret_value")
 		assert.Contains(t, serviceReg.AWSEphemeralResources, "aws_secretsmanager_random_password")
-		
+
 		secretValue := serviceReg.AWSEphemeralResources["aws_secretsmanager_secret_value"]
 		assert.Equal(t, "newSecretValueEphemeralResource", secretValue.FactoryFunction)
 		assert.Equal(t, "Secret Value", secretValue.Name)
-		
+
 		randomPassword := serviceReg.AWSEphemeralResources["aws_secretsmanager_random_password"]
 		assert.Equal(t, "newRandomPasswordEphemeralResource", randomPassword.FactoryFunction)
 		assert.Equal(t, "Random Password", randomPassword.Name)
@@ -146,7 +146,7 @@ func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePa
 		// Create a service registration
 		serviceReg := ServiceRegistration{
 			ServiceName:           "ec2",
-			PackagePath:          "github.com/hashicorp/terraform-provider-aws/internal/service/ec2",
+			PackagePath:           "github.com/hashicorp/terraform-provider-aws/internal/service/ec2",
 			AWSEphemeralResources: make(map[string]AWSResourceInfo),
 		}
 
@@ -156,7 +156,7 @@ func (p *servicePackage) SDKResources(ctx context.Context) []*inttypes.ServicePa
 		}
 
 		// Process the AWS service file
-		processAWSServiceFile(fileInfo, &serviceReg)
+		parseAWSServiceFile(fileInfo, &serviceReg)
 
 		// Verify no ephemeral resources were extracted
 		assert.Len(t, serviceReg.AWSEphemeralResources, 0)
@@ -223,7 +223,7 @@ func TestNewTerraformEphemeralFromAWS_WithCRUDMethods(t *testing.T) {
 func TestWriteEphemeralFiles_AWSEphemeralResources(t *testing.T) {
 	// This test will verify that WriteEphemeralFiles can process AWS ephemeral resources
 	// alongside legacy ephemeral resources
-	
+
 	t.Run("write AWS ephemeral resources to files", func(t *testing.T) {
 		// Setup: Create a temporary directory
 		outputDir, err := os.MkdirTemp("", "ephemeral_resources_test")

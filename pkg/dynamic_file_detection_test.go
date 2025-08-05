@@ -633,7 +633,7 @@ func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.Ser
 
 			// Step 3: Process each AWS service file and merge results
 			for _, fileInfo := range serviceFiles {
-				processAWSServiceFile(fileInfo, serviceReg)
+				parseAWSServiceFile(fileInfo, serviceReg)
 			}
 
 			// Step 4: Verify merged results

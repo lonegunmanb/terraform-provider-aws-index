@@ -99,74 +99,15 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 
 				// Process all identified service files and merge results
 				for _, serviceFile := range serviceFiles {
-					processAWSServiceFile(serviceFile, &serviceReg)
+					parseAWSServiceFile(serviceFile, &serviceReg)
 				}
 
-				// Extract CRUD methods for AWS factory functions
-				allAWSResources := make(map[string]AWSResourceInfo)
-				
-				// Merge all AWS resource types for CRUD analysis
-				for terraformType, resourceInfo := range serviceReg.AWSSDKResources {
-					allAWSResources[terraformType] = resourceInfo
-				}
-				for terraformType, resourceInfo := range serviceReg.AWSSDKDataSources {
-					allAWSResources[terraformType] = resourceInfo
-				}
-				for terraformType, resourceInfo := range serviceReg.AWSFrameworkResources {
-					allAWSResources[terraformType] = resourceInfo
-				}
-				for terraformType, resourceInfo := range serviceReg.AWSFrameworkDataSources {
-					allAWSResources[terraformType] = resourceInfo
-				}
-				for terraformType, resourceInfo := range serviceReg.AWSEphemeralResources {
-					allAWSResources[terraformType] = resourceInfo
-				}
-
-				// Extract CRUD methods for each AWS resource/data source/ephemeral
-				for terraformType, resourceInfo := range allAWSResources {
-					if resourceInfo.FactoryFunction != "" {
-						// Find the factory function and extract CRUD details
-						for _, fileInfo := range packageInfo.Files {
-							if fileInfo.File != nil {
-								if crudMethods := extractFactoryFunctionDetails(fileInfo.File, resourceInfo.FactoryFunction); crudMethods != nil {
-									// Store CRUD methods in the resource info or service registration
-									// For now, we can add this to legacy structure for compatibility
-									if resourceInfo.SDKType == "sdk" {
-										// Check if this is a resource (has CRUD operations) or data source (only read)
-										isDataSource := false
-										
-										// Check if this terraform type is in SDK data sources
-										if _, exists := serviceReg.AWSSDKDataSources[terraformType]; exists {
-											isDataSource = true
-										}
-										
-										if isDataSource && crudMethods.ReadMethod != "" {
-											// Store data source methods
-											legacyDataSource := &LegacyDataSourceMethods{
-												ReadMethod: crudMethods.ReadMethod,
-											}
-											serviceReg.DataSourceMethods[terraformType] = legacyDataSource
-										} else if !isDataSource && (crudMethods.CreateMethod != "" || crudMethods.ReadMethod != "") {
-											// Store resource CRUD methods
-											legacyCRUD := &LegacyResourceCRUDFunctions{
-												CreateMethod: crudMethods.CreateMethod,
-												ReadMethod:   crudMethods.ReadMethod,
-												UpdateMethod: crudMethods.UpdateMethod,
-												DeleteMethod: crudMethods.DeleteMethod,
-											}
-											serviceReg.ResourceCRUDMethods[terraformType] = legacyCRUD
-										}
-									}
-									break
-								}
-							}
-						}
-					}
-				}
+				// Extract CRUD methods for AWS SDK resources and data sources only
+				extractAndStoreSDKCRUDMethodsForLegacyPlugin(packageInfo, &serviceReg)
 
 				// Only include services that have at least one AWS registration method
 				if len(serviceReg.AWSSDKResources) > 0 || len(serviceReg.AWSSDKDataSources) > 0 ||
-					len(serviceReg.AWSFrameworkResources) > 0 || len(serviceReg.AWSFrameworkDataSources) > 0 || 
+					len(serviceReg.AWSFrameworkResources) > 0 || len(serviceReg.AWSFrameworkDataSources) > 0 ||
 					len(serviceReg.AWSEphemeralResources) > 0 {
 					resultChan <- serviceReg
 				}
@@ -200,7 +141,7 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 		stats.ModernResources += len(serviceReg.Resources)
 		stats.TotalDataSources += len(serviceReg.DataSources)
 		stats.EphemeralResources += len(serviceReg.EphemeralFunctions)
-		
+
 		// Add AWS-specific statistics (NEW)
 		stats.TotalResources += len(serviceReg.AWSSDKResources)
 		stats.TotalResources += len(serviceReg.AWSFrameworkResources)
@@ -232,13 +173,13 @@ func (index *TerraformProviderIndex) WriteIndexFiles(outputDir string, progressC
 		totalFiles += len(service.SupportedDataSources) // legacy data sources
 		totalFiles += len(service.DataSources)          // modern data sources
 		totalFiles += len(service.EphemeralFunctions)   // ephemeral resources
-		
+
 		// Add AWS-specific file counts (NEW)
-		totalFiles += len(service.AWSSDKResources)          // AWS SDK resources
-		totalFiles += len(service.AWSFrameworkResources)    // AWS Framework resources
-		totalFiles += len(service.AWSSDKDataSources)        // AWS SDK data sources
-		totalFiles += len(service.AWSFrameworkDataSources)  // AWS Framework data sources
-		totalFiles += len(service.AWSEphemeralResources)    // AWS Ephemeral resources
+		totalFiles += len(service.AWSSDKResources)         // AWS SDK resources
+		totalFiles += len(service.AWSFrameworkResources)   // AWS Framework resources
+		totalFiles += len(service.AWSSDKDataSources)       // AWS SDK data sources
+		totalFiles += len(service.AWSFrameworkDataSources) // AWS Framework data sources
+		totalFiles += len(service.AWSEphemeralResources)   // AWS Ephemeral resources
 	}
 
 	// Create progress tracker
@@ -738,8 +679,8 @@ func extractStructTypeFromEphemeralFunction(funcDecl *ast.FuncDecl) string {
 	return ""
 }
 
-// processAWSServiceFile extracts all AWS registration methods from a single identified service file
-func processAWSServiceFile(fileInfo *gophon.FileInfo, serviceReg *ServiceRegistration) {
+// parseAWSServiceFile extracts all AWS registration methods from a single identified service file
+func parseAWSServiceFile(fileInfo *gophon.FileInfo, serviceReg *ServiceRegistration) {
 	if fileInfo.File == nil {
 		return
 	}
@@ -766,5 +707,59 @@ func processAWSServiceFile(fileInfo *gophon.FileInfo, serviceReg *ServiceRegistr
 	}
 	for terraformType, resourceInfo := range awsEphemeralResources {
 		serviceReg.AWSEphemeralResources[terraformType] = resourceInfo
+	}
+}
+
+// extractAndStoreSDKCRUDMethodsForLegacyPlugin extracts CRUD methods from AWS SDK resources and data sources
+// and stores them in the service registration for backward compatibility.
+// Framework and Ephemeral resources use different patterns (struct methods) and don't need CRUD extraction.
+func extractAndStoreSDKCRUDMethodsForLegacyPlugin(packageInfo *gophon.PackageInfo, serviceReg *ServiceRegistration) {
+	// Framework and Ephemeral resources use different patterns (struct methods) and don't need CRUD extraction
+	awsSDKItems := make(map[string]AWSResourceInfo)
+
+	// Only merge SDK resources and data sources for CRUD analysis
+	for terraformType, resourceInfo := range serviceReg.AWSSDKResources {
+		awsSDKItems[terraformType] = resourceInfo
+	}
+	for terraformType, resourceInfo := range serviceReg.AWSSDKDataSources {
+		awsSDKItems[terraformType] = resourceInfo
+	}
+
+	// Extract CRUD methods for SDK resources and data sources only
+	for terraformType, resourceInfo := range awsSDKItems {
+		if resourceInfo.FactoryFunction != "" && resourceInfo.SDKType == "sdk" {
+			// Find the factory function and extract CRUD details
+			for _, fileInfo := range packageInfo.Files {
+				if fileInfo.File != nil {
+					if crudMethods := extractFactoryFunctionDetails(fileInfo.File, resourceInfo.FactoryFunction); crudMethods != nil {
+						// Check if this is a resource (has CRUD operations) or data source (only read)
+						isDataSource := false
+
+						// Check if this terraform type is in SDK data sources
+						if _, exists := serviceReg.AWSSDKDataSources[terraformType]; exists {
+							isDataSource = true
+						}
+
+						if isDataSource && crudMethods.ReadMethod != "" {
+							// Store data source methods
+							legacyDataSource := &LegacyDataSourceMethods{
+								ReadMethod: crudMethods.ReadMethod,
+							}
+							serviceReg.DataSourceMethods[terraformType] = legacyDataSource
+						} else if !isDataSource && (crudMethods.CreateMethod != "" || crudMethods.ReadMethod != "") {
+							// Store resource CRUD methods
+							legacyCRUD := &LegacyResourceCRUDFunctions{
+								CreateMethod: crudMethods.CreateMethod,
+								ReadMethod:   crudMethods.ReadMethod,
+								UpdateMethod: crudMethods.UpdateMethod,
+								DeleteMethod: crudMethods.DeleteMethod,
+							}
+							serviceReg.ResourceCRUDMethods[terraformType] = legacyCRUD
+						}
+						break
+					}
+				}
+			}
+		}
 	}
 }
