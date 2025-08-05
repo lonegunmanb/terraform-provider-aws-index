@@ -94,7 +94,7 @@ func NewTerraformResourceFromAWSSDK(awsResource AWSResourceInfo, serviceReg Serv
 func NewTerraformResourceFromAWSFramework(awsResource AWSResourceInfo, serviceReg ServiceRegistration) TerraformResource {
 	// Framework resources use the actual struct type extracted from the factory function
 	structType := awsResource.StructType
-	
+
 	result := TerraformResource{
 		TerraformType:      awsResource.TerraformType,
 		StructType:         structType, // Framework resources use struct types
@@ -106,21 +106,10 @@ func NewTerraformResourceFromAWSFramework(awsResource AWSResourceInfo, serviceRe
 		AttributeIndex: fmt.Sprintf("method.%s.Schema.goindex", structType),
 	}
 
-	// Framework resources use struct-based methods for CRUD operations
-	if crudMethods, exists := serviceReg.ResourceCRUDMethods[awsResource.TerraformType]; exists && crudMethods != nil {
-		if crudMethods.CreateMethod != "" {
-			result.CreateIndex = fmt.Sprintf("method.%s.Create.goindex", structType)
-		}
-		if crudMethods.ReadMethod != "" {
-			result.ReadIndex = fmt.Sprintf("method.%s.Read.goindex", structType)
-		}
-		if crudMethods.UpdateMethod != "" {
-			result.UpdateIndex = fmt.Sprintf("method.%s.Update.goindex", structType)
-		}
-		if crudMethods.DeleteMethod != "" {
-			result.DeleteIndex = fmt.Sprintf("method.%s.Delete.goindex", structType)
-		}
-	}
+	result.CreateIndex = fmt.Sprintf("method.%s.Create.goindex", structType)
+	result.ReadIndex = fmt.Sprintf("method.%s.Read.goindex", structType)
+	result.UpdateIndex = fmt.Sprintf("method.%s.Update.goindex", structType)
+	result.DeleteIndex = fmt.Sprintf("method.%s.Delete.goindex", structType)
 
 	return result
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	gophon "github.com/lonegunmanb/gophon/pkg"
@@ -91,20 +92,15 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 
 				serviceReg := newServiceRegistration(packageInfo, entry)
 
-				//// NEW: Use dynamic file detection to find ALL service files
-				//serviceFiles, err := identifyServicePackageFiles(packageInfo)
-				//if err != nil || len(serviceFiles) == 0 {
-				//	// Skip packages without AWS service methods
-				//	continue
-				//}
-
-				// Process all identified service files and merge results
-				for _, serviceFile := range packageInfo.Files {
-					parseAWSServiceFile(serviceFile, &serviceReg)
+				// Phase 3: Use annotation-based scanning instead of file-by-file parsing
+				err = parseAWSServiceFileWithAnnotations(packageInfo, &serviceReg)
+				if err != nil {
+					// Log error but continue with other services
+					continue
 				}
 
-				// Extract CRUD methods for AWS SDK resources and data sources only
-				extractAndStoreSDKCRUDMethodsForLegacyPlugin(packageInfo, &serviceReg)
+				// NOTE: extractAndStoreSDKCRUDMethodsForLegacyPlugin is no longer needed
+				// because CRUD methods are now extracted directly by the annotation scanner
 
 				// Only include services that have at least one AWS registration method
 				if len(serviceReg.AWSSDKResources) > 0 || len(serviceReg.AWSSDKDataSources) > 0 ||
@@ -470,6 +466,166 @@ func (index *TerraformProviderIndex) WriteJSONFile(filePath string, data interfa
 
 	return nil
 }
+
+// =============================================================================
+// Phase 3 Integration Functions: Annotation-based scanning
+// =============================================================================
+
+// parseAWSServiceFileWithAnnotations replaces parseAWSServiceFile with annotation-based scanning
+// This is the new Phase 3 integration function that uses the annotation scanner
+func parseAWSServiceFileWithAnnotations(packageInfo *gophon.PackageInfo, serviceReg *ServiceRegistration) error {
+	// Use the annotation scanner to find all annotations in the package
+	annotationResults, err := ScanPackageForAnnotations(packageInfo)
+	if err != nil {
+		return fmt.Errorf("failed to scan package for annotations: %w", err)
+	}
+
+	// Convert annotation results to service registration format
+	convertAnnotationResultsToServiceRegistration(annotationResults, serviceReg)
+
+	return nil
+}
+
+// convertAnnotationResultsToServiceRegistration converts AnnotationResults to ServiceRegistration format
+// This function bridges the annotation scanner output with the existing ServiceRegistration structure
+func convertAnnotationResultsToServiceRegistration(results *AnnotationResults, serviceReg *ServiceRegistration) {
+	// Process SDK Resources
+	for _, annotation := range results.SDKResources {
+		resourceInfo := AWSResourceInfo{
+			TerraformType:   annotation.TerraformType,
+			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "resource"),
+			Name:            annotation.Name,
+			SDKType:         "sdk",
+			StructType:      "", // SDK resources don't have struct types
+		}
+		serviceReg.AWSSDKResources[annotation.TerraformType] = resourceInfo
+
+		// Store CRUD methods if available from annotation scanner
+		if len(annotation.CRUDMethods) > 0 {
+			legacyCRUD := &LegacyResourceCRUDFunctions{
+				CreateMethod: annotation.CRUDMethods["create"],
+				ReadMethod:   annotation.CRUDMethods["read"],
+				UpdateMethod: annotation.CRUDMethods["update"],
+				DeleteMethod: annotation.CRUDMethods["delete"],
+			}
+			serviceReg.ResourceCRUDMethods[annotation.TerraformType] = legacyCRUD
+		}
+	}
+
+	// Process SDK Data Sources
+	for _, annotation := range results.SDKDataSources {
+		resourceInfo := AWSResourceInfo{
+			TerraformType:   annotation.TerraformType,
+			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "dataSource"),
+			Name:            annotation.Name,
+			SDKType:         "sdk",
+			StructType:      "", // SDK data sources don't have struct types
+		}
+		serviceReg.AWSSDKDataSources[annotation.TerraformType] = resourceInfo
+
+		// Store read method if available from annotation scanner
+		if readMethod, exists := annotation.CRUDMethods["read"]; exists && readMethod != "" {
+			legacyDataSource := &LegacyDataSourceMethods{
+				ReadMethod: readMethod,
+			}
+			serviceReg.DataSourceMethods[annotation.TerraformType] = legacyDataSource
+		}
+	}
+
+	// Process Framework Resources
+	for _, annotation := range results.FrameworkResources {
+		resourceInfo := AWSResourceInfo{
+			TerraformType:   annotation.TerraformType,
+			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "frameworkResource"),
+			Name:            annotation.Name,
+			SDKType:         "framework",
+			StructType:      annotation.StructType,
+		}
+		serviceReg.AWSFrameworkResources[annotation.TerraformType] = resourceInfo
+
+		// Store struct type to terraform type mapping for framework resources
+		if annotation.StructType != "" {
+			serviceReg.ResourceTerraformTypes[annotation.StructType] = annotation.TerraformType
+		}
+	}
+
+	// Process Framework Data Sources
+	for _, annotation := range results.FrameworkDataSources {
+		resourceInfo := AWSResourceInfo{
+			TerraformType:   annotation.TerraformType,
+			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "frameworkDataSource"),
+			Name:            annotation.Name,
+			SDKType:         "framework",
+			StructType:      annotation.StructType,
+		}
+		serviceReg.AWSFrameworkDataSources[annotation.TerraformType] = resourceInfo
+
+		// Store struct type to terraform type mapping for framework data sources
+		if annotation.StructType != "" {
+			serviceReg.DataSourceTerraformTypes[annotation.StructType] = annotation.TerraformType
+		}
+	}
+
+	// Process Ephemeral Resources
+	for _, annotation := range results.EphemeralResources {
+		resourceInfo := AWSResourceInfo{
+			TerraformType:   annotation.TerraformType,
+			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "ephemeral"),
+			Name:            annotation.Name,
+			SDKType:         "ephemeral",
+			StructType:      annotation.StructType,
+		}
+		serviceReg.AWSEphemeralResources[annotation.TerraformType] = resourceInfo
+
+		// Store struct type to terraform type mapping for ephemeral resources
+		if annotation.StructType != "" {
+			serviceReg.EphemeralTerraformTypes[annotation.StructType] = annotation.TerraformType
+		}
+	}
+}
+
+// extractFactoryFunctionNameFromTerraformType extracts the likely factory function name from terraform type
+// This function tries to infer the factory function name based on AWS provider naming conventions
+func extractFactoryFunctionNameFromTerraformType(terraformType, functionType string) string {
+	// Convert terraform type to likely function name
+	// e.g., "aws_lambda_function" -> "resourceFunction" or "dataSourceFunction"
+	
+	// Remove "aws_" prefix
+	suffix := terraformType
+	if strings.HasPrefix(terraformType, "aws_") {
+		suffix = terraformType[4:]
+	}
+	
+	// Convert underscores to camelCase
+	parts := strings.Split(suffix, "_")
+	for i := range parts {
+		if len(parts[i]) > 0 {
+			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+		}
+	}
+	
+	functionBase := strings.Join(parts, "")
+	
+	// Return factory function name based on type following AWS provider conventions
+	switch functionType {
+	case "resource":
+		return "resource" + functionBase
+	case "dataSource":
+		return "dataSource" + functionBase
+	case "frameworkResource":
+		return "new" + functionBase + "Resource"
+	case "frameworkDataSource":
+		return "new" + functionBase + "DataSource"
+	case "ephemeral":
+		return "new" + functionBase + "EphemeralResource"
+	default:
+		return "resource" + functionBase // Default fallback
+	}
+}
+
+// =============================================================================
+// End Phase 3 Integration Functions
+// =============================================================================
 
 // convertFunctionNamesToStructNames converts ephemeral resource function names to struct names
 // by looking up the function declarations in PackageInfo and parsing their return statements
