@@ -273,16 +273,8 @@ func (index *TerraformProviderIndex) WriteResourceFiles(outputDir string, progre
 			svc := service
 
 			tasks = append(tasks, func() error {
-				// Create AWS-specific resource info that includes only core TerraformResource fields and essential AWS metadata
-				awsResourceData := struct {
-					TerraformResource
-					FactoryFunction string `json:"factory_function"`
-					Name            string `json:"name"`
-				}{
-					TerraformResource: NewTerraformResourceFromAWSSDK(awsResource, svc),
-					FactoryFunction:   awsResource.FactoryFunction,
-					Name:              awsResource.Name,
-				}
+				// Create AWS-specific resource info using only core TerraformResource fields
+				awsResourceData := NewTerraformResourceFromAWSSDK(awsResource, svc)
 
 				fileName := fmt.Sprintf("%s.json", tfType)
 				filePath := filepath.Join(resourcesDir, fileName)
@@ -304,16 +296,8 @@ func (index *TerraformProviderIndex) WriteResourceFiles(outputDir string, progre
 			svc := service
 
 			tasks = append(tasks, func() error {
-				// Create AWS Framework-specific resource info that includes only core TerraformResource fields and essential AWS metadata
-				awsResourceData := struct {
-					TerraformResource
-					FactoryFunction string `json:"factory_function"`
-					Name            string `json:"name"`
-				}{
-					TerraformResource: NewTerraformResourceFromAWSFramework(awsResource, svc),
-					FactoryFunction:   awsResource.FactoryFunction,
-					Name:              awsResource.Name,
-				}
+				// Create AWS Framework-specific resource info using only core TerraformResource fields
+				awsResourceData := NewTerraformResourceFromAWSFramework(awsResource, svc)
 
 				fileName := fmt.Sprintf("%s.json", tfType)
 				filePath := filepath.Join(resourcesDir, fileName)
@@ -345,16 +329,8 @@ func (index *TerraformProviderIndex) WriteDataSourceFiles(outputDir string, prog
 			svc := service
 
 			tasks = append(tasks, func() error {
-				// Create AWS-specific data source info that includes only core TerraformDataSource fields and essential AWS metadata
-				awsDataSourceData := struct {
-					TerraformDataSource
-					FactoryFunction string `json:"factory_function"`
-					Name            string `json:"name"`
-				}{
-					TerraformDataSource: NewTerraformDataSourceFromAWSSDK(awsDataSource, svc),
-					FactoryFunction:     awsDataSource.FactoryFunction,
-					Name:                awsDataSource.Name,
-				}
+				// Create AWS-specific data source info using only core TerraformDataSource fields
+				awsDataSourceData := NewTerraformDataSourceFromAWSSDK(awsDataSource, svc)
 
 				fileName := fmt.Sprintf("%s.json", tfType)
 				filePath := filepath.Join(dataSourcesDir, fileName)
@@ -376,16 +352,8 @@ func (index *TerraformProviderIndex) WriteDataSourceFiles(outputDir string, prog
 			svc := service
 
 			tasks = append(tasks, func() error {
-				// Create AWS Framework-specific data source info that includes only core TerraformDataSource fields and essential AWS metadata
-				awsDataSourceData := struct {
-					TerraformDataSource
-					FactoryFunction string `json:"factory_function"`
-					Name            string `json:"name"`
-				}{
-					TerraformDataSource: NewTerraformDataSourceFromAWSFramework(awsDataSource, svc),
-					FactoryFunction:     awsDataSource.FactoryFunction,
-					Name:                awsDataSource.Name,
-				}
+				// Create AWS Framework-specific data source info using only core TerraformDataSource fields
+				awsDataSourceData := NewTerraformDataSourceFromAWSFramework(awsDataSource, svc)
 
 				fileName := fmt.Sprintf("%s.json", tfType)
 				filePath := filepath.Join(dataSourcesDir, fileName)

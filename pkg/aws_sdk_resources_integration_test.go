@@ -31,7 +31,7 @@ func TestAWSSDKResourcesIntegration_WriteResourceFiles(t *testing.T) {
 				},
 			},
 			expectedFiles:       []string{"aws_s3_bucket.json"},
-			expectedContentKeys: []string{"terraform_type", "factory_function", "name", "sdk_type"},
+			expectedContentKeys: []string{"terraform_type", "sdk_type", "namespace", "registration_method"},
 		},
 		{
 			name: "Multiple AWS SDK resources create multiple JSON files",
@@ -50,7 +50,7 @@ func TestAWSSDKResourcesIntegration_WriteResourceFiles(t *testing.T) {
 				},
 			},
 			expectedFiles:       []string{"aws_s3_bucket.json", "aws_ec2_instance.json"},
-			expectedContentKeys: []string{"terraform_type", "factory_function", "name", "sdk_type"},
+			expectedContentKeys: []string{"terraform_type", "sdk_type", "namespace", "registration_method"},
 		},
 		{
 			name:                "Empty AWS SDK resources creates no files",
