@@ -579,6 +579,7 @@ func (index *TerraformProviderIndex) WriteEphemeralFiles(outputDir string, progr
 	var tasks []func() error
 
 	for _, service := range index.Services {
+		// Process legacy ephemeral resources (for backward compatibility)
 		for structType, tfType := range service.EphemeralTerraformTypes {
 			// Capture variables for closure
 			structT := structType
@@ -596,6 +597,28 @@ func (index *TerraformProviderIndex) WriteEphemeralFiles(outputDir string, progr
 				}
 
 				progressTracker.UpdateProgress(fmt.Sprintf("ephemeral %s", terraformType))
+				return nil
+			})
+		}
+
+		// Process AWS ephemeral resources (NEW - Phase 3.2.5)
+		for _, awsEphemeral := range service.AWSEphemeralResources {
+			// Capture variables for closure
+			ephemeral := awsEphemeral
+			svc := service
+
+			tasks = append(tasks, func() error {
+				ephemeralInfo := NewTerraformEphemeralFromAWS(ephemeral, svc)
+				fileName := fmt.Sprintf("%s.json", ephemeral.TerraformType)
+				filePath := filepath.Join(ephemeralDir, fileName)
+
+				if err := index.WriteJSONFile(filePath, ephemeralInfo); err != nil {
+					return fmt.Errorf("failed to write AWS ephemeral resource file %s: %w", fileName, err)
+				}
+
+				if progressTracker != nil {
+					progressTracker.UpdateProgress(fmt.Sprintf("ephemeral %s", ephemeral.TerraformType))
+				}
 				return nil
 			})
 		}

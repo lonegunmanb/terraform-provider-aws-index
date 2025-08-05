@@ -246,7 +246,7 @@ The migration from AzureRM to AWS provider follows a **parallel coexistence stra
    - Phase 3.2.2: SDK Data Sources → ✅ Complete  
    - Phase 3.2.3: Framework Resources → ✅ Complete
    - Phase 3.2.4: Framework Data Sources → ✅ Complete
-   - Phase 3.2.5: Ephemeral Resources → ⌛ Pending
+   - Phase 3.2.5: Ephemeral Resources → ✅ Complete
 
 4. **🧪 Test-First Development**: Every change follows strict TDD methodology with comprehensive integration tests to ensure reliability.
 
@@ -366,7 +366,7 @@ The project is currently in **Phase 3.2**, focusing on integrating the remaining
 - **Sub-Task 3.2.2**: 🗃️ SDK Data Sources Integration (✅ **COMPLETED**)
 - **Sub-Task 3.2.3**: 🚀 Framework Resources Integration (✅ **COMPLETED**)
 - **Sub-Task 3.2.4**: 📊 Framework Data Sources Integration (✅ **COMPLETED**)
-- **Sub-Task 3.2.5**: ⚡ Ephemeral Resources Integration (⌛ **Skipped - Focus on Resources Only**)
+- **Sub-Task 3.2.5**: ⚡ Ephemeral Resources Integration (✅ **COMPLETED**)
 
 #### 🎯 **Current Task Details: Phase 3.2.3 - Framework Resources Integration**
 

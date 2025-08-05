@@ -15,7 +15,7 @@ type TerraformEphemeral struct {
 	CloseIndex         string `json:"close_index,omitempty"`
 }
 
-// NewTerraformEphemeralInfo creates a TerraformEphemeral struct
+// NewTerraformEphemeralInfo creates a TerraformEphemeral struct (legacy approach)
 func NewTerraformEphemeralInfo(structType string, service ServiceRegistration) TerraformEphemeral {
 	return TerraformEphemeral{
 		TerraformType:      service.EphemeralTerraformTypes[structType],
@@ -29,4 +29,25 @@ func NewTerraformEphemeralInfo(structType string, service ServiceRegistration) T
 		RenewIndex:  fmt.Sprintf("method.%s.Renew.goindex", structType),
 		CloseIndex:  fmt.Sprintf("method.%s.Close.goindex", structType),
 	}
+}
+
+// NewTerraformEphemeralFromAWS creates a TerraformEphemeral struct from AWS ephemeral resource information
+func NewTerraformEphemeralFromAWS(awsEphemeral AWSResourceInfo, service ServiceRegistration) TerraformEphemeral {
+	ephemeral := TerraformEphemeral{
+		TerraformType:      awsEphemeral.TerraformType,
+		StructType:         awsEphemeral.StructType,
+		Namespace:          service.PackagePath,
+		RegistrationMethod: awsEphemeral.FactoryFunction,
+		SDKType:            awsEphemeral.SDKType,
+	}
+
+	// Set lifecycle method indexes if we have struct type (for method resolution)
+	if awsEphemeral.StructType != "" {
+		ephemeral.SchemaIndex = fmt.Sprintf("method.%s.Schema.goindex", awsEphemeral.StructType)
+		ephemeral.OpenIndex = fmt.Sprintf("method.%s.Open.goindex", awsEphemeral.StructType)
+		ephemeral.RenewIndex = fmt.Sprintf("method.%s.Renew.goindex", awsEphemeral.StructType)
+		ephemeral.CloseIndex = fmt.Sprintf("method.%s.Close.goindex", awsEphemeral.StructType)
+	}
+
+	return ephemeral
 }
