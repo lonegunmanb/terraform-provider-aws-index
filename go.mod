@@ -6,6 +6,8 @@ require (
 	github.com/hashicorp/terraform-plugin-framework v1.15.0
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.37.0
 	github.com/lonegunmanb/gophon v0.0.0-20250731005102-0d6e2c050003
+	github.com/prashantv/gostub v1.1.0
+	github.com/spf13/afero v1.14.0
 	github.com/stretchr/testify v1.10.0
 )
 
@@ -32,8 +34,6 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prashantv/gostub v1.1.0 // indirect
-	github.com/spf13/afero v1.14.0 // indirect
 	github.com/vmihailenco/msgpack v4.0.4+incompatible // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
