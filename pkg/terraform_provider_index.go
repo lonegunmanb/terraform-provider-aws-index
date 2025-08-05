@@ -402,6 +402,37 @@ func (index *TerraformProviderIndex) WriteResourceFiles(outputDir string, progre
 				return nil
 			})
 		}
+
+		// Process AWS Framework resources (NEW)
+		for terraformType, awsResourceInfo := range service.AWSFrameworkResources {
+			// Capture variables for closure
+			tfType := terraformType
+			awsResource := awsResourceInfo
+			svc := service
+
+			tasks = append(tasks, func() error {
+				// Create AWS Framework-specific resource info that includes only core TerraformResource fields and essential AWS metadata
+				awsResourceData := struct {
+					TerraformResource
+					FactoryFunction string `json:"factory_function"`
+					Name            string `json:"name"`
+				}{
+					TerraformResource: NewTerraformResourceFromAWSFramework(awsResource, svc),
+					FactoryFunction:   awsResource.FactoryFunction,
+					Name:              awsResource.Name,
+				}
+
+				fileName := fmt.Sprintf("%s.json", tfType)
+				filePath := filepath.Join(resourcesDir, fileName)
+
+				if err := index.WriteJSONFile(filePath, awsResourceData); err != nil {
+					return fmt.Errorf("failed to write AWS Framework resource file %s: %w", fileName, err)
+				}
+
+				progressTracker.UpdateProgress(fmt.Sprintf("resource %s", tfType))
+				return nil
+			})
+		}
 	}
 
 	return processCallbacksParallel(tasks)

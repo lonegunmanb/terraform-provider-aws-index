@@ -12,6 +12,7 @@ type AWSResourceInfo struct {
 	FactoryFunction string `json:"factory_function"`
 	Name            string `json:"name"`
 	SDKType         string `json:"sdk_type"` // "sdk", "framework", "ephemeral"
+	StructType      string `json:"struct_type,omitempty"` // For framework resources: "customModelsDataSource"
 }
 
 // AWSFactoryCRUDMethods represents CRUD methods extracted from AWS factory functions
@@ -308,7 +309,7 @@ func extractAWSFrameworkResources(node *ast.File) map[string]AWSResourceInfo {
 					continue
 				}
 				if sliceLit, ok := s.Results[0].(*ast.CompositeLit); ok {
-					extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
+					extractedResources := extractAWSFrameworkResourcesFromSlice(node, sliceLit)
 					for k, v := range extractedResources {
 						resources[k] = v
 					}
@@ -319,7 +320,7 @@ func extractAWSFrameworkResources(node *ast.File) map[string]AWSResourceInfo {
 					continue
 				}
 				if sliceLit, ok := s.Rhs[0].(*ast.CompositeLit); ok {
-					extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
+					extractedResources := extractAWSFrameworkResourcesFromSlice(node, sliceLit)
 					for k, v := range extractedResources {
 						resources[k] = v
 					}
@@ -332,14 +333,14 @@ func extractAWSFrameworkResources(node *ast.File) map[string]AWSResourceInfo {
 				}
 				for _, spec := range genDecl.Specs {
 					valueSpec, ok := spec.(*ast.ValueSpec)
-					if !ok && len(valueSpec.Values) == 0 {
+					if !ok || len(valueSpec.Values) == 0 {
 						continue
 					}
 					sliceLit, ok := valueSpec.Values[0].(*ast.CompositeLit)
 					if !ok {
 						continue
 					}
-					extractedResources := extractAWSFrameworkResourcesFromSlice(sliceLit)
+					extractedResources := extractAWSFrameworkResourcesFromSlice(node, sliceLit)
 					for k, v := range extractedResources {
 						resources[k] = v
 					}
@@ -354,7 +355,7 @@ func extractAWSFrameworkResources(node *ast.File) map[string]AWSResourceInfo {
 }
 
 // extractAWSFrameworkResourcesFromSlice extracts AWS Framework resources from a slice literal
-func extractAWSFrameworkResourcesFromSlice(sliceLit *ast.CompositeLit) map[string]AWSResourceInfo {
+func extractAWSFrameworkResourcesFromSlice(node *ast.File, sliceLit *ast.CompositeLit) map[string]AWSResourceInfo {
 	resources := make(map[string]AWSResourceInfo)
 
 	for _, elt := range sliceLit.Elts {
@@ -364,6 +365,13 @@ func extractAWSFrameworkResourcesFromSlice(sliceLit *ast.CompositeLit) map[strin
 		}
 		resourceInfo := extractAWSFrameworkResourceInfo(structLit)
 		if resourceInfo.TerraformType != "" {
+			// Extract struct type from factory function if available
+			if resourceInfo.FactoryFunction != "" {
+				factoryFunc := findFactoryFunction(node, resourceInfo.FactoryFunction)
+				if factoryFunc != nil {
+					resourceInfo.StructType = findFrameworkStructType(factoryFunc)
+				}
+			}
 			resources[resourceInfo.TerraformType] = resourceInfo
 		}
 	}
