@@ -15,70 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Test data setup
+// Test data setup - now using shared test helpers
+// Note: keeping this function for backwards compatibility, but it now delegates to shared helper
 func createTestTerraformProviderIndex() *TerraformProviderIndex {
-	return &TerraformProviderIndex{
-		Version: "v5.0.0",
-		Services: []ServiceRegistration{
-			{
-				ServiceName: "s3",
-				PackagePath: "github.com/hashicorp/terraform-provider-aws/internal/service/s3",
-				AWSSDKResources: map[string]AWSResourceInfo{
-					"aws_s3_bucket_policy": {
-						TerraformType:   "aws_s3_bucket_policy",
-						Name:            "BucketPolicy",
-						FactoryFunction: "resourceBucketPolicy",
-						SDKType:         "aws_sdk",
-					},
-				},
-				AWSSDKDataSources: map[string]AWSResourceInfo{
-					"aws_s3_bucket": {
-						TerraformType:   "aws_s3_bucket",
-						Name:            "Bucket",
-						FactoryFunction: "dataSourceS3Bucket",
-						SDKType:         "aws_sdk",
-					},
-				},
-				AWSFrameworkResources: map[string]AWSResourceInfo{
-					"aws_s3_bucket": {
-						TerraformType:   "aws_s3_bucket",
-						Name:            "Bucket",
-						FactoryFunction: "newBucketResource",
-						SDKType:         "aws_framework",
-						StructType:      "bucketResource",
-					},
-				},
-				AWSFrameworkDataSources: make(map[string]AWSResourceInfo),
-				AWSEphemeralResources:   make(map[string]AWSResourceInfo),
-				ResourceTerraformTypes: map[string]string{
-					"bucketResource": "aws_s3_bucket",
-				},
-				DataSourceTerraformTypes: make(map[string]string),
-				EphemeralTerraformTypes:  make(map[string]string),
-				ResourceCRUDMethods: map[string]*LegacyResourceCRUDFunctions{
-					"aws_s3_bucket_policy": {
-						CreateMethod: "resourceBucketPolicyCreate",
-						ReadMethod:   "resourceBucketPolicyRead",
-						UpdateMethod: "resourceBucketPolicyUpdate",
-						DeleteMethod: "resourceBucketPolicyDelete",
-					},
-				},
-				DataSourceMethods: map[string]*LegacyDataSourceMethods{
-					"aws_s3_bucket": {
-						ReadMethod: "dataSourceS3BucketRead",
-					},
-				},
-			},
-		},
-		Statistics: ProviderStatistics{
-			ServiceCount:       1,
-			TotalResources:     2, // 1 SDK + 1 Framework = 2 total
-			TotalDataSources:   1, // 1 SDK data source
-			LegacyResources:    0, // No longer used
-			ModernResources:    0, // No longer used
-			EphemeralResources: 0, // No ephemeral resources in test data
-		},
-	}
+	return CreateTestTerraformProviderIndex()
 }
 
 func TestTerraformProviderIndex_WriteIndexFiles(t *testing.T) {
