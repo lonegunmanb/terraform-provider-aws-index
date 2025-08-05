@@ -275,13 +275,6 @@ func TestNewTerraformResourceFromAWSSDK_CRUDMethodExtraction(t *testing.T) {
 // TestAWSSDKResourcesIntegration_BackwardCompatibility tests that existing
 // TerraformResource API remains unchanged while supporting AWS SDK resources
 func TestAWSSDKResourcesIntegration_BackwardCompatibility(t *testing.T) {
-	// Setup legacy resource for comparison
-	legacyService := ServiceRegistration{
-		ServiceName:        "keyvault",
-		PackagePath:        "github.com/hashicorp/terraform-provider-azurerm/internal/services/keyvault",
-		SupportedResources: map[string]string{"azurerm_key_vault": "resourceKeyVault"},
-	}
-
 	// Setup AWS SDK resource
 	awsService := ServiceRegistration{
 		ServiceName: "s3",
@@ -295,24 +288,14 @@ func TestAWSSDKResourcesIntegration_BackwardCompatibility(t *testing.T) {
 		},
 	}
 
-	// Create TerraformResource from legacy (existing functionality)
-	legacyResource := NewTerraformResourceInfo("azurerm_key_vault", "", "resourceKeyVault", "legacy_pluginsdk", legacyService)
-
-	// Create TerraformResource from AWS SDK (new functionality)
+	// Create TerraformResource from AWS SDK
 	awsSDKResource := NewTerraformResourceFromAWSSDK(awsService.AWSSDKResources["aws_s3_bucket"], awsService)
 
-	// Verify both have same TerraformResource structure (backward compatibility)
-	assert.IsType(t, TerraformResource{}, legacyResource)
+	// Verify TerraformResource structure (backward compatibility)
 	assert.IsType(t, TerraformResource{}, awsSDKResource)
 
-	// Verify all required fields are present in both
+	// Verify all required fields are present
 	requiredFields := []string{"terraform_type", "namespace", "registration_method", "sdk_type"}
-
-	legacyJSON, err := json.Marshal(legacyResource)
-	require.NoError(t, err)
-	var legacyData map[string]interface{}
-	err = json.Unmarshal(legacyJSON, &legacyData)
-	require.NoError(t, err)
 
 	awsJSON, err := json.Marshal(awsSDKResource)
 	require.NoError(t, err)
@@ -321,7 +304,6 @@ func TestAWSSDKResourcesIntegration_BackwardCompatibility(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, field := range requiredFields {
-		assert.Contains(t, legacyData, field, "Legacy resource should have field: %s", field)
 		assert.Contains(t, awsData, field, "AWS SDK resource should have field: %s", field)
 	}
 }

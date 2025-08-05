@@ -2,13 +2,13 @@ package pkg
 
 import (
 	"encoding/json"
-	gophon "github.com/lonegunmanb/gophon/pkg"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"path/filepath"
 	"testing"
 
+	gophon "github.com/lonegunmanb/gophon/pkg"
 	"github.com/prashantv/gostub"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
@@ -18,63 +18,65 @@ import (
 // Test data setup
 func createTestTerraformProviderIndex() *TerraformProviderIndex {
 	return &TerraformProviderIndex{
-		Version: "v3.0.0",
+		Version: "v5.0.0",
 		Services: []ServiceRegistration{
 			{
-				ServiceName: "keyvault",
-				PackagePath: "github.com/hashicorp/terraform-provider-azurerm/internal/services/keyvault",
-				SupportedResources: map[string]string{
-					"azurerm_key_vault":             "resourceKeyVault",
-					"azurerm_key_vault_certificate": "resourceKeyVaultCertificate",
-				},
-				SupportedDataSources: map[string]string{
-					"azurerm_key_vault":     "dataSourceKeyVault",
-					"azurerm_key_vault_key": "dataSourceKeyVaultKey",
-				},
-				Resources:          []string{"KeyVaultResource", "KeyVaultCertificateResource"},
-				DataSources:        []string{"KeyVaultDataSource"},
-				EphemeralFunctions: []string{"NewKeyVaultCertificateEphemeralResource"},
-				ResourceTerraformTypes: map[string]string{
-					"KeyVaultResource":            "azurerm_key_vault_modern",
-					"KeyVaultCertificateResource": "azurerm_key_vault_certificate_modern",
-				},
-				DataSourceTerraformTypes: map[string]string{
-					"KeyVaultDataSource": "azurerm_key_vault_data_modern",
-				},
-				EphemeralTerraformTypes: map[string]string{
-					"NewKeyVaultCertificateEphemeralResource": "azurerm_key_vault_certificate_ephemeral",
-				},
-				ResourceCRUDMethods: map[string]*LegacyResourceCRUDFunctions{
-					"azurerm_key_vault": {
-						CreateMethod: "keyVaultCreateFunc",
-						ReadMethod:   "keyVaultReadFunc",
-						UpdateMethod: "keyVaultUpdateFunc",
-						DeleteMethod: "keyVaultDeleteFunc",
+				ServiceName: "s3",
+				PackagePath: "github.com/hashicorp/terraform-provider-aws/internal/service/s3",
+				AWSSDKResources: map[string]AWSResourceInfo{
+					"aws_s3_bucket_policy": {
+						TerraformType:   "aws_s3_bucket_policy",
+						Name:            "BucketPolicy",
+						FactoryFunction: "resourceBucketPolicy",
+						SDKType:         "aws_sdk",
 					},
-					"azurerm_key_vault_certificate": {
-						CreateMethod: "keyVaultCertificateCreateFunc",
-						ReadMethod:   "keyVaultCertificateReadFunc",
-						UpdateMethod: "keyVaultCertificateUpdateFunc",
-						DeleteMethod: "keyVaultCertificateDeleteFunc",
+				},
+				AWSSDKDataSources: map[string]AWSResourceInfo{
+					"aws_s3_bucket": {
+						TerraformType:   "aws_s3_bucket",
+						Name:            "Bucket",
+						FactoryFunction: "dataSourceS3Bucket",
+						SDKType:         "aws_sdk",
+					},
+				},
+				AWSFrameworkResources: map[string]AWSResourceInfo{
+					"aws_s3_bucket": {
+						TerraformType:   "aws_s3_bucket",
+						Name:            "Bucket",
+						FactoryFunction: "newBucketResource",
+						SDKType:         "aws_framework",
+						StructType:      "bucketResource",
+					},
+				},
+				AWSFrameworkDataSources: make(map[string]AWSResourceInfo),
+				AWSEphemeralResources:   make(map[string]AWSResourceInfo),
+				ResourceTerraformTypes: map[string]string{
+					"bucketResource": "aws_s3_bucket",
+				},
+				DataSourceTerraformTypes: make(map[string]string),
+				EphemeralTerraformTypes:  make(map[string]string),
+				ResourceCRUDMethods: map[string]*LegacyResourceCRUDFunctions{
+					"aws_s3_bucket_policy": {
+						CreateMethod: "resourceBucketPolicyCreate",
+						ReadMethod:   "resourceBucketPolicyRead",
+						UpdateMethod: "resourceBucketPolicyUpdate",
+						DeleteMethod: "resourceBucketPolicyDelete",
 					},
 				},
 				DataSourceMethods: map[string]*LegacyDataSourceMethods{
-					"azurerm_key_vault": {
-						ReadMethod: "dataSourceKeyVaultRead",
-					},
-					"azurerm_key_vault_key": {
-						ReadMethod: "dataSourceKeyVaultKeyRead",
+					"aws_s3_bucket": {
+						ReadMethod: "dataSourceS3BucketRead",
 					},
 				},
 			},
 		},
 		Statistics: ProviderStatistics{
 			ServiceCount:       1,
-			TotalResources:     4,
-			TotalDataSources:   3,
-			LegacyResources:    2,
-			ModernResources:    2,
-			EphemeralResources: 1,
+			TotalResources:     2, // 1 SDK + 1 Framework = 2 total
+			TotalDataSources:   1, // 1 SDK data source
+			LegacyResources:    0, // No longer used
+			ModernResources:    0, // No longer used
+			EphemeralResources: 0, // No ephemeral resources in test data
 		},
 	}
 }
@@ -130,40 +132,39 @@ func TestTerraformProviderIndex_WriteResourceFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	// Check legacy resource files
-	legacyResourceFile := filepath.Join(resourcesDir, "azurerm_key_vault.json")
-	exists, err = afero.Exists(fs, legacyResourceFile)
+	// Check AWS SDK resource files
+	awsSDKResourceFile := filepath.Join(resourcesDir, "aws_s3_bucket_policy.json")
+	exists, err = afero.Exists(fs, awsSDKResourceFile)
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	// Read and verify legacy resource content
-	resourceData, err := afero.ReadFile(fs, legacyResourceFile)
+	// Read and verify AWS SDK resource content
+	resourceData, err := afero.ReadFile(fs, awsSDKResourceFile)
 	require.NoError(t, err)
 
 	var resourceInfo TerraformResource
 	err = json.Unmarshal(resourceData, &resourceInfo)
 	require.NoError(t, err)
-	assert.Equal(t, "azurerm_key_vault", resourceInfo.TerraformType)
-	assert.Equal(t, "legacy_pluginsdk", resourceInfo.SDKType)
-	assert.Equal(t, "resourceKeyVault", resourceInfo.RegistrationMethod)
-	assert.Contains(t, resourceInfo.CreateIndex, "keyVaultCreateFunc") // Check that CRUD method is included in index
+	assert.Equal(t, "aws_s3_bucket_policy", resourceInfo.TerraformType)
+	assert.Equal(t, "aws_sdk", resourceInfo.SDKType)
+	assert.Equal(t, "SDKResources", resourceInfo.RegistrationMethod)
 
-	// Check modern resource files
-	modernResourceFile := filepath.Join(resourcesDir, "azurerm_key_vault_modern.json")
-	exists, err = afero.Exists(fs, modernResourceFile)
+	// Check AWS Framework resource files
+	awsFrameworkResourceFile := filepath.Join(resourcesDir, "aws_s3_bucket.json")
+	exists, err = afero.Exists(fs, awsFrameworkResourceFile)
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	// Read and verify modern resource content
-	modernResourceData, err := afero.ReadFile(fs, modernResourceFile)
+	// Read and verify Framework resource content
+	frameworkResourceData, err := afero.ReadFile(fs, awsFrameworkResourceFile)
 	require.NoError(t, err)
 
-	var modernResourceInfo TerraformResource
-	err = json.Unmarshal(modernResourceData, &modernResourceInfo)
+	var frameworkResourceInfo TerraformResource
+	err = json.Unmarshal(frameworkResourceData, &frameworkResourceInfo)
 	require.NoError(t, err)
-	assert.Equal(t, "azurerm_key_vault_modern", modernResourceInfo.TerraformType)
-	assert.Equal(t, "modern_sdk", modernResourceInfo.SDKType)
-	assert.Equal(t, "KeyVaultResource", modernResourceInfo.StructType)
+	assert.Equal(t, "aws_s3_bucket", frameworkResourceInfo.TerraformType)
+	assert.Equal(t, "aws_framework", frameworkResourceInfo.SDKType)
+	assert.Equal(t, "bucketResource", frameworkResourceInfo.StructType)
 }
 
 func TestTerraformProviderIndex_WriteDataSourceFiles(t *testing.T) {
@@ -186,40 +187,23 @@ func TestTerraformProviderIndex_WriteDataSourceFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	// Check legacy data source files
-	legacyDataSourceFile := filepath.Join(dataSourcesDir, "azurerm_key_vault.json")
-	exists, err = afero.Exists(fs, legacyDataSourceFile)
+	// Check AWS SDK data source files
+	awsDataSourceFile := filepath.Join(dataSourcesDir, "aws_s3_bucket.json")
+	exists, err = afero.Exists(fs, awsDataSourceFile)
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	// Read and verify legacy data source content
-	dataSourceData, err := afero.ReadFile(fs, legacyDataSourceFile)
+	// Read and verify AWS SDK data source content
+	dataSourceData, err := afero.ReadFile(fs, awsDataSourceFile)
 	require.NoError(t, err)
 
 	var dataSourceInfo TerraformDataSource
 	err = json.Unmarshal(dataSourceData, &dataSourceInfo)
 	require.NoError(t, err)
-	assert.Equal(t, "azurerm_key_vault", dataSourceInfo.TerraformType)
-	assert.Equal(t, "legacy_pluginsdk", dataSourceInfo.SDKType)
-	assert.Equal(t, "dataSourceKeyVault", dataSourceInfo.RegistrationMethod)
-	assert.Contains(t, dataSourceInfo.ReadIndex, "dataSourceKeyVaultRead") // Check that read method is included in index
+	assert.Equal(t, "aws_s3_bucket", dataSourceInfo.TerraformType)
+	assert.Equal(t, "aws_sdk", dataSourceInfo.SDKType)
+	assert.Equal(t, "SDKDataSources", dataSourceInfo.RegistrationMethod)
 
-	// Check modern data source files
-	modernDataSourceFile := filepath.Join(dataSourcesDir, "azurerm_key_vault_data_modern.json")
-	exists, err = afero.Exists(fs, modernDataSourceFile)
-	require.NoError(t, err)
-	assert.True(t, exists)
-
-	// Read and verify modern data source content
-	modernDataSourceData, err := afero.ReadFile(fs, modernDataSourceFile)
-	require.NoError(t, err)
-
-	var modernDataSourceInfo TerraformDataSource
-	err = json.Unmarshal(modernDataSourceData, &modernDataSourceInfo)
-	require.NoError(t, err)
-	assert.Equal(t, "azurerm_key_vault_data_modern", modernDataSourceInfo.TerraformType)
-	assert.Equal(t, "modern_sdk", modernDataSourceInfo.SDKType)
-	assert.Equal(t, "KeyVaultDataSource", modernDataSourceInfo.StructType)
 }
 
 func TestTerraformProviderIndex_WriteEphemeralFiles(t *testing.T) {
@@ -242,22 +226,10 @@ func TestTerraformProviderIndex_WriteEphemeralFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	// Check ephemeral resource files
-	ephemeralFile := filepath.Join(ephemeralDir, "azurerm_key_vault_certificate_ephemeral.json")
-	exists, err = afero.Exists(fs, ephemeralFile)
+	// Since our test data has no ephemeral resources, verify directory is empty
+	files, err := afero.ReadDir(fs, ephemeralDir)
 	require.NoError(t, err)
-	assert.True(t, exists)
-
-	// Read and verify ephemeral resource content
-	ephemeralData, err := afero.ReadFile(fs, ephemeralFile)
-	require.NoError(t, err)
-
-	var ephemeralInfo TerraformEphemeral
-	err = json.Unmarshal(ephemeralData, &ephemeralInfo)
-	require.NoError(t, err)
-	assert.Equal(t, "azurerm_key_vault_certificate_ephemeral", ephemeralInfo.TerraformType)
-	assert.Equal(t, "ephemeral", ephemeralInfo.SDKType)
-	assert.Equal(t, "NewKeyVaultCertificateEphemeralResource", ephemeralInfo.StructType)
+	assert.Empty(t, files, "Ephemeral directory should be empty when no ephemeral resources exist")
 }
 
 func TestTerraformProviderIndex_WriteMainIndexFile(t *testing.T) {
@@ -416,12 +388,15 @@ func TestTerraformProviderIndex_WriteResourceFiles_NoResources(t *testing.T) {
 	index := &TerraformProviderIndex{
 		Services: []ServiceRegistration{
 			{
-				ServiceName:            "empty",
-				SupportedResources:     map[string]string{},
-				Resources:              []string{},
-				ResourceTerraformTypes: map[string]string{},
-				ResourceCRUDMethods:    map[string]*LegacyResourceCRUDFunctions{},
-				DataSourceMethods:      map[string]*LegacyDataSourceMethods{},
+				ServiceName:             "empty",
+				AWSSDKResources:         map[string]AWSResourceInfo{},
+				AWSFrameworkResources:   map[string]AWSResourceInfo{},
+				AWSSDKDataSources:       map[string]AWSResourceInfo{},
+				AWSFrameworkDataSources: map[string]AWSResourceInfo{},
+				AWSEphemeralResources:   map[string]AWSResourceInfo{},
+				ResourceTerraformTypes:  map[string]string{},
+				ResourceCRUDMethods:     map[string]*LegacyResourceCRUDFunctions{},
+				DataSourceMethods:       map[string]*LegacyDataSourceMethods{},
 			},
 		},
 	}

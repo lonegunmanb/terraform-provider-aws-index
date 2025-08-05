@@ -18,21 +18,17 @@ type ServiceRegistration struct {
 	AWSFrameworkDataSources  map[string]AWSResourceInfo `json:"aws_framework_data_sources"` // Framework data sources from FrameworkDataSources()
 	AWSEphemeralResources    map[string]AWSResourceInfo `json:"aws_ephemeral_resources"`    // Ephemeral resources from EphemeralResources()
 	
-	// Legacy AzureRM structure (DEPRECATED - will be removed)
-	SupportedResources   map[string]string                       `json:"supported_resources,omitempty"`    // Legacy map-based resources
-	SupportedDataSources map[string]string                       `json:"supported_data_sources,omitempty"` // Legacy map-based data sources
-	Resources            []string                                `json:"resources,omitempty"`              // Modern slice-based resources
-	DataSources          []string                                `json:"data_sources,omitempty"`           // Modern slice-based data sources
-	EphemeralFunctions   []string                                `json:"ephemeral_functions,omitempty"`    // Function-based ephemeral resources
-	ResourceCRUDMethods  map[string]*LegacyResourceCRUDFunctions `json:"resource_crud_methods,omitempty"`  // CRUD methods for legacy resources
-	DataSourceMethods    map[string]*LegacyDataSourceMethods     `json:"data_source_methods,omitempty"`    // Methods for legacy data sources
-	// New mappings between Terraform types and struct types
-	ResourceTerraformTypes   map[string]string `json:"resource_terraform_types,omitempty"`    // StructType -> TerraformType for modern resources
-	DataSourceTerraformTypes map[string]string `json:"data_source_terraform_types,omitempty"` // StructType -> TerraformType for modern data sources
+	// Terraform type mappings for Framework resources (struct-based)
+	ResourceTerraformTypes   map[string]string `json:"resource_terraform_types,omitempty"`    // StructType -> TerraformType for Framework resources
+	DataSourceTerraformTypes map[string]string `json:"data_source_terraform_types,omitempty"` // StructType -> TerraformType for Framework data sources
 	EphemeralTerraformTypes  map[string]string `json:"ephemeral_terraform_types,omitempty"`   // StructType -> TerraformType for ephemeral resources
+	
+	// CRUD method mappings for SDK resources (function-based)
+	ResourceCRUDMethods  map[string]*LegacyResourceCRUDFunctions `json:"resource_crud_methods,omitempty"`  // CRUD methods for SDK resources
+	DataSourceMethods    map[string]*LegacyDataSourceMethods     `json:"data_source_methods,omitempty"`    // Methods for SDK data sources
 }
 
-func newServiceRegistration(packageInfo *gophon.PackageInfo, entry os.DirEntry) ServiceRegistration {
+func newServiceRegistration(packageInfo *gophon.PackageInfo, entry os.FileInfo) ServiceRegistration {
 	return ServiceRegistration{
 		Package:                  packageInfo,
 		ServiceName:              entry.Name(),
@@ -45,12 +41,7 @@ func newServiceRegistration(packageInfo *gophon.PackageInfo, entry os.DirEntry) 
 		AWSFrameworkDataSources: make(map[string]AWSResourceInfo),
 		AWSEphemeralResources:   make(map[string]AWSResourceInfo),
 		
-		// Legacy AzureRM structure (DEPRECATED)
-		SupportedResources:       make(map[string]string),
-		SupportedDataSources:     make(map[string]string),
-		Resources:                []string{},
-		DataSources:              []string{},
-		EphemeralFunctions:       []string{},
+		// Terraform type mappings and CRUD methods
 		ResourceCRUDMethods:      make(map[string]*LegacyResourceCRUDFunctions),
 		DataSourceMethods:        make(map[string]*LegacyDataSourceMethods),
 		ResourceTerraformTypes:   make(map[string]string),

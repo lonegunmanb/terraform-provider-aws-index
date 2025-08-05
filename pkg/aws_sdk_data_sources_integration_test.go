@@ -225,13 +225,6 @@ func TestNewTerraformDataSourceFromAWSSDK_DataSourceMethodExtraction(t *testing.
 // TestAWSSDKDataSourcesIntegration_BackwardCompatibility tests that existing
 // TerraformDataSource API remains unchanged while supporting AWS SDK data sources
 func TestAWSSDKDataSourcesIntegration_BackwardCompatibility(t *testing.T) {
-	// Setup legacy data source for comparison
-	legacyService := ServiceRegistration{
-		ServiceName:          "keyvault",
-		PackagePath:          "github.com/hashicorp/terraform-provider-azurerm/internal/services/keyvault",
-		SupportedDataSources: map[string]string{"azurerm_key_vault": "dataSourceKeyVault"},
-	}
-
 	// Setup AWS SDK data source
 	awsService := ServiceRegistration{
 		ServiceName: "s3",
@@ -245,24 +238,14 @@ func TestAWSSDKDataSourcesIntegration_BackwardCompatibility(t *testing.T) {
 		},
 	}
 
-	// Create TerraformDataSource from legacy (existing functionality)
-	legacyDataSource := NewTerraformDataSourceInfo("azurerm_key_vault", "", "dataSourceKeyVault", "legacy_pluginsdk", legacyService)
-
-	// Create TerraformDataSource from AWS SDK (new functionality)
+	// Create TerraformDataSource from AWS SDK
 	awsSDKDataSource := NewTerraformDataSourceFromAWSSDK(awsService.AWSSDKDataSources["aws_s3_bucket"], awsService)
 
-	// Verify both have same TerraformDataSource structure (backward compatibility)
-	assert.IsType(t, TerraformDataSource{}, legacyDataSource)
+	// Verify TerraformDataSource structure (backward compatibility)
 	assert.IsType(t, TerraformDataSource{}, awsSDKDataSource)
 
-	// Verify all required fields are present in both
+	// Verify all required fields are present
 	requiredFields := []string{"terraform_type", "namespace", "registration_method", "sdk_type"}
-
-	legacyJSON, err := json.Marshal(legacyDataSource)
-	require.NoError(t, err)
-	var legacyData map[string]interface{}
-	err = json.Unmarshal(legacyJSON, &legacyData)
-	require.NoError(t, err)
 
 	awsJSON, err := json.Marshal(awsSDKDataSource)
 	require.NoError(t, err)
@@ -271,7 +254,6 @@ func TestAWSSDKDataSourcesIntegration_BackwardCompatibility(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, field := range requiredFields {
-		assert.Contains(t, legacyData, field, "Legacy data source should have field: %s", field)
 		assert.Contains(t, awsData, field, "AWS SDK data source should have field: %s", field)
 	}
 }

@@ -15,6 +15,7 @@ import (
 )
 
 var outputFs = afero.NewOsFs()
+var inputFs = afero.NewOsFs() // Add filesystem abstraction for input operations
 
 // TerraformProviderIndex represents the complete index of a Terraform provider
 type TerraformProviderIndex struct {
@@ -27,13 +28,13 @@ type TerraformProviderIndex struct {
 // and extracts all registration information into a structured index
 func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progressCallback ProgressCallback) (*TerraformProviderIndex, error) {
 	// Read the services directory to get all service subdirectories
-	entries, err := os.ReadDir(dir)
+	entries, err := afero.ReadDir(inputFs, dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read services directory: %w", err)
 	}
 
 	// Filter entries to only include directories
-	var dirEntries []os.DirEntry
+	var dirEntries []os.FileInfo
 	for _, entry := range entries {
 		if entry.IsDir() {
 			dirEntries = append(dirEntries, entry)
@@ -59,7 +60,7 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 	}
 
 	// Channels for work distribution and result collection
-	entryChan := make(chan os.DirEntry, len(dirEntries))
+	entryChan := make(chan os.FileInfo, len(dirEntries))
 	resultChan := make(chan ServiceRegistration, len(dirEntries))
 	var wg sync.WaitGroup
 
@@ -123,26 +124,13 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 
 	// Collect results and build final data structures
 	var services []ServiceRegistration
-	globalResources := make(map[string]string)
-	globalDataSources := make(map[string]string)
 	stats := ProviderStatistics{}
 
 	for serviceReg := range resultChan {
 		services = append(services, serviceReg)
 		stats.ServiceCount++
 
-		// Add to global maps
-		globalResources = mergeMap(globalResources, serviceReg.SupportedResources)
-		globalDataSources = mergeMap(globalDataSources, serviceReg.SupportedDataSources)
-
-		// Update statistics
-		stats.LegacyResources += len(serviceReg.SupportedResources)
-		stats.TotalDataSources += len(serviceReg.SupportedDataSources)
-		stats.ModernResources += len(serviceReg.Resources)
-		stats.TotalDataSources += len(serviceReg.DataSources)
-		stats.EphemeralResources += len(serviceReg.EphemeralFunctions)
-
-		// Add AWS-specific statistics (NEW)
+		// AWS 5-category statistics
 		stats.TotalResources += len(serviceReg.AWSSDKResources)
 		stats.TotalResources += len(serviceReg.AWSFrameworkResources)
 		stats.TotalDataSources += len(serviceReg.AWSSDKDataSources)
@@ -150,7 +138,9 @@ func ScanTerraformProviderServices(dir, basePkgUrl string, version string, progr
 		stats.EphemeralResources += len(serviceReg.AWSEphemeralResources)
 	}
 
-	stats.TotalResources = stats.LegacyResources + stats.ModernResources + stats.EphemeralResources
+	// Final statistics calculation
+	stats.LegacyResources = 0 // No longer used
+	stats.ModernResources = 0 // No longer used
 
 	// Report scanning completion
 	progressTracker.Complete()
@@ -168,18 +158,13 @@ func (index *TerraformProviderIndex) WriteIndexFiles(outputDir string, progressC
 	// Calculate total number of files to write
 	totalFiles := 1 // main index file
 	for _, service := range index.Services {
-		totalFiles += len(service.SupportedResources)   // legacy resources
-		totalFiles += len(service.Resources)            // modern resources
-		totalFiles += len(service.SupportedDataSources) // legacy data sources
-		totalFiles += len(service.DataSources)          // modern data sources
-		totalFiles += len(service.EphemeralFunctions)   // ephemeral resources
-
-		// Add AWS-specific file counts (NEW)
+		// AWS 5-category file counts
 		totalFiles += len(service.AWSSDKResources)         // AWS SDK resources
 		totalFiles += len(service.AWSFrameworkResources)   // AWS Framework resources
 		totalFiles += len(service.AWSSDKDataSources)       // AWS SDK data sources
 		totalFiles += len(service.AWSFrameworkDataSources) // AWS Framework data sources
 		totalFiles += len(service.AWSEphemeralResources)   // AWS Ephemeral resources
+		totalFiles += len(service.EphemeralTerraformTypes) // Framework ephemeral resources (backward compatibility)
 	}
 
 	// Create progress tracker
@@ -280,55 +265,7 @@ func (index *TerraformProviderIndex) WriteResourceFiles(outputDir string, progre
 	var tasks []func() error
 
 	for _, service := range index.Services {
-		// Process legacy resources
-		for terraformType, registrationMethod := range service.SupportedResources {
-			// Capture variables for closure
-			tfType := terraformType
-			regMethod := registrationMethod
-			svc := service
-
-			tasks = append(tasks, func() error {
-				resourceInfo := NewTerraformResourceInfo(tfType, "", regMethod, "legacy_pluginsdk", svc)
-				fileName := fmt.Sprintf("%s.json", tfType)
-				filePath := filepath.Join(resourcesDir, fileName)
-
-				if err := index.WriteJSONFile(filePath, resourceInfo); err != nil {
-					return fmt.Errorf("failed to write legacy resource file %s: %w", fileName, err)
-				}
-
-				progressTracker.UpdateProgress(fmt.Sprintf("resource %s", tfType))
-				return nil
-			})
-		}
-
-		// Process modern resources
-		for _, structType := range service.Resources {
-			// Capture variables for closure
-			structT := structType
-			svc := service
-
-			tasks = append(tasks, func() error {
-				// Get the actual Terraform type from the mapping
-				terraformType, exists := svc.ResourceTerraformTypes[structT]
-				if !exists {
-					// Fallback to struct type if mapping doesn't exist
-					terraformType = structT
-				}
-
-				resourceInfo := NewTerraformResourceInfo(terraformType, structT, "", "modern_sdk", svc)
-				fileName := fmt.Sprintf("%s.json", terraformType)
-				filePath := filepath.Join(resourcesDir, fileName)
-
-				if err := index.WriteJSONFile(filePath, resourceInfo); err != nil {
-					return fmt.Errorf("failed to write modern resource file %s: %w", fileName, err)
-				}
-
-				progressTracker.UpdateProgress(fmt.Sprintf("resource %s", terraformType))
-				return nil
-			})
-		}
-
-		// Process AWS SDK resources (NEW)
+		// Process AWS SDK resources
 		for terraformType, awsResourceInfo := range service.AWSSDKResources {
 			// Capture variables for closure
 			tfType := terraformType
@@ -400,55 +337,7 @@ func (index *TerraformProviderIndex) WriteDataSourceFiles(outputDir string, prog
 	var tasks []func() error
 
 	for _, service := range index.Services {
-		// Process legacy data sources
-		for terraformType, registrationMethod := range service.SupportedDataSources {
-			// Capture variables for closure
-			tfType := terraformType
-			regMethod := registrationMethod
-			svc := service
-
-			tasks = append(tasks, func() error {
-				dataSourceInfo := NewTerraformDataSourceInfo(tfType, "", regMethod, "legacy_pluginsdk", svc)
-				fileName := fmt.Sprintf("%s.json", tfType)
-				filePath := filepath.Join(dataSourcesDir, fileName)
-
-				if err := index.WriteJSONFile(filePath, dataSourceInfo); err != nil {
-					return fmt.Errorf("failed to write legacy data source file %s: %w", fileName, err)
-				}
-
-				progressTracker.UpdateProgress(fmt.Sprintf("data source %s", tfType))
-				return nil
-			})
-		}
-
-		// Process modern data sources
-		for _, structType := range service.DataSources {
-			// Capture variables for closure
-			structT := structType
-			svc := service
-
-			tasks = append(tasks, func() error {
-				// Get the actual Terraform type from the mapping
-				terraformType, exists := svc.DataSourceTerraformTypes[structT]
-				if !exists {
-					// Fallback to struct type if mapping doesn't exist
-					terraformType = structT
-				}
-
-				dataSourceInfo := NewTerraformDataSourceInfo(terraformType, structT, "", "modern_sdk", svc)
-				fileName := fmt.Sprintf("%s.json", terraformType)
-				filePath := filepath.Join(dataSourcesDir, fileName)
-
-				if err := index.WriteJSONFile(filePath, dataSourceInfo); err != nil {
-					return fmt.Errorf("failed to write modern data source file %s: %w", fileName, err)
-				}
-
-				progressTracker.UpdateProgress(fmt.Sprintf("data source %s", terraformType))
-				return nil
-			})
-		}
-
-		// Process AWS SDK data sources (NEW)
+		// Process AWS SDK data sources
 		for terraformType, awsDataSourceInfo := range service.AWSSDKDataSources {
 			// Capture variables for closure
 			tfType := terraformType
@@ -517,6 +406,12 @@ func (index *TerraformProviderIndex) WriteDataSourceFiles(outputDir string, prog
 // WriteEphemeralFiles writes individual JSON files for each ephemeral resource
 func (index *TerraformProviderIndex) WriteEphemeralFiles(outputDir string, progressTracker *ProgressTracker) error {
 	ephemeralDir := filepath.Join(outputDir, "ephemeral")
+	
+	// Ensure ephemeral directory exists even if no files will be written
+	if err := outputFs.MkdirAll(ephemeralDir, 0755); err != nil {
+		return fmt.Errorf("failed to create ephemeral directory %s: %w", ephemeralDir, err)
+	}
+	
 	var tasks []func() error
 
 	for _, service := range index.Services {
