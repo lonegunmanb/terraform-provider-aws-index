@@ -11,7 +11,7 @@ type AWSResourceInfo struct {
 	TerraformType   string `json:"terraform_type"`
 	FactoryFunction string `json:"factory_function"`
 	Name            string `json:"name"`
-	SDKType         string `json:"sdk_type"` // "sdk", "framework", "ephemeral"
+	SDKType         string `json:"sdk_type"`              // "sdk", "framework", "ephemeral"
 	StructType      string `json:"struct_type,omitempty"` // For framework resources: "customModelsDataSource"
 }
 
@@ -164,8 +164,8 @@ func extractAWSResourceInfoFromStruct(compLit *ast.CompositeLit) AWSResourceInfo
 			if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
 				resourceInfo.Name = strings.Trim(basicLit.Value, `"`)
 			}
-		// Tags, Region, Identity, and Import fields are intentionally ignored
-		// as they are not needed for the simplified AWS resource indexing
+			// Tags, Region, Identity, and Import fields are intentionally ignored
+			// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
@@ -281,8 +281,8 @@ func extractAWSDataSourceInfoFromStruct(compLit *ast.CompositeLit) AWSResourceIn
 			if basicLit, ok := kv.Value.(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
 				dataSourceInfo.Name = strings.Trim(basicLit.Value, `"`)
 			}
-		// Tags, Region, Identity, and Import fields are intentionally ignored
-		// as they are not needed for the simplified AWS resource indexing
+			// Tags, Region, Identity, and Import fields are intentionally ignored
+			// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
@@ -411,8 +411,8 @@ func extractAWSFrameworkResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 				name := strings.Trim(basicLit.Value, `"`)
 				resourceInfo.Name = name
 			}
-		// Tags, Region, Identity, and Import fields are intentionally ignored
-		// as they are not needed for the simplified AWS resource indexing
+			// Tags, Region, Identity, and Import fields are intentionally ignored
+			// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
@@ -533,8 +533,8 @@ func extractAWSFrameworkDataSourceInfo(structLit *ast.CompositeLit) AWSResourceI
 				name := strings.Trim(basicLit.Value, `"`)
 				dataSourceInfo.Name = name
 			}
-		// Tags, Region, Identity, and Import fields are intentionally ignored
-		// as they are not needed for the simplified AWS resource indexing
+			// Tags, Region, Identity, and Import fields are intentionally ignored
+			// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
@@ -661,8 +661,8 @@ func extractAWSEphemeralResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 				name := strings.Trim(basicLit.Value, `"`)
 				resourceInfo.Name = name
 			}
-		// Tags, Region, Identity, and Import fields are intentionally ignored
-		// as they are not needed for the simplified AWS resource indexing
+			// Tags, Region, Identity, and Import fields are intentionally ignored
+			// as they are not needed for the simplified AWS resource indexing
 		}
 	}
 
@@ -670,14 +670,7 @@ func extractAWSEphemeralResourceInfo(structLit *ast.CompositeLit) AWSResourceInf
 }
 
 // Helper function placeholders - these will be implemented in aws_extractor.go
-func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *AWSFactoryCRUDMethods {
-	// Find the factory function by name
-	factoryFunc := findFactoryFunction(node, factoryFunctionName)
-	if factoryFunc == nil {
-		// Function not found - return empty struct
-		return &AWSFactoryCRUDMethods{}
-	}
-
+func extractFactoryFunctionDetails(factoryFunc *ast.FuncDecl) *AWSFactoryCRUDMethods {
 	// Initialize result
 	result := &AWSFactoryCRUDMethods{}
 
@@ -699,14 +692,6 @@ func extractFactoryFunctionDetails(node *ast.File, factoryFunctionName string) *
 				// Variable reference pattern: return resource
 				extractFromVariableAssignment(factoryFunc, e.Name, result)
 			}
-		}
-	}
-
-	// Try Framework pattern extraction if no SDK methods found
-	if isEmptyResult(result) {
-		structType := findFrameworkStructType(factoryFunc)
-		if structType != "" {
-			extractFrameworkMethods(node, structType, result)
 		}
 	}
 
