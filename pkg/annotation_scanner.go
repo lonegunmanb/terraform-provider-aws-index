@@ -69,7 +69,8 @@ func scanFileForAnnotations(fileInfo *gophon.FileInfo) ([]AnnotationResult, erro
 		case AnnotationSDKDataSource:
 			result.CRUDMethods = extractSDKDataSourceMethodsFromFile(fileInfo.File)
 		case AnnotationFrameworkResource, AnnotationFrameworkDataSource, AnnotationEphemeralResource:
-			result.StructType = extractFrameworkStructTypeFromFile(fileInfo.File)
+			// Find struct type by Schema method - the struct that implements framework interfaces
+			result.StructType = extractFrameworkStructTypeBySchemaMethod(fileInfo.File)
 			result.FrameworkMethods = inferFrameworkMethods(annotation.Type)
 		}
 
@@ -85,6 +86,7 @@ type basicAnnotation struct {
 	TerraformType string
 	Name          string
 	RawAnnotation string
+	FunctionName  string // Added to track which function has the annotation
 }
 
 // findAnnotationsInFile searches for annotations in all function comments in the file
@@ -137,6 +139,7 @@ func findAnnotationsInFile(file *ast.File) []basicAnnotation {
 				TerraformType: terraformType,
 				Name:          name,
 				RawAnnotation: matches[0],
+				FunctionName:  funcDecl.Name.Name, // Capture the function name
 			})
 		}
 	}
@@ -184,24 +187,33 @@ func extractCRUDFromCompositeLit(compositeLit *ast.CompositeLit, methods map[str
 		if keyValue, ok := elt.(*ast.KeyValueExpr); ok {
 			if ident, ok := keyValue.Key.(*ast.Ident); ok {
 				var methodType string
-				switch ident.Name {
-				case "CreateWithoutTimeout", "Create":
+				if strings.HasPrefix(ident.Name, "Create") {
 					methodType = "create"
-				case "ReadWithoutTimeout", "Read":
+				} else if strings.HasPrefix(ident.Name, "Read") {
 					methodType = "read"
-				case "UpdateWithoutTimeout", "Update":
+				} else if strings.HasPrefix(ident.Name, "Update") {
 					methodType = "update"
-				case "DeleteWithoutTimeout", "Delete":
+				} else if strings.HasPrefix(ident.Name, "Delete") {
 					methodType = "delete"
-				default:
+				} else {
 					continue
 				}
-
-				// Extract function name
+				// Extract function name - handle both identifiers and selector expressions
 				if valueIdent, ok := keyValue.Value.(*ast.Ident); ok {
 					methods[methodType] = valueIdent.Name
+				} else if selectorExpr, ok := keyValue.Value.(*ast.SelectorExpr); ok {
+					// Handle cases like schema.NoopContext
+					if pkgIdent, ok := selectorExpr.X.(*ast.Ident); ok {
+						fullName := pkgIdent.Name + "." + selectorExpr.Sel.Name
+						// Skip special schema functions as requested - leave these empty
+						if !strings.HasPrefix(fullName, "schema.") {
+							methods[methodType] = fullName
+						}
+						// For schema.* cases, we intentionally don't add anything to methods
+					}
 				}
 			}
+
 		}
 	}
 }
@@ -229,7 +241,7 @@ func extractSDKDataSourceMethodsFromFile(file *ast.File) map[string]string {
 						for _, elt := range compositeLit.Elts {
 							if keyValue, ok := elt.(*ast.KeyValueExpr); ok {
 								if ident, ok := keyValue.Key.(*ast.Ident); ok {
-									if ident.Name == "ReadWithoutTimeout" || ident.Name == "Read" {
+									if strings.HasPrefix(ident.Name, "Read") {
 										if valueIdent, ok := keyValue.Value.(*ast.Ident); ok {
 											methods["read"] = valueIdent.Name
 										}
@@ -249,11 +261,66 @@ func extractSDKDataSourceMethodsFromFile(file *ast.File) map[string]string {
 	return methods
 }
 
-// extractFrameworkStructTypeFromFile finds struct types that embed framework interfaces
-func extractFrameworkStructTypeFromFile(file *ast.File) string {
-	var structType string
+// extractFrameworkStructTypeBySchemaMethod finds the struct type that has a Schema method
+// This is the actual resource/datasource/ephemeral struct that implements the framework interfaces
+func extractFrameworkStructTypeBySchemaMethod(file *ast.File) string {
+	// Find all structs with Schema methods
+	structsWithSchema := findStructsWithSchemaMethod(file)
+	
+	// If we found exactly one struct with a Schema method, return it
+	if len(structsWithSchema) == 1 {
+		return structsWithSchema[0]
+	}
 
-	// Look for struct declarations that embed framework types
+	// If multiple structs have Schema methods, prefer the one that embeds framework types
+	for _, structName := range structsWithSchema {
+		if structEmbedsFramework(file, structName) {
+			return structName
+		}
+	}
+
+	// Fallback: return the first one found (shouldn't happen in well-formed code)
+	if len(structsWithSchema) > 0 {
+		return structsWithSchema[0]
+	}
+
+	return ""
+}
+
+// findStructsWithSchemaMethod finds all struct types that have a Schema method
+func findStructsWithSchemaMethod(file *ast.File) []string {
+	var structs []string
+	structSet := make(map[string]bool)
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		funcDecl, ok := n.(*ast.FuncDecl)
+		if !ok || funcDecl.Recv == nil || funcDecl.Name.Name != "Schema" {
+			return true
+		}
+
+		// Check if this is a method on a struct (receiver should be a pointer to a struct)
+		if len(funcDecl.Recv.List) > 0 {
+			field := funcDecl.Recv.List[0]
+			if starExpr, ok := field.Type.(*ast.StarExpr); ok {
+				if ident, ok := starExpr.X.(*ast.Ident); ok {
+					if !structSet[ident.Name] {
+						structSet[ident.Name] = true
+						structs = append(structs, ident.Name)
+					}
+				}
+			}
+		}
+
+		return true
+	})
+
+	return structs
+}
+
+// structEmbedsFramework checks if a struct embeds framework types
+func structEmbedsFramework(file *ast.File, structName string) bool {
+	var embedsFramework bool
+
 	ast.Inspect(file, func(n ast.Node) bool {
 		genDecl, ok := n.(*ast.GenDecl)
 		if !ok || genDecl.Tok != token.TYPE {
@@ -262,7 +329,7 @@ func extractFrameworkStructTypeFromFile(file *ast.File) string {
 
 		for _, spec := range genDecl.Specs {
 			typeSpec, ok := spec.(*ast.TypeSpec)
-			if !ok {
+			if !ok || typeSpec.Name.Name != structName {
 				continue
 			}
 
@@ -276,8 +343,8 @@ func extractFrameworkStructTypeFromFile(file *ast.File) string {
 				if len(field.Names) == 0 { // Embedded field
 					if selectorExpr, ok := field.Type.(*ast.SelectorExpr); ok {
 						if ident, ok := selectorExpr.X.(*ast.Ident); ok && ident.Name == "framework" {
-							structType = typeSpec.Name.Name
-							return false // Found it, stop searching
+							embedsFramework = true
+							return false
 						}
 					}
 				}
@@ -287,7 +354,7 @@ func extractFrameworkStructTypeFromFile(file *ast.File) string {
 		return true
 	})
 
-	return structType
+	return embedsFramework
 }
 
 // inferFrameworkMethods returns expected methods based on annotation type
