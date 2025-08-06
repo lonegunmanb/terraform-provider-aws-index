@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexv2models
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+)
+func arePromptAttemptsEqual(ctx context.Context, oldAttempts, newAttempts fwtypes.SetNestedObjectValueOf[PromptAttemptsSpecification], maxRetries int64) (bool, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	// If both are null or unknown, they're equal
+	if oldAttempts.IsNull() && newAttempts.IsNull() {
+		return true, diags
+	}
+	if oldAttempts.IsUnknown() && newAttempts.IsUnknown() {
+		return true, diags
+	}
+
+	if !oldAttempts.Equal(newAttempts) {
+		// Convert to slices for comparison
+		oldPromptAttemptSpecification, di := oldAttempts.ToSlice(ctx)
+		diags = append(diags, di...)
+		if diags.HasError() {
+			return false, diags
+		}
+
+		newPromptAttemptSpecification, di := newAttempts.ToSlice(ctx)
+		diags = append(diags, di...)
+		if diags.HasError() {
+			return false, diags
+		}
+
+		pasExists := promptAttemptsSpecificationDefaults(ctx, maxRetries)
+		var hasDefaults, areEqual bool
+		for _, value := range oldPromptAttemptSpecification {
+			key := value.MapBlockKey.ValueString()
+			index := slices.IndexFunc(newPromptAttemptSpecification, func(item *PromptAttemptsSpecification) bool {
+				return item.MapBlockKey.ValueString() == key
+			})
+
+			if index != -1 {
+				areEqual = arePromptAttemptValuesEqual(*newPromptAttemptSpecification[index], *value)
+			}
+
+			_, ok := pasExists(key)
+			hasDefaults = ok
+		}
+
+		return (hasDefaults && areEqual) || len(newPromptAttemptSpecification) == 0, diags
+	}
+
+	return false, diags
+}

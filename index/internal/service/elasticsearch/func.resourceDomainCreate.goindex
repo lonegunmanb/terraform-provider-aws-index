@@ -3,6 +3,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
 	"github.com/hashicorp/terraform-provider-aws/internal/semver"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -45,7 +47,7 @@ func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any)
 		return sdkdiag.AppendErrorf(diags, "Elasticsearch Domain (%s) already exists", name)
 	}
 
-	input := &elasticsearch.CreateElasticsearchDomainInput{
+	input := elasticsearch.CreateElasticsearchDomainInput{
 		DomainName:           aws.String(name),
 		ElasticsearchVersion: aws.String(d.Get("elasticsearch_version").(string)),
 		TagList:              getTagsIn(ctx),
@@ -110,8 +112,8 @@ func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any)
 		}
 	}
 
-	if v, ok := d.GetOk("log_publishing_options"); ok {
-		input.LogPublishingOptions = expandLogPublishingOptions(v.(*schema.Set))
+	if v, ok := d.GetOk("log_publishing_options"); ok && v.(*schema.Set).Len() > 0 {
+		input.LogPublishingOptions = expandLogPublishingOptions(v.(*schema.Set).List())
 	}
 
 	if v, ok := d.GetOk("node_to_node_encryption"); ok {
@@ -150,7 +152,7 @@ func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any)
 
 	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout,
 		func() (any, error) {
-			return conn.CreateElasticsearchDomain(ctx, input)
+			return conn.CreateElasticsearchDomain(ctx, &input)
 		},
 		func(err error) (bool, error) {
 			if errs.IsAErrorMessageContains[*awstypes.InvalidTypeException](err, "Error setting policy") ||
@@ -160,7 +162,8 @@ func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any)
 				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "The passed role has not propagated yet") ||
 				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "Authentication error") ||
 				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "Unauthorized Operation: Elasticsearch must be authorised to describe") ||
-				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "The passed role must authorize Amazon Elasticsearch to describe") {
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "The passed role must authorize Amazon Elasticsearch to describe") ||
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "The Resource Access Policy specified for the CloudWatch Logs log group") {
 				return true, err
 			}
 
@@ -179,12 +182,12 @@ func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any)
 	}
 
 	if v, ok := d.GetOk("auto_tune_options"); ok && len(v.([]any)) > 0 {
-		input := &elasticsearch.UpdateElasticsearchDomainConfigInput{
+		input := elasticsearch.UpdateElasticsearchDomainConfigInput{
 			AutoTuneOptions: expandAutoTuneOptions(v.([]any)[0].(map[string]any)),
 			DomainName:      aws.String(name),
 		}
 
-		_, err = conn.UpdateElasticsearchDomainConfig(ctx, input)
+		_, err = conn.UpdateElasticsearchDomainConfig(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating Elasticsearch Domain (%s) Config: %s", d.Id(), err)

@@ -9,12 +9,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
@@ -25,42 +25,47 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *podIdentityAssociationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+func (r *podIdentityAssociationResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	var old, new podIdentityAssociationResourceModel
-
-	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
-	if resp.Diagnostics.HasError() {
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &new)...)
-	if resp.Diagnostics.HasError() {
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
 	conn := r.Meta().EKSClient(ctx)
 
-	if !new.RoleARN.Equal(old.RoleARN) {
-		input := &eks.UpdatePodIdentityAssociationInput{}
-		resp.Diagnostics.Append(fwflex.Expand(ctx, new, input)...)
-		if resp.Diagnostics.HasError() {
+	if !new.DisableSessionTags.Equal(old.DisableSessionTags) ||
+		!new.RoleARN.Equal(old.RoleARN) ||
+		!new.TargetRoleARN.Equal(old.TargetRoleARN) {
+		var input eks.UpdatePodIdentityAssociationInput
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, &input)...)
+		if response.Diagnostics.HasError() {
 			return
 		}
 
+		// Set values for unknowns.
 		input.ClientRequestToken = aws.String(sdkid.UniqueId())
 
-		_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidParameterException](ctx, propagationTimeout, func() (any, error) {
-			return conn.UpdatePodIdentityAssociation(ctx, input)
+		outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidParameterException](ctx, propagationTimeout, func() (any, error) {
+			return conn.UpdatePodIdentityAssociation(ctx, &input)
 		}, "Role provided in the request does not exist")
 
 		if err != nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.EKS, create.ErrActionUpdating, ResNamePodIdentityAssociation, new.AssociationID.String(), err),
-				err.Error(),
-			)
+			response.Diagnostics.AddError(fmt.Sprintf("updating EKS Pod Identity Association (%s)", new.ID.ValueString()), err.Error())
+
 			return
 		}
+
+		// Set values for unknowns.
+		association := outputRaw.(*eks.UpdatePodIdentityAssociationOutput).Association
+		new.ExternalID = fwflex.StringToFramework(ctx, association.ExternalId)
+	} else {
+		new.ExternalID = old.ExternalID
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &new)...)
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
 }

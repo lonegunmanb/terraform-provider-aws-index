@@ -45,7 +45,13 @@ func (r *agentCollaboratorResource) Delete(ctx context.Context, request resource
 		AgentVersion:   data.AgentVersion.ValueStringPointer(),
 		CollaboratorId: data.CollaboratorID.ValueStringPointer(),
 	}
-	_, err := conn.DisassociateAgentCollaborator(ctx, &input)
+
+	timeout := r.DeleteTimeout(ctx, data.Timeouts)
+	_, err := retryOpIfPreparing[*bedrockagent.DisassociateAgentCollaboratorOutput](ctx, timeout,
+		func() (*bedrockagent.DisassociateAgentCollaboratorOutput, error) {
+			return conn.DisassociateAgentCollaborator(ctx, &input)
+		},
+	)
 
 	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
 		return
@@ -58,7 +64,7 @@ func (r *agentCollaboratorResource) Delete(ctx context.Context, request resource
 	}
 
 	if data.PrepareAgent.ValueBool() {
-		response.Diagnostics.Append(prepareSupervisorToReleaseCollaborator(ctx, conn, data.AgentID.ValueString(), r.DeleteTimeout(ctx, data.Timeouts))...)
+		response.Diagnostics.Append(prepareSupervisorToReleaseCollaborator(ctx, conn, data.AgentID.ValueString(), timeout)...)
 		if response.Diagnostics.HasError() {
 			return
 		}

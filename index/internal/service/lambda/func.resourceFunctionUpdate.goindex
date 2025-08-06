@@ -35,20 +35,22 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 
 	if d.HasChange("code_signing_config_arn") {
 		if v, ok := d.GetOk("code_signing_config_arn"); ok {
-			input := &lambda.PutFunctionCodeSigningConfigInput{
+			input := lambda.PutFunctionCodeSigningConfigInput{
 				CodeSigningConfigArn: aws.String(v.(string)),
 				FunctionName:         aws.String(d.Id()),
 			}
 
-			_, err := conn.PutFunctionCodeSigningConfig(ctx, input)
+			_, err := conn.PutFunctionCodeSigningConfig(ctx, &input)
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "setting Lambda Function (%s) code signing config: %s", d.Id(), err)
 			}
 		} else {
-			_, err := conn.DeleteFunctionCodeSigningConfig(ctx, &lambda.DeleteFunctionCodeSigningConfigInput{
+			input := lambda.DeleteFunctionCodeSigningConfigInput{
 				FunctionName: aws.String(d.Id()),
-			})
+			}
+
+			_, err := conn.DeleteFunctionCodeSigningConfig(ctx, &input)
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "deleting Lambda Function (%s) code signing config: %s", d.Id(), err)
@@ -58,7 +60,7 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 
 	configUpdate := needsFunctionConfigUpdate(d)
 	if configUpdate {
-		input := &lambda.UpdateFunctionConfigurationInput{
+		input := lambda.UpdateFunctionConfigurationInput{
 			FunctionName: aws.String(d.Id()),
 		}
 
@@ -182,7 +184,7 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 		}
 
 		_, err := retryFunctionOp(ctx, func() (*lambda.UpdateFunctionConfigurationOutput, error) {
-			return conn.UpdateFunctionConfiguration(ctx, input)
+			return conn.UpdateFunctionConfiguration(ctx, &input)
 		})
 
 		if err != nil {
@@ -196,7 +198,7 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 
 	codeUpdate := needsFunctionCodeUpdate(d)
 	if codeUpdate {
-		input := &lambda.UpdateFunctionCodeInput{
+		input := lambda.UpdateFunctionCodeInput{
 			FunctionName: aws.String(d.Id()),
 		}
 
@@ -233,7 +235,7 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 			}
 		}
 
-		_, err := conn.UpdateFunctionCode(ctx, input)
+		_, err := conn.UpdateFunctionCode(ctx, &input)
 
 		if err != nil {
 			if errs.IsAErrorMessageContains[*awstypes.InvalidParameterValueException](err, "Error occurred while GetObject.") {
@@ -248,24 +250,28 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 		}
 
 		if _, err := waitFunctionUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
-			return sdkdiag.AppendErrorf(diags, "updating Lambda Function (%s) code: waiting for completion: %s", d.Id(), err)
+			return sdkdiag.AppendErrorf(diags, "waiting for Lambda Function (%s) code update: %s", d.Id(), err)
 		}
 	}
 
 	if d.HasChange("reserved_concurrent_executions") {
 		if v, ok := d.Get("reserved_concurrent_executions").(int); ok && v >= 0 {
-			_, err := conn.PutFunctionConcurrency(ctx, &lambda.PutFunctionConcurrencyInput{
+			input := lambda.PutFunctionConcurrencyInput{
 				FunctionName:                 aws.String(d.Id()),
 				ReservedConcurrentExecutions: aws.Int32(int32(v)),
-			})
+			}
+
+			_, err := conn.PutFunctionConcurrency(ctx, &input)
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "setting Lambda Function (%s) concurrency: %s", d.Id(), err)
 			}
 		} else {
-			_, err := conn.DeleteFunctionConcurrency(ctx, &lambda.DeleteFunctionConcurrencyInput{
+			input := lambda.DeleteFunctionConcurrencyInput{
 				FunctionName: aws.String(d.Id()),
-			})
+			}
+
+			_, err := conn.DeleteFunctionConcurrency(ctx, &input)
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "deleting Lambda Function (%s) concurrency: %s", d.Id(), err)
@@ -274,12 +280,12 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 	}
 
 	if d.Get("publish").(bool) && (codeUpdate || configUpdate || d.HasChange("publish")) {
-		input := &lambda.PublishVersionInput{
+		input := lambda.PublishVersionInput{
 			FunctionName: aws.String(d.Id()),
 		}
 
 		outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.ResourceConflictException](ctx, lambdaPropagationTimeout, func() (any, error) {
-			return conn.PublishVersion(ctx, input)
+			return conn.PublishVersion(ctx, &input)
 		}, "in progress")
 
 		if err != nil {
@@ -288,13 +294,8 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 
 		output := outputRaw.(*lambda.PublishVersionOutput)
 
-		err = lambda.NewFunctionUpdatedWaiter(conn).Wait(ctx, &lambda.GetFunctionConfigurationInput{
-			FunctionName: output.FunctionArn,
-			Qualifier:    output.Version,
-		}, d.Timeout(schema.TimeoutUpdate))
-
-		if err != nil {
-			return sdkdiag.AppendErrorf(diags, "publishing Lambda Function (%s) version: waiting for completion: %s", d.Id(), err)
+		if _, err := waitFunctionConfigurationUpdated(ctx, conn, aws.ToString(output.FunctionArn), aws.ToString(output.Version), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Lambda Function (%s) version publish: %s", d.Id(), err)
 		}
 	}
 

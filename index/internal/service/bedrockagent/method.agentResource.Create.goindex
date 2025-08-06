@@ -48,8 +48,8 @@ func (r *agentResource) Create(ctx context.Context, request resource.CreateReque
 
 	conn := r.Meta().BedrockAgentClient(ctx)
 
-	input := &bedrockagent.CreateAgentInput{}
-	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	input := bedrockagent.CreateAgentInput{}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -57,11 +57,10 @@ func (r *agentResource) Create(ctx context.Context, request resource.CreateReque
 	input.ClientToken = aws.String(id.UniqueId())
 	input.Tags = getTagsIn(ctx)
 
-	output, err := conn.CreateAgent(ctx, input)
+	output, err := conn.CreateAgent(ctx, &input)
 
 	if err != nil {
 		response.Diagnostics.AddError("creating Bedrock Agent", err.Error())
-
 		return
 	}
 
@@ -69,20 +68,19 @@ func (r *agentResource) Create(ctx context.Context, request resource.CreateReque
 	data.AgentID = fwflex.StringToFramework(ctx, output.Agent.AgentId)
 	data.setID()
 
-	agent, err := waitAgentCreated(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
+	timeout := r.CreateTimeout(ctx, data.Timeouts)
+	agent, err := waitAgentCreated(ctx, conn, data.ID.ValueString(), timeout)
 
 	if err != nil {
 		response.Diagnostics.AddError(fmt.Sprintf("waiting for Bedrock Agent (%s) create", data.ID.ValueString()), err.Error())
-
 		return
 	}
 
 	if data.PrepareAgent.ValueBool() {
-		agent, err = prepareAgent(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
+		agent, err = prepareAgent(ctx, conn, data.ID.ValueString(), timeout)
 
 		if err != nil {
 			response.Diagnostics.AddError("creating Agent", err.Error())
-
 			return
 		}
 	}

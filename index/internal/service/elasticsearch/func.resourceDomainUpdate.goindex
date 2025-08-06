@@ -3,6 +3,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
 	"github.com/hashicorp/terraform-provider-aws/internal/semver"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -37,7 +39,7 @@ func resourceDomainUpdate(ctx context.Context, d *schema.ResourceData, meta any)
 
 	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
 		name := d.Get(names.AttrDomainName).(string)
-		input := &elasticsearch.UpdateElasticsearchDomainConfigInput{
+		input := elasticsearch.UpdateElasticsearchDomainConfigInput{
 			DomainName: aws.String(name),
 		}
 
@@ -59,6 +61,10 @@ func resourceDomainUpdate(ctx context.Context, d *schema.ResourceData, meta any)
 
 		if d.HasChange("auto_tune_options") {
 			input.AutoTuneOptions = expandAutoTuneOptions(d.Get("auto_tune_options").([]any)[0].(map[string]any))
+		}
+
+		if d.HasChange("cognito_options") {
+			input.CognitoOptions = expandCognitoOptions(d.Get("cognito_options").([]any))
 		}
 
 		if d.HasChange("domain_endpoint_options") {
@@ -94,6 +100,27 @@ func resourceDomainUpdate(ctx context.Context, d *schema.ResourceData, meta any)
 			}
 		}
 
+		if d.HasChange("log_publishing_options") {
+			o, n := d.GetChange("log_publishing_options")
+			os, ns := o.(*schema.Set), n.(*schema.Set)
+
+			input.LogPublishingOptions = expandLogPublishingOptions(ns.List())
+
+			// Explicitly disable removed log types.
+			oldTypes := tfslices.ApplyToAll(os.List(), func(v any) string {
+				return v.(map[string]any)["log_type"].(string)
+			})
+			newTypes := tfslices.ApplyToAll(ns.List(), func(v any) string {
+				return v.(map[string]any)["log_type"].(string)
+			})
+			_, remove, _ := flex.DiffSlices(oldTypes, newTypes, func(s1, s2 string) bool { return s1 == s2 })
+			for _, logType := range remove {
+				input.LogPublishingOptions[logType] = awstypes.LogPublishingOption{
+					Enabled: aws.Bool(false),
+				}
+			}
+		}
+
 		if d.HasChange("node_to_node_encryption") {
 			input.NodeToNodeEncryptionOptions = nil
 			if v, ok := d.GetOk("node_to_node_encryption"); ok {
@@ -119,15 +146,7 @@ func resourceDomainUpdate(ctx context.Context, d *schema.ResourceData, meta any)
 			input.VPCOptions = expandVPCOptions(v[0].(map[string]any))
 		}
 
-		if d.HasChange("cognito_options") {
-			input.CognitoOptions = expandCognitoOptions(d.Get("cognito_options").([]any))
-		}
-
-		if d.HasChange("log_publishing_options") {
-			input.LogPublishingOptions = expandLogPublishingOptions(d.Get("log_publishing_options").(*schema.Set))
-		}
-
-		_, err := conn.UpdateElasticsearchDomainConfig(ctx, input)
+		_, err := conn.UpdateElasticsearchDomainConfig(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating Elasticsearch Domain (%s) Config: %s", d.Id(), err)
@@ -138,12 +157,12 @@ func resourceDomainUpdate(ctx context.Context, d *schema.ResourceData, meta any)
 		}
 
 		if d.HasChange("elasticsearch_version") {
-			input := &elasticsearch.UpgradeElasticsearchDomainInput{
+			input := elasticsearch.UpgradeElasticsearchDomainInput{
 				DomainName:    aws.String(name),
 				TargetVersion: aws.String(d.Get("elasticsearch_version").(string)),
 			}
 
-			_, err := conn.UpgradeElasticsearchDomain(ctx, input)
+			_, err := conn.UpgradeElasticsearchDomain(ctx, &input)
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "upgrading Elasticsearch Domain (%s): %s", d.Id(), err)

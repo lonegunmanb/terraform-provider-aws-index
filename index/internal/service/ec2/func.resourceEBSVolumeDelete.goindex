@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
@@ -45,10 +44,7 @@ func resourceEBSVolumeDelete(ctx context.Context, d *schema.ResourceData, meta a
 
 		_, err = tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutDelete),
 			func() (any, error) {
-				waiter := ec2.NewSnapshotCompletedWaiter(conn)
-				return waiter.WaitForOutput(ctx, &ec2.DescribeSnapshotsInput{
-					SnapshotIds: []string{snapshotID},
-				}, d.Timeout(schema.TimeoutDelete))
+				return waitSnapshotCompleted(ctx, conn, snapshotID, d.Timeout(schema.TimeoutDelete))
 			},
 			errCodeResourceNotReady)
 
@@ -58,11 +54,12 @@ func resourceEBSVolumeDelete(ctx context.Context, d *schema.ResourceData, meta a
 	}
 
 	log.Printf("[DEBUG] Deleting EBS Volume: %s", d.Id())
+	input := ec2.DeleteVolumeInput{
+		VolumeId: aws.String(d.Id()),
+	}
 	_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutDelete),
 		func() (any, error) {
-			return conn.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
-				VolumeId: aws.String(d.Id()),
-			})
+			return conn.DeleteVolume(ctx, &input)
 		},
 		errCodeVolumeInUse)
 
