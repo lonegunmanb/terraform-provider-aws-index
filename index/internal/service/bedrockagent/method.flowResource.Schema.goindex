@@ -1,0 +1,938 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagent
+import (
+	"context"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagent"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagent/document"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagent/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	smithyjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *flowResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN: framework.ARNAttributeComputedOnly(),
+			names.AttrCreatedAt: schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"customer_encryption_key_arn": schema.StringAttribute{
+				CustomType: fwtypes.ARNType,
+				Optional:   true,
+			},
+			names.AttrDescription: schema.StringAttribute{
+				Optional: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 200),
+				},
+			},
+			names.AttrExecutionRoleARN: schema.StringAttribute{
+				CustomType: fwtypes.ARNType,
+				Required:   true,
+			},
+			names.AttrID: framework.IDAttribute(),
+			names.AttrName: schema.StringAttribute{
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(regexache.MustCompile(`^([0-9a-zA-Z][_-]?){1,100}$`), "must only contain alphanumeric characters, hyphens and underscores"),
+				},
+			},
+			names.AttrStatus: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.FlowStatus](),
+				Computed:   true,
+			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
+			"updated_at": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			names.AttrVersion: schema.StringAttribute{
+				Computed: true,
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"definition": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[flowDefinitionModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"connection": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[flowConnectionModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeBetween(0, 20),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrName: schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,100}$`), "must only contain alphanumeric characters"),
+										},
+									},
+									names.AttrSource: schema.StringAttribute{
+										Validators: []validator.String{
+											stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+										},
+										Required: true,
+									},
+									names.AttrTarget: schema.StringAttribute{
+										Validators: []validator.String{
+											stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+										},
+										Required: true,
+									},
+									names.AttrType: schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.FlowConnectionType](),
+										Required:   true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									names.AttrConfiguration: schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[flowConnectionConfigurationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												"conditional": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[flowConditionalConnectionConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															names.AttrCondition: schema.StringAttribute{
+																Required: true,
+																Validators: []validator.String{
+																	stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+																},
+															},
+														},
+													},
+												},
+												"data": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[flowDataConnectionConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+														listvalidator.ExactlyOneOf(
+															path.MatchRelative().AtParent().AtName("conditional"),
+															path.MatchRelative().AtParent().AtName("data"),
+														),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"source_output": schema.StringAttribute{
+																Required: true,
+																Validators: []validator.String{
+																	stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+																},
+															},
+															"target_input": schema.StringAttribute{
+																Required: true,
+																Validators: []validator.String{
+																	stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"node": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[flowNodeModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeBetween(0, 40),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrName: schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+										},
+									},
+									names.AttrType: schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.FlowNodeType](),
+										Required:   true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									names.AttrConfiguration: schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[flowNodeConfigurationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												"agent": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[agentFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+														listvalidator.ExactlyOneOf(
+															path.MatchRelative().AtParent().AtName("agent"),
+															path.MatchRelative().AtParent().AtName("collector"),
+															path.MatchRelative().AtParent().AtName(names.AttrCondition),
+															path.MatchRelative().AtParent().AtName("inline_code"),
+															path.MatchRelative().AtParent().AtName("input"),
+															path.MatchRelative().AtParent().AtName("iterator"),
+															path.MatchRelative().AtParent().AtName("knowledge_base"),
+															path.MatchRelative().AtParent().AtName("lambda_function"),
+															path.MatchRelative().AtParent().AtName("lex"),
+															path.MatchRelative().AtParent().AtName("output"),
+															path.MatchRelative().AtParent().AtName("prompt"),
+															path.MatchRelative().AtParent().AtName("retrieval"),
+															path.MatchRelative().AtParent().AtName("storage"),
+														),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"agent_alias_arn": schema.StringAttribute{
+																CustomType: fwtypes.ARNType,
+																Required:   true,
+															},
+														},
+													},
+												},
+												"collector": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[collectorFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+												},
+												names.AttrCondition: schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[conditionFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Blocks: map[string]schema.Block{
+															names.AttrCondition: schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[flowConditionModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeBetween(1, 5),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Attributes: map[string]schema.Attribute{
+																		names.AttrExpression: schema.StringAttribute{
+																			Optional: true,
+																			Validators: []validator.String{
+																				stringvalidator.LengthBetween(1, 64),
+																			},
+																		},
+																		names.AttrName: schema.StringAttribute{
+																			Required: true,
+																			Validators: []validator.String{
+																				stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+																			},
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+												"inline_code": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[inlineCodeFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"code": schema.StringAttribute{
+																Required: true,
+																Validators: []validator.String{
+																	stringvalidator.LengthBetween(1, 5000000),
+																},
+															},
+															"language": schema.StringAttribute{
+																CustomType: fwtypes.StringEnumType[awstypes.SupportedLanguages](),
+																Required:   true,
+															},
+														},
+													},
+												},
+												"input": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[inputFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+												},
+												"iterator": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[iteratorFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+												},
+												"knowledge_base": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[knowledgeBaseFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"knowledge_base_id": schema.StringAttribute{
+																Required: true,
+															},
+															"model_id": schema.StringAttribute{
+																Required: true,
+															},
+															"number_of_results": schema.Int64Attribute{
+																Optional: true,
+																Validators: []validator.Int64{
+																	int64validator.Between(1, 100),
+																},
+															},
+														},
+														Blocks: map[string]schema.Block{
+															"guardrail_configuration": schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailConfigurationModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeAtMost(1),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Attributes: map[string]schema.Attribute{
+																		"guardrail_identifier": schema.StringAttribute{
+																			Required: true,
+																		},
+																		"guardrail_version": schema.StringAttribute{
+																			Required: true,
+																		},
+																	},
+																},
+															},
+															"inference_configuration": schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[promptInferenceConfigurationModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeAtMost(1),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Blocks: map[string]schema.Block{
+																		"text": schema.ListNestedBlock{
+																			CustomType: fwtypes.NewListNestedObjectTypeOf[promptModelInferenceConfigurationModel](ctx),
+																			Validators: []validator.List{
+																				listvalidator.SizeAtMost(1),
+																				listvalidator.ExactlyOneOf(
+																					path.MatchRelative().AtParent().AtName("text"),
+																				),
+																			},
+																			NestedObject: schema.NestedBlockObject{
+																				Attributes: map[string]schema.Attribute{
+																					"max_tokens": schema.Int32Attribute{
+																						Optional: true,
+																					},
+																					"stop_sequences": schema.ListAttribute{
+																						CustomType:  fwtypes.ListOfStringType,
+																						ElementType: types.StringType,
+																						Optional:    true,
+																					},
+																					"temperature": schema.Float32Attribute{
+																						Optional: true,
+																					},
+																					"top_p": schema.Float32Attribute{
+																						Optional: true,
+																					},
+																				},
+																			},
+																		},
+																	},
+																},
+															},
+															// TODO More fields.
+														},
+													},
+												},
+												"lambda_function": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[lambdaFunctionFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"lambda_arn": schema.StringAttribute{
+																CustomType: fwtypes.ARNType,
+																Required:   true,
+															},
+														},
+													},
+												},
+												"lex": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[lexFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"bot_alias_arn": schema.StringAttribute{
+																CustomType: fwtypes.ARNType,
+																Required:   true,
+															},
+															"locale_id": schema.StringAttribute{
+																Required: true,
+															},
+														},
+													},
+												},
+												// TODO Loop stuff.
+												"output": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[outputFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+												},
+												"prompt": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[promptFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Blocks: map[string]schema.Block{
+															"guardrail_configuration": schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailConfigurationModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeAtMost(1),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Attributes: map[string]schema.Attribute{
+																		"guardrail_identifier": schema.StringAttribute{
+																			Required: true,
+																		},
+																		"guardrail_version": schema.StringAttribute{
+																			Required: true,
+																		},
+																	},
+																},
+															},
+															"source_configuration": schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[promptFlowNodeSourceConfigurationModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeAtMost(1),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Blocks: map[string]schema.Block{
+																		"inline": schema.ListNestedBlock{
+																			CustomType: fwtypes.NewListNestedObjectTypeOf[promptFlowNodeInlineConfigurationModel](ctx),
+																			Validators: []validator.List{
+																				listvalidator.SizeAtMost(1),
+																				listvalidator.ExactlyOneOf(
+																					path.MatchRelative().AtParent().AtName("inline"),
+																					path.MatchRelative().AtParent().AtName("resource"),
+																				),
+																			},
+																			NestedObject: schema.NestedBlockObject{
+																				Attributes: map[string]schema.Attribute{
+																					"additional_model_request_fields": schema.StringAttribute{
+																						CustomType: jsontypes.NormalizedType{},
+																						Optional:   true,
+																					},
+																					"model_id": schema.StringAttribute{
+																						Required: true,
+																					},
+																					"template_type": schema.StringAttribute{
+																						CustomType: fwtypes.StringEnumType[awstypes.PromptTemplateType](),
+																						Required:   true,
+																					},
+																				},
+																				Blocks: map[string]schema.Block{
+																					"inference_configuration": schema.ListNestedBlock{
+																						CustomType: fwtypes.NewListNestedObjectTypeOf[promptInferenceConfigurationModel](ctx),
+																						Validators: []validator.List{
+																							listvalidator.SizeAtMost(1),
+																						},
+																						NestedObject: schema.NestedBlockObject{
+																							Blocks: map[string]schema.Block{
+																								"text": schema.ListNestedBlock{
+																									CustomType: fwtypes.NewListNestedObjectTypeOf[promptModelInferenceConfigurationModel](ctx),
+																									Validators: []validator.List{
+																										listvalidator.SizeAtMost(1),
+																										listvalidator.ExactlyOneOf(
+																											path.MatchRelative().AtParent().AtName("text"),
+																										),
+																									},
+																									NestedObject: schema.NestedBlockObject{
+																										Attributes: map[string]schema.Attribute{
+																											"max_tokens": schema.Int32Attribute{
+																												Optional: true,
+																											},
+																											"stop_sequences": schema.ListAttribute{
+																												CustomType:  fwtypes.ListOfStringType,
+																												ElementType: types.StringType,
+																												Optional:    true,
+																											},
+																											"temperature": schema.Float32Attribute{
+																												Optional: true,
+																											},
+																											"top_p": schema.Float32Attribute{
+																												Optional: true,
+																											},
+																										},
+																									},
+																								},
+																							},
+																						},
+																					},
+																					"template_configuration": schema.ListNestedBlock{
+																						CustomType: fwtypes.NewListNestedObjectTypeOf[promptTemplateConfigurationModel](ctx),
+																						Validators: []validator.List{
+																							listvalidator.SizeAtMost(1),
+																						},
+																						NestedObject: schema.NestedBlockObject{
+																							Blocks: map[string]schema.Block{
+																								"chat": schema.ListNestedBlock{
+																									CustomType: fwtypes.NewListNestedObjectTypeOf[chatPromptTemplateConfigurationModel](ctx),
+																									Validators: []validator.List{
+																										listvalidator.SizeAtMost(1),
+																										listvalidator.ExactlyOneOf(
+																											path.MatchRelative().AtParent().AtName("chat"),
+																											path.MatchRelative().AtParent().AtName("text"),
+																										),
+																									},
+																									NestedObject: schema.NestedBlockObject{
+																										Blocks: map[string]schema.Block{
+																											"input_variable": schema.ListNestedBlock{
+																												CustomType: fwtypes.NewListNestedObjectTypeOf[promptInputVariableModel](ctx),
+																												Validators: []validator.List{
+																													listvalidator.SizeBetween(0, 20),
+																												},
+																												NestedObject: schema.NestedBlockObject{
+																													Attributes: map[string]schema.Attribute{
+																														names.AttrName: schema.StringAttribute{
+																															Required: true,
+																														},
+																													},
+																												},
+																											},
+																											names.AttrMessage: schema.ListNestedBlock{
+																												CustomType: fwtypes.NewListNestedObjectTypeOf[messageModel](ctx),
+																												Validators: []validator.List{
+																													listvalidator.IsRequired(),
+																													listvalidator.SizeAtLeast(1),
+																												},
+																												NestedObject: schema.NestedBlockObject{
+																													Attributes: map[string]schema.Attribute{
+																														names.AttrRole: schema.StringAttribute{
+																															CustomType: fwtypes.StringEnumType[awstypes.ConversationRole](),
+																															Required:   true,
+																														},
+																													},
+																													Blocks: map[string]schema.Block{
+																														names.AttrContent: schema.ListNestedBlock{
+																															CustomType: fwtypes.NewListNestedObjectTypeOf[contentBlockModel](ctx),
+																															Validators: []validator.List{
+																																listvalidator.SizeAtMost(1),
+																															},
+																															NestedObject: schema.NestedBlockObject{
+																																Attributes: map[string]schema.Attribute{
+																																	"text": schema.StringAttribute{
+																																		Optional: true,
+																																	},
+																																},
+																																Blocks: map[string]schema.Block{
+																																	"cache_point": schema.ListNestedBlock{
+																																		CustomType: fwtypes.NewListNestedObjectTypeOf[cachePointBlockModel](ctx),
+																																		Validators: []validator.List{
+																																			listvalidator.SizeAtMost(1),
+																																			listvalidator.ExactlyOneOf(
+																																				path.MatchRelative().AtParent().AtName("cache_point"),
+																																				path.MatchRelative().AtParent().AtName("text"),
+																																			),
+																																		},
+																																		NestedObject: schema.NestedBlockObject{
+																																			Attributes: map[string]schema.Attribute{
+																																				names.AttrType: schema.StringAttribute{
+																																					CustomType: fwtypes.StringEnumType[awstypes.CachePointType](),
+																																					Required:   true,
+																																				},
+																																			},
+																																		},
+																																	},
+																																},
+																															},
+																														},
+																													},
+																												},
+																											},
+																											"system": schema.ListNestedBlock{
+																												CustomType: fwtypes.NewListNestedObjectTypeOf[systemContentBlockModel](ctx),
+																												NestedObject: schema.NestedBlockObject{
+																													Attributes: map[string]schema.Attribute{
+																														"text": schema.StringAttribute{
+																															Optional: true,
+																														},
+																													},
+																													Blocks: map[string]schema.Block{
+																														"cache_point": schema.ListNestedBlock{
+																															CustomType: fwtypes.NewListNestedObjectTypeOf[cachePointBlockModel](ctx),
+																															Validators: []validator.List{
+																																listvalidator.ExactlyOneOf(
+																																	path.MatchRelative().AtParent().AtName("cache_point"),
+																																	path.MatchRelative().AtParent().AtName("text"),
+																																),
+																																listvalidator.SizeAtMost(1),
+																															},
+																															NestedObject: schema.NestedBlockObject{
+																																Attributes: map[string]schema.Attribute{
+																																	names.AttrType: schema.StringAttribute{
+																																		CustomType: fwtypes.StringEnumType[awstypes.CachePointType](),
+																																		Required:   true,
+																																	},
+																																},
+																															},
+																														},
+																													},
+																												},
+																											},
+																											"tool_configuration": schema.ListNestedBlock{
+																												CustomType: fwtypes.NewListNestedObjectTypeOf[toolConfigurationModel](ctx),
+																												Validators: []validator.List{
+																													listvalidator.SizeAtMost(1),
+																												},
+																												NestedObject: schema.NestedBlockObject{
+																													Blocks: map[string]schema.Block{
+																														"tool_choice": schema.ListNestedBlock{
+																															CustomType: fwtypes.NewListNestedObjectTypeOf[toolChoiceModel](ctx),
+																															Validators: []validator.List{
+																																listvalidator.SizeAtMost(1),
+																															},
+																															NestedObject: schema.NestedBlockObject{
+																																Blocks: map[string]schema.Block{
+																																	"any": schema.ListNestedBlock{
+																																		CustomType: fwtypes.NewListNestedObjectTypeOf[anyToolChoiceModel](ctx),
+																																		Validators: []validator.List{
+																																			listvalidator.SizeAtMost(1),
+																																			listvalidator.ExactlyOneOf(
+																																				path.MatchRelative().AtParent().AtName("any"),
+																																				path.MatchRelative().AtParent().AtName("auto"),
+																																				path.MatchRelative().AtParent().AtName("tool"),
+																																			),
+																																		},
+																																	},
+																																	"auto": schema.ListNestedBlock{
+																																		CustomType: fwtypes.NewListNestedObjectTypeOf[autoToolChoiceModel](ctx),
+																																		Validators: []validator.List{
+																																			listvalidator.SizeAtMost(1),
+																																		},
+																																	},
+																																	"tool": schema.ListNestedBlock{
+																																		CustomType: fwtypes.NewListNestedObjectTypeOf[specificToolChoiceModel](ctx),
+																																		Validators: []validator.List{
+																																			listvalidator.SizeAtMost(1),
+																																		},
+																																		NestedObject: schema.NestedBlockObject{
+																																			Attributes: map[string]schema.Attribute{
+																																				names.AttrName: schema.StringAttribute{
+																																					Required: true,
+																																				},
+																																			},
+																																		},
+																																	},
+																																},
+																															},
+																														},
+																														"tool": schema.ListNestedBlock{
+																															CustomType: fwtypes.NewListNestedObjectTypeOf[toolModel](ctx),
+																															NestedObject: schema.NestedBlockObject{
+																																Blocks: map[string]schema.Block{
+																																	"cache_point": schema.ListNestedBlock{
+																																		CustomType: fwtypes.NewListNestedObjectTypeOf[cachePointBlockModel](ctx),
+																																		Validators: []validator.List{
+																																			listvalidator.SizeAtMost(1),
+																																			listvalidator.ExactlyOneOf(
+																																				path.MatchRelative().AtParent().AtName("cache_point"),
+																																				path.MatchRelative().AtParent().AtName("tool_spec"),
+																																			),
+																																		},
+																																		NestedObject: schema.NestedBlockObject{
+																																			Attributes: map[string]schema.Attribute{
+																																				names.AttrType: schema.StringAttribute{
+																																					CustomType: fwtypes.StringEnumType[awstypes.CachePointType](),
+																																					Required:   true,
+																																				},
+																																			},
+																																		},
+																																	},
+																																	"tool_spec": schema.ListNestedBlock{
+																																		CustomType: fwtypes.NewListNestedObjectTypeOf[toolSpecificationModel](ctx),
+																																		Validators: []validator.List{
+																																			listvalidator.SizeAtMost(1),
+																																		},
+																																		NestedObject: schema.NestedBlockObject{
+																																			Attributes: map[string]schema.Attribute{
+																																				names.AttrDescription: schema.StringAttribute{
+																																					Optional: true,
+																																				},
+																																				names.AttrName: schema.StringAttribute{
+																																					Required: true,
+																																				},
+																																			},
+																																			Blocks: map[string]schema.Block{
+																																				"input_schema": schema.ListNestedBlock{
+																																					CustomType: fwtypes.NewListNestedObjectTypeOf[toolInputSchemaModel](ctx),
+																																					Validators: []validator.List{
+																																						listvalidator.SizeAtMost(1),
+																																					},
+																																					NestedObject: schema.NestedBlockObject{
+																																						Attributes: map[string]schema.Attribute{
+																																							names.AttrJSON: schema.StringAttribute{
+																																								CustomType: jsontypes.NormalizedType{},
+																																								Optional:   true,
+																																								Validators: []validator.String{
+																																									stringvalidator.ExactlyOneOf(
+																																										path.MatchRelative().AtParent().AtName(names.AttrJSON),
+																																									),
+																																								},
+																																							},
+																																						},
+																																					},
+																																				},
+																																			},
+																																		},
+																																	},
+																																},
+																															},
+																														},
+																													},
+																												},
+																											},
+																										},
+																									},
+																								},
+																								"text": schema.ListNestedBlock{
+																									CustomType: fwtypes.NewListNestedObjectTypeOf[textPromptTemplateConfigurationModel](ctx),
+																									Validators: []validator.List{
+																										listvalidator.SizeAtMost(1),
+																									},
+																									NestedObject: schema.NestedBlockObject{
+																										Attributes: map[string]schema.Attribute{
+																											"text": schema.StringAttribute{
+																												Required: true,
+																											},
+																										},
+																										Blocks: map[string]schema.Block{
+																											"cache_point": schema.ListNestedBlock{
+																												CustomType: fwtypes.NewListNestedObjectTypeOf[cachePointModel](ctx),
+																												Validators: []validator.List{
+																													listvalidator.SizeAtMost(1),
+																												},
+																												NestedObject: schema.NestedBlockObject{
+																													Attributes: map[string]schema.Attribute{
+																														names.AttrType: schema.StringAttribute{
+																															CustomType: fwtypes.StringEnumType[awstypes.CachePointType](),
+																															Required:   true,
+																														},
+																													},
+																												},
+																											},
+																											"input_variable": schema.ListNestedBlock{
+																												CustomType: fwtypes.NewListNestedObjectTypeOf[promptInputVariableModel](ctx),
+																												NestedObject: schema.NestedBlockObject{
+																													Attributes: map[string]schema.Attribute{
+																														names.AttrName: schema.StringAttribute{
+																															Required: true,
+																														},
+																													},
+																												},
+																											},
+																										},
+																									},
+																								},
+																							},
+																						},
+																					},
+																				},
+																			},
+																		},
+																		"resource": schema.ListNestedBlock{
+																			CustomType: fwtypes.NewListNestedObjectTypeOf[promptFlowNodeResourceConfigurationModel](ctx),
+																			Validators: []validator.List{
+																				listvalidator.SizeAtMost(1),
+																			},
+																			NestedObject: schema.NestedBlockObject{
+																				Attributes: map[string]schema.Attribute{
+																					names.AttrResourceARN: schema.StringAttribute{
+																						CustomType: fwtypes.ARNType,
+																						Required:   true,
+																					},
+																				},
+																			},
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+												"retrieval": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[retrievalFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Blocks: map[string]schema.Block{
+															"service_configuration": schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[retrievalFlowNodeServiceConfigurationModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeAtMost(1),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Blocks: map[string]schema.Block{
+																		"s3": schema.ListNestedBlock{
+																			CustomType: fwtypes.NewListNestedObjectTypeOf[retrievalFlowNodeS3ConfigurationModel](ctx),
+																			Validators: []validator.List{
+																				listvalidator.SizeAtMost(1),
+																				listvalidator.ExactlyOneOf(
+																					path.MatchRelative().AtParent().AtName("s3"),
+																				),
+																			},
+																			NestedObject: schema.NestedBlockObject{
+																				Attributes: map[string]schema.Attribute{
+																					names.AttrBucketName: schema.StringAttribute{
+																						Required: true,
+																					},
+																				},
+																			},
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+												"storage": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[storageFlowNodeConfigurationModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Blocks: map[string]schema.Block{
+															"service_configuration": schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[storageFlowNodeServiceConfigurationModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeAtMost(1),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Blocks: map[string]schema.Block{
+																		"s3": schema.ListNestedBlock{
+																			CustomType: fwtypes.NewListNestedObjectTypeOf[storageFlowNodeS3ConfigurationModel](ctx),
+																			Validators: []validator.List{
+																				listvalidator.SizeAtMost(1),
+																				listvalidator.ExactlyOneOf(
+																					path.MatchRelative().AtParent().AtName("s3"),
+																				),
+																			},
+																			NestedObject: schema.NestedBlockObject{
+																				Attributes: map[string]schema.Attribute{
+																					names.AttrBucketName: schema.StringAttribute{
+																						Required: true,
+																					},
+																				},
+																			},
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+									"input": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[flowNodeInputModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeBetween(0, 20),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"category": schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.FlowNodeInputCategory](),
+													Optional:   true,
+												},
+												names.AttrExpression: schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														stringvalidator.LengthBetween(1, 64),
+													},
+												},
+												names.AttrName: schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+													},
+												},
+												names.AttrType: schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.FlowNodeIODataType](),
+													Required:   true,
+												},
+											},
+										},
+									},
+									"output": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[flowNodeOutputModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeBetween(0, 5),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrName: schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z]([_]?[0-9a-zA-Z]){1,50}$`), "must only contain alphanumeric characters"),
+													},
+												},
+												names.AttrType: schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.FlowNodeIODataType](),
+													Required:   true,
+												},
+											},
+										}},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+	}
+}

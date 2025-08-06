@@ -1,6 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/ecs
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -26,12 +27,15 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func statusServiceWaitForStable(ctx context.Context, conn *ecs.Client, serviceName, clusterNameOrARN string) retry.StateRefreshFunc {
+	cachedDeploymentArn := new(string)
+
 	return func() (any, string, error) {
 		outputRaw, status, err := statusService(ctx, conn, serviceName, clusterNameOrARN)()
 
@@ -45,6 +49,16 @@ func statusServiceWaitForStable(ctx context.Context, conn *ecs.Client, serviceNa
 
 		output := outputRaw.(*awstypes.Service)
 
+		// For ECS deployment controller, check the deployment status
+		if output.DeploymentController != nil && output.DeploymentController.Type == awstypes.DeploymentControllerTypeEcs {
+			status, err := checkServiceDeploymentStatus(ctx, conn, aws.ToString(output.ServiceArn), clusterNameOrARN, cachedDeploymentArn)
+			if err != nil {
+				return nil, "", err
+			}
+			return output, status, nil
+		}
+
+		// For other deployment controllers, check based on desired count
 		if n, dc, rc := len(output.Deployments), output.DesiredCount, output.RunningCount; n == 1 && dc == rc {
 			status = serviceStatusStable
 		} else {

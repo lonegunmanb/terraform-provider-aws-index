@@ -1,13 +1,11 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/datazone"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -15,44 +13,45 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
-	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *environmentBlueprintConfigurationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+func (r *environmentBlueprintConfigurationResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	var data environmentBlueprintConfigurationResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
 	conn := r.Meta().DataZoneClient(ctx)
 
-	var state environmentBlueprintConfigurationResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	domainID, environmentBlueprintID := fwflex.StringValueFromFramework(ctx, data.DomainIdentifier), fwflex.StringValueFromFramework(ctx, data.EnvironmentBlueprintIdentifier)
+	output, err := findEnvironmentBlueprintConfigurationByTwoPartKey(ctx, conn, domainID, environmentBlueprintID)
 
-	out, err := findEnvironmentBlueprintConfigurationByIDs(ctx, conn, state.DomainId.ValueString(), state.EnvironmentBlueprintId.ValueString())
 	if tfresource.NotFound(err) {
-		resp.State.RemoveResource(ctx)
+		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		response.State.RemoveResource(ctx)
+
 		return
 	}
+
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.DataZone, create.ErrActionSetting, ResNameEnvironmentBlueprintConfiguration, state.EnvironmentBlueprintId.String(), err),
-			err.Error(),
-		)
+		response.Diagnostics.AddError(fmt.Sprintf("reading DataZone Environment Blueprint Configuration (%s/%s)", domainID, environmentBlueprintID), err.Error())
+
 		return
 	}
 
-	state.DomainId = flex.StringToFramework(ctx, out.DomainId)
-	state.EnabledRegions = flex.FlattenFrameworkStringValueListOfStringLegacy(ctx, out.EnabledRegions)
-	state.EnvironmentBlueprintId = flex.StringToFramework(ctx, out.EnvironmentBlueprintId)
-	state.ManageAccessRoleArn = flex.StringToFrameworkARN(ctx, out.ManageAccessRoleArn)
-	state.ProvisioningRoleArn = flex.StringToFrameworkARN(ctx, out.ProvisioningRoleArn)
+	// Set attributes for import.
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
 
-	regionalParameters, d := flattenRegionalParameters(ctx, &out.RegionalParameters)
-	resp.Diagnostics.Append(d...)
-	state.RegionalParameters = fwtypes.MapValueOf[types.String]{MapValue: regionalParameters}
+	data.DomainIdentifier = fwflex.StringToFramework(ctx, output.DomainId)
+	data.EnvironmentBlueprintIdentifier = fwflex.StringToFramework(ctx, output.EnvironmentBlueprintId)
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
 }

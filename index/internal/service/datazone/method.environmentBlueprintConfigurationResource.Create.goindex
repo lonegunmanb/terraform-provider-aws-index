@@ -1,13 +1,11 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/datazone"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -15,62 +13,35 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
-	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *environmentBlueprintConfigurationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+func (r *environmentBlueprintConfigurationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data environmentBlueprintConfigurationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
 	conn := r.Meta().DataZoneClient(ctx)
 
-	var plan environmentBlueprintConfigurationResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
+	domainID, environmentBlueprintID := fwflex.StringValueFromFramework(ctx, data.DomainIdentifier), fwflex.StringValueFromFramework(ctx, data.EnvironmentBlueprintIdentifier)
+	var input datazone.PutEnvironmentBlueprintConfigurationInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
-	in := &datazone.PutEnvironmentBlueprintConfigurationInput{
-		DomainIdentifier:               plan.DomainId.ValueStringPointer(),
-		EnabledRegions:                 flex.ExpandFrameworkStringValueList(ctx, plan.EnabledRegions),
-		EnvironmentBlueprintIdentifier: plan.EnvironmentBlueprintId.ValueStringPointer(),
-	}
+	_, err := conn.PutEnvironmentBlueprintConfiguration(ctx, &input)
 
-	if !plan.ManageAccessRoleArn.IsNull() {
-		in.ManageAccessRoleArn = plan.ManageAccessRoleArn.ValueStringPointer()
-	}
-
-	if !plan.ProvisioningRoleArn.IsNull() {
-		in.ProvisioningRoleArn = plan.ProvisioningRoleArn.ValueStringPointer()
-	}
-
-	if !plan.RegionalParameters.IsNull() {
-		var tfMap map[string]map[string]string
-		resp.Diagnostics.Append(plan.RegionalParameters.ElementsAs(ctx, &tfMap, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		in.RegionalParameters = tfMap
-	}
-
-	out, err := conn.PutEnvironmentBlueprintConfiguration(ctx, in)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.DataZone, create.ErrActionCreating, ResNameEnvironmentBlueprintConfiguration, plan.EnvironmentBlueprintId.String(), err),
-			err.Error(),
-		)
+		response.Diagnostics.AddError(fmt.Sprintf("creating DataZone Environment Blueprint Configuration (%s/%s)", domainID, environmentBlueprintID), err.Error())
+
 		return
 	}
 
-	if out == nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.DataZone, create.ErrActionCreating, ResNameEnvironmentBlueprintConfiguration, plan.EnvironmentBlueprintId.String(), nil),
-			errors.New("empty output").Error(),
-		)
-		return
-	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
 }

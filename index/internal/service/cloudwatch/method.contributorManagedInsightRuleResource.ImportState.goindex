@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
@@ -13,13 +14,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -28,10 +29,7 @@ func (r *contributorManagedInsightRuleResource) ImportState(ctx context.Context,
 	const resourceIDParts = 2
 	idParts, err := flex.ExpandResourceId(req.ID, resourceIDParts, false)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Resource Import Invalid ID",
-			fmt.Sprintf("Wrong format for import ID (%s), use: 'resource-arn,template-name'", req.ID),
-		)
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, req.ID)
 		return
 	}
 	resourceARN := idParts[0]
@@ -39,12 +37,10 @@ func (r *contributorManagedInsightRuleResource) ImportState(ctx context.Context,
 
 	cmir, err := findContributorManagedInsightRuleDescriptionByTemplateName(ctx, r.Meta().CloudWatchClient(ctx), resourceARN, templateName)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Importing Resource",
-			err.Error(),
-		)
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, resourceARN)
+		return
 	}
 
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(names.AttrResourceARN), aws.ToString(cmir.ResourceARN))...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("template_name"), templateName)...)
+	smerr.EnrichAppend(ctx, &resp.Diagnostics, resp.State.SetAttribute(ctx, path.Root(names.AttrResourceARN), aws.ToString(cmir.ResourceARN)), smerr.ID, resourceARN)
+	smerr.EnrichAppend(ctx, &resp.Diagnostics, resp.State.SetAttribute(ctx, path.Root("template_name"), templateName), smerr.ID, resourceARN)
 }

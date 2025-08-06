@@ -17,15 +17,17 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceAccessPointRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).S3ControlClient(ctx)
+	c := meta.(*conns.AWSClient)
+	conn := c.S3ControlClient(ctx)
 
-	accountID, name, err := AccessPointParseResourceID(d.Id())
+	accountID, name, err := accessPointParseResourceID(d.Id())
 	if err != nil {
 		return sdkdiag.AppendFromErr(diags, err)
 	}
@@ -72,40 +74,23 @@ func resourceAccessPointRead(ctx context.Context, d *schema.ResourceData, meta a
 			return sdkdiag.AppendErrorf(diags, "parsing S3 Access Point (%s): %s", d.Id(), err)
 		}
 
+		// https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html#amazons3-resources-for-iam-policies.
 		switch service := apARN.Service; service {
 		case "s3":
-			// https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html#amazons3-resources-for-iam-policies.
-			accessPointARN := arn.ARN{
-				Partition: meta.(*conns.AWSClient).Partition(ctx),
-				Service:   "s3",
-				Region:    meta.(*conns.AWSClient).Region(ctx),
-				AccountID: accountID,
-				Resource:  fmt.Sprintf("accesspoint/%s", aws.ToString(output.Name)),
-			}
-
-			d.Set(names.AttrARN, accessPointARN.String())
+			d.Set(names.AttrARN, c.RegionalARNWithAccount(ctx, "s3", accountID, "accesspoint/"+aws.ToString(output.Name)))
 			d.Set(names.AttrBucket, output.Bucket)
 		case "s3express":
-			// https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html#amazons3-resources-for-iam-policies.
-			accessPointARN := arn.ARN{
-				Partition: meta.(*conns.AWSClient).Partition(ctx),
-				Service:   "s3express",
-				Region:    meta.(*conns.AWSClient).Region(ctx),
-				AccountID: accountID,
-				Resource:  fmt.Sprintf("accesspoint/%s", aws.ToString(output.Name)),
-			}
-
-			d.Set(names.AttrARN, accessPointARN.String())
+			d.Set(names.AttrARN, c.RegionalARNWithAccount(ctx, "s3express", accountID, "accesspoint/"+aws.ToString(output.Name)))
 			d.Set(names.AttrBucket, output.Bucket)
 		default:
-			return sdkdiag.AppendErrorf(diags, "unknown S3 Access Point service %s", service)
+			return sdkdiag.AppendErrorf(diags, "unknown S3 Access Point service (%s)", service)
 		}
 	}
 
 	d.Set(names.AttrAccountID, accountID)
 	d.Set(names.AttrAlias, output.Alias)
 	d.Set("bucket_account_id", output.BucketAccountId)
-	d.Set(names.AttrDomainName, meta.(*conns.AWSClient).RegionalHostname(ctx, fmt.Sprintf("%s-%s.s3-accesspoint", aws.ToString(output.Name), accountID)))
+	d.Set(names.AttrDomainName, c.RegionalHostname(ctx, fmt.Sprintf("%s-%s.s3-accesspoint", aws.ToString(output.Name), accountID)))
 	d.Set(names.AttrEndpoints, output.Endpoints)
 	d.Set(names.AttrName, output.Name)
 	d.Set("network_origin", output.NetworkOrigin)
