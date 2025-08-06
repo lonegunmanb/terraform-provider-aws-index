@@ -16,7 +16,7 @@ func CreateTestTerraformProviderIndex() *TerraformProviderIndex {
 			{
 				ServiceName: "s3",
 				PackagePath: "github.com/hashicorp/terraform-provider-aws/internal/service/s3",
-				AWSSDKResources: map[string]AWSResourceInfo{
+				AWSSDKResources: map[string]AWSResource{
 					"aws_s3_bucket_policy": {
 						TerraformType:   "aws_s3_bucket_policy",
 						Name:            "BucketPolicy",
@@ -24,7 +24,7 @@ func CreateTestTerraformProviderIndex() *TerraformProviderIndex {
 						SDKType:         "aws_sdk",
 					},
 				},
-				AWSSDKDataSources: map[string]AWSResourceInfo{
+				AWSSDKDataSources: map[string]AWSResource{
 					"aws_s3_bucket": {
 						TerraformType:   "aws_s3_bucket",
 						Name:            "Bucket",
@@ -32,7 +32,7 @@ func CreateTestTerraformProviderIndex() *TerraformProviderIndex {
 						SDKType:         "aws_sdk",
 					},
 				},
-				AWSFrameworkResources: map[string]AWSResourceInfo{
+				AWSFrameworkResources: map[string]AWSResource{
 					"aws_s3_bucket": {
 						TerraformType:   "aws_s3_bucket",
 						Name:            "Bucket",
@@ -41,8 +41,8 @@ func CreateTestTerraformProviderIndex() *TerraformProviderIndex {
 						StructType:      "bucketResource",
 					},
 				},
-				AWSFrameworkDataSources: make(map[string]AWSResourceInfo),
-				AWSEphemeralResources:   make(map[string]AWSResourceInfo),
+				AWSFrameworkDataSources: make(map[string]AWSResource),
+				AWSEphemeralResources:   make(map[string]AWSResource),
 				ResourceTerraformTypes: map[string]string{
 					"bucketResource": "aws_s3_bucket",
 				},
@@ -78,25 +78,24 @@ func CreateTestTerraformProviderIndex() *TerraformProviderIndex {
 // with empty collections ready for specific test cases
 func CreateTestServiceRegistration(serviceName string) ServiceRegistration {
 	return ServiceRegistration{
-		ServiceName:                 serviceName,
-		PackagePath:                 "github.com/hashicorp/terraform-provider-aws/internal/service/" + serviceName,
-		AWSSDKResources:             make(map[string]AWSResourceInfo),
-		AWSSDKDataSources:           make(map[string]AWSResourceInfo),
-		AWSFrameworkResources:       make(map[string]AWSResourceInfo),
-		AWSFrameworkDataSources:     make(map[string]AWSResourceInfo),
-		AWSEphemeralResources:       make(map[string]AWSResourceInfo),
-		ResourceCRUDMethods:         make(map[string]*LegacyResourceCRUDFunctions),
-		DataSourceMethods:           make(map[string]*LegacyDataSourceMethods),
-		ResourceTerraformTypes:      make(map[string]string),
-		DataSourceTerraformTypes:    make(map[string]string),
-		EphemeralTerraformTypes:     make(map[string]string),
-		functions:                   make(map[string]*gophon.FunctionInfo),
+		ServiceName:              serviceName,
+		PackagePath:              "github.com/hashicorp/terraform-provider-aws/internal/service/" + serviceName,
+		AWSSDKResources:          make(map[string]AWSResource),
+		AWSSDKDataSources:        make(map[string]AWSResource),
+		AWSFrameworkResources:    make(map[string]AWSResource),
+		AWSFrameworkDataSources:  make(map[string]AWSResource),
+		AWSEphemeralResources:    make(map[string]AWSResource),
+		ResourceCRUDMethods:      make(map[string]*LegacyResourceCRUDFunctions),
+		DataSourceMethods:        make(map[string]*LegacyDataSourceMethods),
+		ResourceTerraformTypes:   make(map[string]string),
+		DataSourceTerraformTypes: make(map[string]string),
+		EphemeralTerraformTypes:  make(map[string]string),
 	}
 }
 
 // CreateTestAWSResourceInfo creates common test resource info for different types
-func CreateTestAWSResourceInfo(resourceType, terraformType, factoryFunction, name string) AWSResourceInfo {
-	info := AWSResourceInfo{
+func CreateTestAWSResourceInfo(resourceType, terraformType, factoryFunction, name string) AWSResource {
+	info := AWSResource{
 		TerraformType:   terraformType,
 		Name:            name,
 		FactoryFunction: factoryFunction,
@@ -192,8 +191,8 @@ func CreateTestPackageInfo(serviceName string, files []*gophon.FileInfo) *gophon
 func CreateExpectedJSON(terraformType, sdkType, namespace, registrationMethod string) map[string]interface{} {
 	return map[string]interface{}{
 		"terraform_type":      terraformType,
-		"sdk_type":           sdkType,
-		"namespace":          namespace,
+		"sdk_type":            sdkType,
+		"namespace":           namespace,
 		"registration_method": registrationMethod,
 	}
 }

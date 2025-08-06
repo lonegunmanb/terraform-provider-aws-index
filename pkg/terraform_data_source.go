@@ -50,7 +50,7 @@ func NewTerraformDataSourceInfo(terraformType, structType, registrationMethod, s
 }
 
 // NewTerraformDataSourceFromAWSSDK creates a TerraformDataSource struct from AWS SDK data source info
-func NewTerraformDataSourceFromAWSSDK(awsDataSource AWSResourceInfo, serviceReg ServiceRegistration) TerraformDataSource {
+func NewTerraformDataSourceFromAWSSDK(awsDataSource AWSResource, serviceReg ServiceRegistration) TerraformDataSource {
 	// Use specific data source methods if available, otherwise fall back to factory function
 	schemaIndex := fmt.Sprintf("func.%s.goindex", awsDataSource.FactoryFunction)
 	var readIndex string
@@ -76,7 +76,7 @@ func NewTerraformDataSourceFromAWSSDK(awsDataSource AWSResourceInfo, serviceReg 
 }
 
 // NewTerraformDataSourceFromAWSFramework creates a TerraformDataSource struct from AWS Framework data source info
-func NewTerraformDataSourceFromAWSFramework(awsDataSource AWSResourceInfo, serviceReg ServiceRegistration) TerraformDataSource {
+func NewTerraformDataSourceFromAWSFramework(awsDataSource AWSResource, serviceReg ServiceRegistration) TerraformDataSource {
 	// Framework data sources use the actual struct type extracted from the factory function
 	structType := awsDataSource.StructType
 

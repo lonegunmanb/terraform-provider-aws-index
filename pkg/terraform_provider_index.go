@@ -491,7 +491,7 @@ func parseAWSServiceFileWithAnnotations(packageInfo *gophon.PackageInfo, service
 func convertAnnotationResultsToServiceRegistration(results *AnnotationResults, serviceReg *ServiceRegistration) {
 	// Process SDK Resources
 	for _, annotation := range results.SDKResources {
-		resourceInfo := AWSResourceInfo{
+		resourceInfo := AWSResource{
 			TerraformType:   annotation.TerraformType,
 			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "resource"),
 			Name:            annotation.Name,
@@ -514,7 +514,7 @@ func convertAnnotationResultsToServiceRegistration(results *AnnotationResults, s
 
 	// Process SDK Data Sources
 	for _, annotation := range results.SDKDataSources {
-		resourceInfo := AWSResourceInfo{
+		resourceInfo := AWSResource{
 			TerraformType:   annotation.TerraformType,
 			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "dataSource"),
 			Name:            annotation.Name,
@@ -534,7 +534,7 @@ func convertAnnotationResultsToServiceRegistration(results *AnnotationResults, s
 
 	// Process Framework Resources
 	for _, annotation := range results.FrameworkResources {
-		resourceInfo := AWSResourceInfo{
+		resourceInfo := AWSResource{
 			TerraformType:   annotation.TerraformType,
 			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "frameworkResource"),
 			Name:            annotation.Name,
@@ -551,7 +551,7 @@ func convertAnnotationResultsToServiceRegistration(results *AnnotationResults, s
 
 	// Process Framework Data Sources
 	for _, annotation := range results.FrameworkDataSources {
-		resourceInfo := AWSResourceInfo{
+		resourceInfo := AWSResource{
 			TerraformType:   annotation.TerraformType,
 			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "frameworkDataSource"),
 			Name:            annotation.Name,
@@ -568,11 +568,11 @@ func convertAnnotationResultsToServiceRegistration(results *AnnotationResults, s
 
 	// Process Ephemeral Resources
 	for _, annotation := range results.EphemeralResources {
-		resourceInfo := AWSResourceInfo{
+		resourceInfo := AWSResource{
 			TerraformType:   annotation.TerraformType,
 			FactoryFunction: extractFactoryFunctionNameFromTerraformType(annotation.TerraformType, "ephemeral"),
 			Name:            annotation.Name,
-			SDKType:         "ephemeral",
+			SDKType:         "framework", // Ephemeral resources use the Framework SDK
 			StructType:      annotation.StructType,
 		}
 		serviceReg.AWSEphemeralResources[annotation.TerraformType] = resourceInfo
@@ -589,13 +589,13 @@ func convertAnnotationResultsToServiceRegistration(results *AnnotationResults, s
 func extractFactoryFunctionNameFromTerraformType(terraformType, functionType string) string {
 	// Convert terraform type to likely function name
 	// e.g., "aws_lambda_function" -> "resourceFunction" or "dataSourceFunction"
-	
+
 	// Remove "aws_" prefix
 	suffix := terraformType
 	if strings.HasPrefix(terraformType, "aws_") {
 		suffix = terraformType[4:]
 	}
-	
+
 	// Convert underscores to camelCase
 	parts := strings.Split(suffix, "_")
 	for i := range parts {
@@ -603,9 +603,9 @@ func extractFactoryFunctionNameFromTerraformType(terraformType, functionType str
 			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
 		}
 	}
-	
+
 	functionBase := strings.Join(parts, "")
-	
+
 	// Return factory function name based on type following AWS provider conventions
 	switch functionType {
 	case "resource":
@@ -696,86 +696,4 @@ func extractStructTypeFromEphemeralFunction(funcDecl *ast.FuncDecl) string {
 	}
 
 	return ""
-}
-
-// parseAWSServiceFile extracts all AWS registration methods from a single identified service file
-func parseAWSServiceFile(fileInfo *gophon.FileInfo, serviceReg *ServiceRegistration) {
-	if fileInfo.File == nil {
-		return
-	}
-
-	// Extract all registration methods from this file using AWS-specific functions
-	awsSDKResources := extractAWSSDKResources(fileInfo.File)
-	awsSDKDataSources := extractAWSSDKDataSources(fileInfo.File)
-	awsFrameworkResources := extractAWSFrameworkResources(fileInfo.File)
-	awsFrameworkDataSources := extractAWSFrameworkDataSources(fileInfo.File)
-	awsEphemeralResources := extractAWSEphemeralResources(fileInfo.File)
-
-	// Merge AWS results into service registration
-	for terraformType, resourceInfo := range awsSDKResources {
-		serviceReg.AWSSDKResources[terraformType] = resourceInfo
-	}
-	for terraformType, resourceInfo := range awsSDKDataSources {
-		serviceReg.AWSSDKDataSources[terraformType] = resourceInfo
-	}
-	for terraformType, resourceInfo := range awsFrameworkResources {
-		serviceReg.AWSFrameworkResources[terraformType] = resourceInfo
-	}
-	for terraformType, resourceInfo := range awsFrameworkDataSources {
-		serviceReg.AWSFrameworkDataSources[terraformType] = resourceInfo
-	}
-	for terraformType, resourceInfo := range awsEphemeralResources {
-		serviceReg.AWSEphemeralResources[terraformType] = resourceInfo
-	}
-}
-
-// extractAndStoreSDKCRUDMethodsForLegacyPlugin extracts CRUD methods from AWS SDK resources and data sources
-// and stores them in the service registration for backward compatibility.
-// Framework and Ephemeral resources use different patterns (struct methods) and don't need CRUD extraction.
-func extractAndStoreSDKCRUDMethodsForLegacyPlugin(packageInfo *gophon.PackageInfo, serviceReg *ServiceRegistration) {
-	// Framework and Ephemeral resources use different patterns (struct methods) and don't need CRUD extraction
-	awsSDKItems := make(map[string]AWSResourceInfo)
-
-	// Only merge SDK resources and data sources for CRUD analysis
-	for terraformType, resourceInfo := range serviceReg.AWSSDKResources {
-		awsSDKItems[terraformType] = resourceInfo
-	}
-	for terraformType, resourceInfo := range serviceReg.AWSSDKDataSources {
-		awsSDKItems[terraformType] = resourceInfo
-	}
-
-	// Extract CRUD methods for SDK resources and data sources only
-	for terraformType, resourceInfo := range awsSDKItems {
-		if resourceInfo.FactoryFunction != "" && resourceInfo.SDKType == "sdk" {
-			funcDecl := serviceReg.functions[resourceInfo.FactoryFunction]
-			if funcDecl != nil {
-				if crudMethods := extractFactoryFunctionDetails(funcDecl.FuncDecl); crudMethods != nil {
-					// Check if this is a resource (has CRUD operations) or data source (only read)
-					isDataSource := false
-
-					// Check if this terraform type is in SDK data sources
-					if _, exists := serviceReg.AWSSDKDataSources[terraformType]; exists {
-						isDataSource = true
-					}
-
-					if isDataSource && crudMethods.ReadMethod != "" {
-						// Store data source methods
-						legacyDataSource := &LegacyDataSourceMethods{
-							ReadMethod: crudMethods.ReadMethod,
-						}
-						serviceReg.DataSourceMethods[terraformType] = legacyDataSource
-					} else if !isDataSource && (crudMethods.CreateMethod != "" || crudMethods.ReadMethod != "") {
-						// Store resource CRUD methods
-						legacyCRUD := &LegacyResourceCRUDFunctions{
-							CreateMethod: crudMethods.CreateMethod,
-							ReadMethod:   crudMethods.ReadMethod,
-							UpdateMethod: crudMethods.UpdateMethod,
-							DeleteMethod: crudMethods.DeleteMethod,
-						}
-						serviceReg.ResourceCRUDMethods[terraformType] = legacyCRUD
-					}
-				}
-			}
-		}
-	}
 }

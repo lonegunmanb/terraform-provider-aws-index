@@ -32,7 +32,7 @@ func NewTerraformEphemeralInfo(structType string, service ServiceRegistration) T
 }
 
 // NewTerraformEphemeralFromAWS creates a TerraformEphemeral struct from AWS ephemeral resource information
-func NewTerraformEphemeralFromAWS(awsEphemeral AWSResourceInfo, service ServiceRegistration) TerraformEphemeral {
+func NewTerraformEphemeralFromAWS(awsEphemeral AWSResource, service ServiceRegistration) TerraformEphemeral {
 	ephemeral := TerraformEphemeral{
 		TerraformType:      awsEphemeral.TerraformType,
 		StructType:         awsEphemeral.StructType,

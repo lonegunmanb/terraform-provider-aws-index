@@ -13,36 +13,46 @@ import (
 
 // TestAnnotationBasedScanningIntegration tests the Phase 3 integration
 // Validates that annotation-based scanning produces correct ServiceRegistration data
+//
+// Note: We distinguish between SDK type (implementation) and resource type (functionality):
+// - SDK Type: "sdk" (Legacy Plugin SDK) vs "framework" (Modern Plugin Framework)
+// - Resource Type: "resource", "datasource", "ephemeral" (functional classification)
+// - Ephemeral resources use the Framework SDK but have ephemeral lifecycle semantics
 func TestAnnotationBasedScanningIntegration(t *testing.T) {
 	testFiles := []struct {
-		name         string
-		file         string
-		expectedType string
-		expectedSDK  string
+		name             string
+		file             string
+		expectedType     string
+		expectedSDKType  string // "sdk" or "framework"
+		expectedCategory string // "resource", "datasource", or "ephemeral"
 	}{
 		{
-			name:         "SDK Resource",
-			file:         "testharness/sdk_resource_aws_lambda_invocation.gocode",
-			expectedType: "aws_lambda_invocation",
-			expectedSDK:  "sdk",
+			name:             "SDK Resource",
+			file:             "testharness/sdk_resource_aws_lambda_invocation.gocode",
+			expectedType:     "aws_lambda_invocation",
+			expectedSDKType:  "sdk",
+			expectedCategory: "resource",
 		},
 		{
-			name:         "Framework Resource",
-			file:         "testharness/framework_resource_aws_bedrock_guardrail.gocode",
-			expectedType: "aws_bedrock_guardrail",
-			expectedSDK:  "framework",
+			name:             "Framework Resource",
+			file:             "testharness/framework_resource_aws_bedrock_guardrail.gocode",
+			expectedType:     "aws_bedrock_guardrail",
+			expectedSDKType:  "framework",
+			expectedCategory: "resource",
 		},
 		{
-			name:         "Framework DataSource",
-			file:         "testharness/framework_data_aws_bedrock_foundation_model.gocode",
-			expectedType: "aws_bedrock_foundation_model",
-			expectedSDK:  "framework",
+			name:             "Framework DataSource",
+			file:             "testharness/framework_data_aws_bedrock_foundation_model.gocode",
+			expectedType:     "aws_bedrock_foundation_model",
+			expectedSDKType:  "framework",
+			expectedCategory: "datasource",
 		},
 		{
-			name:         "Ephemeral Resource",
-			file:         "testharness/framework_ephemeral_aws_lambda_invocation.gocode",
-			expectedType: "aws_lambda_invocation",
-			expectedSDK:  "ephemeral",
+			name:             "Framework Ephemeral Resource",
+			file:             "testharness/framework_ephemeral_aws_lambda_invocation.gocode",
+			expectedType:     "aws_lambda_invocation",
+			expectedSDKType:  "framework", // Uses Framework SDK
+			expectedCategory: "ephemeral", // But has ephemeral lifecycle
 		},
 	}
 
@@ -70,51 +80,56 @@ func TestAnnotationBasedScanningIntegration(t *testing.T) {
 
 			// Create service registration
 			serviceReg := ServiceRegistration{
-				ServiceName:                 "test",
-				PackagePath:                "test/path",
-				AWSSDKResources:            make(map[string]AWSResourceInfo),
-				AWSSDKDataSources:          make(map[string]AWSResourceInfo),
-				AWSFrameworkResources:      make(map[string]AWSResourceInfo),
-				AWSFrameworkDataSources:    make(map[string]AWSResourceInfo),
-				AWSEphemeralResources:      make(map[string]AWSResourceInfo),
-				ResourceCRUDMethods:        make(map[string]*LegacyResourceCRUDFunctions),
-				DataSourceMethods:          make(map[string]*LegacyDataSourceMethods),
-				ResourceTerraformTypes:     make(map[string]string),
-				DataSourceTerraformTypes:   make(map[string]string),
-				EphemeralTerraformTypes:    make(map[string]string),
-				functions:                  make(map[string]*gophon.FunctionInfo),
+				ServiceName:              "test",
+				PackagePath:              "test/path",
+				AWSSDKResources:          make(map[string]AWSResource),
+				AWSSDKDataSources:        make(map[string]AWSResource),
+				AWSFrameworkResources:    make(map[string]AWSResource),
+				AWSFrameworkDataSources:  make(map[string]AWSResource),
+				AWSEphemeralResources:    make(map[string]AWSResource),
+				ResourceCRUDMethods:      make(map[string]*LegacyResourceCRUDFunctions),
+				DataSourceMethods:        make(map[string]*LegacyDataSourceMethods),
+				ResourceTerraformTypes:   make(map[string]string),
+				DataSourceTerraformTypes: make(map[string]string),
+				EphemeralTerraformTypes:  make(map[string]string),
 			}
 
 			// Test the new annotation-based scanning
 			err = parseAWSServiceFileWithAnnotations(packageInfo, &serviceReg)
 			require.NoError(t, err)
 
-			// Validate results based on expected type
+			// Validate results based on expected category
 			var found bool
-			var resourceInfo AWSResourceInfo
+			var resourceInfo AWSResource
 
-			switch tc.expectedSDK {
-			case "sdk":
-				// Check if it's in SDK resources or data sources
-				if info, exists := serviceReg.AWSSDKResources[tc.expectedType]; exists {
-					found = true
-					resourceInfo = info
-					t.Logf("Found SDK Resource: %s", tc.expectedType)
-				} else if info, exists := serviceReg.AWSSDKDataSources[tc.expectedType]; exists {
-					found = true
-					resourceInfo = info
-					t.Logf("Found SDK DataSource: %s", tc.expectedType)
+			switch tc.expectedCategory {
+			case "resource":
+				if tc.expectedSDKType == "sdk" {
+					if info, exists := serviceReg.AWSSDKResources[tc.expectedType]; exists {
+						found = true
+						resourceInfo = info
+						t.Logf("Found SDK Resource: %s", tc.expectedType)
+					}
+				} else if tc.expectedSDKType == "framework" {
+					if info, exists := serviceReg.AWSFrameworkResources[tc.expectedType]; exists {
+						found = true
+						resourceInfo = info
+						t.Logf("Found Framework Resource: %s", tc.expectedType)
+					}
 				}
-			case "framework":
-				// Check if it's in Framework resources or data sources
-				if info, exists := serviceReg.AWSFrameworkResources[tc.expectedType]; exists {
-					found = true
-					resourceInfo = info
-					t.Logf("Found Framework Resource: %s", tc.expectedType)
-				} else if info, exists := serviceReg.AWSFrameworkDataSources[tc.expectedType]; exists {
-					found = true
-					resourceInfo = info
-					t.Logf("Found Framework DataSource: %s", tc.expectedType)
+			case "datasource":
+				if tc.expectedSDKType == "sdk" {
+					if info, exists := serviceReg.AWSSDKDataSources[tc.expectedType]; exists {
+						found = true
+						resourceInfo = info
+						t.Logf("Found SDK DataSource: %s", tc.expectedType)
+					}
+				} else if tc.expectedSDKType == "framework" {
+					if info, exists := serviceReg.AWSFrameworkDataSources[tc.expectedType]; exists {
+						found = true
+						resourceInfo = info
+						t.Logf("Found Framework DataSource: %s", tc.expectedType)
+					}
 				}
 			case "ephemeral":
 				if info, exists := serviceReg.AWSEphemeralResources[tc.expectedType]; exists {
@@ -125,35 +140,35 @@ func TestAnnotationBasedScanningIntegration(t *testing.T) {
 			}
 
 			// Assert that we found the expected resource
-			assert.True(t, found, "Should find %s of type %s", tc.expectedType, tc.expectedSDK)
+			assert.True(t, found, "Should find %s of category %s with SDK type %s", tc.expectedType, tc.expectedCategory, tc.expectedSDKType)
 
 			if found {
 				// Validate the resource info
 				assert.Equal(t, tc.expectedType, resourceInfo.TerraformType)
-				assert.Equal(t, tc.expectedSDK, resourceInfo.SDKType)
+				assert.Equal(t, tc.expectedSDKType, resourceInfo.SDKType)
 				assert.NotEmpty(t, resourceInfo.Name, "Resource should have a name")
 				assert.NotEmpty(t, resourceInfo.FactoryFunction, "Resource should have a factory function")
 
 				// For framework and ephemeral resources, should have struct type
-				if tc.expectedSDK == "framework" || tc.expectedSDK == "ephemeral" {
-					assert.NotEmpty(t, resourceInfo.StructType, "Framework/Ephemeral resources should have struct type")
+				if tc.expectedSDKType == "framework" {
+					assert.NotEmpty(t, resourceInfo.StructType, "Framework resources should have struct type")
 				}
 
 				// For SDK resources, should have CRUD methods
-				if tc.expectedSDK == "sdk" {
-					if _, exists := serviceReg.AWSSDKResources[tc.expectedType]; exists {
-						// Check for CRUD methods
+				if tc.expectedSDKType == "sdk" {
+					if tc.expectedCategory == "resource" {
+						// Check for CRUD methods on SDK resources
 						if crud, exists := serviceReg.ResourceCRUDMethods[tc.expectedType]; exists {
 							// Note: Some resources may use schema.NoopContext for read, which gets filtered out
 							// This is correct behavior - we only want real CRUD methods in the index
 							t.Logf("CRUD methods: Create=%s, Read=%s, Update=%s, Delete=%s",
 								crud.CreateMethod, crud.ReadMethod, crud.UpdateMethod, crud.DeleteMethod)
-							
+
 							// Validate that at least one method exists (not all are required)
 							hasMethod := crud.CreateMethod != "" || crud.ReadMethod != "" || crud.UpdateMethod != "" || crud.DeleteMethod != ""
 							assert.True(t, hasMethod, "SDK resource should have at least one CRUD method")
 						}
-					} else if _, exists := serviceReg.AWSSDKDataSources[tc.expectedType]; exists {
+					} else if tc.expectedCategory == "datasource" {
 						// Check for data source read method
 						if ds, exists := serviceReg.DataSourceMethods[tc.expectedType]; exists {
 							assert.NotEmpty(t, ds.ReadMethod, "SDK data source should have read method")
@@ -179,11 +194,11 @@ func TestAnnotationBasedScanningIntegration(t *testing.T) {
 	}
 }
 
-// TestAnnotationBasedVsLegacyComparison tests that annotation-based scanning 
+// TestAnnotationBasedVsLegacyComparison tests that annotation-based scanning
 // produces equivalent results to the legacy approach for the same input
 func TestAnnotationBasedVsLegacyComparison(t *testing.T) {
 	testFile := "testharness/sdk_resource_aws_lambda_invocation.gocode"
-	
+
 	// Read and parse the test file
 	content, err := os.ReadFile(testFile)
 	require.NoError(t, err)
@@ -206,19 +221,18 @@ func TestAnnotationBasedVsLegacyComparison(t *testing.T) {
 
 	// Test annotation-based approach
 	annotationReg := ServiceRegistration{
-		ServiceName:                 "test",
-		PackagePath:                "test/path",
-		AWSSDKResources:            make(map[string]AWSResourceInfo),
-		AWSSDKDataSources:          make(map[string]AWSResourceInfo),
-		AWSFrameworkResources:      make(map[string]AWSResourceInfo),
-		AWSFrameworkDataSources:    make(map[string]AWSResourceInfo),
-		AWSEphemeralResources:      make(map[string]AWSResourceInfo),
-		ResourceCRUDMethods:        make(map[string]*LegacyResourceCRUDFunctions),
-		DataSourceMethods:          make(map[string]*LegacyDataSourceMethods),
-		ResourceTerraformTypes:     make(map[string]string),
-		DataSourceTerraformTypes:   make(map[string]string),
-		EphemeralTerraformTypes:    make(map[string]string),
-		functions:                  make(map[string]*gophon.FunctionInfo),
+		ServiceName:              "test",
+		PackagePath:              "test/path",
+		AWSSDKResources:          make(map[string]AWSResource),
+		AWSSDKDataSources:        make(map[string]AWSResource),
+		AWSFrameworkResources:    make(map[string]AWSResource),
+		AWSFrameworkDataSources:  make(map[string]AWSResource),
+		AWSEphemeralResources:    make(map[string]AWSResource),
+		ResourceCRUDMethods:      make(map[string]*LegacyResourceCRUDFunctions),
+		DataSourceMethods:        make(map[string]*LegacyDataSourceMethods),
+		ResourceTerraformTypes:   make(map[string]string),
+		DataSourceTerraformTypes: make(map[string]string),
+		EphemeralTerraformTypes:  make(map[string]string),
 	}
 
 	err = parseAWSServiceFileWithAnnotations(packageInfo, &annotationReg)

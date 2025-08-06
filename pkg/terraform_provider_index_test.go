@@ -329,11 +329,11 @@ func TestTerraformProviderIndex_WriteResourceFiles_NoResources(t *testing.T) {
 		Services: []ServiceRegistration{
 			{
 				ServiceName:             "empty",
-				AWSSDKResources:         map[string]AWSResourceInfo{},
-				AWSFrameworkResources:   map[string]AWSResourceInfo{},
-				AWSSDKDataSources:       map[string]AWSResourceInfo{},
-				AWSFrameworkDataSources: map[string]AWSResourceInfo{},
-				AWSEphemeralResources:   map[string]AWSResourceInfo{},
+				AWSSDKResources:         map[string]AWSResource{},
+				AWSFrameworkResources:   map[string]AWSResource{},
+				AWSSDKDataSources:       map[string]AWSResource{},
+				AWSFrameworkDataSources: map[string]AWSResource{},
+				AWSEphemeralResources:   map[string]AWSResource{},
 				ResourceTerraformTypes:  map[string]string{},
 				ResourceCRUDMethods:     map[string]*LegacyResourceCRUDFunctions{},
 				DataSourceMethods:       map[string]*LegacyDataSourceMethods{},

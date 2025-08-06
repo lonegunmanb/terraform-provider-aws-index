@@ -109,39 +109,41 @@ func findAnnotationsInFile(file *ast.File) []basicAnnotation {
 
 		// Search for annotation patterns
 		matches := annotationRegex.FindStringSubmatch(commentText.String())
-		if len(matches) >= 3 {
-			annotationType := matches[1]
-			terraformType := matches[2]
-			name := ""
-			if len(matches) > 3 && matches[3] != "" {
-				name = matches[3]
-			}
-
-			// Convert to enum type
-			var annoType AnnotationType
-			switch annotationType {
-			case "SDKResource":
-				annoType = AnnotationSDKResource
-			case "SDKDataSource":
-				annoType = AnnotationSDKDataSource
-			case "FrameworkResource":
-				annoType = AnnotationFrameworkResource
-			case "FrameworkDataSource":
-				annoType = AnnotationFrameworkDataSource
-			case "EphemeralResource":
-				annoType = AnnotationEphemeralResource
-			default:
-				continue // Skip unknown annotations
-			}
-
-			annotations = append(annotations, basicAnnotation{
-				Type:          annoType,
-				TerraformType: terraformType,
-				Name:          name,
-				RawAnnotation: matches[0],
-				FunctionName:  funcDecl.Name.Name, // Capture the function name
-			})
+		if len(matches) < 3 {
+			continue
 		}
+
+		annotationType := matches[1]
+		terraformType := matches[2]
+		name := ""
+		if len(matches) > 3 && matches[3] != "" {
+			name = matches[3]
+		}
+
+		// Convert to enum type
+		var annoType AnnotationType
+		switch annotationType {
+		case "SDKResource":
+			annoType = AnnotationSDKResource
+		case "SDKDataSource":
+			annoType = AnnotationSDKDataSource
+		case "FrameworkResource":
+			annoType = AnnotationFrameworkResource
+		case "FrameworkDataSource":
+			annoType = AnnotationFrameworkDataSource
+		case "EphemeralResource":
+			annoType = AnnotationEphemeralResource
+		default:
+			continue // Skip unknown annotations
+		}
+
+		annotations = append(annotations, basicAnnotation{
+			Type:          annoType,
+			TerraformType: terraformType,
+			Name:          name,
+			RawAnnotation: matches[0],
+			FunctionName:  funcDecl.Name.Name, // Capture the function name
+		})
 	}
 
 	return annotations
@@ -166,10 +168,12 @@ func extractSDKResourceCRUDFromFile(file *ast.File) map[string]string {
 			}
 
 			for _, result := range returnStmt.Results {
-				if unaryExpr, ok := result.(*ast.UnaryExpr); ok && unaryExpr.Op == token.AND {
-					if compositeLit, ok := unaryExpr.X.(*ast.CompositeLit); ok {
-						extractCRUDFromCompositeLit(compositeLit, methods)
-					}
+				unaryExpr, ok := result.(*ast.UnaryExpr)
+				if !ok || unaryExpr.Op != token.AND {
+					continue
+				}
+				if compositeLit, ok := unaryExpr.X.(*ast.CompositeLit); ok {
+					extractCRUDFromCompositeLit(compositeLit, methods)
 				}
 			}
 			return true
@@ -184,36 +188,46 @@ func extractSDKResourceCRUDFromFile(file *ast.File) map[string]string {
 // extractCRUDFromCompositeLit extracts CRUD methods from &schema.Resource{...} composite literal
 func extractCRUDFromCompositeLit(compositeLit *ast.CompositeLit, methods map[string]string) {
 	for _, elt := range compositeLit.Elts {
-		if keyValue, ok := elt.(*ast.KeyValueExpr); ok {
-			if ident, ok := keyValue.Key.(*ast.Ident); ok {
-				var methodType string
-				if strings.HasPrefix(ident.Name, "Create") {
-					methodType = "create"
-				} else if strings.HasPrefix(ident.Name, "Read") {
-					methodType = "read"
-				} else if strings.HasPrefix(ident.Name, "Update") {
-					methodType = "update"
-				} else if strings.HasPrefix(ident.Name, "Delete") {
-					methodType = "delete"
-				} else {
-					continue
-				}
-				// Extract function name - handle both identifiers and selector expressions
-				if valueIdent, ok := keyValue.Value.(*ast.Ident); ok {
-					methods[methodType] = valueIdent.Name
-				} else if selectorExpr, ok := keyValue.Value.(*ast.SelectorExpr); ok {
-					// Handle cases like schema.NoopContext
-					if pkgIdent, ok := selectorExpr.X.(*ast.Ident); ok {
-						fullName := pkgIdent.Name + "." + selectorExpr.Sel.Name
-						// Skip special schema functions as requested - leave these empty
-						if !strings.HasPrefix(fullName, "schema.") {
-							methods[methodType] = fullName
-						}
-						// For schema.* cases, we intentionally don't add anything to methods
-					}
-				}
+		keyValue, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+
+		ident, ok := keyValue.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		var methodType string
+		if strings.HasPrefix(ident.Name, "Create") {
+			methodType = "create"
+		} else if strings.HasPrefix(ident.Name, "Read") {
+			methodType = "read"
+		} else if strings.HasPrefix(ident.Name, "Update") {
+			methodType = "update"
+		} else if strings.HasPrefix(ident.Name, "Delete") {
+			methodType = "delete"
+		} else {
+			continue
+		}
+
+		// Extract function name - handle both identifiers and selector expressions
+		switch value := keyValue.Value.(type) {
+		case *ast.Ident:
+			methods[methodType] = value.Name
+		case *ast.SelectorExpr:
+			// Handle cases like schema.NoopContext
+			pkgIdent, ok := value.X.(*ast.Ident)
+			if !ok {
+				continue
 			}
 
+			fullName := pkgIdent.Name + "." + value.Sel.Name
+			// Skip special schema functions as requested - leave these empty
+			if !strings.HasPrefix(fullName, "schema.") {
+				methods[methodType] = fullName
+			}
+			// For schema.* cases, we intentionally don't add anything to methods
 		}
 	}
 }
@@ -236,19 +250,29 @@ func extractSDKDataSourceMethodsFromFile(file *ast.File) map[string]string {
 			}
 
 			for _, result := range returnStmt.Results {
-				if unaryExpr, ok := result.(*ast.UnaryExpr); ok && unaryExpr.Op == token.AND {
-					if compositeLit, ok := unaryExpr.X.(*ast.CompositeLit); ok {
-						for _, elt := range compositeLit.Elts {
-							if keyValue, ok := elt.(*ast.KeyValueExpr); ok {
-								if ident, ok := keyValue.Key.(*ast.Ident); ok {
-									if strings.HasPrefix(ident.Name, "Read") {
-										if valueIdent, ok := keyValue.Value.(*ast.Ident); ok {
-											methods["read"] = valueIdent.Name
-										}
-									}
-								}
-							}
-						}
+				unaryExpr, ok := result.(*ast.UnaryExpr)
+				if !ok || unaryExpr.Op != token.AND {
+					continue
+				}
+
+				compositeLit, ok := unaryExpr.X.(*ast.CompositeLit)
+				if !ok {
+					continue
+				}
+
+				for _, elt := range compositeLit.Elts {
+					keyValue, ok := elt.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+
+					ident, ok := keyValue.Key.(*ast.Ident)
+					if !ok || !strings.HasPrefix(ident.Name, "Read") {
+						continue
+					}
+
+					if valueIdent, ok := keyValue.Value.(*ast.Ident); ok {
+						methods["read"] = valueIdent.Name
 					}
 				}
 			}
@@ -266,7 +290,7 @@ func extractSDKDataSourceMethodsFromFile(file *ast.File) map[string]string {
 func extractFrameworkStructTypeBySchemaMethod(file *ast.File) string {
 	// Find all structs with Schema methods
 	structsWithSchema := findStructsWithSchemaMethod(file)
-	
+
 	// If we found exactly one struct with a Schema method, return it
 	if len(structsWithSchema) == 1 {
 		return structsWithSchema[0]
@@ -299,16 +323,24 @@ func findStructsWithSchemaMethod(file *ast.File) []string {
 		}
 
 		// Check if this is a method on a struct (receiver should be a pointer to a struct)
-		if len(funcDecl.Recv.List) > 0 {
-			field := funcDecl.Recv.List[0]
-			if starExpr, ok := field.Type.(*ast.StarExpr); ok {
-				if ident, ok := starExpr.X.(*ast.Ident); ok {
-					if !structSet[ident.Name] {
-						structSet[ident.Name] = true
-						structs = append(structs, ident.Name)
-					}
-				}
-			}
+		if len(funcDecl.Recv.List) == 0 {
+			return true
+		}
+
+		field := funcDecl.Recv.List[0]
+		starExpr, ok := field.Type.(*ast.StarExpr)
+		if !ok {
+			return true
+		}
+
+		ident, ok := starExpr.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+
+		if !structSet[ident.Name] {
+			structSet[ident.Name] = true
+			structs = append(structs, ident.Name)
 		}
 
 		return true
@@ -340,14 +372,22 @@ func structEmbedsFramework(file *ast.File, structName string) bool {
 
 			// Check if this struct embeds framework types
 			for _, field := range structTypeDecl.Fields.List {
-				if len(field.Names) == 0 { // Embedded field
-					if selectorExpr, ok := field.Type.(*ast.SelectorExpr); ok {
-						if ident, ok := selectorExpr.X.(*ast.Ident); ok && ident.Name == "framework" {
-							embedsFramework = true
-							return false
-						}
-					}
+				if len(field.Names) != 0 { // Not an embedded field
+					continue
 				}
+
+				selectorExpr, ok := field.Type.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+
+				ident, ok := selectorExpr.X.(*ast.Ident)
+				if !ok || ident.Name != "framework" {
+					continue
+				}
+
+				embedsFramework = true
+				return false
 			}
 		}
 
@@ -368,41 +408,5 @@ func inferFrameworkMethods(annoType AnnotationType) []string {
 		return []string{"Open", "Close", "Renew", "Metadata", "Schema"}
 	default:
 		return []string{}
-	}
-}
-
-// validateAnnotationResult performs basic validation on an annotation result
-func validateAnnotationResult(result *AnnotationResult) error {
-	if result.Type == "" {
-		return fmt.Errorf("annotation type is required")
-	}
-
-	if result.TerraformType == "" {
-		return fmt.Errorf("terraform type is required")
-	}
-
-	// Validate terraform type format (should start with aws_)
-	if !strings.HasPrefix(result.TerraformType, "aws_") {
-		return fmt.Errorf("terraform type should start with 'aws_': %s", result.TerraformType)
-	}
-
-	return nil
-}
-
-// getAnnotationTypeName returns a human-readable name for the annotation type
-func getAnnotationTypeName(annoType AnnotationType) string {
-	switch annoType {
-	case AnnotationSDKResource:
-		return "SDK Resource"
-	case AnnotationSDKDataSource:
-		return "SDK Data Source"
-	case AnnotationFrameworkResource:
-		return "Framework Resource"
-	case AnnotationFrameworkDataSource:
-		return "Framework Data Source"
-	case AnnotationEphemeralResource:
-		return "Ephemeral Resource"
-	default:
-		return "Unknown"
 	}
 }

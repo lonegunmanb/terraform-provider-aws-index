@@ -20,7 +20,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 	tests := []struct {
 		name            string
 		resourceType    string
-		resources       map[string]AWSResourceInfo
+		resources       map[string]AWSResource
 		expectedFiles   []string
 		expectedSDKType string
 		outputDir       string // "resources", "datasources", or "ephemeral"
@@ -29,7 +29,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "SDK Resources - Single resource creates JSON file",
 			resourceType: "sdk_resources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_s3_bucket": TestSDKResourceS3Bucket,
 			},
 			expectedFiles:   []string{"aws_s3_bucket.json"},
@@ -39,7 +39,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "SDK Resources - Multiple resources create multiple JSON files",
 			resourceType: "sdk_resources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_s3_bucket": {
 					TerraformType:   "aws_s3_bucket",
 					FactoryFunction: "resourceBucket",
@@ -61,7 +61,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "SDK DataSources - Single data source creates JSON file",
 			resourceType: "sdk_datasources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_s3_bucket": {
 					TerraformType:   "aws_s3_bucket",
 					FactoryFunction: "dataSourceBucket",
@@ -76,7 +76,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "SDK DataSources - Multiple data sources create multiple JSON files",
 			resourceType: "sdk_datasources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_s3_bucket": {
 					TerraformType:   "aws_s3_bucket",
 					FactoryFunction: "dataSourceBucket",
@@ -98,7 +98,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "Framework Resources - Single resource creates JSON file",
 			resourceType: "framework_resources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_s3_bucket": {
 					TerraformType:   "aws_s3_bucket",
 					Name:            "Bucket",
@@ -114,7 +114,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "Framework Resources - Multiple resources create multiple JSON files",
 			resourceType: "framework_resources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_dynamodb_table": {
 					TerraformType:   "aws_dynamodb_table",
 					Name:            "Table",
@@ -138,7 +138,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "Framework DataSources - Single data source creates JSON file",
 			resourceType: "framework_datasources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_bedrock_foundation_model": {
 					TerraformType:   "aws_bedrock_foundation_model",
 					Name:            "Foundation Model",
@@ -155,7 +155,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "Ephemeral Resources - Single ephemeral resource creates JSON file",
 			resourceType: "ephemeral_resources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_secretsmanager_secret_value": {
 					TerraformType:   "aws_secretsmanager_secret_value",
 					Name:            "Secret Value",
@@ -171,7 +171,7 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 		{
 			name:         "Ephemeral Resources - Multiple ephemeral resources create multiple JSON files",
 			resourceType: "ephemeral_resources",
-			resources: map[string]AWSResourceInfo{
+			resources: map[string]AWSResource{
 				"aws_lambda_invocation": {
 					TerraformType:   "aws_lambda_invocation",
 					Name:            "Invocation",
@@ -205,18 +205,18 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 
 			// Create TerraformProviderIndex with appropriate resource type
 			service := ServiceRegistration{
-				ServiceName:                 "test-service",
-				PackagePath:                 "github.com/hashicorp/terraform-provider-aws/internal/service/test",
-				AWSSDKResources:            make(map[string]AWSResourceInfo),
-				AWSSDKDataSources:          make(map[string]AWSResourceInfo),
-				AWSFrameworkResources:      make(map[string]AWSResourceInfo),
-				AWSFrameworkDataSources:    make(map[string]AWSResourceInfo),
-				AWSEphemeralResources:      make(map[string]AWSResourceInfo),
-				ResourceCRUDMethods:        make(map[string]*LegacyResourceCRUDFunctions),
-				DataSourceMethods:          make(map[string]*LegacyDataSourceMethods),
-				ResourceTerraformTypes:     make(map[string]string),
-				DataSourceTerraformTypes:   make(map[string]string),
-				EphemeralTerraformTypes:    make(map[string]string),
+				ServiceName:              "test-service",
+				PackagePath:              "github.com/hashicorp/terraform-provider-aws/internal/service/test",
+				AWSSDKResources:          make(map[string]AWSResource),
+				AWSSDKDataSources:        make(map[string]AWSResource),
+				AWSFrameworkResources:    make(map[string]AWSResource),
+				AWSFrameworkDataSources:  make(map[string]AWSResource),
+				AWSEphemeralResources:    make(map[string]AWSResource),
+				ResourceCRUDMethods:      make(map[string]*LegacyResourceCRUDFunctions),
+				DataSourceMethods:        make(map[string]*LegacyDataSourceMethods),
+				ResourceTerraformTypes:   make(map[string]string),
+				DataSourceTerraformTypes: make(map[string]string),
+				EphemeralTerraformTypes:  make(map[string]string),
 			}
 
 			// Assign resources to appropriate category
@@ -234,8 +234,8 @@ func TestAWSResourcesIntegration_WriteFiles(t *testing.T) {
 			}
 
 			index := &TerraformProviderIndex{
-				Version:  "v5.0.0",
-				Services: []ServiceRegistration{service},
+				Version:    "v5.0.0",
+				Services:   []ServiceRegistration{service},
 				Statistics: ProviderStatistics{},
 			}
 
@@ -303,14 +303,14 @@ func TestAWSResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 	tests := []struct {
 		name         string
 		resourceType string
-		awsResource  AWSResourceInfo
+		awsResource  AWSResource
 		expectedType string
 		expectedReg  string
 	}{
 		{
 			name:         "SDK Resource conversion",
 			resourceType: "sdk_resource",
-			awsResource: AWSResourceInfo{
+			awsResource: AWSResource{
 				TerraformType:   "aws_s3_bucket",
 				FactoryFunction: "resourceBucket",
 				Name:            "Bucket",
@@ -322,7 +322,7 @@ func TestAWSResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 		{
 			name:         "SDK DataSource conversion",
 			resourceType: "sdk_datasource",
-			awsResource: AWSResourceInfo{
+			awsResource: AWSResource{
 				TerraformType:   "aws_s3_bucket",
 				FactoryFunction: "dataSourceBucket",
 				Name:            "Bucket",
@@ -334,7 +334,7 @@ func TestAWSResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 		{
 			name:         "Framework Resource conversion",
 			resourceType: "framework_resource",
-			awsResource: AWSResourceInfo{
+			awsResource: AWSResource{
 				TerraformType:   "aws_s3_bucket",
 				FactoryFunction: "newBucketResource",
 				Name:            "Bucket",
@@ -347,7 +347,7 @@ func TestAWSResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 		{
 			name:         "Framework DataSource conversion",
 			resourceType: "framework_datasource",
-			awsResource: AWSResourceInfo{
+			awsResource: AWSResource{
 				TerraformType:   "aws_bedrock_foundation_model",
 				FactoryFunction: "newFoundationModelDataSource",
 				Name:            "Foundation Model",
@@ -360,7 +360,7 @@ func TestAWSResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 		{
 			name:         "Ephemeral Resource conversion",
 			resourceType: "ephemeral_resource",
-			awsResource: AWSResourceInfo{
+			awsResource: AWSResource{
 				TerraformType:   "aws_lambda_invocation",
 				FactoryFunction: "newInvocationEphemeralResource",
 				Name:            "Invocation",
@@ -435,7 +435,7 @@ func TestAWSResourcesIntegration_TerraformResourceConversion(t *testing.T) {
 func TestAWSResourcesIntegration_CRUDMethodExtraction(t *testing.T) {
 	tests := []struct {
 		name            string
-		awsResource     AWSResourceInfo
+		awsResource     AWSResource
 		crudMethods     *LegacyResourceCRUDFunctions
 		dsMethod        *LegacyDataSourceMethods
 		expectedIndexes map[string]string
@@ -443,7 +443,7 @@ func TestAWSResourcesIntegration_CRUDMethodExtraction(t *testing.T) {
 	}{
 		{
 			name: "SDK Resource with extracted CRUD methods",
-			awsResource: AWSResourceInfo{
+			awsResource: AWSResource{
 				TerraformType:   "aws_s3_bucket",
 				FactoryFunction: "resourceBucket",
 				Name:            "Bucket",
@@ -467,7 +467,7 @@ func TestAWSResourcesIntegration_CRUDMethodExtraction(t *testing.T) {
 		},
 		{
 			name: "SDK DataSource with extracted read method",
-			awsResource: AWSResourceInfo{
+			awsResource: AWSResource{
 				TerraformType:   "aws_s3_bucket",
 				FactoryFunction: "dataSourceBucket",
 				Name:            "Bucket",
@@ -485,7 +485,7 @@ func TestAWSResourcesIntegration_CRUDMethodExtraction(t *testing.T) {
 		},
 		{
 			name: "SDK Resource fallback when no CRUD methods available",
-			awsResource: AWSResourceInfo{
+			awsResource: AWSResource{
 				TerraformType:   "aws_ec2_instance",
 				FactoryFunction: "resourceInstance",
 				Name:            "Instance",
@@ -496,10 +496,10 @@ func TestAWSResourcesIntegration_CRUDMethodExtraction(t *testing.T) {
 				"SchemaIndex":    "func.resourceInstance.goindex",
 				"AttributeIndex": "func.resourceInstance.goindex",
 				// CRUD indexes should be empty when no methods available
-				"CreateIndex":    "",
-				"ReadIndex":      "",
-				"UpdateIndex":    "",
-				"DeleteIndex":    "",
+				"CreateIndex": "",
+				"ReadIndex":   "",
+				"UpdateIndex": "",
+				"DeleteIndex": "",
 			},
 			description: "Should use factory function for schema but leave CRUD indexes empty when no methods available",
 		},
@@ -509,10 +509,10 @@ func TestAWSResourcesIntegration_CRUDMethodExtraction(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup service registration with CRUD methods
 			service := ServiceRegistration{
-				ServiceName:           "test-service",
-				PackagePath:           "github.com/hashicorp/terraform-provider-aws/internal/service/test",
-				ResourceCRUDMethods:   make(map[string]*LegacyResourceCRUDFunctions),
-				DataSourceMethods:     make(map[string]*LegacyDataSourceMethods),
+				ServiceName:         "test-service",
+				PackagePath:         "github.com/hashicorp/terraform-provider-aws/internal/service/test",
+				ResourceCRUDMethods: make(map[string]*LegacyResourceCRUDFunctions),
+				DataSourceMethods:   make(map[string]*LegacyDataSourceMethods),
 			}
 
 			// Add CRUD methods if provided
@@ -653,18 +653,18 @@ func (e *exampleEphemeralResource) Schema(ctx context.Context, req ephemeral.Sch
 
 			// Create a service registration
 			serviceReg := ServiceRegistration{
-				ServiceName:                "test-service",
-				PackagePath:               "github.com/hashicorp/terraform-provider-aws/internal/service/test",
-				AWSSDKResources:           make(map[string]AWSResourceInfo),
-				AWSSDKDataSources:         make(map[string]AWSResourceInfo),
-				AWSFrameworkResources:     make(map[string]AWSResourceInfo),
-				AWSFrameworkDataSources:   make(map[string]AWSResourceInfo),
-				AWSEphemeralResources:     make(map[string]AWSResourceInfo),
-				ResourceCRUDMethods:       make(map[string]*LegacyResourceCRUDFunctions),
-				DataSourceMethods:         make(map[string]*LegacyDataSourceMethods),
-				ResourceTerraformTypes:    make(map[string]string),
-				DataSourceTerraformTypes:  make(map[string]string),
-				EphemeralTerraformTypes:   make(map[string]string),
+				ServiceName:              "test-service",
+				PackagePath:              "github.com/hashicorp/terraform-provider-aws/internal/service/test",
+				AWSSDKResources:          make(map[string]AWSResource),
+				AWSSDKDataSources:        make(map[string]AWSResource),
+				AWSFrameworkResources:    make(map[string]AWSResource),
+				AWSFrameworkDataSources:  make(map[string]AWSResource),
+				AWSEphemeralResources:    make(map[string]AWSResource),
+				ResourceCRUDMethods:      make(map[string]*LegacyResourceCRUDFunctions),
+				DataSourceMethods:        make(map[string]*LegacyDataSourceMethods),
+				ResourceTerraformTypes:   make(map[string]string),
+				DataSourceTerraformTypes: make(map[string]string),
+				EphemeralTerraformTypes:  make(map[string]string),
 			}
 
 			// Create gophon.FileInfo and PackageInfo
