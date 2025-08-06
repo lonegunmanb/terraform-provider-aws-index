@@ -1,0 +1,96 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ses
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfigurationSetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SESClient(ctx)
+
+	configurationSetName := d.Get(names.AttrName).(string)
+	input := &ses.CreateConfigurationSetInput{
+		ConfigurationSet: &awstypes.ConfigurationSet{
+			Name: aws.String(configurationSetName),
+		},
+	}
+
+	_, err := conn.CreateConfigurationSet(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SES Configuration Set (%s): %s", configurationSetName, err)
+	}
+
+	d.SetId(configurationSetName)
+
+	if v, ok := d.GetOk("delivery_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input := &ses.PutConfigurationSetDeliveryOptionsInput{
+			ConfigurationSetName: aws.String(configurationSetName),
+			DeliveryOptions:      expandDeliveryOptions(v.([]any)),
+		}
+
+		_, err := conn.PutConfigurationSetDeliveryOptions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "putting SES Configuration Set (%s) delivery options: %s", d.Id(), err)
+		}
+	}
+
+	if v := d.Get("reputation_metrics_enabled"); v.(bool) {
+		input := &ses.UpdateConfigurationSetReputationMetricsEnabledInput{
+			ConfigurationSetName: aws.String(configurationSetName),
+			Enabled:              v.(bool),
+		}
+
+		_, err := conn.UpdateConfigurationSetReputationMetricsEnabled(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "enabling SES Configuration Set (%s) reputation metrics %s", d.Id(), err)
+		}
+	}
+
+	if v := d.Get("sending_enabled"); !v.(bool) {
+		input := &ses.UpdateConfigurationSetSendingEnabledInput{
+			ConfigurationSetName: aws.String(configurationSetName),
+			Enabled:              v.(bool),
+		}
+
+		_, err := conn.UpdateConfigurationSetSendingEnabled(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "disabling SES Configuration Set (%s) sending: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("tracking_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input := &ses.CreateConfigurationSetTrackingOptionsInput{
+			ConfigurationSetName: aws.String(configurationSetName),
+			TrackingOptions:      expandTrackingOptions(v.([]any)),
+		}
+
+		_, err := conn.CreateConfigurationSetTrackingOptions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating SES Configuration Set (%s) tracking options: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceConfigurationSetRead(ctx, d, meta)...)
+}

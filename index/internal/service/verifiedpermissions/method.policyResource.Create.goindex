@@ -1,0 +1,135 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/verifiedpermissions
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/verifiedpermissions"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/verifiedpermissions/types"
+	cedar "github.com/cedar-policy/cedar-go/x/exp/parser"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	interflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *policyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().VerifiedPermissionsClient(ctx)
+
+	var plan policyResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := &verifiedpermissions.CreatePolicyInput{}
+
+	in.ClientToken = aws.String(id.UniqueId())
+	in.PolicyStoreId = plan.PolicyStoreID.ValueStringPointer()
+
+	def, diags := plan.Definition.ToPtr(ctx)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !def.Static.IsNull() {
+		static, diags := def.Static.ToPtr(ctx)
+		resp.Diagnostics.Append(diags...)
+		if diags.HasError() {
+			return
+		}
+
+		in.Definition = &awstypes.PolicyDefinitionMemberStatic{
+			Value: awstypes.StaticPolicyDefinition{
+				Statement:   fwflex.StringFromFramework(ctx, static.Statement),
+				Description: fwflex.StringFromFramework(ctx, static.Description),
+			},
+		}
+	}
+
+	if !def.TemplateLinked.IsNull() {
+		templateLinked, diags := def.TemplateLinked.ToPtr(ctx)
+		resp.Diagnostics.Append(diags...)
+		if diags.HasError() {
+			return
+		}
+
+		value := awstypes.TemplateLinkedPolicyDefinition{
+			PolicyTemplateId: templateLinked.PolicyTemplateID.ValueStringPointer(),
+		}
+
+		if !templateLinked.Principal.IsNull() {
+			principal, diags := templateLinked.Principal.ToPtr(ctx)
+			resp.Diagnostics.Append(diags...)
+			if diags.HasError() {
+				return
+			}
+
+			value.Principal = &awstypes.EntityIdentifier{
+				EntityId:   fwflex.StringFromFramework(ctx, principal.EntityID),
+				EntityType: fwflex.StringFromFramework(ctx, principal.EntityType),
+			}
+		}
+
+		if !templateLinked.Resource.IsNull() {
+			res, diags := templateLinked.Resource.ToPtr(ctx)
+			resp.Diagnostics.Append(diags...)
+			if diags.HasError() {
+				return
+			}
+
+			value.Resource = &awstypes.EntityIdentifier{
+				EntityId:   fwflex.StringFromFramework(ctx, res.EntityID),
+				EntityType: fwflex.StringFromFramework(ctx, res.EntityType),
+			}
+		}
+
+		in.Definition = &awstypes.PolicyDefinitionMemberTemplateLinked{
+			Value: value,
+		}
+	}
+
+	out, err := conn.CreatePolicy(ctx, in)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionCreating, ResNamePolicy, plan.PolicyStoreID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	idParts := []string{
+		aws.ToString(out.PolicyId),
+		aws.ToString(out.PolicyStoreId),
+	}
+
+	rID, err := interflex.FlattenResourceId(idParts, ResourcePolicyIDPartsCount, false)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionCreating, ResNamePolicy, plan.PolicyStoreID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	plan.ID = fwflex.StringValueToFramework(ctx, rID)
+	plan.CreatedDate = timetypes.NewRFC3339TimePointerValue(out.CreatedDate)
+	plan.PolicyID = fwflex.StringToFramework(ctx, out.PolicyId)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}

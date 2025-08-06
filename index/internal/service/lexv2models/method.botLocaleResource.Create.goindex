@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexv2models
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelsv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelsv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *botLocaleResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data botLocaleResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().LexV2ModelsClient(ctx)
+
+	var input lexmodelsv2.CreateBotLocaleInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	output, err := conn.CreateBotLocale(ctx, &input)
+
+	if err != nil {
+		response.Diagnostics.AddError("creating Lex v2 Bot Locale", err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	localeID, botID, botVersion := aws.ToString(output.LocaleId), aws.ToString(output.BotId), aws.ToString(output.BotVersion)
+	id, _ := intflex.FlattenResourceId([]string{localeID, botID, botVersion}, botLocaleResourceIDPartCount, false)
+	data.ID = fwflex.StringValueToFramework(ctx, id)
+	data.LocaleName = fwflex.StringToFramework(ctx, output.LocaleName)
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output.VoiceSettings, &data.VoiceSettings)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if _, err := waitBotLocaleCreated(ctx, conn, localeID, botID, botVersion, r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+		response.State.SetAttribute(ctx, path.Root(names.AttrID), data.BotID) // Set 'id' so as to taint the resource.
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for Lex v2 Bot Locale (%s) create", id), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

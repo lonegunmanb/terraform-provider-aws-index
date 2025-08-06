@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findBudgetResourceAssociations(ctx context.Context, conn *servicecatalog.Client, budgetName, resourceID string) ([]awstypes.BudgetDetail, error) {
+	input := &servicecatalog.ListBudgetsForResourceInput{
+		ResourceId: aws.String(resourceID),
+	}
+
+	var result []awstypes.BudgetDetail
+
+	pages := servicecatalog.NewListBudgetsForResourcePaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: input,
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, budget := range page.Budgets {
+			if aws.ToString(budget.BudgetName) == budgetName {
+				result = append(result, budget)
+			}
+		}
+	}
+
+	return result, nil
+}

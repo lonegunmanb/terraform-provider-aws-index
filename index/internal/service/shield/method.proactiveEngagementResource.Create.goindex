@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/shield
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/service/shield"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/shield/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *proactiveEngagementResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data proactiveEngagementResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().ShieldClient(ctx)
+
+	input := &shield.AssociateProactiveEngagementDetailsInput{}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	_, err := conn.AssociateProactiveEngagementDetails(ctx, input)
+
+	// "InvalidOperationException: Proactive engagement details are already associated with the subscription. Please use Enable/DisableProactiveEngagement APIs to update it's status".
+	if err != nil && !errs.IsA[*awstypes.InvalidOperationException](err) {
+		response.Diagnostics.AddError("creating Shield Proactive Engagement", err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.ID = types.StringValue(r.Meta().AccountID(ctx))
+
+	response.Diagnostics.Append(updateEmergencyContactSettings(ctx, conn, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(putProactiveEngagementStatus(ctx, conn, data.Enabled.ValueBool())...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

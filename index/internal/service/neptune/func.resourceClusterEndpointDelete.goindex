@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/neptune
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/neptune"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/neptune/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterEndpointDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NeptuneClient(ctx)
+
+	clusterID, clusterEndpointID, err := clusterEndpointParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	_, err = conn.DeleteDBClusterEndpoint(ctx, &neptune.DeleteDBClusterEndpointInput{
+		DBClusterEndpointIdentifier: aws.String(clusterEndpointID),
+	})
+
+	if errs.IsA[*awstypes.DBClusterNotFoundFault](err) || errs.IsA[*awstypes.DBClusterEndpointNotFoundFault](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Neptune Cluster Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if _, err = waitClusterEndpointDeleted(ctx, conn, clusterID, clusterEndpointID); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Neptune Cluster Endpoint (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceListenerCertificateDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBV2Client(ctx)
+
+	listenerARN, certificateARN, err := listenerCertificateParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	log.Printf("[INFO] Deleting ELBv2 Listener Certificate: %s", d.Id())
+	_, err = conn.RemoveListenerCertificates(ctx, &elasticloadbalancingv2.RemoveListenerCertificatesInput{
+		Certificates: []awstypes.Certificate{{
+			CertificateArn: aws.String(certificateARN),
+		}},
+		ListenerArn: aws.String(listenerARN),
+	})
+
+	if errs.IsA[*awstypes.CertificateNotFoundException](err) || errs.IsA[*awstypes.ListenerNotFoundException](err) {
+		return diags
+	}
+
+	// Even though we're not trying to remove the default certificate, AWS started returning this error around 2023-12-09.
+	if errs.IsAErrorMessageContains[*awstypes.OperationNotPermittedException](err, "Default certificate cannot be removed") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting ELBv2 Listener Certificate (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePipelineRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	pipeline, err := findPipelineByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SageMaker AI Pipeline (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SageMaker AI Pipeline (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, pipeline.PipelineArn)
+	if err := d.Set("parallelism_configuration", flattenParallelismConfiguration(pipeline.ParallelismConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting parallelism_configuration: %s", err)
+	}
+	d.Set("pipeline_definition", pipeline.PipelineDefinition)
+	d.Set("pipeline_description", pipeline.PipelineDescription)
+	d.Set("pipeline_display_name", pipeline.PipelineDisplayName)
+	d.Set("pipeline_name", pipeline.PipelineName)
+	d.Set(names.AttrRoleARN, pipeline.RoleArn)
+
+	return diags
+}

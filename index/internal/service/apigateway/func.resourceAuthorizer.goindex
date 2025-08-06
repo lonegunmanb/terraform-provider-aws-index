@@ -1,0 +1,102 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAuthorizer() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceAuthorizerCreate,
+		ReadWithoutTimeout:   resourceAuthorizerRead,
+		UpdateWithoutTimeout: resourceAuthorizerUpdate,
+		DeleteWithoutTimeout: resourceAuthorizerDelete,
+
+		CustomizeDiff: resourceAuthorizerCustomizeDiff,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: func(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+				idParts := strings.Split(d.Id(), "/")
+				if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+					return nil, fmt.Errorf("Unexpected format of ID (%q), expected REST-API-ID/AUTHORIZER-ID", d.Id())
+				}
+				restAPIId := idParts[0]
+				authorizerId := idParts[1]
+				d.Set("rest_api_id", restAPIId)
+				d.SetId(authorizerId)
+				return []*schema.ResourceData{d}, nil
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"authorizer_credentials": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: verify.ValidARN,
+			},
+			"authorizer_result_ttl_in_seconds": {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				ValidateFunc: validation.IntBetween(0, 3600),
+				Default:      defaultAuthorizerTTL,
+			},
+			"authorizer_uri": {
+				Type:     schema.TypeString,
+				Optional: true, // authorizer_uri is required for authorizer TOKEN/REQUEST
+			},
+			"identity_source": {
+				Type:     schema.TypeString,
+				Optional: true,
+				Default:  "method.request.header.Authorization",
+			},
+			"identity_validation_expression": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			names.AttrName: {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"provider_arns": {
+				Type:     schema.TypeSet,
+				Optional: true, // provider_arns is required for authorizer COGNITO_USER_POOLS.
+				Elem: &schema.Schema{
+					Type:         schema.TypeString,
+					ValidateFunc: verify.ValidARN,
+				},
+			},
+			"rest_api_id": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			names.AttrType: {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          types.AuthorizerTypeToken,
+				ValidateDiagFunc: enum.Validate[types.AuthorizerType](),
+			},
+		},
+	}
+}

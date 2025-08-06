@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterSnapshotCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	id := d.Get("db_cluster_snapshot_identifier").(string)
+	input := &rds.CreateDBClusterSnapshotInput{
+		DBClusterIdentifier:         aws.String(d.Get("db_cluster_identifier").(string)),
+		DBClusterSnapshotIdentifier: aws.String(id),
+		Tags:                        getTagsIn(ctx),
+	}
+
+	const (
+		timeout = 2 * time.Minute
+	)
+	_, err := tfresource.RetryWhenIsA[*types.InvalidDBClusterStateFault](ctx, timeout, func() (any, error) {
+		return conn.CreateDBClusterSnapshot(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating RDS DB Cluster Snapshot (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitDBClusterSnapshotCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RDS DB Cluster Snapshot (%s) create: %s", d.Id(), err)
+	}
+
+	if v, ok := d.GetOk("shared_accounts"); ok && v.(*schema.Set).Len() > 0 {
+		input := &rds.ModifyDBClusterSnapshotAttributeInput{
+			AttributeName:               aws.String(clusterSnapshotAttributeNameRestore),
+			DBClusterSnapshotIdentifier: aws.String(d.Id()),
+			ValuesToAdd:                 flex.ExpandStringValueSet(v.(*schema.Set)),
+		}
+
+		_, err := conn.ModifyDBClusterSnapshotAttribute(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "modifying RDS DB Cluster Snapshot (%s) attribute: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceClusterSnapshotRead(ctx, d, meta)...)
+}

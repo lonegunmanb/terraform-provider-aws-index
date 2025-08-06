@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/signer
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/signer"
+	"github.com/aws/aws-sdk-go-v2/service/signer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSigningProfilePermissionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SignerClient(ctx)
+
+	profileName := d.Get("profile_name").(string)
+
+	conns.GlobalMutexKV.Lock(profileName)
+	defer conns.GlobalMutexKV.Unlock(profileName)
+
+	var revisionID string
+	output, err := conn.ListProfilePermissions(ctx, &signer.ListProfilePermissionsInput{
+		ProfileName: aws.String(profileName),
+	})
+
+	if err == nil {
+		revisionID = aws.ToString(output.RevisionId)
+	} else if !errs.IsA[*types.ResourceNotFoundException](err) {
+		return sdkdiag.AppendErrorf(diags, "reading Signer Signing Profile (%s) Permissions: %s", profileName, err)
+	}
+
+	statementID := create.Name(d.Get("statement_id").(string), d.Get("statement_id_prefix").(string))
+	input := &signer.AddProfilePermissionInput{
+		Action:      aws.String(d.Get(names.AttrAction).(string)),
+		Principal:   aws.String(d.Get(names.AttrPrincipal).(string)),
+		ProfileName: aws.String(profileName),
+		RevisionId:  aws.String(revisionID),
+		StatementId: aws.String(statementID),
+	}
+
+	if v, ok := d.GetOk("profile_version"); ok {
+		input.ProfileVersion = aws.String(v.(string))
+	}
+
+	_, err = tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.AddProfilePermission(ctx, input)
+		},
+		func(err error) (bool, error) {
+			if errs.IsA[*types.ConflictException](err) || errs.IsA[*types.ResourceNotFoundException](err) {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "adding Signer Signing Profile (%s) Permission: %s", profileName, err)
+	}
+
+	d.SetId(fmt.Sprintf("%s/%s", profileName, statementID))
+
+	_, err = tfresource.RetryWhenNotFound(ctx, propagationTimeout, func() (any, error) {
+		return findPermissionByTwoPartKey(ctx, conn, profileName, statementID)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Signer Signing Profile Permission (%s) create: %s", d.Id(), err)
+	}
+
+	d.Set("statement_id", statementID)
+
+	return append(diags, resourceSigningProfilePermissionRead(ctx, d, meta)...)
+}

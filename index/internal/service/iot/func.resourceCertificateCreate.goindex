@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCertificateCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	active := d.Get("active").(bool)
+	status := awstypes.CertificateStatusInactive
+	if active {
+		status = awstypes.CertificateStatusActive
+	}
+	vCert, okCert := d.GetOk("certificate_pem")
+	vCA, okCA := d.GetOk("ca_pem")
+
+	if vCSR, okCSR := d.GetOk("csr"); okCSR {
+		input := &iot.CreateCertificateFromCsrInput{
+			CertificateSigningRequest: aws.String(vCSR.(string)),
+			SetAsActive:               active,
+		}
+
+		output, err := conn.CreateCertificateFromCsr(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating IoT Certificate from CSR: %s", err)
+		}
+
+		d.SetId(aws.ToString(output.CertificateId))
+	} else if okCert && okCA {
+		input := &iot.RegisterCertificateInput{
+			CaCertificatePem: aws.String(vCA.(string)),
+			CertificatePem:   aws.String(vCert.(string)),
+			Status:           status,
+		}
+
+		output, err := conn.RegisterCertificate(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "registering IoT Certificate with CA: %s", err)
+		}
+
+		d.SetId(aws.ToString(output.CertificateId))
+	} else if okCert {
+		input := &iot.RegisterCertificateWithoutCAInput{
+			CertificatePem: aws.String(vCert.(string)),
+			Status:         status,
+		}
+
+		output, err := conn.RegisterCertificateWithoutCA(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "registering IoT Certificate without CA: %s", err)
+		}
+
+		d.SetId(aws.ToString(output.CertificateId))
+	} else {
+		input := &iot.CreateKeysAndCertificateInput{
+			SetAsActive: active,
+		}
+
+		output, err := conn.CreateKeysAndCertificate(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating IoT Certificate: %s", err)
+		}
+
+		d.SetId(aws.ToString(output.CertificateId))
+		d.Set(names.AttrPrivateKey, output.KeyPair.PrivateKey)
+		d.Set(names.AttrPublicKey, output.KeyPair.PublicKey)
+	}
+
+	return append(diags, resourceCertificateRead(ctx, d, meta)...)
+}

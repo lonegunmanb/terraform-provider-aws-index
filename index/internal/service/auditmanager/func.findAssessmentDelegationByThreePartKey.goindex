@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/auditmanager
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/auditmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/auditmanager/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findAssessmentDelegationByThreePartKey(ctx context.Context, conn *auditmanager.Client, assessmentID, roleARN, controlSetID string) (*awstypes.DelegationMetadata, error) {
+	var input auditmanager.GetDelegationsInput
+
+	pages := auditmanager.NewGetDelegationsPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.Delegations {
+			if aws.ToString(v.AssessmentId) == assessmentID &&
+				strings.EqualFold(aws.ToString(v.RoleArn), roleARN) && // IAM role names are case-insensitive.
+				aws.ToString(v.ControlSetName) == controlSetID {
+				return &v, nil
+			}
+		}
+	}
+
+	return nil, &retry.NotFoundError{
+		LastRequest: input,
+	}
+}

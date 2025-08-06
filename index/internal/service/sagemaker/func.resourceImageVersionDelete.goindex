@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceImageVersionDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	name := d.Get("image_name").(string)
+	version := d.Get(names.AttrVersion).(int)
+
+	input := sagemaker.DeleteImageVersionInput{
+		ImageName: aws.String(name),
+		Version:   aws.Int32(int32(version)),
+	}
+
+	if _, err := conn.DeleteImageVersion(ctx, &input); err != nil {
+		if errs.IsAErrorMessageContains[*awstypes.ResourceNotFound](err, "does not exist") {
+			return diags
+		}
+		return sdkdiag.AppendErrorf(diags, "deleting SageMaker AI Image Version (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitImageVersionDeleted(ctx, conn, name, version); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for SageMaker AI Image Version (%s) deletion: %s", d.Id(), err)
+	}
+
+	return diags
+}

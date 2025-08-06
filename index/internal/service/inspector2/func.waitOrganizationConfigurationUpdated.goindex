@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitOrganizationConfigurationUpdated(ctx context.Context, conn *inspector2.Client, target *awstypes.AutoEnable, timeout time.Duration) (*inspector2.DescribeOrganizationConfigurationOutput, error) { //nolint:unparam
+	var output *inspector2.DescribeOrganizationConfigurationOutput
+
+	_, err := tfresource.RetryUntilEqual(ctx, timeout, true, func() (bool, error) {
+		var err error
+		output, err = findOrganizationConfiguration(ctx, conn)
+
+		if err != nil {
+			return false, err
+		}
+
+		equal := aws.ToBool(output.AutoEnable.Ec2) == aws.ToBool(target.Ec2)
+		equal = equal && aws.ToBool(output.AutoEnable.Ecr) == aws.ToBool(target.Ecr)
+		equal = equal && aws.ToBool(output.AutoEnable.Lambda) == aws.ToBool(target.Lambda)
+		equal = equal && aws.ToBool(output.AutoEnable.LambdaCode) == aws.ToBool(target.LambdaCode)
+
+		return equal, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return output, nil
+}

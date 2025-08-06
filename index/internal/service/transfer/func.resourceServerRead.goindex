@@ -1,0 +1,119 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/transfer
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/transfer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/transfer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).TransferClient(ctx)
+
+	output, err := findServerByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Transfer Server (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Transfer Server (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, output.Arn)
+	d.Set(names.AttrCertificate, output.Certificate)
+	if output.IdentityProviderDetails != nil {
+		d.Set("directory_id", output.IdentityProviderDetails.DirectoryId)
+	} else {
+		d.Set("directory_id", "")
+	}
+	d.Set(names.AttrDomain, output.Domain)
+	d.Set(names.AttrEndpoint, meta.(*conns.AWSClient).RegionalHostname(ctx, fmt.Sprintf("%s.server.transfer", d.Id())))
+	if output.EndpointDetails != nil {
+		securityGroupIDs := make([]*string, 0)
+
+		// Security Group IDs are not returned for VPC endpoints.
+		if output.EndpointType == awstypes.EndpointTypeVpc && len(output.EndpointDetails.SecurityGroupIds) == 0 {
+			vpcEndpointID := aws.ToString(output.EndpointDetails.VpcEndpointId)
+			output, err := tfec2.FindVPCEndpointByID(ctx, meta.(*conns.AWSClient).EC2Client(ctx), vpcEndpointID)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "reading Transfer Server (%s) VPC Endpoint (%s): %s", d.Id(), vpcEndpointID, err)
+			}
+
+			for _, group := range output.Groups {
+				securityGroupIDs = append(securityGroupIDs, group.GroupId)
+			}
+		}
+
+		if err := d.Set("endpoint_details", []any{flattenEndpointDetails(output.EndpointDetails, securityGroupIDs)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting endpoint_details: %s", err)
+		}
+	} else {
+		d.Set("endpoint_details", nil)
+	}
+	d.Set(names.AttrEndpointType, output.EndpointType)
+	if output.IdentityProviderDetails != nil {
+		d.Set("function", output.IdentityProviderDetails.Function)
+	} else {
+		d.Set("function", "")
+	}
+	d.Set("host_key_fingerprint", output.HostKeyFingerprint)
+	d.Set("identity_provider_type", output.IdentityProviderType)
+	if output.IdentityProviderDetails != nil {
+		d.Set("invocation_role", output.IdentityProviderDetails.InvocationRole)
+	} else {
+		d.Set("invocation_role", "")
+	}
+	if output.IdentityProviderDetails != nil {
+		d.Set("sftp_authentication_methods", output.IdentityProviderDetails.SftpAuthenticationMethods)
+	} else {
+		d.Set("sftp_authentication_methods", "")
+	}
+	d.Set("logging_role", output.LoggingRole)
+	d.Set("post_authentication_login_banner", output.PostAuthenticationLoginBanner)
+	d.Set("pre_authentication_login_banner", output.PreAuthenticationLoginBanner)
+	if err := d.Set("protocol_details", flattenProtocolDetails(output.ProtocolDetails)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting protocol_details: %s", err)
+	}
+	d.Set("protocols", output.Protocols)
+	if err := d.Set("s3_storage_options", flattenS3StorageOptions(output.S3StorageOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting s3_storage_options: %s", err)
+	}
+	d.Set("security_policy_name", output.SecurityPolicyName)
+	d.Set("structured_log_destinations", output.StructuredLogDestinations)
+	if output.IdentityProviderDetails != nil {
+		d.Set(names.AttrURL, output.IdentityProviderDetails.Url)
+	} else {
+		d.Set(names.AttrURL, "")
+	}
+	if err := d.Set("workflow_details", flattenWorkflowDetails(output.WorkflowDetails)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting workflow_details: %s", err)
+	}
+
+	setTagsOut(ctx, output.Tags)
+
+	return diags
+}

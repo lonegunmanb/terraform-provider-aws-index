@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLoadBalancerAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+	lbName := d.Get("lb_name").(string)
+	req := lightsail.AttachInstancesToLoadBalancerInput{
+		LoadBalancerName: aws.String(lbName),
+		InstanceNames:    []string{d.Get("instance_name").(string)},
+	}
+
+	out, err := conn.AttachInstancesToLoadBalancer(ctx, &req)
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.Lightsail, string(types.OperationTypeAttachInstancesToLoadBalancer), ResLoadBalancerAttachment, lbName, err)
+	}
+
+	diag := expandOperations(ctx, conn, out.Operations, types.OperationTypeAttachInstancesToLoadBalancer, ResLoadBalancerAttachment, lbName)
+
+	if diag != nil {
+		return diag
+	}
+
+	// Generate an ID
+	vars := []string{
+		d.Get("lb_name").(string),
+		d.Get("instance_name").(string),
+	}
+
+	d.SetId(strings.Join(vars, ","))
+
+	return append(diags, resourceLoadBalancerAttachmentRead(ctx, d, meta)...)
+}

@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appflow
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appflow"
+	"github.com/aws/aws-sdk-go-v2/service/appflow/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFlowUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).AppFlowClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &appflow.UpdateFlowInput{
+			DestinationFlowConfigList: expandDestinationFlowConfigs(d.Get("destination_flow_config").([]any)),
+			FlowName:                  aws.String(d.Get(names.AttrName).(string)),
+			SourceFlowConfig:          expandSourceFlowConfig(d.Get("source_flow_config").([]any)[0].(map[string]any)),
+			Tasks:                     expandTasks(d.Get("task").(*schema.Set).List()),
+			TriggerConfig:             expandTriggerConfig(d.Get("trigger_config").([]any)[0].(map[string]any)),
+		}
+
+		if v, ok := d.GetOk("metadata_catalog_config"); ok {
+			input.MetadataCatalogConfig = expandMetadataCatalogConfig(v.([]any))
+		}
+
+		// always send description when updating a task
+		if v, ok := d.GetOk(names.AttrDescription); ok {
+			input.Description = aws.String(v.(string))
+		}
+
+		_, err := conn.UpdateFlow(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating AppFlow Flow (%s): %s", d.Get(names.AttrName), err)
+		}
+	}
+
+	return append(diags, resourceFlowRead(ctx, d, meta)...)
+}

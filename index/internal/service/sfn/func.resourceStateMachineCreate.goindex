@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sfn
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStateMachineCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SFNClient(ctx)
+
+	name := create.Name(d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string))
+	input := &sfn.CreateStateMachineInput{
+		Definition: aws.String(d.Get("definition").(string)),
+		Name:       aws.String(name),
+		Publish:    d.Get("publish").(bool),
+		RoleArn:    aws.String(d.Get(names.AttrRoleARN).(string)),
+		Tags:       getTagsIn(ctx),
+		Type:       awstypes.StateMachineType(d.Get(names.AttrType).(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrEncryptionConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.EncryptionConfiguration = expandEncryptionConfiguration(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrLoggingConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.LoggingConfiguration = expandLoggingConfiguration(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("tracing_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.TracingConfiguration = expandTracingConfiguration(v.([]any)[0].(map[string]any))
+	}
+
+	// This is done to deal with IAM eventual consistency.
+	// Note: the instance may be in a deleting mode, hence the retry
+	// when creating the step function. This can happen when we are
+	// updating the resource (since there is no update API call).
+	outputRaw, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutCreate), func() (any, error) {
+		return conn.CreateStateMachine(ctx, input)
+	}, "StateMachineDeleting", "AccessDeniedException")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Step Functions State Machine (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*sfn.CreateStateMachineOutput).StateMachineArn))
+
+	return append(diags, resourceStateMachineRead(ctx, d, meta)...)
+}

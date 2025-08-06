@@ -1,0 +1,194 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ses
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReceiptRuleRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SESClient(ctx)
+
+	ruleSetName := d.Get("rule_set_name").(string)
+	rule, err := findReceiptRuleByTwoPartKey(ctx, conn, d.Id(), ruleSetName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SES Receipt Rule (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SES Receipt Rule (%s): %s", d.Id(), err)
+	}
+
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "ses",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("receipt-rule-set/%s:receipt-rule/%s", ruleSetName, d.Id()),
+	}.String()
+	d.Set(names.AttrARN, arn)
+	d.Set(names.AttrEnabled, rule.Enabled)
+	d.Set("recipients", rule.Recipients)
+	d.Set("scan_enabled", rule.ScanEnabled)
+	d.Set("tls_policy", rule.TlsPolicy)
+
+	addHeaderActionList := []map[string]any{}
+	bounceActionList := []map[string]any{}
+	lambdaActionList := []map[string]any{}
+	s3ActionList := []map[string]any{}
+	snsActionList := []map[string]any{}
+	stopActionList := []map[string]any{}
+	workmailActionList := []map[string]any{}
+
+	for i, apiObject := range rule.Actions {
+		if apiObject := apiObject.AddHeaderAction; apiObject != nil {
+			tfMap := map[string]any{
+				"header_name":  aws.ToString(apiObject.HeaderName),
+				"header_value": aws.ToString(apiObject.HeaderValue),
+				"position":     i + 1,
+			}
+			addHeaderActionList = append(addHeaderActionList, tfMap)
+		}
+
+		if apiObject := apiObject.BounceAction; apiObject != nil {
+			tfMap := map[string]any{
+				names.AttrMessage: aws.ToString(apiObject.Message),
+				"sender":          aws.ToString(apiObject.Sender),
+				"smtp_reply_code": aws.ToString(apiObject.SmtpReplyCode),
+				"position":        i + 1,
+			}
+
+			if v := apiObject.StatusCode; v != nil {
+				tfMap[names.AttrStatusCode] = aws.ToString(v)
+			}
+
+			if v := apiObject.TopicArn; v != nil {
+				tfMap[names.AttrTopicARN] = aws.ToString(v)
+			}
+
+			bounceActionList = append(bounceActionList, tfMap)
+		}
+
+		if apiObject := apiObject.LambdaAction; apiObject != nil {
+			tfMap := map[string]any{
+				names.AttrFunctionARN: aws.ToString(apiObject.FunctionArn),
+				"invocation_type":     apiObject.InvocationType,
+				"position":            i + 1,
+			}
+
+			if v := apiObject.TopicArn; v != nil {
+				tfMap[names.AttrTopicARN] = aws.ToString(v)
+			}
+
+			lambdaActionList = append(lambdaActionList, tfMap)
+		}
+
+		if apiObject := apiObject.S3Action; apiObject != nil {
+			tfMap := map[string]any{
+				names.AttrBucketName: aws.ToString(apiObject.BucketName),
+				"position":           i + 1,
+			}
+
+			if v := apiObject.IamRoleArn; v != nil {
+				tfMap[names.AttrIAMRoleARN] = aws.ToString(v)
+			}
+
+			if v := apiObject.KmsKeyArn; v != nil {
+				tfMap[names.AttrKMSKeyARN] = aws.ToString(v)
+			}
+
+			if v := apiObject.ObjectKeyPrefix; v != nil {
+				tfMap["object_key_prefix"] = aws.ToString(v)
+			}
+
+			if v := apiObject.TopicArn; v != nil {
+				tfMap[names.AttrTopicARN] = aws.ToString(v)
+			}
+
+			s3ActionList = append(s3ActionList, tfMap)
+		}
+
+		if apiObject := apiObject.SNSAction; apiObject != nil {
+			tfMap := map[string]any{
+				names.AttrTopicARN: aws.ToString(apiObject.TopicArn),
+				"encoding":         apiObject.Encoding,
+				"position":         i + 1,
+			}
+
+			snsActionList = append(snsActionList, tfMap)
+		}
+
+		if apiObject := apiObject.StopAction; apiObject != nil {
+			stopAction := map[string]any{
+				names.AttrScope: apiObject.Scope,
+				"position":      i + 1,
+			}
+
+			if v := apiObject.TopicArn; v != nil {
+				stopAction[names.AttrTopicARN] = aws.ToString(v)
+			}
+
+			stopActionList = append(stopActionList, stopAction)
+		}
+
+		if apiObject := apiObject.WorkmailAction; apiObject != nil {
+			workmailAction := map[string]any{
+				"organization_arn": aws.ToString(apiObject.OrganizationArn),
+				"position":         i + 1,
+			}
+
+			if v := apiObject.TopicArn; v != nil {
+				workmailAction[names.AttrTopicARN] = aws.ToString(v)
+			}
+
+			workmailActionList = append(workmailActionList, workmailAction)
+		}
+	}
+
+	if err := d.Set("add_header_action", addHeaderActionList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting add_header_action: %s", err)
+	}
+	if err := d.Set("bounce_action", bounceActionList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting bounce_action: %s", err)
+	}
+	if err := d.Set("lambda_action", lambdaActionList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting lambda_action: %s", err)
+	}
+	if err := d.Set("s3_action", s3ActionList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting s3_action: %s", err)
+	}
+	if err := d.Set("sns_action", snsActionList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting sns_action: %s", err)
+	}
+	if err := d.Set("stop_action", stopActionList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting stop_action: %s", err)
+	}
+	if err := d.Set("workmail_action", workmailActionList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting workmail_action: %s", err)
+	}
+
+	return diags
+}

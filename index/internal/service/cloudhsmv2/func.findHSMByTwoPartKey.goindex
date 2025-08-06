@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudhsmv2
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findHSMByTwoPartKey(ctx context.Context, conn *cloudhsmv2.Client, hsmID, eniID string) (*types.Hsm, error) {
+	input := &cloudhsmv2.DescribeClustersInput{}
+
+	output, err := findClusters(ctx, conn, input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	for _, v := range output {
+		for _, v := range v.Hsms {
+			// CloudHSMv2 HSM instances can be recreated, but the ENI ID will
+			// remain consistent. Without this ENI matching, HSM instances
+			// instances can become orphaned.
+			if aws.ToString(v.HsmId) == hsmID || aws.ToString(v.EniId) == eniID {
+				return &v, nil
+			}
+		}
+	}
+
+	return nil, &retry.NotFoundError{}
+}

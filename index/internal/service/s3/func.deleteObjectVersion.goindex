@@ -1,0 +1,41 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/url"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+)
+func deleteObjectVersion(ctx context.Context, conn *s3.Client, b, k, v string, force bool, optFns ...func(*s3.Options)) error {
+	input := &s3.DeleteObjectInput{
+		Bucket: aws.String(b),
+		Key:    aws.String(k),
+	}
+	if v != "" {
+		input.VersionId = aws.String(v)
+	}
+	if force {
+		input.BypassGovernanceRetention = aws.Bool(force)
+	}
+
+	log.Printf("[INFO] Deleting S3 Bucket (%s) Object (%s) Version (%s)", b, k, v)
+	_, err := conn.DeleteObject(ctx, input, optFns...)
+
+	if err != nil {
+		log.Printf("[WARN] Deleting S3 Bucket (%s) Object (%s) Version (%s): %s", b, k, v, err)
+	}
+
+	if tfawserr.ErrCodeEquals(err, errCodeNoSuchBucket, errCodeNoSuchKey) {
+		return nil
+	}
+
+	return err
+}

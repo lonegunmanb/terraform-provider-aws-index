@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findGroupsByUserPoolID(ctx context.Context, conn *cognitoidentityprovider.Client, userPoolID string) ([]awstypes.GroupType, error) {
+	input := &cognitoidentityprovider.ListGroupsInput{
+		UserPoolId: aws.String(userPoolID),
+	}
+	var output []awstypes.GroupType
+
+	pages := cognitoidentityprovider.NewListGroupsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: input,
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		output = append(output, page.Groups...)
+	}
+
+	return output, nil
+}

@@ -1,0 +1,93 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/auditmanager
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/auditmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/auditmanager/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *assessmentDelegationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data assessmentDelegationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().AuditManagerClient(ctx)
+
+	var createDelegationRequest awstypes.CreateDelegationRequest
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &createDelegationRequest)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	assessmentID, roleARN, controlSetID := data.AssessmentID.ValueString(), data.RoleARN.ValueString(), data.ControlSetID.ValueString()
+	id, _ := intflex.FlattenResourceId([]string{assessmentID, roleARN, controlSetID}, assessmentDelegationResourceIDPartCount, false)
+	input := auditmanager.BatchCreateDelegationByAssessmentInput{
+		AssessmentId:             aws.String(assessmentID),
+		CreateDelegationRequests: []awstypes.CreateDelegationRequest{createDelegationRequest},
+	}
+
+	// Include retry handling to allow for IAM propagation
+	//
+	// Example:
+	//   ResourceNotFoundException: The operation tried to access a nonexistent resource. The resource
+	//   might not be specified correctly, or its status might not be active. Check and try again.
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.ResourceNotFoundException](ctx, iamPropagationTimeout, func() (any, error) {
+		return conn.BatchCreateDelegationByAssessment(ctx, &input)
+	})
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating Audit Manager Assessment Delegation (%s)", id), err.Error())
+
+		return
+	}
+
+	// This response object will return ALL delegations assigned to the assessment, not just those
+	// added in this batch request. In order to write to state, the response should be filtered to
+	// the item with a matching role_arn and control_set_id.
+	//
+	// Also, assessment_id is returned as null in the BatchCreateDelegationByAssessment response
+	// object, and therefore is not included as one of the matching parameters.
+	output, err := tfresource.AssertSingleValueResult(tfslices.Filter(outputRaw.(*auditmanager.BatchCreateDelegationByAssessmentOutput).Delegations, func(v awstypes.Delegation) bool {
+		// IAM role names are case-insensitive.
+		return strings.EqualFold(aws.ToString(v.RoleArn), roleARN) && aws.ToString(v.ControlSetId) == controlSetID
+	}))
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating Audit Manager Assessment Delegation (%s)", id), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// The response from create operations always includes a nil AssessmentId. This is likely
+	// a bug in the AWS API, so for now skip using the response output and copy the state
+	// value directly from plan.
+	data.AssessmentID = fwflex.StringValueToFramework(ctx, assessmentID)
+	data.DelegationID = data.ID
+	data.ID = fwflex.StringValueToFramework(ctx, id)
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

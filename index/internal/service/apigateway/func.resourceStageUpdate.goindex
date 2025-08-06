@@ -1,0 +1,141 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStageUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		apiID := d.Get("rest_api_id").(string)
+		stageName := d.Get("stage_name").(string)
+		operations := make([]types.PatchOperation, 0)
+		waitForCache := false
+
+		if d.HasChange("cache_cluster_enabled") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/cacheClusterEnabled"),
+				Value: aws.String(strconv.FormatBool(d.Get("cache_cluster_enabled").(bool))),
+			})
+			waitForCache = true
+		}
+		if d.HasChange("cache_cluster_size") && d.Get("cache_cluster_enabled").(bool) {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/cacheClusterSize"),
+				Value: aws.String(d.Get("cache_cluster_size").(string)),
+			})
+			waitForCache = true
+		}
+		if d.HasChange("client_certificate_id") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/clientCertificateId"),
+				Value: aws.String(d.Get("client_certificate_id").(string)),
+			})
+		}
+		if d.HasChange("canary_settings") {
+			oldCanarySettingsRaw, newCanarySettingsRaw := d.GetChange("canary_settings")
+			operations = appendCanarySettingsPatchOperations(operations,
+				oldCanarySettingsRaw.([]any),
+				newCanarySettingsRaw.([]any),
+			)
+		}
+		if d.HasChange("deployment_id") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/deploymentId"),
+				Value: aws.String(d.Get("deployment_id").(string)),
+			})
+		}
+		if d.HasChange(names.AttrDescription) {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/description"),
+				Value: aws.String(d.Get(names.AttrDescription).(string)),
+			})
+		}
+		if d.HasChange("xray_tracing_enabled") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/tracingEnabled"),
+				Value: aws.String(strconv.FormatBool(d.Get("xray_tracing_enabled").(bool))),
+			})
+		}
+		if d.HasChange("documentation_version") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/documentationVersion"),
+				Value: aws.String(d.Get("documentation_version").(string)),
+			})
+		}
+		if d.HasChange("variables") {
+			o, n := d.GetChange("variables")
+			oldV := o.(map[string]any)
+			newV := n.(map[string]any)
+			operations = append(operations, diffVariablesOps(oldV, newV, "/variables/")...)
+		}
+		if d.HasChange("access_log_settings") {
+			accessLogSettings := d.Get("access_log_settings").([]any)
+			if len(accessLogSettings) == 1 {
+				operations = append(operations,
+					types.PatchOperation{
+						Op:    types.OpReplace,
+						Path:  aws.String("/accessLogSettings/destinationArn"),
+						Value: aws.String(d.Get("access_log_settings.0.destination_arn").(string)),
+					}, types.PatchOperation{
+						Op:    types.OpReplace,
+						Path:  aws.String("/accessLogSettings/format"),
+						Value: aws.String(d.Get("access_log_settings.0.format").(string)),
+					})
+			} else if len(accessLogSettings) == 0 {
+				operations = append(operations, types.PatchOperation{
+					Op:   types.OpRemove,
+					Path: aws.String("/accessLogSettings"),
+				})
+			}
+		}
+
+		input := apigateway.UpdateStageInput{
+			RestApiId:       aws.String(apiID),
+			StageName:       aws.String(stageName),
+			PatchOperations: operations,
+		}
+
+		output, err := conn.UpdateStage(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating API Gateway Stage (%s): %s", d.Id(), err)
+		}
+
+		if waitForCache && output.CacheClusterStatus != types.CacheClusterStatusNotAvailable {
+			if _, err := waitStageCacheUpdated(ctx, conn, apiID, stageName); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for API Gateway Stage (%s) cache update: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceStageRead(ctx, d, meta)...)
+}

@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-cty/cty/gocty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicationGroupDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElastiCacheClient(ctx)
+
+	v, hasGlobalReplicationGroupID := d.GetOk("global_replication_group_id")
+	if hasGlobalReplicationGroupID {
+		if err := disassociateReplicationGroup(ctx, conn, v.(string), d.Id(), meta.(*conns.AWSClient).Region(ctx), d.Timeout(schema.TimeoutDelete)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	input := &elasticache.DeleteReplicationGroupInput{
+		ReplicationGroupId: aws.String(d.Id()),
+	}
+
+	if v, ok := d.GetOk(names.AttrFinalSnapshotIdentifier); ok {
+		input.FinalSnapshotIdentifier = aws.String(v.(string))
+	}
+
+	// Cache Cluster is creating/deleting or Replication Group is snapshotting
+	// InvalidReplicationGroupState: Cache cluster tf-acc-test-uqhe-003 is not in a valid state to be deleted
+	const (
+		timeout = 10 * time.Minute // 10 minutes should give any creating/deleting cache clusters or snapshots time to complete.
+	)
+	log.Printf("[INFO] Deleting ElastiCache Replication Group: %s", d.Id())
+	_, err := tfresource.RetryWhenIsA[*awstypes.InvalidReplicationGroupStateFault](ctx, timeout, func() (any, error) {
+		return conn.DeleteReplicationGroup(ctx, input)
+	})
+
+	switch {
+	case errs.IsA[*awstypes.ReplicationGroupNotFoundFault](err):
+	case err != nil:
+		return sdkdiag.AppendErrorf(diags, "deleting ElastiCache Replication Group (%s): %s", d.Id(), err)
+	default:
+		if _, err := waitReplicationGroupDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for ElastiCache Replication Group (%s) delete: %s", d.Id(), err)
+		}
+	}
+
+	if hasGlobalReplicationGroupID {
+		if paramGroupName := d.Get(names.AttrParameterGroupName).(string); paramGroupName != "" {
+			if err := deleteParameterGroup(ctx, conn, paramGroupName); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	return diags
+}

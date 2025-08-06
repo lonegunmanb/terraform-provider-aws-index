@@ -1,0 +1,343 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTableUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	o, n := d.GetChange("billing_mode")
+	newBillingMode, oldBillingMode := awstypes.BillingMode(n.(string)), awstypes.BillingMode(o.(string))
+
+	// Global Secondary Index operations must occur in multiple phases
+	// to prevent various error scenarios. If there are no detected required
+	// updates in the Terraform configuration, later validation or API errors
+	// will signal the problems.
+	var gsiUpdates []awstypes.GlobalSecondaryIndexUpdate
+
+	if d.HasChange("global_secondary_index") {
+		var err error
+		o, n := d.GetChange("global_secondary_index")
+		gsiUpdates, err = updateDiffGSI(o.(*schema.Set).List(), n.(*schema.Set).List(), newBillingMode)
+
+		if err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), fmt.Errorf("computing GSI difference: %w", err))
+		}
+	}
+
+	// Phase 1 of Global Secondary Index Operations: Delete Only
+	//  * Delete indexes first to prevent error when simultaneously updating
+	//    BillingMode to PROVISIONED, which requires updating index
+	//    ProvisionedThroughput first, but we have no definition
+	//  * Only 1 online index can be deleted simultaneously per table
+	for _, gsiUpdate := range gsiUpdates {
+		if gsiUpdate.Delete == nil {
+			continue
+		}
+
+		idxName := aws.ToString(gsiUpdate.Delete.IndexName)
+		input := &dynamodb.UpdateTableInput{
+			GlobalSecondaryIndexUpdates: []awstypes.GlobalSecondaryIndexUpdate{gsiUpdate},
+			TableName:                   aws.String(d.Id()),
+		}
+
+		if _, err := conn.UpdateTable(ctx, input); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionDeleting, resNameTable, d.Id(), fmt.Errorf("GSI (%s): %w", idxName, err))
+		}
+
+		if _, err := waitGSIDeleted(ctx, conn, d.Id(), idxName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionWaitingForDeletion, resNameTable, d.Id(), fmt.Errorf("GSI (%s): %w", idxName, err))
+		}
+	}
+
+	// Table Class cannot be changed concurrently with other values
+	if d.HasChange("table_class") {
+		input := dynamodb.UpdateTableInput{
+			TableClass: awstypes.TableClass(d.Get("table_class").(string)),
+			TableName:  aws.String(d.Id()),
+		}
+		_, err := conn.UpdateTable(ctx, &input)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating DynamoDB Table (%s) table class: %s", d.Id(), err)
+		}
+		if _, err := waitTableActive(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating DynamoDB Table (%s) table class: waiting for completion: %s", d.Id(), err)
+		}
+	}
+
+	hasTableUpdate := false
+	input := &dynamodb.UpdateTableInput{
+		TableName: aws.String(d.Id()),
+	}
+
+	if d.HasChanges("billing_mode", "read_capacity", "write_capacity") {
+		hasTableUpdate = true
+
+		capacityMap := map[string]any{
+			"write_capacity": d.Get("write_capacity"),
+			"read_capacity":  d.Get("read_capacity"),
+		}
+
+		input.BillingMode = newBillingMode
+		input.ProvisionedThroughput = expandProvisionedThroughputUpdate(d.Id(), capacityMap, newBillingMode, oldBillingMode)
+	}
+
+	if d.HasChange("deletion_protection_enabled") {
+		hasTableUpdate = true
+		input.DeletionProtectionEnabled = aws.Bool(d.Get("deletion_protection_enabled").(bool))
+	}
+
+	if d.HasChange("on_demand_throughput") {
+		hasTableUpdate = true
+		if v, ok := d.GetOk("on_demand_throughput"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.OnDemandThroughput = expandOnDemandThroughput(v.([]any)[0].(map[string]any))
+		}
+	}
+
+	// make change when
+	//   stream_enabled has change (below) OR
+	//   stream_view_type has change and stream_enabled is true (special case)
+	if !d.HasChange("stream_enabled") && d.HasChange("stream_view_type") {
+		if v, ok := d.Get("stream_enabled").(bool); ok && v {
+			// in order to change stream view type:
+			//   1) stream have already been enabled, and
+			//   2) it must be disabled and then reenabled (otherwise, ValidationException: Table already has an enabled stream)
+			if err := cycleStreamEnabled(ctx, conn, d.Id(), awstypes.StreamViewType(d.Get("stream_view_type").(string)), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange("stream_enabled") {
+		hasTableUpdate = true
+
+		input.StreamSpecification = &awstypes.StreamSpecification{
+			StreamEnabled: aws.Bool(d.Get("stream_enabled").(bool)),
+		}
+		if d.Get("stream_enabled").(bool) {
+			input.StreamSpecification.StreamViewType = awstypes.StreamViewType(d.Get("stream_view_type").(string))
+		}
+	}
+
+	// Phase 2 of Global Secondary Index Operations: Update Only
+	// Cannot create or delete index while updating table ProvisionedThroughput
+	// Must skip all index updates when switching BillingMode from PROVISIONED to PAY_PER_REQUEST
+	// Must update all indexes when switching BillingMode from PAY_PER_REQUEST to PROVISIONED
+	if newBillingMode == awstypes.BillingModeProvisioned {
+		for _, gsiUpdate := range gsiUpdates {
+			if gsiUpdate.Update == nil {
+				continue
+			}
+
+			hasTableUpdate = true
+			input.GlobalSecondaryIndexUpdates = append(input.GlobalSecondaryIndexUpdates, gsiUpdate)
+		}
+	}
+
+	// update only on-demand throughput indexes when switching to PAY_PER_REQUEST
+	if newBillingMode == awstypes.BillingModePayPerRequest {
+		for _, gsiUpdate := range gsiUpdates {
+			if gsiUpdate.Update == nil || (gsiUpdate.Update != nil && gsiUpdate.Update.OnDemandThroughput == nil) {
+				continue
+			}
+
+			hasTableUpdate = true
+			input.GlobalSecondaryIndexUpdates = append(input.GlobalSecondaryIndexUpdates, gsiUpdate)
+		}
+	}
+
+	if hasTableUpdate {
+		_, err := conn.UpdateTable(ctx, input)
+
+		if err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), err)
+		}
+
+		if _, err := waitTableActive(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionWaitingForUpdate, resNameTable, d.Id(), err)
+		}
+
+		for _, gsiUpdate := range gsiUpdates {
+			if gsiUpdate.Update == nil {
+				continue
+			}
+
+			idxName := aws.ToString(gsiUpdate.Update.IndexName)
+
+			if _, err := waitGSIActive(ctx, conn, d.Id(), idxName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionWaitingForUpdate, resNameTable, d.Id(), fmt.Errorf("GSI (%s): %w", idxName, err))
+			}
+		}
+	}
+
+	// Phase 3 of Global Secondary Index Operations: Create Only
+	// Only 1 online index can be created simultaneously per table
+	for _, gsiUpdate := range gsiUpdates {
+		if gsiUpdate.Create == nil {
+			continue
+		}
+
+		idxName := aws.ToString(gsiUpdate.Create.IndexName)
+		input := &dynamodb.UpdateTableInput{
+			AttributeDefinitions:        expandAttributes(d.Get("attribute").(*schema.Set).List()),
+			GlobalSecondaryIndexUpdates: []awstypes.GlobalSecondaryIndexUpdate{gsiUpdate},
+			TableName:                   aws.String(d.Id()),
+		}
+
+		if _, err := conn.UpdateTable(ctx, input); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), fmt.Errorf("creating GSI (%s): %w", idxName, err))
+		}
+
+		if _, err := waitGSIActive(ctx, conn, d.Id(), idxName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), fmt.Errorf("%s GSI (%s): %w", create.ErrActionWaitingForCreation, idxName, err))
+		}
+	}
+
+	if d.HasChange("server_side_encryption") {
+		if replicas, sseSpecification := d.Get("replica").(*schema.Set), expandEncryptAtRestOptions(d.Get("server_side_encryption").([]any)); replicas.Len() > 0 && sseSpecification.KMSMasterKeyId != nil {
+			log.Printf("[DEBUG] Using SSE update on replicas")
+			var replicaUpdates []awstypes.ReplicationGroupUpdate
+			for _, replica := range replicas.List() {
+				tfMap, ok := replica.(map[string]any)
+				if !ok {
+					continue
+				}
+
+				region, ok := tfMap["region_name"].(string)
+				if !ok {
+					continue
+				}
+
+				key, ok := tfMap[names.AttrKMSKeyARN].(string)
+				if !ok || key == "" {
+					continue
+				}
+
+				var input = &awstypes.UpdateReplicationGroupMemberAction{
+					RegionName:     aws.String(region),
+					KMSMasterKeyId: aws.String(key),
+				}
+				var update = awstypes.ReplicationGroupUpdate{Update: input}
+				replicaUpdates = append(replicaUpdates, update)
+			}
+			var updateAction = awstypes.UpdateReplicationGroupMemberAction{
+				KMSMasterKeyId: sseSpecification.KMSMasterKeyId,
+				RegionName:     aws.String(meta.(*conns.AWSClient).Region(ctx)),
+			}
+			var update = awstypes.ReplicationGroupUpdate{
+				Update: &updateAction,
+			}
+			replicaUpdates = append(replicaUpdates, update)
+			input := dynamodb.UpdateTableInput{
+				TableName:      aws.String(d.Id()),
+				ReplicaUpdates: replicaUpdates,
+			}
+			_, err := conn.UpdateTable(ctx, &input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating DynamoDB Table (%s) SSE: %s", d.Id(), err)
+			}
+		} else {
+			log.Printf("[DEBUG] Using normal update for SSE")
+			input := dynamodb.UpdateTableInput{
+				TableName:        aws.String(d.Id()),
+				SSESpecification: sseSpecification,
+			}
+			_, err := conn.UpdateTable(ctx, &input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating DynamoDB Table (%s) SSE: %s", d.Id(), err)
+			}
+		}
+
+		// since we don't update replicas unless there is a KMS key, we need to wait for replica
+		// updates for the scenario where 1) there are replicas, 2) we are updating SSE (such as
+		// disabling), and 3) we have no KMS key
+		if replicas := d.Get("replica").(*schema.Set); replicas.Len() > 0 {
+			var replicaRegions []string
+			for _, replica := range replicas.List() {
+				tfMap, ok := replica.(map[string]any)
+				if !ok {
+					continue
+				}
+				if v, ok := tfMap["region_name"].(string); ok {
+					replicaRegions = append(replicaRegions, v)
+				}
+			}
+			for _, region := range replicaRegions {
+				if _, err := waitReplicaSSEUpdated(ctx, conn, region, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendErrorf(diags, "waiting for DynamoDB Table (%s) replica SSE update in region %q: %s", d.Id(), region, err)
+				}
+			}
+		}
+
+		if _, err := waitSSEUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for DynamoDB Table (%s) SSE update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("ttl") {
+		if err := updateTimeToLive(ctx, conn, d.Id(), d.Get("ttl").([]any), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), err)
+		}
+	}
+
+	replicaTagsChange := false
+	if d.HasChange("replica") {
+		replicaTagsChange = true
+
+		if err := updateReplica(ctx, conn, d); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), err)
+		}
+	}
+
+	if d.HasChange(names.AttrTagsAll) {
+		replicaTagsChange = true
+	}
+
+	if replicaTagsChange {
+		if v, ok := d.Get("replica").(*schema.Set); ok && v.Len() > 0 {
+			if err := updateReplicaTags(ctx, conn, d.Get(names.AttrARN).(string), v.List(), d.Get(names.AttrTagsAll)); err != nil {
+				return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange("point_in_time_recovery") {
+		if err := updatePITR(ctx, conn, d.Id(), d.Get("point_in_time_recovery.0.enabled").(bool), aws.Int32(int32(d.Get("point_in_time_recovery.0.recovery_period_in_days").(int))), meta.(*conns.AWSClient).Region(ctx), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionUpdating, resNameTable, d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceTableRead(ctx, d, meta)...)
+}

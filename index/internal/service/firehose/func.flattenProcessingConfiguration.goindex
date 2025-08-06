@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/firehose
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/firehose"
+	"github.com/aws/aws-sdk-go-v2/service/firehose/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenProcessingConfiguration(pc *types.ProcessingConfiguration, destinationType destinationType, roleARN string) []map[string]any {
+	if pc == nil {
+		return []map[string]any{}
+	}
+
+	processingConfiguration := make([]map[string]any, 1)
+
+	processors := make([]any, len(pc.Processors))
+	for i, p := range pc.Processors {
+		t := p.Type
+		parameters := make([]any, 0)
+
+		// It is necessary to explicitly filter this out
+		// to prevent diffs during routine use and retain the ability
+		// to show diffs if any field has drifted.
+		defaultProcessorParameters := defaultProcessorParameters(destinationType, t, roleARN)
+
+		for _, params := range p.Parameters {
+			name := params.ParameterName
+			value := aws.ToString(params.ParameterValue)
+
+			// Ignore defaults.
+			if v, ok := defaultProcessorParameters[name]; ok && v == value {
+				continue
+			}
+
+			parameters = append(parameters, map[string]any{
+				"parameter_name":  name,
+				"parameter_value": value,
+			})
+		}
+
+		processors[i] = map[string]any{
+			names.AttrType:       t,
+			names.AttrParameters: parameters,
+		}
+	}
+	processingConfiguration[0] = map[string]any{
+		names.AttrEnabled: aws.ToBool(pc.Enabled),
+		"processors":      processors,
+	}
+	return processingConfiguration
+}

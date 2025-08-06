@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kinesisanalytics
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kinesisanalytics"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kinesisanalytics/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func stopApplication(ctx context.Context, conn *kinesisanalytics.Client, application *awstypes.ApplicationDetail) error {
+	applicationARN := aws.ToString(application.ApplicationARN)
+	applicationName := aws.ToString(application.ApplicationName)
+
+	if actual, expected := string(application.ApplicationStatus), string(awstypes.ApplicationStatusRunning); actual != expected {
+		log.Printf("[DEBUG] Kinesis Analytics Application (%s) has status %s. An application can only be stopped if it's in the %s state", applicationARN, actual, expected)
+		return nil
+	}
+
+	input := &kinesisanalytics.StopApplicationInput{
+		ApplicationName: aws.String(applicationName),
+	}
+
+	if _, err := conn.StopApplication(ctx, input); err != nil {
+		return fmt.Errorf("stopping Kinesis Analytics Application (%s): %w", applicationARN, err)
+	}
+
+	if _, err := waitApplicationStopped(ctx, conn, applicationName); err != nil {
+		return fmt.Errorf("waiting for Kinesis Analytics Application (%s) stop: %w", applicationARN, err)
+	}
+
+	return nil
+}

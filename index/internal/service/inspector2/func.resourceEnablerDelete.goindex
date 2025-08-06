@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mitchellh/mapstructure"
+)
+func resourceEnablerDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	client := meta.(*conns.AWSClient)
+	conn := client.Inspector2Client(ctx)
+
+	accountIDs := getAccountIDs(d)
+	admin := slices.Contains(accountIDs, client.AccountID(ctx))
+	members := tfslices.Filter(accountIDs, func(s string) bool {
+		return s != client.AccountID(ctx)
+	})
+	if len(members) > 0 {
+		// Catch legacy case mixing admin account and member accounts
+		if admin {
+			diags = append(diags, errs.NewWarningDiagnostic(
+				"Inconsistent Amazon Inspector State",
+				"The Organization Administrator Account cannot be deleted while there are associated member accounts. Disabling Inspector for the member accounts. ",
+			))
+		}
+
+		diags = append(diags, disableAccounts(ctx, conn, d, members)...)
+		if diags.HasError() {
+			return diags
+		}
+	} else if admin {
+		diags = append(diags, disableAccounts(ctx, conn, d, []string{client.AccountID(ctx)})...)
+	}
+
+	return diags
+}

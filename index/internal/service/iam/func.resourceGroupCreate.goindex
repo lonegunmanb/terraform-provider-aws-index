@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &iam.CreateGroupInput{
+		GroupName: aws.String(name),
+		Path:      aws.String(d.Get(names.AttrPath).(string)),
+	}
+
+	output, err := conn.CreateGroup(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating IAM Group (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Group.GroupName))
+
+	_, err = tfresource.RetryWhenNotFound(ctx, propagationTimeout, func() (any, error) {
+		return findGroupByName(ctx, conn, d.Id())
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for IAM Group (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceGroupRead(ctx, d, meta)...)
+}

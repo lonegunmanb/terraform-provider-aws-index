@@ -1,0 +1,448 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"log"
+	"reflect"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandTopicRulePayload(d *schema.ResourceData) *awstypes.TopicRulePayload {
+	var actions []awstypes.Action
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("cloudwatch_alarm").(*schema.Set).List() {
+		action := expandCloudWatchAlarmAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{CloudwatchAlarm: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get(names.AttrCloudWatchLogs).(*schema.Set).List() {
+		action := expandCloudWatchLogsAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{CloudwatchLogs: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("cloudwatch_metric").(*schema.Set).List() {
+		action := expandCloudWatchMetricAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{CloudwatchMetric: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("dynamodb").(*schema.Set).List() {
+		action := expandDynamoDBAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{DynamoDB: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("dynamodbv2").(*schema.Set).List() {
+		action := expandDynamoDBv2Action([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{DynamoDBv2: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("elasticsearch").(*schema.Set).List() {
+		action := expandElasticsearchAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Elasticsearch: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("firehose").(*schema.Set).List() {
+		action := expandFirehoseAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Firehose: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("http").(*schema.Set).List() {
+		action := expandHTTPAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Http: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("iot_analytics").(*schema.Set).List() {
+		action := expandAnalyticsAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{IotAnalytics: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("iot_events").(*schema.Set).List() {
+		action := expandEventsAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{IotEvents: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("kafka").(*schema.Set).List() {
+		action := expandKafkaAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Kafka: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("kinesis").(*schema.Set).List() {
+		action := expandKinesisAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Kinesis: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("lambda").(*schema.Set).List() {
+		action := expandLambdaAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Lambda: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("republish").(*schema.Set).List() {
+		action := expandRepublishAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Republish: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("s3").(*schema.Set).List() {
+		action := expandS3Action([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{S3: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("sns").(*schema.Set).List() {
+		action := expandSNSAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Sns: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("sqs").(*schema.Set).List() {
+		action := expandSQSAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Sqs: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("step_functions").(*schema.Set).List() {
+		action := expandStepFunctionsAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{StepFunctions: action})
+	}
+
+	// Legacy root attribute handling
+	for _, tfMapRaw := range d.Get("timestream").(*schema.Set).List() {
+		action := expandTimestreamAction([]any{tfMapRaw})
+
+		if action == nil {
+			continue
+		}
+
+		actions = append(actions, awstypes.Action{Timestream: action})
+	}
+
+	// Prevent sending empty Actions:
+	// - missing required field, CreateTopicRuleInput.TopicRulePayload.Actions
+	if len(actions) == 0 {
+		actions = []awstypes.Action{}
+	}
+
+	var iotErrorAction *awstypes.Action
+	if errorAction := d.Get("error_action").([]any); len(errorAction) > 0 {
+		for k, v := range errorAction[0].(map[string]any) {
+			switch k {
+			case "cloudwatch_alarm":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandCloudWatchAlarmAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{CloudwatchAlarm: action}
+				}
+			case "cloudwatch_logs":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandCloudWatchLogsAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{CloudwatchLogs: action}
+				}
+			case "cloudwatch_metric":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandCloudWatchMetricAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{CloudwatchMetric: action}
+				}
+			case "dynamodb":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandDynamoDBAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{DynamoDB: action}
+				}
+			case "dynamodbv2":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandDynamoDBv2Action([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{DynamoDBv2: action}
+				}
+			case "elasticsearch":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandElasticsearchAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Elasticsearch: action}
+				}
+			case "firehose":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandFirehoseAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Firehose: action}
+				}
+			case "http":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandHTTPAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Http: action}
+				}
+			case "iot_analytics":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandAnalyticsAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{IotAnalytics: action}
+				}
+			case "iot_events":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandEventsAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{IotEvents: action}
+				}
+			case "kafka":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandKafkaAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Kafka: action}
+				}
+			case "kinesis":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandKinesisAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Kinesis: action}
+				}
+			case "lambda":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandLambdaAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Lambda: action}
+				}
+			case "republish":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandRepublishAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Republish: action}
+				}
+			case "s3":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandS3Action([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{S3: action}
+				}
+			case "sns":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandSNSAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Sns: action}
+				}
+			case "sqs":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandSQSAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Sqs: action}
+				}
+			case "step_functions":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandStepFunctionsAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{StepFunctions: action}
+				}
+			case "timestream":
+				for _, tfMapRaw := range v.([]any) {
+					action := expandTimestreamAction([]any{tfMapRaw})
+
+					if action == nil {
+						continue
+					}
+
+					iotErrorAction = &awstypes.Action{Timestream: action}
+				}
+			}
+		}
+	}
+
+	return &awstypes.TopicRulePayload{
+		Actions:          actions,
+		AwsIotSqlVersion: aws.String(d.Get("sql_version").(string)),
+		Description:      aws.String(d.Get(names.AttrDescription).(string)),
+		ErrorAction:      iotErrorAction,
+		RuleDisabled:     aws.Bool(!d.Get(names.AttrEnabled).(bool)),
+		Sql:              aws.String(d.Get("sql").(string)),
+	}
+}

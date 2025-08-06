@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/securitylake
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/securitylake"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/securitylake/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *customLogSourceResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	var data customLogSourceResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if err := data.InitFromID(); err != nil {
+		response.Diagnostics.AddError("parsing resource ID", err.Error())
+
+		return
+	}
+
+	conn := r.Meta().SecurityLakeClient(ctx)
+
+	sourceName := data.SourceName.ValueString()
+	customLogSource, err := findCustomLogSourceBySourceName(ctx, conn, sourceName)
+
+	if tfresource.NotFound(err) {
+		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		response.State.RemoveResource(ctx)
+
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading Security Lake Custom Log Source (%s)", sourceName), err.Error())
+
+		return
+	}
+
+	var dataFromRead customLogSourceSourceModel
+	response.Diagnostics.Append(fwflex.Flatten(ctx, customLogSource, &dataFromRead)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	data.Attributes = dataFromRead.Attributes
+	data.ProviderDetails = dataFromRead.Provider
+	data.SourceVersion = dataFromRead.SourceVersion
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

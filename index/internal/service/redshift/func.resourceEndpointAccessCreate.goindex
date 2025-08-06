@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointAccessCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	createOpts := redshift.CreateEndpointAccessInput{
+		EndpointName:    aws.String(d.Get("endpoint_name").(string)),
+		SubnetGroupName: aws.String(d.Get("subnet_group_name").(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrVPCSecurityGroupIDs); ok && v.(*schema.Set).Len() > 0 {
+		createOpts.VpcSecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk(names.AttrClusterIdentifier); ok {
+		createOpts.ClusterIdentifier = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrResourceOwner); ok {
+		createOpts.ResourceOwner = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateEndpointAccess(ctx, &createOpts)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Redshift endpoint access: %s", err)
+	}
+
+	d.SetId(aws.ToString(createOpts.EndpointName))
+	log.Printf("[INFO] Redshift endpoint access ID: %s", d.Id())
+
+	if _, err := waitEndpointAccessActive(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Redshift Endpoint Access (%s) to be active: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceEndpointAccessRead(ctx, d, meta)...)
+}

@@ -1,0 +1,215 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OpenSearchClient(ctx)
+
+	// The API doesn't check for duplicate names
+	// so w/out this check Create would act as upsert
+	// and might cause duplicate domain to appear in state
+	resp, err := findDomainByName(ctx, conn, d.Get(names.AttrDomainName).(string))
+	if err == nil {
+		return sdkdiag.AppendErrorf(diags, "OpenSearch Domain %q already exists", aws.ToString(resp.DomainName))
+	}
+
+	input := &opensearch.CreateDomainInput{
+		DomainName: aws.String(d.Get(names.AttrDomainName).(string)),
+		TagList:    getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrEngineVersion); ok {
+		input.EngineVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrIPAddressType); ok {
+		input.IPAddressType = awstypes.IPAddressType(v.(string))
+	}
+
+	if v, ok := d.GetOk("access_policies"); ok {
+		policy, err := structure.NormalizeJsonString(v.(string))
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "policy (%s) is invalid JSON: %s", policy, err)
+		}
+
+		input.AccessPolicies = aws.String(policy)
+	}
+
+	if v, ok := d.GetOk("advanced_options"); ok {
+		input.AdvancedOptions = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("advanced_security_options"); ok {
+		input.AdvancedSecurityOptions = expandAdvancedSecurityOptions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("auto_tune_options"); ok && len(v.([]any)) > 0 {
+		input.AutoTuneOptions = expandAutoTuneOptionsInput(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("ebs_options"); ok {
+		options := v.([]any)
+
+		if len(options) == 1 {
+			if options[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside ebs_options")
+			}
+
+			s := options[0].(map[string]any)
+			input.EBSOptions = expandEBSOptions(s)
+		}
+	}
+
+	if v, ok := d.GetOk("encrypt_at_rest"); ok {
+		options := v.([]any)
+		if options[0] == nil {
+			return sdkdiag.AppendErrorf(diags, "At least one field is expected inside encrypt_at_rest")
+		}
+
+		s := options[0].(map[string]any)
+		input.EncryptionAtRestOptions = expandEncryptAtRestOptions(s)
+	}
+
+	if v, ok := d.GetOk("cluster_config"); ok {
+		config := v.([]any)
+
+		if len(config) == 1 {
+			if config[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside cluster_config")
+			}
+			m := config[0].(map[string]any)
+			input.ClusterConfig = expandClusterConfig(m)
+		}
+	}
+
+	if v, ok := d.GetOk("node_to_node_encryption"); ok {
+		options := v.([]any)
+
+		s := options[0].(map[string]any)
+		input.NodeToNodeEncryptionOptions = expandNodeToNodeEncryptionOptions(s)
+	}
+
+	if v, ok := d.GetOk("snapshot_options"); ok {
+		options := v.([]any)
+
+		if len(options) == 1 {
+			if options[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside snapshot_options")
+			}
+
+			o := options[0].(map[string]any)
+
+			snapshotOptions := awstypes.SnapshotOptions{
+				AutomatedSnapshotStartHour: aws.Int32(int32(o["automated_snapshot_start_hour"].(int))),
+			}
+
+			input.SnapshotOptions = &snapshotOptions
+		}
+	}
+
+	if v, ok := d.GetOk("software_update_options"); ok {
+		input.SoftwareUpdateOptions = expandSoftwareUpdateOptions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("vpc_options"); ok {
+		options := v.([]any)
+		if options[0] == nil {
+			return sdkdiag.AppendErrorf(diags, "At least one field is expected inside vpc_options")
+		}
+
+		s := options[0].(map[string]any)
+		input.VPCOptions = expandVPCOptions(s)
+	}
+
+	if v, ok := d.GetOk("log_publishing_options"); ok {
+		input.LogPublishingOptions = expandLogPublishingOptions(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("domain_endpoint_options"); ok {
+		input.DomainEndpointOptions = expandDomainEndpointOptions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("cognito_options"); ok {
+		input.CognitoOptions = expandCognitoOptions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("off_peak_window_options"); ok && len(v.([]any)) > 0 {
+		input.OffPeakWindowOptions = expandOffPeakWindowOptions(v.([]any)[0].(map[string]any))
+
+		// This option is only available when modifying a domain created prior to February 16, 2023, not when creating a new domain.
+		// An off-peak window is required for a domain and cannot be disabled.
+		if input.OffPeakWindowOptions != nil {
+			input.OffPeakWindowOptions.Enabled = aws.Bool(true)
+		}
+	}
+
+	// IAM Roles can take some time to propagate if set in AccessPolicies and created in the same terraform
+	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateDomain(ctx, input)
+	},
+		domainErrorRetryable)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating OpenSearch Domain: %s", err)
+	}
+	out := outputRaw.(*opensearch.CreateDomainOutput)
+
+	d.SetId(aws.ToString(out.DomainStatus.ARN))
+
+	log.Printf("[DEBUG] Waiting for OpenSearch Domain %q to be created", d.Id())
+	if err := waitForDomainCreation(ctx, conn, d.Get(names.AttrDomainName).(string), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for OpenSearch Domain (%s) to be created: %s", d.Id(), err)
+	}
+
+	log.Printf("[DEBUG] OpenSearch Domain %q created", d.Id())
+
+	if v, ok := d.GetOk("auto_tune_options"); ok && len(v.([]any)) > 0 {
+		input := &opensearch.UpdateDomainConfigInput{
+			DomainName:      aws.String(d.Get(names.AttrDomainName).(string)),
+			AutoTuneOptions: expandAutoTuneOptions(v.([]any)[0].(map[string]any)),
+		}
+
+		log.Printf("[DEBUG] Updating OpenSearch Domain config: %#v", input)
+		_, err := tfresource.RetryWhen(ctx, propagationTimeout, func() (any, error) {
+			return conn.UpdateDomainConfig(ctx, input)
+		},
+			domainErrorRetryable)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating OpenSearch Domain (%s): %s", d.Id(), err)
+		}
+
+		if err := waitForDomainUpdate(ctx, conn, d.Get(names.AttrDomainName).(string), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for OpenSearch Domain (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceDomainRead(ctx, d, meta)...)
+}

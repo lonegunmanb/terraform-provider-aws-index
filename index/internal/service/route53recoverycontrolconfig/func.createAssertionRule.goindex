@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53recoverycontrolconfig
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	r53rcc "github.com/aws/aws-sdk-go-v2/service/route53recoverycontrolconfig"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53recoverycontrolconfig/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func createAssertionRule(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53RecoveryControlConfigClient(ctx)
+
+	assertionRule := &awstypes.NewAssertionRule{
+		Name:             aws.String(d.Get(names.AttrName).(string)),
+		ControlPanelArn:  aws.String(d.Get("control_panel_arn").(string)),
+		WaitPeriodMs:     aws.Int32(int32(d.Get("wait_period_ms").(int))),
+		RuleConfig:       testAccSafetyRuleConfig_expandRule(d.Get("rule_config").([]any)[0].(map[string]any)),
+		AssertedControls: flex.ExpandStringValueList(d.Get("asserted_controls").([]any)),
+	}
+
+	input := &r53rcc.CreateSafetyRuleInput{
+		ClientToken:   aws.String(id.UniqueId()),
+		AssertionRule: assertionRule,
+	}
+
+	output, err := conn.CreateSafetyRule(ctx, input)
+	result := output.AssertionRule
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Route53 Recovery Control Config Assertion Rule: %s", err)
+	}
+
+	if result == nil {
+		return sdkdiag.AppendErrorf(diags, "creating Route53 Recovery Control Config Assertion Rule empty response")
+	}
+
+	d.SetId(aws.ToString(result.SafetyRuleArn))
+
+	if _, err := waitSafetyRuleCreated(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Route53 Recovery Control Config Assertion Rule (%s) to be Deployed: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceSafetyRuleRead(ctx, d, meta)...)
+}

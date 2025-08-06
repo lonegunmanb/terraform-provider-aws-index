@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitDistributionDeployed(ctx context.Context, conn *cloudfront.Client, id string) (*cloudfront.GetDistributionOutput, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending:    []string{distributionStatusInProgress},
+		Target:     []string{distributionStatusDeployed},
+		Refresh:    statusDistribution(ctx, conn, id),
+		Timeout:    90 * time.Minute,
+		MinTimeout: 15 * time.Second,
+		Delay:      30 * time.Second,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*cloudfront.GetDistributionOutput); ok {
+		return output, err
+	}
+
+	return nil, err
+}

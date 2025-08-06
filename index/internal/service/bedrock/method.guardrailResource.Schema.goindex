@@ -1,0 +1,307 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrock
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrock"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *guardrailResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"blocked_input_messaging": schema.StringAttribute{
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 500),
+				},
+			},
+			"blocked_outputs_messaging": schema.StringAttribute{
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 500),
+				},
+			},
+			names.AttrCreatedAt: schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrDescription: schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(0, 200),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"guardrail_arn": framework.ARNAttributeComputedOnly(),
+			"guardrail_id":  framework.IDAttribute(),
+			names.AttrKMSKeyARN: schema.StringAttribute{
+				Optional: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 2048),
+				},
+			},
+			names.AttrName: schema.StringAttribute{
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 50),
+					stringvalidator.RegexMatches(guardrailNameRegex, ""),
+				},
+			},
+			names.AttrStatus: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.GuardrailStatus](),
+				Computed:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
+			names.AttrVersion: schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"content_policy_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[contentPolicyConfig](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"filters_config": schema.SetNestedBlock{
+							CustomType: fwtypes.NewSetNestedObjectTypeOf[filtersConfig](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"input_strength": schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailFilterStrength](),
+									},
+									"output_strength": schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailFilterStrength](),
+									},
+									names.AttrType: schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailContentFilterType](),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"contextual_grounding_policy_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[contextualGroundingPolicyConfig](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"filters_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[contextualGroundingFiltersConfig](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"threshold": schema.Float64Attribute{
+										Required: true,
+										Validators: []validator.Float64{
+											float64validator.AtLeast(filtersConfigThresholdMin),
+										},
+									},
+									names.AttrType: schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailContextualGroundingFilterType](),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"sensitive_information_policy_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[sensitiveInformationPolicyConfig](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"pii_entities_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[piiEntitiesConfig](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrAction: schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailSensitiveInformationAction](),
+									},
+									names.AttrType: schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailPiiEntityType](),
+									},
+								},
+							},
+						},
+						"regexes_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[regexesConfig](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrAction: schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailSensitiveInformationAction](),
+									},
+									names.AttrDescription: schema.StringAttribute{
+										Optional: true,
+										Computed: true,
+										Validators: []validator.String{
+											stringvalidator.LengthBetween(1, 1000),
+										},
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseStateForUnknown(),
+										},
+									},
+									names.AttrName: schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.LengthBetween(1, 100),
+										},
+									},
+									"pattern": schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.LengthAtLeast(1),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"topic_policy_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[topicPolicyConfig](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"topics_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[topicsConfig](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtLeast(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"definition": schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.LengthBetween(1, 200),
+										},
+									},
+									"examples": schema.ListAttribute{
+										ElementType: types.StringType,
+										Optional:    true,
+										Computed:    true,
+										Validators: []validator.List{
+											listvalidator.SizeAtLeast(0),
+											listvalidator.ValueStringsAre(
+												stringvalidator.LengthBetween(1, 100),
+											),
+										},
+										PlanModifiers: []planmodifier.List{
+											listplanmodifier.UseStateForUnknown(),
+										},
+									},
+									names.AttrName: schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.LengthBetween(1, 100),
+											stringvalidator.RegexMatches(topicsConfigNameRegex, ""),
+										},
+									},
+									names.AttrType: schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailTopicType](),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"word_policy_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[wordPolicyConfig](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"managed_word_lists_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[managedWordListsConfig](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrType: schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GuardrailManagedWordsType](),
+									},
+								},
+							},
+						},
+						"words_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[wordsConfig](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"text": schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.LengthAtLeast(1),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+	}
+}

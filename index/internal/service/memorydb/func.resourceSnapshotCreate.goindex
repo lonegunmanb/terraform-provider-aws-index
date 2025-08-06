@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/memorydb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/memorydb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/memorydb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSnapshotCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).MemoryDBClient(ctx)
+
+	name := create.Name(d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string))
+	input := &memorydb.CreateSnapshotInput{
+		ClusterName:  aws.String(d.Get(names.AttrClusterName).(string)),
+		SnapshotName: aws.String(name),
+		Tags:         getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyARN); ok {
+		input.KmsKeyId = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateSnapshot(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating MemoryDB Snapshot (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if _, err := waitSnapshotAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for MemoryDB Snapshot (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceSnapshotRead(ctx, d, meta)...)
+}

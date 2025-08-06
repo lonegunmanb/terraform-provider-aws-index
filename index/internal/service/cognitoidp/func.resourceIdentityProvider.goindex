@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIdentityProvider() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceIdentityProviderCreate,
+		ReadWithoutTimeout:   resourceIdentityProviderRead,
+		UpdateWithoutTimeout: resourceIdentityProviderUpdate,
+		DeleteWithoutTimeout: resourceIdentityProviderDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			"attribute_mapping": {
+				Type:     schema.TypeMap,
+				Optional: true,
+				Computed: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+			"idp_identifiers": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 50,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+					ValidateFunc: validation.All(
+						validation.StringLenBetween(1, 40),
+						validation.StringMatch(regexache.MustCompile(`^[\w\s+=.@-]+$`), "see https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_CreateIdentityProvider.html#API_CreateIdentityProvider_RequestSyntax"),
+					),
+				},
+			},
+			"provider_details": {
+				Type:     schema.TypeMap,
+				Required: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			names.AttrProviderName: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validIdentityProviderName,
+			},
+			"provider_type": {
+				Type:             schema.TypeString,
+				Required:         true,
+				ForceNew:         true,
+				ValidateDiagFunc: enum.Validate[awstypes.IdentityProviderTypeType](),
+			},
+			names.AttrUserPoolID: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+		},
+	}
+}

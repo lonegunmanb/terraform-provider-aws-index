@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"iter"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfiters "github.com/hashicorp/terraform-provider-aws/internal/iters"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceParameterGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	const (
+		maxParamModifyChunk = 20
+	)
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	if d.HasChange(names.AttrParameter) {
+		o, n := d.GetChange(names.AttrParameter)
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		for chunk := range parameterChunksForModify(expandParameters(ns.Difference(os).List()), maxParamModifyChunk) {
+			input := rds.ModifyDBParameterGroupInput{
+				DBParameterGroupName: aws.String(d.Id()),
+				Parameters:           chunk,
+			}
+
+			_, err := conn.ModifyDBParameterGroup(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "modifying RDS DB Parameter Group (%s): %s", d.Id(), err)
+			}
+		}
+
+		toRemove := map[string]types.Parameter{}
+
+		for _, p := range expandParameters(os.List()) {
+			if p.ParameterName != nil {
+				toRemove[aws.ToString(p.ParameterName)] = p
+			}
+		}
+
+		for _, p := range expandParameters(ns.List()) {
+			if p.ParameterName != nil {
+				delete(toRemove, aws.ToString(p.ParameterName))
+			}
+		}
+
+		// Reset parameters that have been removed.
+		for chunk := range slices.Chunk(tfmaps.Values(toRemove), maxParamModifyChunk) {
+			input := rds.ResetDBParameterGroupInput{
+				DBParameterGroupName: aws.String(d.Id()),
+				Parameters:           chunk,
+				ResetAllParameters:   aws.Bool(false),
+			}
+
+			_, err := conn.ResetDBParameterGroup(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "resetting RDS DB Parameter Group (%s): %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceParameterGroupRead(ctx, d, meta)...)
+}

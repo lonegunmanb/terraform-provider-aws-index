@@ -1,0 +1,35 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findPITRByTableName(ctx context.Context, conn *dynamodb.Client, tableName string, optFns ...func(*dynamodb.Options)) (*awstypes.PointInTimeRecoveryDescription, error) {
+	input := &dynamodb.DescribeContinuousBackupsInput{
+		TableName: aws.String(tableName),
+	}
+
+	output, err := conn.DescribeContinuousBackups(ctx, input, optFns...)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil || output.ContinuousBackupsDescription == nil || output.ContinuousBackupsDescription.PointInTimeRecoveryDescription == nil {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	return output.ContinuousBackupsDescription.PointInTimeRecoveryDescription, nil
+}

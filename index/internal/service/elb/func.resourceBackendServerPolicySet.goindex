@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceBackendServerPolicySet(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBClient(ctx)
+
+	instancePort := d.Get("instance_port").(int)
+	lbName := d.Get("load_balancer_name").(string)
+	id := backendServerPolicyCreateResourceID(lbName, instancePort)
+	input := &elasticloadbalancing.SetLoadBalancerPoliciesForBackendServerInput{
+		InstancePort:     aws.Int32(int32(instancePort)),
+		LoadBalancerName: aws.String(lbName),
+	}
+
+	if v, ok := d.GetOk("policy_names"); ok && v.(*schema.Set).Len() > 0 {
+		input.PolicyNames = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	_, err := conn.SetLoadBalancerPoliciesForBackendServer(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ELB Classic Backend Server Policy (%s): %s", id, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(id)
+	}
+
+	return append(diags, resourceBackendServerPolicyRead(ctx, d, meta)...)
+}

@@ -1,0 +1,120 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/securityhub
+import (
+	"context"
+	"errors"
+	"log"
+	"math"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandSecurityControlCustomParameter(tfMap map[string]any) types.SecurityControlCustomParameter {
+	apiObject := types.SecurityControlCustomParameter{
+		Parameters: make(map[string]types.ParameterConfiguration),
+	}
+
+	if v, ok := tfMap["security_control_id"].(string); ok {
+		apiObject.SecurityControlId = aws.String(v)
+	}
+
+	if v, ok := tfMap[names.AttrParameter].(*schema.Set); ok && v.Len() > 0 {
+		for _, tfMapRaw := range v.List() {
+			tfMap, ok := tfMapRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			parameterConfiguration := types.ParameterConfiguration{}
+
+			if v, ok := tfMap["value_type"].(string); ok {
+				parameterConfiguration.ValueType = types.ParameterValueType(v)
+			}
+
+			var parameterValue types.ParameterValue
+
+			if v, ok := tfMap["bool"].([]any); ok && len(v) > 0 { // block defined
+				parameterValue = &types.ParameterValueMemberBoolean{}
+				if v[0] != nil { // block defined with non-defaults
+					val := v[0].(map[string]any)[names.AttrValue]
+					parameterValue = &types.ParameterValueMemberBoolean{Value: val.(bool)}
+				}
+			} else if v, ok := tfMap["double"].([]any); ok && len(v) > 0 {
+				parameterValue = &types.ParameterValueMemberDouble{}
+				if v[0] != nil {
+					val := v[0].(map[string]any)[names.AttrValue]
+					parameterValue = &types.ParameterValueMemberDouble{Value: val.(float64)}
+				}
+			} else if v, ok := tfMap["enum"].([]any); ok && len(v) > 0 {
+				parameterValue = &types.ParameterValueMemberEnum{}
+				if v[0] != nil {
+					val := v[0].(map[string]any)[names.AttrValue]
+					parameterValue = &types.ParameterValueMemberEnum{Value: val.(string)}
+				}
+			} else if v, ok := tfMap["string"].([]any); ok && len(v) > 0 {
+				parameterValue = &types.ParameterValueMemberString{}
+				if v[0] != nil {
+					val := v[0].(map[string]any)[names.AttrValue]
+					parameterValue = &types.ParameterValueMemberString{Value: val.(string)}
+				}
+			} else if v, ok := tfMap["int"].([]any); ok && len(v) > 0 {
+				parameterValue = &types.ParameterValueMemberInteger{}
+				if v[0] != nil {
+					val := v[0].(map[string]any)[names.AttrValue]
+					parameterValue = &types.ParameterValueMemberInteger{Value: int32(val.(int))}
+				}
+			} else if v, ok := tfMap["int_list"].([]any); ok && len(v) > 0 {
+				parameterValue = &types.ParameterValueMemberIntegerList{}
+				if v[0] != nil {
+					val := v[0].(map[string]any)[names.AttrValue]
+					var vals []int32
+					for _, s := range val.([]any) {
+						vals = append(vals, int32(s.(int)))
+					}
+					parameterValue = &types.ParameterValueMemberIntegerList{Value: vals}
+				}
+			} else if v, ok := tfMap["enum_list"].([]any); ok && len(v) > 0 {
+				parameterValue = &types.ParameterValueMemberEnumList{}
+				if v[0] != nil {
+					val := v[0].(map[string]any)[names.AttrValue]
+					var vals []string
+					for _, s := range val.([]any) {
+						vals = append(vals, s.(string))
+					}
+					parameterValue = &types.ParameterValueMemberEnumList{Value: vals}
+				}
+			} else if v, ok := tfMap["string_list"].([]any); ok && len(v) > 0 {
+				parameterValue = &types.ParameterValueMemberStringList{}
+				if v[0] != nil {
+					val := v[0].(map[string]any)[names.AttrValue]
+					var vals []string
+					for _, s := range val.([]any) {
+						vals = append(vals, s.(string))
+					}
+					parameterValue = &types.ParameterValueMemberStringList{Value: vals}
+				}
+			}
+
+			parameterConfiguration.Value = parameterValue
+
+			if v, ok := tfMap[names.AttrName].(string); ok && len(v) > 0 {
+				apiObject.Parameters[v] = parameterConfiguration
+			}
+		}
+	}
+
+	return apiObject
+}

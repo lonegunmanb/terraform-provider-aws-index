@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVolumeAttachmentDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	if _, ok := d.GetOk(names.AttrSkipDestroy); ok {
+		return diags
+	}
+
+	deviceName := d.Get(names.AttrDeviceName).(string)
+	instanceID := d.Get(names.AttrInstanceID).(string)
+	volumeID := d.Get("volume_id").(string)
+
+	if _, ok := d.GetOk("stop_instance_before_detaching"); ok {
+		if err := stopVolumeAttachmentInstance(ctx, conn, instanceID, false, instanceStopTimeout); err != nil {
+			return sdkdiag.AppendErrorf(diags, "deleting EBS Volume (%s) Attachment (%s): %s", volumeID, instanceID, err)
+		}
+	}
+
+	input := ec2.DetachVolumeInput{
+		Device:     aws.String(deviceName),
+		Force:      aws.Bool(d.Get("force_detach").(bool)),
+		InstanceId: aws.String(instanceID),
+		VolumeId:   aws.String(volumeID),
+	}
+
+	log.Printf("[DEBUG] Deleting EBS Volume Attachment: %s", d.Id())
+	_, err := conn.DetachVolume(ctx, &input)
+
+	if tfawserr.ErrMessageContains(err, errCodeIncorrectState, "available") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting EBS Volume (%s) Attachment (%s): %s", volumeID, instanceID, err)
+	}
+
+	if _, err := waitVolumeAttachmentDeleted(ctx, conn, volumeID, instanceID, deviceName, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EBS Volume (%s) Attachment (%s) delete: %s", volumeID, instanceID, err)
+	}
+
+	return diags
+}

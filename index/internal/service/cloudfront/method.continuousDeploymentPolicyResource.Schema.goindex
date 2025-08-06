@@ -1,0 +1,127 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *continuousDeploymentPolicyResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN: framework.ARNAttributeComputedOnly(),
+			names.AttrEnabled: schema.BoolAttribute{
+				Required: true,
+			},
+			"etag": schema.StringAttribute{
+				Computed: true,
+			},
+			names.AttrID: framework.IDAttribute(),
+			"last_modified_time": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"staging_distribution_dns_names": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[stagingDistributionDNSNamesModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtLeast(1),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"items": schema.SetAttribute{
+							CustomType:  fwtypes.SetOfStringType,
+							Optional:    true,
+							ElementType: types.StringType,
+						},
+						"quantity": schema.Int64Attribute{
+							Required: true,
+						},
+					},
+				},
+			},
+			"traffic_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[trafficConfigModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrType: schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.ContinuousDeploymentPolicyType](),
+							Required:   true,
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"single_header_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[continuousDeploymentSingleHeaderConfigModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrHeader: schema.StringAttribute{
+										Required: true,
+									},
+									names.AttrValue: schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+						"single_weight_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[continuousDeploymentSingleWeightConfigModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrWeight: schema.Float64Attribute{
+										Required: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"session_stickiness_config": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[sessionStickinessConfigModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"idle_ttl": schema.Int64Attribute{
+													Required: true,
+												},
+												"maximum_ttl": schema.Int64Attribute{
+													Required: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

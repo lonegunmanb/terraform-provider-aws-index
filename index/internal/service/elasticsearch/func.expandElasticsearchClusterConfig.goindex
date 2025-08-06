@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticsearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	elasticsearch "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandElasticsearchClusterConfig(tfMap map[string]any) *awstypes.ElasticsearchClusterConfig { // nosemgrep:ci.elasticsearch-in-func-name
+	apiObject := &awstypes.ElasticsearchClusterConfig{}
+
+	if v, ok := tfMap["cold_storage_options"].([]any); ok && len(v) > 0 {
+		apiObject.ColdStorageOptions = expandColdStorageOptions(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["dedicated_master_enabled"]; ok {
+		isEnabled := v.(bool)
+		apiObject.DedicatedMasterEnabled = aws.Bool(isEnabled)
+
+		if isEnabled {
+			if v, ok := tfMap["dedicated_master_count"]; ok && v.(int) > 0 {
+				apiObject.DedicatedMasterCount = aws.Int32(int32(v.(int)))
+			}
+			if v, ok := tfMap["dedicated_master_type"]; ok && v.(string) != "" {
+				apiObject.DedicatedMasterType = awstypes.ESPartitionInstanceType(v.(string))
+			}
+		}
+	}
+
+	if v, ok := tfMap[names.AttrInstanceCount]; ok {
+		apiObject.InstanceCount = aws.Int32(int32(v.(int)))
+	}
+	if v, ok := tfMap[names.AttrInstanceType]; ok {
+		apiObject.InstanceType = awstypes.ESPartitionInstanceType(v.(string))
+	}
+
+	if v, ok := tfMap["zone_awareness_enabled"]; ok {
+		isEnabled := v.(bool)
+		apiObject.ZoneAwarenessEnabled = aws.Bool(isEnabled)
+
+		if isEnabled {
+			if v, ok := tfMap["zone_awareness_config"]; ok {
+				apiObject.ZoneAwarenessConfig = expandZoneAwarenessConfig(v.([]any))
+			}
+		}
+	}
+
+	if v, ok := tfMap["warm_enabled"]; ok {
+		isEnabled := v.(bool)
+		apiObject.WarmEnabled = aws.Bool(isEnabled)
+
+		if isEnabled {
+			if v, ok := tfMap["warm_count"]; ok {
+				apiObject.WarmCount = aws.Int32(int32(v.(int)))
+			}
+
+			if v, ok := tfMap["warm_type"]; ok {
+				apiObject.WarmType = awstypes.ESWarmPartitionInstanceType(v.(string))
+			}
+		}
+	}
+
+	return apiObject
+}

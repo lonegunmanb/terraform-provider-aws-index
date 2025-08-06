@@ -1,0 +1,106 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHealthCheckUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &route53.UpdateHealthCheckInput{
+			HealthCheckId: aws.String(d.Id()),
+		}
+
+		if d.HasChange("child_health_threshold") {
+			input.HealthThreshold = aws.Int32(int32(d.Get("child_health_threshold").(int)))
+		}
+
+		if d.HasChange("child_healthchecks") {
+			input.ChildHealthChecks = flex.ExpandStringValueSet(d.Get("child_healthchecks").(*schema.Set))
+		}
+
+		if d.HasChanges("cloudwatch_alarm_name", "cloudwatch_alarm_region") ||
+			d.HasChange(names.AttrTriggers) && d.Get("cloudwatch_alarm_name").(string) != "" {
+			alarmIdentifier := &awstypes.AlarmIdentifier{
+				Name:   aws.String(d.Get("cloudwatch_alarm_name").(string)),
+				Region: awstypes.CloudWatchRegion(d.Get("cloudwatch_alarm_region").(string)),
+			}
+
+			input.AlarmIdentifier = alarmIdentifier
+		}
+
+		if d.HasChange("disabled") {
+			input.Disabled = aws.Bool(d.Get("disabled").(bool))
+		}
+
+		if d.HasChange("enable_sni") {
+			input.EnableSNI = aws.Bool(d.Get("enable_sni").(bool))
+		}
+
+		if d.HasChange("failure_threshold") {
+			input.FailureThreshold = aws.Int32(int32(d.Get("failure_threshold").(int)))
+		}
+
+		if d.HasChange("fqdn") {
+			input.FullyQualifiedDomainName = aws.String(d.Get("fqdn").(string))
+		}
+
+		if d.HasChange("insufficient_data_health_status") {
+			input.InsufficientDataHealthStatus = awstypes.InsufficientDataHealthStatus(d.Get("insufficient_data_health_status").(string))
+		}
+
+		if d.HasChange("invert_healthcheck") {
+			input.Inverted = aws.Bool(d.Get("invert_healthcheck").(bool))
+		}
+
+		if d.HasChange(names.AttrIPAddress) {
+			input.IPAddress = aws.String(d.Get(names.AttrIPAddress).(string))
+		}
+
+		if d.HasChange(names.AttrPort) {
+			input.Port = aws.Int32(int32(d.Get(names.AttrPort).(int)))
+		}
+
+		if d.HasChange("regions") {
+			input.Regions = flex.ExpandStringyValueSet[awstypes.HealthCheckRegion](d.Get("regions").(*schema.Set))
+		}
+
+		if d.HasChange("resource_path") {
+			input.ResourcePath = aws.String(d.Get("resource_path").(string))
+		}
+
+		if d.HasChange("search_string") {
+			input.SearchString = aws.String(d.Get("search_string").(string))
+		}
+
+		_, err := conn.UpdateHealthCheck(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Route53 Health Check (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceHealthCheckRead(ctx, d, meta)...)
+}

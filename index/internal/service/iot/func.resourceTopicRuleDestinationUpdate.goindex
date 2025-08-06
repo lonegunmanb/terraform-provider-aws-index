@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTopicRuleDestinationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	if d.HasChange(names.AttrEnabled) {
+		input := &iot.UpdateTopicRuleDestinationInput{
+			Arn:    aws.String(d.Id()),
+			Status: awstypes.TopicRuleDestinationStatusEnabled,
+		}
+		waiter := waitTopicRuleDestinationEnabled
+
+		if _, ok := d.GetOk(names.AttrEnabled); !ok {
+			input.Status = awstypes.TopicRuleDestinationStatusDisabled
+			waiter = waitTopicRuleDestinationDisabled
+		}
+
+		_, err := conn.UpdateTopicRuleDestination(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating IoT Topic Rule Destination (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waiter(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for IoT Topic Rule Destination (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceTopicRuleDestinationRead(ctx, d, meta)...)
+}

@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInboundConnectionDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OpenSearchClient(ctx)
+
+	if d.Get("connection_status").(string) == string(awstypes.InboundConnectionStatusCodePendingAcceptance) {
+		log.Printf("[DEBUG] Rejecting OpenSearch Inbound Connection: %s", d.Id())
+		_, err := conn.RejectInboundConnection(ctx, &opensearch.RejectInboundConnectionInput{
+			ConnectionId: aws.String(d.Id()),
+		})
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "rejecting OpenSearch Inbound Connection (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitInboundConnectionRejected(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for OpenSearch Inbound Connection (%s) reject: %s", d.Id(), err)
+		}
+
+		return diags
+	}
+
+	log.Printf("[DEBUG] Deleting OpenSearch Inbound Connection: %s", d.Id())
+	_, err := conn.DeleteInboundConnection(ctx, &opensearch.DeleteInboundConnectionInput{
+		ConnectionId: aws.String(d.Id()),
+	})
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting OpenSearch Inbound Connection (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitInboundConnectionDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for OpenSearch Inbound Connection (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

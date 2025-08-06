@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func createCrawlerInput(ctx context.Context, d *schema.ResourceData, crawlerName string) (*glue.CreateCrawlerInput, error) {
+	crawlerInput := &glue.CreateCrawlerInput{
+		Name:         aws.String(crawlerName),
+		DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+		Role:         aws.String(d.Get(names.AttrRole).(string)),
+		Tags:         getTagsIn(ctx),
+		Targets:      expandCrawlerTargets(d),
+	}
+	if description, ok := d.GetOk(names.AttrDescription); ok {
+		crawlerInput.Description = aws.String(description.(string))
+	}
+	if schedule, ok := d.GetOk(names.AttrSchedule); ok {
+		crawlerInput.Schedule = aws.String(schedule.(string))
+	}
+	if classifiers, ok := d.GetOk("classifiers"); ok {
+		crawlerInput.Classifiers = flex.ExpandStringValueList(classifiers.([]any))
+	}
+
+	crawlerInput.SchemaChangePolicy = expandSchemaChangePolicy(d.Get("schema_change_policy").([]any))
+
+	if tablePrefix, ok := d.GetOk("table_prefix"); ok {
+		crawlerInput.TablePrefix = aws.String(tablePrefix.(string))
+	}
+	if configuration, ok := d.GetOk(names.AttrConfiguration); ok {
+		crawlerInput.Configuration = aws.String(configuration.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrConfiguration); ok {
+		configuration, err := structure.NormalizeJsonString(v)
+		if err != nil {
+			return nil, fmt.Errorf("configuration contains an invalid JSON: %v", err)
+		}
+		crawlerInput.Configuration = aws.String(configuration)
+	}
+
+	if securityConfiguration, ok := d.GetOk("security_configuration"); ok {
+		crawlerInput.CrawlerSecurityConfiguration = aws.String(securityConfiguration.(string))
+	}
+
+	if v, ok := d.GetOk("lineage_configuration"); ok {
+		crawlerInput.LineageConfiguration = expandCrawlerLineageConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("lake_formation_configuration"); ok {
+		crawlerInput.LakeFormationConfiguration = expandLakeFormationConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("recrawl_policy"); ok {
+		crawlerInput.RecrawlPolicy = expandCrawlerRecrawlPolicy(v.([]any))
+	}
+
+	return crawlerInput, nil
+}

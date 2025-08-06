@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kinesisanalyticsv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesisanalyticsv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kinesisanalyticsv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceApplicationSnapshotCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KinesisAnalyticsV2Client(ctx)
+
+	applicationName := d.Get("application_name").(string)
+	snapshotName := d.Get("snapshot_name").(string)
+	id := applicationSnapshotCreateResourceID(applicationName, snapshotName)
+	input := &kinesisanalyticsv2.CreateApplicationSnapshotInput{
+		ApplicationName: aws.String(applicationName),
+		SnapshotName:    aws.String(snapshotName),
+	}
+
+	_, err := conn.CreateApplicationSnapshot(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Kinesis Analytics v2 Application Snapshot (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	snapshot, err := waitSnapshotCreated(ctx, conn, applicationName, snapshotName, d.Timeout(schema.TimeoutCreate))
+
+	if err != nil {
+		if snapshot != nil && snapshot.SnapshotCreationTimestamp != nil {
+			// SnapshotCreationTimestamp is required for deletion, so persist to state now in case of subsequent errors and destroy being called without refresh.
+			d.Set("snapshot_creation_timestamp", aws.ToTime(snapshot.SnapshotCreationTimestamp).Format(time.RFC3339))
+		}
+
+		return sdkdiag.AppendErrorf(diags, "waiting for Kinesis Analytics v2 Application Snapshot (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceApplicationSnapshotRead(ctx, d, meta)...)
+}

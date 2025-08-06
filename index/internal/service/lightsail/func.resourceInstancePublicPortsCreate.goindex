@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstancePublicPortsCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	var portInfos []types.PortInfo
+	if v, ok := d.GetOk("port_info"); ok && v.(*schema.Set).Len() > 0 {
+		portInfos = expandPortInfos(v.(*schema.Set).List())
+	}
+
+	input := &lightsail.PutInstancePublicPortsInput{
+		InstanceName: aws.String(d.Get("instance_name").(string)),
+		PortInfos:    portInfos,
+	}
+
+	_, err := conn.PutInstancePublicPorts(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "unable to create public ports for instance %s: %s", d.Get("instance_name").(string), err)
+	}
+
+	var buffer bytes.Buffer
+	for _, portInfo := range portInfos {
+		fmt.Fprintf(&buffer, "%s-%d-%d\n", string(portInfo.Protocol), int64(portInfo.FromPort), int64(portInfo.ToPort))
+	}
+
+	d.SetId(fmt.Sprintf("%s-%d", d.Get("instance_name").(string), create.StringHashcode(buffer.String())))
+
+	return append(diags, resourceInstancePublicPortsRead(ctx, d, meta)...)
+}

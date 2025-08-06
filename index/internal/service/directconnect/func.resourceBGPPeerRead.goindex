@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceBGPPeerRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+	vifID := d.Get("virtual_interface_id").(string)
+	addrFamily := awstypes.AddressFamily(d.Get("address_family").(string))
+	asn := int32(d.Get("bgp_asn").(int))
+	bgpPeer, err := findBGPPeerByThreePartKey(ctx, conn, vifID, addrFamily, asn)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Direct Connect BGP Peer (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Direct Connect BGP Peer (%s): %s", d.Id(), err)
+	}
+
+	d.Set("amazon_address", bgpPeer.AmazonAddress)
+	d.Set("aws_device", bgpPeer.AwsDeviceV2)
+	d.Set("bgp_auth_key", bgpPeer.AuthKey)
+	d.Set("bgp_peer_id", bgpPeer.BgpPeerId)
+	d.Set("bgp_status", bgpPeer.BgpStatus)
+	d.Set("customer_address", bgpPeer.CustomerAddress)
+
+	return diags
+}

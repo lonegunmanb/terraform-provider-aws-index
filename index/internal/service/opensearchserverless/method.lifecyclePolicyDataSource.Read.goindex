@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearchserverless
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *lifecyclePolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	conn := d.Meta().OpenSearchServerlessClient(ctx)
+
+	var data lifecyclePolicyDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	out, err := findLifecyclePolicyByNameAndType(ctx, conn, data.Name.ValueString(), data.Type.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionReading, DSNameLifecyclePolicy, data.Name.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, out, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	data.ID = flex.StringToFramework(ctx, out.Name)
+	createdDate := time.UnixMilli(aws.ToInt64(out.CreatedDate))
+	data.CreatedDate = flex.StringValueToFramework(ctx, createdDate.Format(time.RFC3339))
+
+	lastModifiedDate := time.UnixMilli(aws.ToInt64(out.LastModifiedDate))
+	data.LastModifiedDate = flex.StringValueToFramework(ctx, lastModifiedDate.Format(time.RFC3339))
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}

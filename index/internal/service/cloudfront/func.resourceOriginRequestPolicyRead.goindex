@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOriginRequestPolicyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	output, err := findOriginRequestPolicyByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudFront Origin Request Policy (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudFront Origin Request Policy (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, originRequestPolicyARN(ctx, meta.(*conns.AWSClient), d.Id()))
+	apiObject := output.OriginRequestPolicy.OriginRequestPolicyConfig
+	d.Set(names.AttrComment, apiObject.Comment)
+	if apiObject.CookiesConfig != nil {
+		if err := d.Set("cookies_config", []any{flattenOriginRequestPolicyCookiesConfig(apiObject.CookiesConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting cookies_config: %s", err)
+		}
+	} else {
+		d.Set("cookies_config", nil)
+	}
+	d.Set("etag", output.ETag)
+	if apiObject.HeadersConfig != nil {
+		if err := d.Set("headers_config", []any{flattenOriginRequestPolicyHeadersConfig(apiObject.HeadersConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting headers_config: %s", err)
+		}
+	} else {
+		d.Set("headers_config", nil)
+	}
+	d.Set(names.AttrName, apiObject.Name)
+	if apiObject.QueryStringsConfig != nil {
+		if err := d.Set("query_strings_config", []any{flattenOriginRequestPolicyQueryStringsConfig(apiObject.QueryStringsConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting query_strings_config: %s", err)
+		}
+	} else {
+		d.Set("query_strings_config", nil)
+	}
+
+	return diags
+}

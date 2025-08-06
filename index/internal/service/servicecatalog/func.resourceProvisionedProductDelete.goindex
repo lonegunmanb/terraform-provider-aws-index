@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProvisionedProductDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	input := &servicecatalog.TerminateProvisionedProductInput{
+		TerminateToken:       aws.String(id.UniqueId()),
+		ProvisionedProductId: aws.String(d.Id()),
+	}
+
+	if v, ok := d.GetOk("accept_language"); ok {
+		input.AcceptLanguage = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("ignore_errors"); ok {
+		input.IgnoreErrors = v.(bool)
+	}
+
+	if v, ok := d.GetOk("retain_physical_resources"); ok {
+		input.RetainPhysicalResources = v.(bool)
+	}
+
+	_, err := conn.TerminateProvisionedProduct(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "terminating Service Catalog Provisioned Product (%s): %s", d.Id(), err)
+	}
+
+	err = waitProvisionedProductTerminated(ctx, conn, d.Get("accept_language").(string), d.Id(), "", d.Timeout(schema.TimeoutDelete))
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Service Catalog Provisioned Product (%s) to be terminated: %s", d.Id(), err)
+	}
+
+	return diags
+}

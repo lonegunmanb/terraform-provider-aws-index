@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidentity
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentity"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentity/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePoolProviderPrincipalTagUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIdentityClient(ctx)
+	log.Print("[DEBUG] Updating Cognito Identity Provider Principal Tags")
+
+	poolId, providerName, err := DecodePoolProviderPrincipalTagsID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Cognito Identity Provider Principal Tags (%s): %s", d.Id(), err)
+	}
+
+	params := &cognitoidentity.SetPrincipalTagAttributeMapInput{
+		IdentityPoolId:       aws.String(poolId),
+		IdentityProviderName: aws.String(providerName),
+	}
+
+	if d.HasChanges("principal_tags", "use_defaults") {
+		params.PrincipalTags = flex.ExpandStringValueMap(d.Get("principal_tags").(map[string]any))
+		params.UseDefaults = aws.Bool(d.Get("use_defaults").(bool))
+
+		_, err = conn.SetPrincipalTagAttributeMap(ctx, params)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Cognito Identity Provider Principal Tags (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourcePoolProviderPrincipalTagRead(ctx, d, meta)...)
+}

@@ -1,0 +1,117 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/drs
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/drs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/drs/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *replicationConfigurationTemplateResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN: framework.ARNAttributeComputedOnly(),
+			"associate_default_security_group": schema.BoolAttribute{
+				Required: true,
+			},
+			"auto_replicate_new_disks": schema.BoolAttribute{
+				Computed: true,
+				Optional: true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"bandwidth_throttling": schema.Int64Attribute{
+				Required: true,
+			},
+			"create_public_ip": schema.BoolAttribute{
+				Required: true,
+			},
+			"data_plane_routing": schema.StringAttribute{
+				Required:   true,
+				CustomType: fwtypes.StringEnumType[awstypes.ReplicationConfigurationDataPlaneRouting](),
+			},
+			"default_large_staging_disk_type": schema.StringAttribute{
+				Required:   true,
+				CustomType: fwtypes.StringEnumType[awstypes.ReplicationConfigurationDefaultLargeStagingDiskType](),
+			},
+			"ebs_encryption": schema.StringAttribute{
+				Required:   true,
+				CustomType: fwtypes.StringEnumType[awstypes.ReplicationConfigurationEbsEncryption](),
+			},
+			"ebs_encryption_key_arn": schema.StringAttribute{
+				Optional: true,
+			},
+			names.AttrID: framework.IDAttribute(),
+			"replication_server_instance_type": schema.StringAttribute{
+				Required: true,
+			},
+			"replication_servers_security_groups_ids": schema.ListAttribute{
+				CustomType:  fwtypes.ListOfStringType,
+				Required:    true,
+				ElementType: types.StringType,
+			},
+			"staging_area_subnet_id": schema.StringAttribute{
+				Required: true,
+			},
+
+			"staging_area_tags": tftags.TagsAttributeRequired(),
+			names.AttrTags:      tftags.TagsAttribute(),
+			names.AttrTagsAll:   tftags.TagsAttributeComputedOnly(),
+			"use_dedicated_replication_server": schema.BoolAttribute{
+				Required: true,
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"pit_policy": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[pitPolicy](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrEnabled: schema.BoolAttribute{
+							Optional: true,
+						},
+						names.AttrInterval: schema.Int64Attribute{
+							Required: true,
+						},
+						"retention_duration": schema.Int64Attribute{
+							Required: true,
+						},
+						"rule_id": schema.Int64Attribute{
+							Optional: true,
+						},
+						"units": schema.StringAttribute{
+							Required:   true,
+							CustomType: fwtypes.StringEnumType[awstypes.PITPolicyRuleUnits](),
+						},
+					},
+				},
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+	}
+}

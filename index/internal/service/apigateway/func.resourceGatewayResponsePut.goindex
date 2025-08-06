@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGatewayResponsePut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	input := apigateway.PutGatewayResponseInput{
+		ResponseType: types.GatewayResponseType(d.Get("response_type").(string)),
+		RestApiId:    aws.String(d.Get("rest_api_id").(string)),
+	}
+
+	if v, ok := d.GetOk("response_parameters"); ok && len(v.(map[string]any)) > 0 {
+		input.ResponseParameters = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("response_templates"); ok && len(v.(map[string]any)) > 0 {
+		input.ResponseTemplates = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrStatusCode); ok {
+		input.StatusCode = aws.String(v.(string))
+	}
+
+	_, err := conn.PutGatewayResponse(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting API Gateway Gateway Response: %s", err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(fmt.Sprintf("aggr-%s-%s", d.Get("rest_api_id").(string), d.Get("response_type").(string)))
+	}
+
+	return append(diags, resourceGatewayResponseRead(ctx, d, meta)...)
+}

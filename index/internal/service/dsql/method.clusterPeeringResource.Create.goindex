@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dsql
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dsql"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dsql/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *clusterPeeringResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data clusterPeeringResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().DSQLClient(ctx)
+
+	// Check if the cluster exists and is in a valid state to create a peering connection.
+	id := fwflex.StringValueFromFramework(ctx, data.Identifier)
+	output, err := findClusterByID(ctx, conn, id)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading Aurora DSQL Cluster (%s)", id), err.Error())
+
+		return
+	}
+
+	if status := output.Status; status != awstypes.ClusterStatusPendingSetup {
+		response.Diagnostics.AddError(fmt.Sprintf("Aurora DSQL Cluster (%s) is not in a valid state to create a peering", id), string(status))
+
+		return
+	}
+
+	input := dsql.UpdateClusterInput{
+		ClientToken:           aws.String(sdkid.UniqueId()),
+		Identifier:            aws.String(id),
+		MultiRegionProperties: new(awstypes.MultiRegionProperties),
+	}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, input.MultiRegionProperties)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	_, err = conn.UpdateCluster(ctx, &input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating Aurora DSQL Cluster (%s) peering", id), err.Error())
+
+		return
+	}
+
+	output, err = waitClusterPeeringCreated(ctx, conn, data.Identifier.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
+
+	if err == nil && output.MultiRegionProperties == nil {
+		err = tfresource.NewEmptyResultError(nil)
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for Aurora DSQL Cluster (%s) peering create", id), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

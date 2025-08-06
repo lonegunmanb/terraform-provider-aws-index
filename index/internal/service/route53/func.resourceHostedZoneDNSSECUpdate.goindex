@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHostedZoneDNSSECUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	if d.HasChange("signing_status") {
+		signingStatus := d.Get("signing_status").(string)
+		timeout := d.Timeout(schema.TimeoutUpdate)
+
+		if signingStatus == serveSignatureSigning {
+			if err := hostedZoneDNSSECEnable(ctx, conn, d.Id(), timeout); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		} else {
+			if err := hostedZoneDNSSECDisable(ctx, conn, d.Id(), timeout); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+
+		if _, err := waitHostedZoneDNSSECStatusUpdated(ctx, conn, d.Id(), signingStatus); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Route 53 Hosted Zone DNSSEC (%s) signing status update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceHostedZoneDNSSECRead(ctx, d, meta)...)
+}

@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/identitystore
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/identitystore"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+)
+func (d *groupsDataSource) Read(ctx context.Context, request datasource.ReadRequest, response *datasource.ReadResponse) {
+	var data groupsDataSourceModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := d.Meta().IdentityStoreClient(ctx)
+
+	input := &identitystore.ListGroupsInput{
+		IdentityStoreId: fwflex.StringFromFramework(ctx, data.IdentityStoreID),
+	}
+
+	var output *identitystore.ListGroupsOutput
+	pages := identitystore.NewListGroupsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			response.Diagnostics.AddError("listing IdentityStore Groups", err.Error())
+
+			return
+		}
+
+		if output == nil {
+			output = page
+		} else {
+			output.Groups = append(output.Groups, page.Groups...)
+		}
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

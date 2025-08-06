@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSecurityProfileCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID := d.Get(names.AttrInstanceID).(string)
+	securityProfileName := d.Get(names.AttrName).(string)
+	input := &connect.CreateSecurityProfileInput{
+		InstanceId:          aws.String(instanceID),
+		SecurityProfileName: aws.String(securityProfileName),
+		Tags:                getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrPermissions); ok && v.(*schema.Set).Len() > 0 {
+		input.Permissions = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	output, err := conn.CreateSecurityProfile(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Connect Security Profile (%s): %s", securityProfileName, err)
+	}
+
+	id := securityProfileCreateResourceID(instanceID, aws.ToString(output.SecurityProfileId))
+	d.SetId(id)
+
+	return append(diags, resourceSecurityProfileRead(ctx, d, meta)...)
+}

@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceVPNConnectionRouteCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	cidrBlock := d.Get("destination_cidr_block").(string)
+	vpnConnectionID := d.Get("vpn_connection_id").(string)
+	id := vpnConnectionRouteCreateResourceID(cidrBlock, vpnConnectionID)
+	input := ec2.CreateVpnConnectionRouteInput{
+		DestinationCidrBlock: aws.String(cidrBlock),
+		VpnConnectionId:      aws.String(vpnConnectionID),
+	}
+
+	_, err := conn.CreateVpnConnectionRoute(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EC2 VPN Connection Route (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitVPNConnectionRouteCreated(ctx, conn, vpnConnectionID, cidrBlock); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EC2 VPN Connection Route (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceVPNConnectionRouteRead(ctx, d, meta)...)
+}

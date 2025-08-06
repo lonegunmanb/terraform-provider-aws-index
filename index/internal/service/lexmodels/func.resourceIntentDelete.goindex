@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexmodels
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIntentDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LexModelsClient(ctx)
+
+	log.Printf("[DEBUG] Deleting Lex Model Intent: %s", d.Id())
+	_, err := tfresource.RetryWhenIsA[*awstypes.ConflictException](ctx, d.Timeout(schema.TimeoutDelete), func() (any, error) {
+		return conn.DeleteIntent(ctx, &lexmodelbuildingservice.DeleteIntentInput{
+			Name: aws.String(d.Id()),
+		})
+	})
+
+	if errs.IsA[*awstypes.NotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Lex Model Intent (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitIntentDeleted(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Lex Model Intent (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

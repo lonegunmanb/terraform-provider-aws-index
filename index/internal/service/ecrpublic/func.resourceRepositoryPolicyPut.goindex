@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecrpublic
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecrpublic"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ecrpublic/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRepositoryPolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ECRPublicClient(ctx)
+
+	policy, err := structure.NormalizeJsonString(d.Get(names.AttrPolicy).(string))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "policy (%s) is invalid JSON: %s", policy, err)
+	}
+
+	repositoryName := d.Get(names.AttrRepositoryName).(string)
+	input := &ecrpublic.SetRepositoryPolicyInput{
+		PolicyText:     aws.String(policy),
+		RepositoryName: aws.String(repositoryName),
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, policyPutTimeout,
+		func() (any, error) {
+			return conn.SetRepositoryPolicy(ctx, input)
+		},
+		func(err error) (bool, error) {
+			if errs.IsAErrorMessageContains[*awstypes.InvalidParameterException](err, "Invalid repository policy provided") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ECR Public Repository (%s) Policy: %s", repositoryName, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(aws.ToString(outputRaw.(*ecrpublic.SetRepositoryPolicyOutput).RepositoryName))
+	}
+
+	return append(diags, resourceRepositoryPolicyRead(ctx, d, meta)...)
+}

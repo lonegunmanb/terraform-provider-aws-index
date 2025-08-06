@@ -1,0 +1,90 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRecordCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	zoneID := cleanZoneID(d.Get("zone_id").(string))
+	zoneRecord, err := findHostedZoneByID(ctx, conn, zoneID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Route 53 Hosted Zone (%s): %s", zoneID, err)
+	}
+
+	// Protect existing DNS records which might be managed in another way.
+	// Use UPSERT only if the overwrite flag is true or if the current action is an update
+	// Else CREATE is used and fail if the same record exists.
+	var action awstypes.ChangeAction
+	if d.Get("allow_overwrite").(bool) || !d.IsNewResource() {
+		action = awstypes.ChangeActionUpsert
+	} else {
+		action = awstypes.ChangeActionCreate
+	}
+	input := &route53.ChangeResourceRecordSetsInput{
+		ChangeBatch: &awstypes.ChangeBatch{
+			Changes: []awstypes.Change{
+				{
+					Action:            action,
+					ResourceRecordSet: expandResourceRecordSet(d, aws.ToString(zoneRecord.HostedZone.Name)),
+				},
+			},
+			Comment: aws.String("Managed by Terraform"),
+		},
+		HostedZoneId: aws.String(cleanZoneID(aws.ToString(zoneRecord.HostedZone.Id))),
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.NoSuchHostedZone](ctx, 1*time.Minute, func() (any, error) {
+		return conn.ChangeResourceRecordSets(ctx, input)
+	})
+
+	if v, ok := errs.As[*awstypes.InvalidChangeBatch](err); ok && len(v.Messages) > 0 {
+		err = fmt.Errorf("%s: %w", v.ErrorCode(), errors.Join(tfslices.ApplyToAll(v.Messages, errors.New)...))
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Route53 Record: %s", err)
+	}
+
+	vars := []string{
+		zoneID,
+		strings.ToLower(d.Get(names.AttrName).(string)),
+		d.Get(names.AttrType).(string),
+	}
+	if v, ok := d.GetOk("set_identifier"); ok {
+		vars = append(vars, v.(string))
+	}
+	d.SetId(strings.Join(vars, "_"))
+
+	if output := outputRaw.(*route53.ChangeResourceRecordSetsOutput); output.ChangeInfo != nil {
+		if _, err := waitChangeInsync(ctx, conn, aws.ToString(output.ChangeInfo.Id), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Route 53 Record (%s) synchronize: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceRecordRead(ctx, d, meta)...)
+}

@@ -1,0 +1,151 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceLFTagResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().LakeFormationClient(ctx)
+
+	var plan ResourceLFTagResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := &lakeformation.AddLFTagsToResourceInput{}
+
+	if !plan.CatalogID.IsNull() {
+		in.CatalogId = fwflex.StringFromFramework(ctx, plan.CatalogID)
+	}
+
+	lftagger := newLFTagTagger(&plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	res := lftagger.expandResource(ctx, &resp.Diagnostics)
+	in.Resource = res
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	lfTag, lfDiags := plan.LFTag.ToPtr(ctx)
+	resp.Diagnostics.Append(lfDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in.LFTags = []awstypes.LFTagPair{
+		{
+			TagKey: fwflex.StringFromFramework(ctx, lfTag.Key),
+			TagValues: []string{
+				lfTag.Value.ValueString(),
+			},
+		},
+	}
+
+	var output *lakeformation.AddLFTagsToResourceOutput
+	err := retry.RetryContext(ctx, IAMPropagationTimeout, func() *retry.RetryError {
+		var err error
+		output, err = conn.AddLFTagsToResource(ctx, in)
+		if err != nil {
+			if errs.IsA[*awstypes.ConcurrentModificationException](err) || errs.IsA[*awstypes.AccessDeniedException](err) {
+				return retry.RetryableError(err)
+			}
+
+			return retry.NonRetryableError(err)
+		}
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		output, err = conn.AddLFTagsToResource(ctx, in)
+	}
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LakeFormation, create.ErrActionCreating, ResNameResourceLFTag, prettify(in), err),
+			err.Error(),
+		)
+		return
+	}
+
+	if output != nil && len(output.Failures) > 0 {
+		var failureDiags diag.Diagnostics
+		for _, v := range output.Failures {
+			if v.LFTag == nil || v.Error == nil {
+				continue
+			}
+
+			errSummary := fmt.Errorf("catalog id:%s, tag key:%s, value:%+v", aws.ToString(v.LFTag.CatalogId), aws.ToString(v.LFTag.TagKey), v.LFTag.TagValues)
+			failureDiags.AddError(
+				create.ProblemStandardMessage(names.LakeFormation, create.ErrActionCreating, ResNameResourceLFTag, prettify(in), errSummary),
+				fmt.Sprintf("%s: %s", aws.ToString(v.Error.ErrorCode), aws.ToString(v.Error.ErrorMessage)))
+		}
+		resp.Diagnostics.Append(failureDiags...)
+		return
+	}
+
+	state := plan
+
+	id := strconv.Itoa(create.StringHashcode(prettify(in)))
+	state.ID = fwflex.StringValueToFramework(ctx, id)
+
+	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
+	outputRaw, err := tfresource.RetryWhenNotFound(ctx, createTimeout, func() (any, error) {
+		return findResourceLFTagByID(ctx, conn, state.CatalogID.ValueString(), res)
+	})
+
+	out := outputRaw.(*lakeformation.GetResourceLFTagsOutput)
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LakeFormation, create.ErrActionSetting, ResNameResourceLFTag, state.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	outputTag := lftagger.findTag(ctx, out, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	state.LFTag = outputTag
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+}

@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/globalaccelerator
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/globalaccelerator"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/globalaccelerator/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCustomRoutingListenerDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlobalAcceleratorClient(ctx)
+
+	log.Printf("[DEBUG] Deleting Global Accelerator Custom Routing Listener (%s)", d.Id())
+	_, err := conn.DeleteCustomRoutingListener(ctx, &globalaccelerator.DeleteCustomRoutingListenerInput{
+		ListenerArn: aws.String(d.Id()),
+	})
+
+	if errs.IsA[*awstypes.ListenerNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Global Accelerator Custom Routing Listener (%s): %s", d.Id(), err)
+	}
+
+	// Deleting a listener triggers the accelerator to change status to InPending.
+	acceleratorARN := d.Get("accelerator_arn").(string)
+	if _, err := waitCustomRoutingAcceleratorDeployed(ctx, conn, acceleratorARN, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Global Accelerator Custom Routing Accelerator (%s) deploy: %s", acceleratorARN, err)
+	}
+
+	return diags
+}

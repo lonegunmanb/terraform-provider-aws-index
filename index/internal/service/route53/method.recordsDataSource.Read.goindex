@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+)
+func (d *recordsDataSource) Read(ctx context.Context, request datasource.ReadRequest, response *datasource.ReadResponse) {
+	var data recordsDataSourceModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := d.Meta().Route53Client(ctx)
+
+	hostedZoneID := fwflex.StringValueFromFramework(ctx, data.ZoneID)
+	input := route53.ListResourceRecordSetsInput{
+		HostedZoneId: aws.String(hostedZoneID),
+	}
+	filter := tfslices.PredicateTrue[*awstypes.ResourceRecordSet]()
+	if !data.NameRegex.IsNull() {
+		filter = func(v *awstypes.ResourceRecordSet) bool {
+			return data.NameRegex.ValueRegexp().MatchString(aws.ToString(v.Name))
+		}
+	}
+
+	output, err := findResourceRecordSets(ctx, conn, &input, tfslices.PredicateTrue[*route53.ListResourceRecordSetsOutput](), filter)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("listing Route 53 Records (%s)", hostedZoneID), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(
+		ctx,
+		struct {
+			ResourceRecordSets []awstypes.ResourceRecordSet
+		}{
+			ResourceRecordSets: output,
+		},
+		&data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

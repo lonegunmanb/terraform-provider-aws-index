@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findSecurityGroupRuleMatch(p awstypes.IpPermission, securityGroupRules []awstypes.SecurityGroupRule, ruleType securityGroupRuleType) string {
+	for _, r := range securityGroupRules {
+		if ruleType == securityGroupRuleTypeIngress && aws.ToBool(r.IsEgress) {
+			continue
+		}
+
+		if p.ToPort != nil && r.ToPort != nil && aws.ToInt32(p.ToPort) != aws.ToInt32(r.ToPort) {
+			continue
+		}
+
+		if p.FromPort != nil && r.FromPort != nil && aws.ToInt32(p.FromPort) != aws.ToInt32(r.FromPort) {
+			continue
+		}
+
+		if p.IpProtocol != nil && r.IpProtocol != nil && aws.ToString(p.IpProtocol) != aws.ToString(r.IpProtocol) {
+			continue
+		}
+
+		// SecurityGroupRule has only a single source or destination set.
+		if r.CidrIpv4 != nil {
+			if len(p.IpRanges) == 1 && aws.ToString(p.IpRanges[0].CidrIp) == aws.ToString(r.CidrIpv4) {
+				if len(p.Ipv6Ranges) == 0 && len(p.PrefixListIds) == 0 && len(p.UserIdGroupPairs) == 0 {
+					return aws.ToString(r.SecurityGroupRuleId)
+				}
+			}
+		} else if r.CidrIpv6 != nil {
+			if len(p.Ipv6Ranges) == 1 && aws.ToString(p.Ipv6Ranges[0].CidrIpv6) == aws.ToString(r.CidrIpv6) {
+				if len(p.IpRanges) == 0 && len(p.PrefixListIds) == 0 && len(p.UserIdGroupPairs) == 0 {
+					return aws.ToString(r.SecurityGroupRuleId)
+				}
+			}
+		} else if r.PrefixListId != nil {
+			if len(p.PrefixListIds) == 1 && aws.ToString(p.PrefixListIds[0].PrefixListId) == aws.ToString(r.PrefixListId) {
+				if len(p.IpRanges) == 0 && len(p.Ipv6Ranges) == 0 && len(p.UserIdGroupPairs) == 0 {
+					return aws.ToString(r.SecurityGroupRuleId)
+				}
+			}
+		} else if r.ReferencedGroupInfo != nil {
+			if len(p.UserIdGroupPairs) == 1 && aws.ToString(p.UserIdGroupPairs[0].GroupId) == aws.ToString(r.ReferencedGroupInfo.GroupId) {
+				if len(p.IpRanges) == 0 && len(p.Ipv6Ranges) == 0 && len(p.PrefixListIds) == 0 {
+					return aws.ToString(r.SecurityGroupRuleId)
+				}
+			}
+		}
+	}
+
+	return ""
+}

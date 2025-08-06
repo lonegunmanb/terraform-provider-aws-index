@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/waf
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/waf"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/waf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIPSetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	output, err := newRetryer(conn).RetryWithToken(ctx, func(token *string) (any, error) {
+		input := &waf.CreateIPSetInput{
+			ChangeToken: token,
+			Name:        aws.String(name),
+		}
+
+		return conn.CreateIPSet(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating WAF IPSet (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.(*waf.CreateIPSetOutput).IPSet.IPSetId))
+
+	if v, ok := d.GetOk("ip_set_descriptors"); ok && v.(*schema.Set).Len() > 0 {
+		if err := updateIPSet(ctx, conn, d.Id(), nil, v.(*schema.Set).List()); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceIPSetRead(ctx, d, meta)...)
+}

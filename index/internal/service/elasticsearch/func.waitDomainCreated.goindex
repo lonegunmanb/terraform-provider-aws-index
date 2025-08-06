@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticsearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	elasticsearch "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitDomainCreated(ctx context.Context, conn *elasticsearch.Client, domainName string, timeout time.Duration) (*awstypes.ElasticsearchDomainStatus, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.DomainProcessingStatusTypeCreating),
+		Target:  enum.Slice(awstypes.DomainProcessingStatusTypeActive),
+		Refresh: statusDomainProcessing(ctx, conn, domainName),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.ElasticsearchDomainStatus); ok {
+		if v := output.ChangeProgressDetails; v != nil {
+			tfresource.SetLastError(err, fmt.Errorf("%s: %s", v.ConfigChangeStatus, aws.ToString(v.Message)))
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}

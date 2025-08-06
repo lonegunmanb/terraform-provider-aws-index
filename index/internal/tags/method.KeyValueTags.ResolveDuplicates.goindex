@@ -1,0 +1,92 @@
+package github.com/hashicorp/terraform-provider-aws/internal/tags
+import (
+	"context"
+	"fmt"
+	"maps"
+	"net/url"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/hashicorp/go-cty/cty"
+	fwdiag "github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (tags KeyValueTags) ResolveDuplicates(ctx context.Context, defaultConfig *DefaultConfig, ignoreConfig *IgnoreConfig, d schemaResourceData, tagsAttr string, setFunc func(string, cty.Value) bool) KeyValueTags {
+	// remove default config.
+	t := tags.RemoveDefaultConfig(defaultConfig)
+
+	cf := d.GetRawConfig()
+	configExists := !cf.IsNull() && cf.IsKnown()
+
+	result := make(map[string]string)
+	for k, v := range t {
+		result[k] = v.ValueString()
+	}
+
+	configTags := make(map[string]configTag)
+	if configExists {
+		c, err := GetAnyAttr(cf, tagsAttr, setFunc)
+		if err != nil {
+			// in situations with imports and computed attributes where there's no
+			// matching config, return the tags unchanged
+			return tags
+		}
+
+		// if the config is null just return the incoming tags
+		// no duplicates to calculate
+		if c.IsNull() {
+			return t
+		}
+
+		if !c.IsNull() && c.IsKnown() {
+			normalizeTagsFromRaw(c.AsValueMap(), configTags, configuration)
+		}
+	}
+
+	if pl := d.GetRawPlan(); !pl.IsNull() && pl.IsKnown() {
+		c, err := GetAnyAttr(pl, tagsAttr, setFunc)
+		if err != nil {
+			panic(fmt.Sprintf("failed to get attribute %s: %v", tagsAttr, err))
+		}
+		if !c.IsNull() && c.IsKnown() {
+			normalizeTagsFromRaw(c.AsValueMap(), configTags, plan)
+		}
+	}
+
+	if st := d.GetRawState(); !st.IsNull() && st.IsKnown() {
+		c, err := GetAnyAttr(st, tagsAttr, setFunc)
+		if err != nil {
+			panic(fmt.Sprintf("failed to get attribute %s: %v", tagsAttr, err))
+		}
+		if !c.IsNull() {
+			normalizeTagsFromRaw(c.AsValueMap(), configTags, state)
+		}
+	}
+
+	for k, v := range configTags {
+		if _, ok := result[k]; !ok {
+			if defaultConfig != nil {
+				if val, ok := defaultConfig.Tags[k]; ok && val.ValueString() == v.value {
+					// config does not exist during a refresh.
+					// set duplicate values from other sources for refresh diff calculation
+					if !configExists {
+						result[k] = v.value
+					} else {
+						if v.source == configuration {
+							result[k] = v.value
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return New(ctx, result).IgnoreConfig(ignoreConfig)
+}

@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EventsClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &eventbridge.CreateEndpointInput{
+		EventBuses:    expandEndpointEventBuses(d.Get("event_bus").([]any)),
+		Name:          aws.String(name),
+		RoutingConfig: expandRoutingConfig(d.Get("routing_config").([]any)[0].(map[string]any)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("replication_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.ReplicationConfig = expandReplicationConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrRoleARN); ok {
+		input.RoleArn = aws.String(v.(string))
+	}
+
+	_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateEndpoint(ctx, input)
+	}, errCodeValidationException, "cannot be assumed by principal")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EventBridge Global Endpoint (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	const (
+		timeout = 2 * time.Minute
+	)
+	if _, err := waitEndpointCreated(ctx, conn, d.Id(), timeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EventBridge Global Endpoint (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceEndpointRead(ctx, d, meta)...)
+}

@@ -1,0 +1,238 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/storagegateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/storagegateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).StorageGatewayClient(ctx)
+
+	region := meta.(*conns.AWSClient).Region(ctx)
+	activationKey := d.Get("activation_key").(string)
+
+	// Perform one time fetch of activation key from gateway IP address.
+	if v, ok := d.GetOk("gateway_ip_address"); ok {
+		gatewayIPAddress := v.(string)
+
+		client := &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+			Timeout: time.Second * 10,
+		}
+
+		requestURL := fmt.Sprintf("http://%[1]s/?activationRegion=%[2]s", gatewayIPAddress, region)
+		if v, ok := d.GetOk("gateway_vpc_endpoint"); ok {
+			requestURL = fmt.Sprintf("%[1]s&vpcEndpoint=%[2]s", requestURL, v.(string))
+		}
+
+		request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		var response *http.Response
+		err = retry.RetryContext(ctx, d.Timeout(schema.TimeoutCreate), func() *retry.RetryError {
+			response, err = client.Do(request)
+
+			if err != nil {
+				if errs.IsA[net.Error](err) {
+					errMessage := fmt.Errorf("making HTTP request: %w", err)
+					log.Printf("[DEBUG] retryable %s", errMessage)
+					return retry.RetryableError(errMessage)
+				}
+
+				return retry.NonRetryableError(fmt.Errorf("making HTTP request: %w", err))
+			}
+
+			if slices.Contains([]int{504}, response.StatusCode) {
+				errMessage := fmt.Errorf("status code in HTTP response: %d", response.StatusCode)
+				log.Printf("[DEBUG] retryable %s", errMessage)
+				return retry.RetryableError(errMessage)
+			}
+
+			return nil
+		})
+
+		if tfresource.TimedOut(err) {
+			response, err = client.Do(request)
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "retrieving activation key from IP Address (%s): %s", gatewayIPAddress, err)
+		}
+
+		if response.StatusCode != http.StatusFound {
+			return sdkdiag.AppendErrorf(diags, "expected HTTP status code 302, received: %d", response.StatusCode)
+		}
+
+		redirectURL, err := response.Location()
+
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		activationKey = redirectURL.Query().Get("activationKey")
+		if activationKey == "" {
+			return sdkdiag.AppendErrorf(diags, "empty activationKey received from IP Address: %s", gatewayIPAddress)
+		}
+	}
+
+	name := d.Get("gateway_name").(string)
+	input := &storagegateway.ActivateGatewayInput{
+		ActivationKey:   aws.String(activationKey),
+		GatewayRegion:   aws.String(region),
+		GatewayName:     aws.String(name),
+		GatewayTimezone: aws.String(d.Get("gateway_timezone").(string)),
+		GatewayType:     aws.String(d.Get("gateway_type").(string)),
+		Tags:            getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("medium_changer_type"); ok {
+		input.MediumChangerType = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("tape_drive_type"); ok {
+		input.TapeDriveType = aws.String(v.(string))
+	}
+
+	output, err := conn.ActivateGateway(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "activating Storage Gateway Gateway (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.GatewayARN))
+
+	if _, err = waitGatewayConnected(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Storage Gateway Gateway (%s) connect: %s", d.Id(), err)
+	}
+
+	if v, ok := d.GetOk(names.AttrCloudWatchLogGroupARN); ok && v.(string) != "" {
+		input := &storagegateway.UpdateGatewayInformationInput{
+			CloudWatchLogGroupARN: aws.String(v.(string)),
+			GatewayARN:            aws.String(d.Id()),
+		}
+
+		_, err := conn.UpdateGatewayInformation(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Storage Gateway Gateway (%s) CloudWatch log group: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("maintenance_start_time"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input := expandUpdateMaintenanceStartTimeInput(v.([]any)[0].(map[string]any))
+		input.GatewayARN = aws.String(d.Id())
+
+		_, err := conn.UpdateMaintenanceStartTime(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Storage Gateway Gateway (%s) maintenance start time: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("smb_active_directory_settings"); ok && len(v.([]any)) > 0 {
+		input := expandJoinDomainInput(v.([]any), d.Id())
+
+		_, err := conn.JoinDomain(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "joining Storage Gateway Gateway (%s) to Active Directory domain (%s): %s", d.Id(), aws.ToString(input.DomainName), err)
+		}
+
+		if _, err = waitGatewayJoinDomainJoined(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Storage Gateway Gateway (%s) domain join: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("smb_guest_password"); ok && v.(string) != "" {
+		input := &storagegateway.SetSMBGuestPasswordInput{
+			GatewayARN: aws.String(d.Id()),
+			Password:   aws.String(v.(string)),
+		}
+
+		_, err := conn.SetSMBGuestPassword(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting Storage Gateway Gateway (%s) SMB guest password: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("smb_security_strategy"); ok {
+		input := &storagegateway.UpdateSMBSecurityStrategyInput{
+			GatewayARN:          aws.String(d.Id()),
+			SMBSecurityStrategy: awstypes.SMBSecurityStrategy(v.(string)),
+		}
+
+		_, err := conn.UpdateSMBSecurityStrategy(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting Storage Gateway Gateway (%s) SMB security strategy: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("smb_file_share_visibility"); ok {
+		input := &storagegateway.UpdateSMBFileShareVisibilityInput{
+			FileSharesVisible: aws.Bool(v.(bool)),
+			GatewayARN:        aws.String(d.Id()),
+		}
+
+		_, err := conn.UpdateSMBFileShareVisibility(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Storage Gateway Gateway (%s) SMB file share visibility: %s", d.Id(), err)
+		}
+	}
+
+	switch d.Get("gateway_type").(string) {
+	case gatewayTypeCached, gatewayTypeStored, gatewayTypeVTL, gatewayTypeVTLSnow:
+		input := &storagegateway.UpdateBandwidthRateLimitInput{
+			GatewayARN: aws.String(d.Id()),
+		}
+
+		if v, ok := d.GetOk("average_download_rate_limit_in_bits_per_sec"); ok {
+			input.AverageDownloadRateLimitInBitsPerSec = aws.Int64(int64(v.(int)))
+		}
+
+		if v, ok := d.GetOk("average_upload_rate_limit_in_bits_per_sec"); ok {
+			input.AverageUploadRateLimitInBitsPerSec = aws.Int64(int64(v.(int)))
+		}
+
+		if input.AverageDownloadRateLimitInBitsPerSec != nil || input.AverageUploadRateLimitInBitsPerSec != nil {
+			_, err := conn.UpdateBandwidthRateLimit(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating Storage Gateway Gateway (%s) bandwidth rate limits: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceGatewayRead(ctx, d, meta)...)
+}

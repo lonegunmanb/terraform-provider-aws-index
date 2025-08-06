@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePolicyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+
+	p, err := findScalingPolicyByTwoPartKey(ctx, conn, d.Get("autoscaling_group_name").(string), d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Auto Scaling Policy %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Auto Scaling Policy (%s): %s", d.Id(), err)
+	}
+
+	d.Set("adjustment_type", p.AdjustmentType)
+	d.Set(names.AttrARN, p.PolicyARN)
+	d.Set("autoscaling_group_name", p.AutoScalingGroupName)
+	d.Set("cooldown", p.Cooldown)
+	d.Set(names.AttrEnabled, p.Enabled)
+	d.Set("estimated_instance_warmup", p.EstimatedInstanceWarmup)
+	d.Set("metric_aggregation_type", p.MetricAggregationType)
+	d.Set("min_adjustment_magnitude", p.MinAdjustmentMagnitude)
+	d.Set(names.AttrName, p.PolicyName)
+	d.Set("policy_type", p.PolicyType)
+	if err := d.Set("predictive_scaling_configuration", flattenPredictiveScalingConfiguration(p.PredictiveScalingConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting predictive_scaling_configuration: %s", err)
+	}
+	d.Set("scaling_adjustment", p.ScalingAdjustment)
+	if err := d.Set("step_adjustment", flattenStepAdjustments(p.StepAdjustments)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting step_adjustment: %s", err)
+	}
+	if err := d.Set("target_tracking_configuration", flattenTargetTrackingConfiguration(p.TargetTrackingConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting target_tracking_configuration: %s", err)
+	}
+
+	return diags
+}

@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findDelegatedAdminAccounts(ctx context.Context, conn *inspector2.Client, input *inspector2.ListDelegatedAdminAccountsInput, filter tfslices.Predicate[*awstypes.DelegatedAdminAccount]) ([]awstypes.DelegatedAdminAccount, error) {
+	var output []awstypes.DelegatedAdminAccount
+
+	pages := inspector2.NewListDelegatedAdminAccountsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "is the delegated admin") {
+			return nil, errIsDelegatedAdmin
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.DelegatedAdminAccounts {
+			if filter(&v) {
+				output = append(output, v)
+			}
+		}
+	}
+
+	return output, nil
+}

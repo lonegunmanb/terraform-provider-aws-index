@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/logs
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LogsClient(ctx)
+
+	name := create.Name(d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string))
+	input := &cloudwatchlogs.CreateLogGroupInput{
+		LogGroupClass: awstypes.LogGroupClass(d.Get("log_group_class").(string)),
+		LogGroupName:  aws.String(name),
+		Tags:          getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		input.KmsKeyId = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateLogGroup(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudWatch Logs Log Group (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if v, ok := d.GetOk("retention_in_days"); ok {
+		input := &cloudwatchlogs.PutRetentionPolicyInput{
+			LogGroupName:    aws.String(d.Id()),
+			RetentionInDays: aws.Int32(int32(v.(int))),
+		}
+
+		_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func() (any, error) {
+			return conn.PutRetentionPolicy(ctx, input)
+		}, "AccessDeniedException", "no identity-based policy allows the logs:PutRetentionPolicy action")
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting CloudWatch Logs Log Group (%s) retention policy: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceGroupRead(ctx, d, meta)...)
+}

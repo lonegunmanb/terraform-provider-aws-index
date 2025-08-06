@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *userPoliciesExclusiveResource) syncAttachments(ctx context.Context, userName string, want []string) error {
+	conn := r.Meta().IAMClient(ctx)
+
+	have, err := findUserPoliciesByName(ctx, conn, userName)
+	if err != nil {
+		return err
+	}
+
+	create, remove, _ := intflex.DiffSlices(have, want, func(s1, s2 string) bool { return s1 == s2 })
+
+	for _, name := range create {
+		in := &iam.PutUserPolicyInput{
+			UserName:   aws.String(userName),
+			PolicyName: aws.String(name),
+		}
+
+		_, err := conn.PutUserPolicy(ctx, in)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, name := range remove {
+		in := &iam.DeleteUserPolicyInput{
+			UserName:   aws.String(userName),
+			PolicyName: aws.String(name),
+		}
+
+		_, err := conn.DeleteUserPolicy(ctx, in)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

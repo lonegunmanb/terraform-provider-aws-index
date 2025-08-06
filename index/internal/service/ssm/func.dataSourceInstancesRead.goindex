@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceInstancesRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSMClient(ctx)
+
+	input := &ssm.DescribeInstanceInformationInput{}
+
+	if v, ok := d.GetOk(names.AttrFilter); ok {
+		input.Filters = expandInstanceInformationStringFilters(v.(*schema.Set).List())
+	}
+
+	var output []awstypes.InstanceInformation
+
+	pages := ssm.NewDescribeInstanceInformationPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading SSM Instances: %s", err)
+		}
+
+		output = append(output, page.InstanceInformationList...)
+	}
+
+	d.SetId(meta.(*conns.AWSClient).Region(ctx))
+	d.Set(names.AttrIDs, tfslices.ApplyToAll(output, func(v awstypes.InstanceInformation) string {
+		return aws.ToString(v.InstanceId)
+	}))
+
+	return diags
+}

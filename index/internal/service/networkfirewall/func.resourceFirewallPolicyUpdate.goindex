@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkfirewall
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkfirewall"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkfirewall/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFirewallPolicyUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NetworkFirewallClient(ctx)
+
+	if d.HasChanges(names.AttrDescription, names.AttrEncryptionConfiguration, "firewall_policy") {
+		input := &networkfirewall.UpdateFirewallPolicyInput{
+			EncryptionConfiguration: expandEncryptionConfiguration(d.Get(names.AttrEncryptionConfiguration).([]any)),
+			FirewallPolicy:          expandFirewallPolicy(d.Get("firewall_policy").([]any)),
+			FirewallPolicyArn:       aws.String(d.Id()),
+			UpdateToken:             aws.String(d.Get("update_token").(string)),
+		}
+
+		// Only pass non-empty description values, else API request returns an InternalServiceError.
+		if v, ok := d.GetOk(names.AttrDescription); ok {
+			input.Description = aws.String(v.(string))
+		}
+
+		_, err := conn.UpdateFirewallPolicy(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating NetworkFirewall Firewall Policy (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceFirewallPolicyRead(ctx, d, meta)...)
+}

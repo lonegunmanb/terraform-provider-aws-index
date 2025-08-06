@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appsync
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appsync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataSourceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppSyncClient(ctx)
+
+	apiID, name, err := dataSourceParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	dataSource, err := findDataSourceByTwoPartKey(ctx, conn, apiID, name)
+
+	if tfresource.NotFound(err) && !d.IsNewResource() {
+		log.Printf("[WARN] AppSync Datasource %q not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Appsync Data Source (%s): %s", d.Id(), err)
+	}
+
+	d.Set("api_id", apiID)
+	d.Set(names.AttrARN, dataSource.DataSourceArn)
+	d.Set(names.AttrDescription, dataSource.Description)
+	if err := d.Set("dynamodb_config", flattenDynamoDBDataSourceConfig(dataSource.DynamodbConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting dynamodb_config: %s", err)
+	}
+	if err := d.Set("elasticsearch_config", flattenElasticsearchDataSourceConfig(dataSource.ElasticsearchConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting elasticsearch_config: %s", err)
+	}
+	if err := d.Set("event_bridge_config", flattenEventBridgeDataSourceConfig(dataSource.EventBridgeConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting event_bridge_config: %s", err)
+	}
+	if err := d.Set("http_config", flattenHTTPDataSourceConfig(dataSource.HttpConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting http_config: %s", err)
+	}
+	if err := d.Set("lambda_config", flattenLambdaDataSourceConfig(dataSource.LambdaConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting lambda_config: %s", err)
+	}
+	d.Set(names.AttrName, dataSource.Name)
+	if err := d.Set("opensearchservice_config", flattenOpenSearchServiceDataSourceConfig(dataSource.OpenSearchServiceConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting opensearchservice_config: %s", err)
+	}
+	if err := d.Set("relational_database_config", flattenRelationalDatabaseDataSourceConfig(dataSource.RelationalDatabaseConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting relational_database_config: %s", err)
+	}
+	d.Set(names.AttrServiceRoleARN, dataSource.ServiceRoleArn)
+	d.Set(names.AttrType, dataSource.Type)
+
+	return diags
+}

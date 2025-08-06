@@ -1,0 +1,107 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+var loadBalancerAttributes = loadBalancerAttributeMap(map[string]loadBalancerAttributeInfo{
+	"client_keep_alive": {
+		apiAttributeKey:            loadBalancerAttributeClientKeepAliveSeconds,
+		tfType:                     schema.TypeInt,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"desync_mitigation_mode": {
+		apiAttributeKey:            loadBalancerAttributeRoutingHTTPDesyncMitigationMode,
+		tfType:                     schema.TypeString,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"dns_record_client_routing_policy": {
+		apiAttributeKey:            loadBalancerAttributeDNSRecordClientRoutingPolicy,
+		tfType:                     schema.TypeString,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumNetwork},
+	},
+	"drop_invalid_header_fields": {
+		apiAttributeKey:            loadBalancerAttributeRoutingHTTPDropInvalidHeaderFieldsEnabled,
+		tfType:                     schema.TypeBool,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"enable_cross_zone_load_balancing": {
+		apiAttributeKey: loadBalancerAttributeLoadBalancingCrossZoneEnabled,
+		tfType:          schema.TypeBool,
+		// Although this attribute is supported for ALBs, it must always be true.
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumNetwork, awstypes.LoadBalancerTypeEnumGateway},
+	},
+	"enable_deletion_protection": {
+		apiAttributeKey:            loadBalancerAttributeDeletionProtectionEnabled,
+		tfType:                     schema.TypeBool,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication, awstypes.LoadBalancerTypeEnumNetwork, awstypes.LoadBalancerTypeEnumGateway},
+	},
+	"enable_http2": {
+		apiAttributeKey:            loadBalancerAttributeRoutingHTTP2Enabled,
+		tfType:                     schema.TypeBool,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"enable_tls_version_and_cipher_suite_headers": {
+		apiAttributeKey:            loadBalancerAttributeRoutingHTTPXAmznTLSVersionAndCipherSuiteEnabled,
+		tfType:                     schema.TypeBool,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"enable_waf_fail_open": {
+		apiAttributeKey:            loadBalancerAttributeWAFFailOpenEnabled,
+		tfType:                     schema.TypeBool,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"enable_xff_client_port": {
+		apiAttributeKey:            loadBalancerAttributeRoutingHTTPXFFClientPortEnabled,
+		tfType:                     schema.TypeBool,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"enable_zonal_shift": {
+		apiAttributeKey:            loadBalancerAttributeZonalShiftConfigEnabled,
+		tfType:                     schema.TypeBool,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication, awstypes.LoadBalancerTypeEnumNetwork},
+	},
+	"idle_timeout": {
+		apiAttributeKey:            loadBalancerAttributeIdleTimeoutTimeoutSeconds,
+		tfType:                     schema.TypeInt,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"preserve_host_header": {
+		apiAttributeKey:            loadBalancerAttributeRoutingHTTPPreserveHostHeaderEnabled,
+		tfType:                     schema.TypeBool,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+	"xff_header_processing_mode": {
+		apiAttributeKey:            loadBalancerAttributeRoutingHTTPXFFHeaderProcessingMode,
+		tfType:                     schema.TypeString,
+		loadBalancerTypesSupported: []awstypes.LoadBalancerTypeEnum{awstypes.LoadBalancerTypeEnumApplication},
+	},
+})

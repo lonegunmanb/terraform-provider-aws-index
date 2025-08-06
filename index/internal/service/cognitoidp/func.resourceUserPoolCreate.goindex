@@ -1,0 +1,206 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserPoolCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &cognitoidentityprovider.CreateUserPoolInput{
+		PoolName:     aws.String(name),
+		UserPoolTags: getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("account_recovery_setting"); ok {
+		if config, ok := v.([]any)[0].(map[string]any); ok {
+			input.AccountRecoverySetting = expandAccountRecoverySettingType(config)
+		}
+	}
+
+	if v, ok := d.GetOk("admin_create_user_config"); ok {
+		if v, ok := v.([]any)[0].(map[string]any); ok && v != nil {
+			input.AdminCreateUserConfig = expandAdminCreateUserConfigType(v)
+		}
+	}
+
+	if v, ok := d.GetOk("alias_attributes"); ok {
+		input.AliasAttributes = flex.ExpandStringyValueSet[awstypes.AliasAttributeType](v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("auto_verified_attributes"); ok {
+		input.AutoVerifiedAttributes = flex.ExpandStringyValueSet[awstypes.VerifiedAttributeType](v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk(names.AttrDeletionProtection); ok {
+		input.DeletionProtection = awstypes.DeletionProtectionType(v.(string))
+	}
+
+	if v, ok := d.GetOk("device_configuration"); ok {
+		if v, ok := v.([]any)[0].(map[string]any); ok && v != nil {
+			input.DeviceConfiguration = expandDeviceConfigurationType(v)
+		}
+	}
+
+	if v, ok := d.GetOk("email_configuration"); ok && len(v.([]any)) > 0 {
+		input.EmailConfiguration = expandEmailConfigurationType(v.([]any))
+	}
+
+	if v, ok := d.GetOk("email_verification_subject"); ok {
+		input.EmailVerificationSubject = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("email_verification_message"); ok {
+		input.EmailVerificationMessage = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("lambda_config"); ok {
+		if v, ok := v.([]any)[0].(map[string]any); ok && v != nil {
+			input.LambdaConfig = expandLambdaConfigType(v)
+		}
+	}
+
+	if v, ok := d.GetOk("password_policy"); ok {
+		if v, ok := v.([]any)[0].(map[string]any); ok && v != nil {
+			passwordPolicy := expandPasswordPolicyType(v)
+			if input.Policies == nil {
+				input.Policies = &awstypes.UserPoolPolicyType{}
+			}
+			input.Policies.PasswordPolicy = passwordPolicy
+		}
+	}
+
+	if v, ok := d.GetOk(names.AttrSchema); ok {
+		input.Schema = expandSchemaAttributeTypes(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("sign_in_policy"); ok {
+		if v, ok := v.([]any)[0].(map[string]any); ok && v != nil {
+			signInPolicy := expandSignInPolicyType(v)
+			if input.Policies == nil {
+				input.Policies = &awstypes.UserPoolPolicyType{}
+			}
+			input.Policies.SignInPolicy = signInPolicy
+		}
+	}
+
+	// For backwards compatibility, include this outside of MFA configuration
+	// since its configuration is allowed by the API even without SMS MFA.
+	if v, ok := d.GetOk("sms_authentication_message"); ok {
+		input.SmsAuthenticationMessage = aws.String(v.(string))
+	}
+
+	// Include the SMS configuration outside of MFA configuration since it
+	// can be used for user verification.
+	if v, ok := d.GetOk("sms_configuration"); ok {
+		input.SmsConfiguration = expandSMSConfigurationType(v.([]any))
+	}
+
+	if v, ok := d.GetOk("sms_verification_message"); ok {
+		input.SmsVerificationMessage = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("username_attributes"); ok {
+		input.UsernameAttributes = flex.ExpandStringyValueSet[awstypes.UsernameAttributeType](v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("username_configuration"); ok {
+		if v, ok := v.([]any)[0].(map[string]any); ok && v != nil {
+			input.UsernameConfiguration = expandUsernameConfigurationType(v)
+		}
+	}
+
+	if v, ok := d.GetOk("user_attribute_update_settings"); ok {
+		if v, ok := v.([]any)[0].(map[string]any); ok && v != nil {
+			input.UserAttributeUpdateSettings = expandUserAttributeUpdateSettingsType(v)
+		}
+	}
+
+	if v, ok := d.GetOk("user_pool_add_ons"); ok && len(v.([]any)) > 0 {
+		input.UserPoolAddOns = expandUserPoolAddOnsType(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("verification_message_template"); ok {
+		if v, ok := v.([]any)[0].(map[string]any); ok && v != nil {
+			input.VerificationMessageTemplate = expandVerificationMessageTemplateType(v)
+		}
+	}
+
+	if v := awstypes.UserPoolTierType(d.Get("user_pool_tier").(string)); v != awstypes.UserPoolTierTypeEssentials {
+		input.UserPoolTier = v
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateUserPool(ctx, input)
+	}, userPoolErrorRetryable)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Cognito User Pool (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*cognitoidentityprovider.CreateUserPoolOutput).UserPool.Id))
+
+	if mfaConfig := awstypes.UserPoolMfaType(d.Get("mfa_configuration").(string)); mfaConfig != awstypes.UserPoolMfaTypeOff || len(d.Get("web_authn_configuration").([]any)) > 0 {
+		input := &cognitoidentityprovider.SetUserPoolMfaConfigInput{
+			UserPoolId: aws.String(d.Id()),
+		}
+
+		if mfaConfig != awstypes.UserPoolMfaTypeOff {
+			input.MfaConfiguration = mfaConfig
+			input.SoftwareTokenMfaConfiguration = expandSoftwareTokenMFAConfigType(d.Get("software_token_mfa_configuration").([]any))
+		}
+
+		if v := d.Get("email_mfa_configuration").([]any); len(v) > 0 && v[0] != nil {
+			input.EmailMfaConfiguration = expandEmailMFAConfigType(v)
+		}
+
+		if v := d.Get("sms_configuration").([]any); len(v) > 0 && v[0] != nil {
+			input.SmsMfaConfiguration = &awstypes.SmsMfaConfigType{
+				SmsConfiguration: expandSMSConfigurationType(v),
+			}
+
+			if v, ok := d.GetOk("sms_authentication_message"); ok {
+				input.SmsMfaConfiguration.SmsAuthenticationMessage = aws.String(v.(string))
+			}
+		}
+
+		if webAuthnConfig := d.Get("web_authn_configuration").([]any); len(webAuthnConfig) > 0 {
+			input.WebAuthnConfiguration = expandWebAuthnConfigurationConfigType(webAuthnConfig)
+		}
+
+		_, err := tfresource.RetryWhen(ctx, propagationTimeout, func() (any, error) {
+			return conn.SetUserPoolMfaConfig(ctx, input)
+		}, userPoolErrorRetryable)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting Cognito User Pool (%s) MFA configuration: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceUserPoolRead(ctx, d, meta)...)
+}

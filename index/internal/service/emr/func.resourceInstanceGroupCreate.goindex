@@ -1,0 +1,95 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	groupConfig := awstypes.InstanceGroupConfig{
+		EbsConfiguration: readEBSConfig(d),
+		InstanceRole:     awstypes.InstanceRoleTypeTask,
+		InstanceType:     aws.String(d.Get(names.AttrInstanceType).(string)),
+		Name:             aws.String(name),
+	}
+
+	if v, ok := d.GetOk("autoscaling_policy"); ok {
+		var autoScalingPolicy awstypes.AutoScalingPolicy
+
+		if err := tfjson.DecodeFromString(v.(string), &autoScalingPolicy); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		groupConfig.AutoScalingPolicy = &autoScalingPolicy
+	}
+
+	groupConfig.Market = awstypes.MarketTypeOnDemand
+	if v, ok := d.GetOk("bid_price"); ok {
+		groupConfig.BidPrice = aws.String(v.(string))
+		groupConfig.Market = awstypes.MarketTypeSpot
+	}
+
+	if v, ok := d.GetOk("configurations_json"); ok {
+		v, err := structure.NormalizeJsonString(v)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		groupConfig.Configurations, err = expandConfigurationJSON(v)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if v := d.GetRawConfig().GetAttr(names.AttrInstanceCount); v.IsKnown() && !v.IsNull() {
+		v, _ := v.AsBigFloat().Int64()
+		groupConfig.InstanceCount = aws.Int32(int32(v))
+	} else {
+		groupConfig.InstanceCount = aws.Int32(1)
+	}
+
+	input := &emr.AddInstanceGroupsInput{
+		InstanceGroups: []awstypes.InstanceGroupConfig{groupConfig},
+		JobFlowId:      aws.String(d.Get("cluster_id").(string)),
+	}
+
+	output, err := conn.AddInstanceGroups(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EMR Instance Group (%s): %s", name, err)
+	}
+
+	d.SetId(output.InstanceGroupIds[0])
+
+	const (
+		timeout = 30 * time.Minute
+	)
+	if _, err := waitInstanceGroupRunning(ctx, conn, d.Get("cluster_id").(string), d.Id(), timeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EMR Instance Group (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceInstanceGroupRead(ctx, d, meta)...)
+}

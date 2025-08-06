@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceLaunchConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	autoscalingconn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+	ec2conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	lc, err := findLaunchConfigurationByName(ctx, autoscalingconn, name)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Auto Scaling Launch Configuration (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	d.Set(names.AttrARN, lc.LaunchConfigurationARN)
+	d.Set("associate_public_ip_address", lc.AssociatePublicIpAddress)
+	d.Set("ebs_optimized", lc.EbsOptimized)
+	if lc.InstanceMonitoring != nil {
+		d.Set("enable_monitoring", lc.InstanceMonitoring.Enabled)
+	} else {
+		d.Set("enable_monitoring", false)
+	}
+	d.Set("iam_instance_profile", lc.IamInstanceProfile)
+	d.Set("image_id", lc.ImageId)
+	d.Set(names.AttrInstanceType, lc.InstanceType)
+	d.Set("key_name", lc.KeyName)
+	if lc.MetadataOptions != nil {
+		if err := d.Set("metadata_options", []any{flattenInstanceMetadataOptions(lc.MetadataOptions)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting metadata_options: %s", err)
+		}
+	} else {
+		d.Set("metadata_options", nil)
+	}
+	d.Set(names.AttrName, lc.LaunchConfigurationName)
+	d.Set("placement_tenancy", lc.PlacementTenancy)
+	d.Set(names.AttrSecurityGroups, lc.SecurityGroups)
+	d.Set("spot_price", lc.SpotPrice)
+	d.Set("user_data", lc.UserData)
+
+	rootDeviceName, err := findImageRootDeviceName(ctx, ec2conn, d.Get("image_id").(string))
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Auto Scaling Launch Configuration (%s): %s", name, err)
+	}
+
+	tfListEBSBlockDevice, tfListEphemeralBlockDevice, tfListRootBlockDevice := flattenBlockDeviceMappings(lc.BlockDeviceMappings, rootDeviceName, map[string]map[string]any{})
+
+	if err := d.Set("ebs_block_device", tfListEBSBlockDevice); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ebs_block_device: %s", err)
+	}
+	if err := d.Set("ephemeral_block_device", tfListEphemeralBlockDevice); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ephemeral_block_device: %s", err)
+	}
+	if err := d.Set("root_block_device", tfListRootBlockDevice); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting root_block_device: %s", err)
+	}
+
+	return diags
+}

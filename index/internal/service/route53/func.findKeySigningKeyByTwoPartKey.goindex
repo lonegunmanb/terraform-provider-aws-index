@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findKeySigningKeyByTwoPartKey(ctx context.Context, conn *route53.Client, hostedZoneID, name string) (*awstypes.KeySigningKey, error) {
+	input := &route53.GetDNSSECInput{
+		HostedZoneId: aws.String(hostedZoneID),
+	}
+
+	output, err := conn.GetDNSSEC(ctx, input)
+
+	if errs.IsA[*awstypes.NoSuchHostedZone](err) || errs.IsA[*awstypes.NoSuchKeySigningKey](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	for _, v := range output.KeySigningKeys {
+		if aws.ToString(v.Name) == name {
+			return &v, nil
+		}
+	}
+
+	return nil, &retry.NotFoundError{}
+}

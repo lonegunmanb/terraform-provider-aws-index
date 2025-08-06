@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProvisionedConcurrencyConfigUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), provisionedConcurrencyConfigResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	functionName, qualifier := parts[0], parts[1]
+
+	input := &lambda.PutProvisionedConcurrencyConfigInput{
+		FunctionName:                    aws.String(functionName),
+		ProvisionedConcurrentExecutions: aws.Int32(int32(d.Get("provisioned_concurrent_executions").(int))),
+		Qualifier:                       aws.String(qualifier),
+	}
+
+	_, err = conn.PutProvisionedConcurrencyConfig(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Lambda Provisioned Concurrency Config (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitProvisionedConcurrencyConfigReady(ctx, conn, functionName, qualifier, d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Lambda Provisioned Concurrency Config (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceProvisionedConcurrencyConfigRead(ctx, d, meta)...)
+}

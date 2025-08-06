@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePartitionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	log.Printf("[DEBUG] Reading Glue Partition: %s", d.Id())
+	partition, err := findPartitionByValues(ctx, conn, d.Id())
+	if err != nil {
+		if errs.IsA[*awstypes.EntityNotFoundException](err) {
+			log.Printf("[WARN] Glue Partition (%s) not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+		return sdkdiag.AppendErrorf(diags, "reading Glue Partition: %s", err)
+	}
+
+	d.Set(names.AttrTableName, partition.TableName)
+	d.Set(names.AttrCatalogID, partition.CatalogId)
+	d.Set(names.AttrDatabaseName, partition.DatabaseName)
+	d.Set("partition_values", flex.FlattenStringValueList(partition.Values))
+
+	if partition.LastAccessTime != nil {
+		d.Set("last_accessed_time", partition.LastAccessTime.Format(time.RFC3339))
+	}
+
+	if partition.LastAnalyzedTime != nil {
+		d.Set("last_analyzed_time", partition.LastAnalyzedTime.Format(time.RFC3339))
+	}
+
+	if partition.CreationTime != nil {
+		d.Set(names.AttrCreationTime, partition.CreationTime.Format(time.RFC3339))
+	}
+
+	if err := d.Set("storage_descriptor", flattenStorageDescriptor(partition.StorageDescriptor)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting storage_descriptor: %s", err)
+	}
+
+	if err := d.Set(names.AttrParameters, partition.Parameters); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting parameters: %s", err)
+	}
+
+	return diags
+}

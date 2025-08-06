@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFunctionURLCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
+
+	name := d.Get("function_name").(string)
+	qualifier := d.Get("qualifier").(string)
+	id := functionURLCreateResourceID(name, qualifier)
+	authorizationType := awstypes.FunctionUrlAuthType(d.Get("authorization_type").(string))
+	input := &lambda.CreateFunctionUrlConfigInput{
+		AuthType:     authorizationType,
+		FunctionName: aws.String(name),
+		InvokeMode:   awstypes.InvokeMode(d.Get("invoke_mode").(string)),
+	}
+
+	if qualifier != "" {
+		input.Qualifier = aws.String(qualifier)
+	}
+
+	if v, ok := d.GetOk("cors"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Cors = expandCors(v.([]any)[0].(map[string]any))
+	}
+
+	_, err := conn.CreateFunctionUrlConfig(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Lambda Function URL (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if authorizationType == awstypes.FunctionUrlAuthTypeNone {
+		input := &lambda.AddPermissionInput{
+			Action:              aws.String("lambda:InvokeFunctionUrl"),
+			FunctionName:        aws.String(name),
+			FunctionUrlAuthType: authorizationType,
+			Principal:           aws.String("*"),
+			StatementId:         aws.String("FunctionURLAllowPublicAccess"),
+		}
+
+		if qualifier != "" {
+			input.Qualifier = aws.String(qualifier)
+		}
+
+		_, err := conn.AddPermission(ctx, input)
+
+		if err != nil {
+			if errs.IsAErrorMessageContains[*awstypes.ResourceConflictException](err, "The statement id (FunctionURLAllowPublicAccess) provided already exists") {
+				log.Printf("[DEBUG] function permission statement 'FunctionURLAllowPublicAccess' already exists.")
+			} else {
+				return sdkdiag.AppendErrorf(diags, "adding Lambda Function URL (%s) permission %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceFunctionURLRead(ctx, d, meta)...)
+}

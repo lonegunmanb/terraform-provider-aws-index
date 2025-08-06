@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-cty/cty/gocty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func modifyReplicationGroupShardConfigurationNumNodeGroups(ctx context.Context, conn *elasticache.Client, d *schema.ResourceData, argument string) error {
+	o, n := d.GetChange(argument)
+	oldNodeGroupCount, newNodeGroupCount := o.(int), n.(int)
+
+	input := &elasticache.ModifyReplicationGroupShardConfigurationInput{
+		ApplyImmediately:   aws.Bool(true),
+		NodeGroupCount:     aws.Int32(int32(newNodeGroupCount)),
+		ReplicationGroupId: aws.String(d.Id()),
+	}
+
+	if oldNodeGroupCount > newNodeGroupCount {
+		// Node Group IDs are 1 indexed: 0001 through 0015
+		// Loop from highest old ID until we reach highest new ID
+		nodeGroupsToRemove := []string{}
+		for i := oldNodeGroupCount; i > newNodeGroupCount; i-- {
+			nodeGroupID := fmt.Sprintf("%04d", i)
+			nodeGroupsToRemove = append(nodeGroupsToRemove, nodeGroupID)
+		}
+		input.NodeGroupsToRemove = nodeGroupsToRemove
+	}
+
+	_, err := conn.ModifyReplicationGroupShardConfiguration(ctx, input)
+
+	if err != nil {
+		return fmt.Errorf("modifying ElastiCache Replication Group (%s) shard configuration: %w", d.Id(), err)
+	}
+
+	const (
+		delay = 30 * time.Second
+	)
+	if _, err := waitReplicationGroupAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate), delay); err != nil {
+		return fmt.Errorf("waiting for ElastiCache Replication Group (%s) update: %w", d.Id(), err)
+	}
+
+	return nil
+}

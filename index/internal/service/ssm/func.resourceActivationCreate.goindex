@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceActivationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSMClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &ssm.CreateActivationInput{
+		DefaultInstanceName: aws.String(name),
+		IamRole:             aws.String(d.Get("iam_role").(string)),
+		Tags:                getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("expiration_date"); ok {
+		t, _ := time.Parse(time.RFC3339, v.(string))
+		input.ExpirationDate = aws.Time(t)
+	}
+
+	if v, ok := d.GetOk("registration_limit"); ok {
+		input.RegistrationLimit = aws.Int32(int32(v.(int)))
+	}
+
+	outputRaw, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateActivation(ctx, input)
+	}, errCodeValidationException, "Nonexistent role")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SSM Activation (%s): %s", name, err)
+	}
+
+	output := outputRaw.(*ssm.CreateActivationOutput)
+
+	d.SetId(aws.ToString(output.ActivationId))
+	d.Set("activation_code", output.ActivationCode)
+
+	return append(diags, resourceActivationRead(ctx, d, meta)...)
+}

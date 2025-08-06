@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2
+import (
+	"context"
+	"fmt"
+	"unique"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/interceptors"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r tagsDataSourceCRUDInterceptor) run(ctx context.Context, opts crudInterceptorOptions) diag.Diagnostics {
+	c := opts.c
+	var diags diag.Diagnostics
+
+	if !r.Enabled() {
+		return diags
+	}
+
+	sp, serviceName, resourceName, tagsInContext, ok := interceptors.InfoFromContext(ctx, c)
+	if !ok {
+		return diags
+	}
+
+	switch d, when, why := opts.d, opts.when, opts.why; when {
+	case Before:
+		switch why {
+		case Read:
+			// Get the data source's configured tags.
+			tags := tftags.New(ctx, d.Get(names.AttrTags).(map[string]any))
+			tagsInContext.TagsIn = option.Some(tags)
+		}
+	case After:
+		// Set tags in state after R.
+		switch why {
+		case Read:
+			// TODO: can this occur for a data source?
+			if d.Id() == "" {
+				return diags
+			}
+
+			// If the R handler didn't set tags, try and read them from the service API.
+			if tagsInContext.TagsOut.IsNone() {
+				// TODO: can this occur for a data source?
+				// Some old resources may not have the required attribute set after Read:
+				// https://github.com/hashicorp/terraform-provider-aws/issues/31180
+				if identifier := r.GetIdentifierSDKv2(ctx, d); identifier != "" {
+					if err := r.ListTags(ctx, sp, c, identifier); err != nil {
+						return sdkdiag.AppendErrorf(diags, "listing tags for %s %s (%s): %s", serviceName, resourceName, identifier, err)
+					}
+				}
+			}
+
+			// Remove any provider configured ignore_tags and system tags from those returned from the service API.
+			tags := tagsInContext.TagsOut.UnwrapOrDefault().IgnoreSystem(sp.ServicePackageName()).IgnoreConfig(c.IgnoreTagsConfig(ctx))
+			if err := d.Set(names.AttrTags, tags.Map()); err != nil {
+				return sdkdiag.AppendErrorf(diags, "setting %s: %s", names.AttrTags, err)
+			}
+		}
+	}
+
+	return diags
+}

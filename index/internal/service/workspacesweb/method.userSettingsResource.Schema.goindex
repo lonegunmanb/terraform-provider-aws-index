@@ -1,0 +1,177 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workspacesweb
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workspacesweb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/workspacesweb/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *userSettingsResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"additional_encryption_context": schema.MapAttribute{
+				CustomType:  fwtypes.MapOfStringType,
+				ElementType: types.StringType,
+				Optional:    true,
+				PlanModifiers: []planmodifier.Map{
+					mapplanmodifier.RequiresReplace(),
+				},
+			},
+			"associated_portal_arns": schema.ListAttribute{
+				CustomType:  fwtypes.ListOfStringType,
+				ElementType: types.StringType,
+				Computed:    true,
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"copy_allowed": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.EnabledType](),
+				Required:   true,
+			},
+			"customer_managed_key": schema.StringAttribute{
+				CustomType: fwtypes.ARNType,
+				Optional:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"deep_link_allowed": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.EnabledType](),
+				Optional:   true,
+				Computed:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"disconnect_timeout_in_minutes": schema.Int64Attribute{
+				Optional: true,
+				Validators: []validator.Int64{
+					int64validator.Between(1, 600),
+				},
+			},
+			"download_allowed": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.EnabledType](),
+				Required:   true,
+			},
+			"idle_disconnect_timeout_in_minutes": schema.Int64Attribute{
+				Optional: true,
+				Validators: []validator.Int64{
+					int64validator.Between(0, 60),
+				},
+			},
+			"paste_allowed": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.EnabledType](),
+				Required:   true,
+			},
+			"print_allowed": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.EnabledType](),
+				Required:   true,
+			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
+			"upload_allowed": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.EnabledType](),
+				Required:   true,
+			},
+			"user_settings_arn": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"cookie_synchronization_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[cookieSynchronizationConfigurationModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"allowlist": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[cookieSpecificationModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrDomain: schema.StringAttribute{
+										Required: true,
+									},
+									names.AttrName: schema.StringAttribute{
+										Optional: true,
+									},
+									names.AttrPath: schema.StringAttribute{
+										Optional: true,
+									},
+								},
+							},
+						},
+						"blocklist": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[cookieSpecificationModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrDomain: schema.StringAttribute{
+										Required: true,
+									},
+									names.AttrName: schema.StringAttribute{
+										Optional: true,
+									},
+									names.AttrPath: schema.StringAttribute{
+										Optional: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"toolbar_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[toolbarConfigurationModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"hidden_toolbar_items": schema.ListAttribute{
+							ElementType: fwtypes.StringEnumType[awstypes.ToolbarItem](),
+							Optional:    true,
+						},
+						"max_display_resolution": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.MaxDisplayResolution](),
+							Optional:   true,
+						},
+						"toolbar_type": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.ToolbarType](),
+							Optional:   true,
+						},
+						"visual_mode": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.VisualMode](),
+							Optional:   true,
+						},
+					},
+				},
+			},
+		},
+	}
+}

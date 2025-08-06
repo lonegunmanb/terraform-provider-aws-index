@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EventsClient(ctx)
+
+	output, err := findEndpointByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EventBridge Global Endpoint (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EventBridge Global Endpoint (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, output.Arn)
+	d.Set(names.AttrDescription, output.Description)
+	d.Set("endpoint_url", output.EndpointUrl)
+	if err := d.Set("event_bus", flattenEndpointEventBuses(output.EventBuses)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting event_bus: %s", err)
+	}
+	d.Set(names.AttrName, output.Name)
+	if output.ReplicationConfig != nil {
+		if err := d.Set("replication_config", []any{flattenReplicationConfig(output.ReplicationConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting replication_config: %s", err)
+		}
+	} else {
+		d.Set("replication_config", nil)
+	}
+	d.Set(names.AttrRoleARN, output.RoleArn)
+	if output.RoutingConfig != nil {
+		if err := d.Set("routing_config", []any{flattenRoutingConfig(output.RoutingConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting routing_config: %s", err)
+		}
+	} else {
+		d.Set("routing_config", nil)
+	}
+
+	return diags
+}

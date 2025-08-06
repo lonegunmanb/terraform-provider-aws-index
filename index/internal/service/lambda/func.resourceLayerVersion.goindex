@@ -1,0 +1,144 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfio "github.com/hashicorp/terraform-provider-aws/internal/io"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLayerVersion() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceLayerVersionCreate,
+		ReadWithoutTimeout:   resourceLayerVersionRead,
+		DeleteWithoutTimeout: resourceLayerVersionDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"code_sha256": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"compatible_architectures": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				ForceNew: true,
+				MaxItems: 2,
+				Elem: &schema.Schema{
+					Type:             schema.TypeString,
+					ValidateDiagFunc: enum.Validate[awstypes.Architecture](),
+				},
+			},
+			"compatible_runtimes": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				ForceNew: true,
+				MinItems: 0,
+				MaxItems: 15,
+				Elem: &schema.Schema{
+					Type:             schema.TypeString,
+					ValidateDiagFunc: enum.Validate[awstypes.Runtime](),
+				},
+			},
+			names.AttrCreatedDate: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrDescription: {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+			"filename": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ForceNew:      true,
+				ConflictsWith: []string{names.AttrS3Bucket, "s3_key", "s3_object_version"},
+			},
+			"layer_arn": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"layer_name": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"license_info": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringLenBetween(0, 512),
+			},
+			names.AttrS3Bucket: {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ForceNew:      true,
+				ConflictsWith: []string{"filename"},
+			},
+			"s3_key": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ForceNew:      true,
+				ConflictsWith: []string{"filename"},
+			},
+			"s3_object_version": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ForceNew:      true,
+				ConflictsWith: []string{"filename"},
+			},
+			"signing_job_arn": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"signing_profile_version_arn": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrSkipDestroy: {
+				Type:     schema.TypeBool,
+				Default:  false,
+				ForceNew: true,
+				Optional: true,
+			},
+			"source_code_hash": {
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ForceNew: true,
+			},
+			"source_code_size": {
+				Type:     schema.TypeInt,
+				Computed: true,
+			},
+			names.AttrVersion: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+		},
+	}
+}

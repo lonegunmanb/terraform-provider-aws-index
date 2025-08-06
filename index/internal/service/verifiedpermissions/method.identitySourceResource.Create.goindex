@@ -1,0 +1,88 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/verifiedpermissions
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/verifiedpermissions"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/verifiedpermissions/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *identitySourceResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	conn := r.Meta().VerifiedPermissionsClient(ctx)
+	var plan identitySourceResourceModel
+
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	input := &verifiedpermissions.CreateIdentitySourceInput{}
+	response.Diagnostics.Append(flex.Expand(context.WithValue(ctx, operationType, readOperation), plan, input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	clientToken := id.UniqueId()
+	input.ClientToken = aws.String(clientToken)
+
+	output, err := conn.CreateIdentitySource(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionCreating, ResNameIdentitySource, clientToken, err),
+			err.Error(),
+		)
+		return
+	}
+
+	state := plan
+	state.ID = flex.StringValueToFramework(ctx, aws.ToString(output.IdentitySourceId))
+
+	response.Diagnostics.Append(flex.Flatten(ctx, output, &state)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Get call to retrieve computed values not included in create response.
+	out, err := findIdentitySourceByIDAndPolicyStoreID(ctx, conn, state.ID.ValueString(), state.PolicyStoreID.ValueString())
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionCreating, ResNameIdentitySource, plan.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	state.PrincipalEntityType = flex.StringToFramework(ctx, out.PrincipalEntityType)
+
+	configuration, d := flattenConfiguration(ctx, out.Configuration)
+	response.Diagnostics.Append(d...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	state.Configuration = configuration
+
+	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+}

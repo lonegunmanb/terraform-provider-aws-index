@@ -1,0 +1,96 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandFindingCriteria(raw []any) (*awstypes.FindingCriteria, error) {
+	findingCriteria := raw[0].(map[string]any)
+	inputFindingCriteria := findingCriteria["criterion"].(*schema.Set).List()
+
+	criteria := map[string]awstypes.Condition{}
+	for _, criterion := range inputFindingCriteria {
+		typedCriterion := criterion.(map[string]any)
+		field := typedCriterion[names.AttrField].(string)
+
+		condition := awstypes.Condition{}
+		if x, ok := typedCriterion["equals"]; ok {
+			if v, ok := x.([]any); ok && len(v) > 0 {
+				foo := make([]string, len(v))
+				for i := range v {
+					s := v[i].(string)
+					foo[i] = s
+				}
+				condition.Equals = foo
+			}
+		}
+		if x, ok := typedCriterion["not_equals"]; ok {
+			if v, ok := x.([]any); ok && len(v) > 0 {
+				foo := make([]string, len(v))
+				for i := range v {
+					s := v[i].(string)
+					foo[i] = s
+				}
+				condition.NotEquals = foo
+			}
+		}
+		if x, ok := typedCriterion["greater_than"]; ok {
+			if v, ok := x.(string); ok && v != "" {
+				i, err := expandConditionIntField(field, v)
+				if err != nil {
+					return nil, fmt.Errorf("parsing condition %q for field %q: %w", "greater_than", field, err)
+				}
+				condition.GreaterThan = aws.Int64(i)
+			}
+		}
+		if x, ok := typedCriterion["greater_than_or_equal"]; ok {
+			if v, ok := x.(string); ok && v != "" {
+				i, err := expandConditionIntField(field, v)
+				if err != nil {
+					return nil, fmt.Errorf("parsing condition %q for field %q: %w", "greater_than_or_equal", field, err)
+				}
+				condition.GreaterThanOrEqual = aws.Int64(i)
+			}
+		}
+		if x, ok := typedCriterion["less_than"]; ok {
+			if v, ok := x.(string); ok && v != "" {
+				i, err := expandConditionIntField(field, v)
+				if err != nil {
+					return nil, fmt.Errorf("parsing condition %q for field %q: %w", "less_than", field, err)
+				}
+				condition.LessThan = aws.Int64(i)
+			}
+		}
+		if x, ok := typedCriterion["less_than_or_equal"]; ok {
+			if v, ok := x.(string); ok && v != "" {
+				i, err := expandConditionIntField(field, v)
+				if err != nil {
+					return nil, fmt.Errorf("parsing condition %q for field %q: %w", "less_than_or_equal", field, err)
+				}
+				condition.LessThanOrEqual = aws.Int64(i)
+			}
+		}
+		criteria[field] = condition
+	}
+
+	return &awstypes.FindingCriteria{Criterion: criteria}, nil
+}

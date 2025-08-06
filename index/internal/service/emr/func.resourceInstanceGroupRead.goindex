@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	ig, err := findInstanceGroupByTwoPartKey(ctx, conn, d.Get("cluster_id").(string), d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EMR Instance Group (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EMR Instance Group (%s): %s", d.Id(), err)
+	}
+
+	autoscalingPolicyString, err := flattenAutoScalingPolicyDescription(ig.AutoScalingPolicy)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+	d.Set("autoscaling_policy", autoscalingPolicyString)
+	d.Set("bid_price", ig.BidPrice)
+	switch {
+	case len(ig.Configurations) > 0:
+		configOut, err := flattenConfigurationJSON(ig.Configurations)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		d.Set("configurations_json", configOut)
+	default:
+		d.Set("configurations_json", "")
+	}
+	if err := d.Set("ebs_config", flattenEBSConfig(ig.EbsBlockDevices)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ebs_config: %s", err)
+	}
+	d.Set("ebs_optimized", ig.EbsOptimized)
+	d.Set(names.AttrInstanceCount, ig.RequestedInstanceCount)
+	d.Set(names.AttrInstanceType, ig.InstanceType)
+	d.Set(names.AttrName, ig.Name)
+	d.Set("running_instance_count", ig.RunningInstanceCount)
+	d.Set(names.AttrStatus, ig.Status.State)
+
+	return diags
+}

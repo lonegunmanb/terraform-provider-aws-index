@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionsBoundaryAttachmentDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSOAdminClient(ctx)
+
+	permissionSetARN, instanceARN, err := PermissionsBoundaryAttachmentParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &ssoadmin.DeletePermissionsBoundaryFromPermissionSetInput{
+		InstanceArn:      aws.String(instanceARN),
+		PermissionSetArn: aws.String(permissionSetARN),
+	}
+
+	_, err = conn.DeletePermissionsBoundaryFromPermissionSet(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting SSO Permissions Boundary Attachment (%s): %s", d.Id(), err)
+	}
+
+	// After the policy has been detached from the permission set, provision in all accounts that use this permission set.
+	if err := provisionPermissionSet(ctx, conn, permissionSetARN, instanceARN, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	return diags
+}

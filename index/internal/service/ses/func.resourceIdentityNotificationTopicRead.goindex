@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ses
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIdentityNotificationTopicRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SESClient(ctx)
+
+	identity, notificationType, err := identityNotificationTopicParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	notificationAttributes, err := findIdentityNotificationAttributesByIdentity(ctx, conn, identity)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SES Identity Notification Topic (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SES Identity Notification Topic (%s): %s", d.Id(), err)
+	}
+
+	d.Set("identity", identity)
+	d.Set("notification_type", notificationType)
+
+	switch notificationType {
+	case awstypes.NotificationTypeBounce:
+		d.Set(names.AttrTopicARN, notificationAttributes.BounceTopic)
+		d.Set("include_original_headers", notificationAttributes.HeadersInBounceNotificationsEnabled)
+	case awstypes.NotificationTypeComplaint:
+		d.Set(names.AttrTopicARN, notificationAttributes.ComplaintTopic)
+		d.Set("include_original_headers", notificationAttributes.HeadersInComplaintNotificationsEnabled)
+	case awstypes.NotificationTypeDelivery:
+		d.Set(names.AttrTopicARN, notificationAttributes.DeliveryTopic)
+		d.Set("include_original_headers", notificationAttributes.HeadersInDeliveryNotificationsEnabled)
+	}
+
+	return diags
+}

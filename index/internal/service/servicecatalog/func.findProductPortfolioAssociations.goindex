@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findProductPortfolioAssociations(ctx context.Context, conn *servicecatalog.Client, acceptLanguage, portfolioID, productID string) ([]awstypes.PortfolioDetail, error) {
+	// seems odd that the sourcePortfolioID is not returned or searchable...
+	input := &servicecatalog.ListPortfoliosForProductInput{
+		ProductId: aws.String(productID),
+	}
+
+	if acceptLanguage != "" {
+		input.AcceptLanguage = aws.String(acceptLanguage)
+	}
+
+	var result []awstypes.PortfolioDetail
+
+	pages := servicecatalog.NewListPortfoliosForProductPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: input,
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, detail := range page.PortfolioDetails {
+			if aws.ToString(detail.Id) == portfolioID {
+				result = append(result, detail)
+			}
+		}
+	}
+
+	return result, nil
+}

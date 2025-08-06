@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicationSubnetGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DMSClient(ctx)
+
+	replicationSubnetGroupID := d.Get("replication_subnet_group_id").(string)
+	input := &dms.CreateReplicationSubnetGroupInput{
+		ReplicationSubnetGroupDescription: aws.String(d.Get("replication_subnet_group_description").(string)),
+		ReplicationSubnetGroupIdentifier:  aws.String(replicationSubnetGroupID),
+		SubnetIds:                         flex.ExpandStringValueSet(d.Get(names.AttrSubnetIDs).(*schema.Set)),
+		Tags:                              getTagsIn(ctx),
+	}
+
+	_, err := tfresource.RetryWhenIsA[*awstypes.AccessDeniedFault](ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateReplicationSubnetGroup(ctx, input)
+	})
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DMS Replication Subnet Group (%s): %s", replicationSubnetGroupID, err)
+	}
+
+	d.SetId(replicationSubnetGroupID)
+
+	return append(diags, resourceReplicationSubnetGroupRead(ctx, d, meta)...)
+}

@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepStaticIPs(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("Error getting client: %s", err)
+	}
+	conn := client.LightsailClient(ctx)
+
+	input := &lightsail.GetStaticIpsInput{}
+
+	for {
+		output, err := conn.GetStaticIps(ctx, input)
+		if err != nil {
+			if awsv2.SkipSweepError(err) {
+				log.Printf("[WARN] Skipping Lightsail Static IP sweep for %s: %s", region, err)
+				return nil
+			}
+			return fmt.Errorf("Error retrieving Lightsail Static IPs: %s", err)
+		}
+
+		if len(output.StaticIps) == 0 {
+			log.Print("[DEBUG] No Lightsail Static IPs to sweep")
+			return nil
+		}
+
+		for _, staticIp := range output.StaticIps {
+			name := aws.ToString(staticIp.Name)
+
+			log.Printf("[INFO] Deleting Lightsail Static IP %s", name)
+			_, err := conn.ReleaseStaticIp(ctx, &lightsail.ReleaseStaticIpInput{
+				StaticIpName: aws.String(name),
+			})
+			if err != nil {
+				return fmt.Errorf("Error deleting Lightsail Static IP %s: %s", name, err)
+			}
+		}
+
+		if output.NextPageToken == nil {
+			break
+		}
+		input.PageToken = output.NextPageToken
+	}
+
+	return nil
+}

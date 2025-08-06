@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourcePermissionSetInlinePolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSOAdminClient(ctx)
+
+	policy, err := structure.NormalizeJsonString(d.Get("inline_policy").(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	instanceARN := d.Get("instance_arn").(string)
+	permissionSetARN := d.Get("permission_set_arn").(string)
+	input := &ssoadmin.PutInlinePolicyToPermissionSetInput{
+		InlinePolicy:     aws.String(policy),
+		InstanceArn:      aws.String(instanceARN),
+		PermissionSetArn: aws.String(permissionSetARN),
+	}
+
+	_, err = conn.PutInlinePolicyToPermissionSet(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting SSO Permission Set (%s) Inline Policy: %s", permissionSetARN, err)
+	}
+
+	d.SetId(fmt.Sprintf("%s,%s", permissionSetARN, instanceARN))
+
+	// (Re)provision ALL accounts after making the above changes.
+	if err := provisionPermissionSet(ctx, conn, permissionSetARN, instanceARN, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	return append(diags, resourcePermissionSetInlinePolicyRead(ctx, d, meta)...)
+}

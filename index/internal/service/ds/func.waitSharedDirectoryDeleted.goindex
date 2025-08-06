@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitSharedDirectoryDeleted(ctx context.Context, conn *directoryservice.Client, ownerDirectoryID, sharedDirectoryID string, timeout time.Duration) (*awstypes.SharedDirectory, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(
+			awstypes.ShareStatusDeleting,
+			awstypes.ShareStatusShared,
+			awstypes.ShareStatusPendingAcceptance,
+			awstypes.ShareStatusRejectFailed,
+			awstypes.ShareStatusRejected,
+			awstypes.ShareStatusRejecting,
+		),
+		Target:                    []string{},
+		Refresh:                   statusSharedDirectory(ctx, conn, ownerDirectoryID, sharedDirectoryID),
+		Timeout:                   timeout,
+		MinTimeout:                30 * time.Second,
+		ContinuousTargetOccurence: 2,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.SharedDirectory); ok {
+		return output, err
+	}
+
+	return nil, err
+}

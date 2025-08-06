@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceContainerServiceDeploymentVersionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+	serviceName := d.Get(names.AttrServiceName).(string)
+
+	input := lightsail.CreateContainerServiceDeploymentInput{
+		ServiceName: aws.String(serviceName),
+	}
+
+	if v, ok := d.GetOk("container"); ok && v.(*schema.Set).Len() > 0 {
+		input.Containers = expandContainerServiceDeploymentContainers(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("public_endpoint"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.PublicEndpoint = expandContainerServiceDeploymentPublicEndpoint(v.([]any))
+	}
+
+	output, err := conn.CreateContainerServiceDeployment(ctx, &input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Lightsail Container Service (%s) Deployment Version: %s", serviceName, err)
+	}
+
+	if output == nil || output.ContainerService == nil || output.ContainerService.NextDeployment == nil {
+		return sdkdiag.AppendErrorf(diags, "creating Lightsail Container Service (%s) Deployment Version: empty output", serviceName)
+	}
+
+	version := int(aws.ToInt32(output.ContainerService.NextDeployment.Version))
+
+	d.SetId(fmt.Sprintf("%s/%d", serviceName, version))
+
+	if err := waitContainerServiceDeploymentVersionActive(ctx, conn, serviceName, version, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Lightsail Container Service (%s) Deployment Version (%d): %s", serviceName, version, err)
+	}
+
+	return append(diags, resourceContainerServiceDeploymentVersionRead(ctx, d, meta)...)
+}

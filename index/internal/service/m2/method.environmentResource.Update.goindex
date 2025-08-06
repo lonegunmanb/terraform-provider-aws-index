@@ -1,0 +1,106 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/m2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/m2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/m2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *environmentResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new environmentResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().M2Client(ctx)
+
+	if !new.EngineVersion.Equal(old.EngineVersion) ||
+		!new.HighAvailabilityConfig.Equal(old.HighAvailabilityConfig) ||
+		!new.InstanceType.Equal(old.InstanceType) ||
+		!new.PreferredMaintenanceWindow.Equal(old.PreferredMaintenanceWindow) {
+		input := &m2.UpdateEnvironmentInput{
+			EnvironmentId: fwflex.StringFromFramework(ctx, new.ID),
+		}
+
+		if !new.ForceUpdate.IsNull() {
+			input.ForceUpdate = new.ForceUpdate.ValueBool()
+		}
+
+		// https://docs.aws.amazon.com/m2/latest/APIReference/API_UpdateEnvironment.html#m2-UpdateEnvironment-request-applyDuringMaintenanceWindow.
+		// "Currently, AWS Mainframe Modernization accepts the engineVersion parameter only if applyDuringMaintenanceWindow is true. If any parameter other than engineVersion is provided in UpdateEnvironmentRequest, it will fail if applyDuringMaintenanceWindow is set to true."
+		if new.ApplyDuringMaintenanceWindow.ValueBool() && !new.EngineVersion.Equal(old.EngineVersion) {
+			input.ApplyDuringMaintenanceWindow = true
+			input.EngineVersion = fwflex.StringFromFramework(ctx, new.EngineVersion)
+		} else {
+			if !new.EngineVersion.Equal(old.EngineVersion) {
+				input.EngineVersion = fwflex.StringFromFramework(ctx, new.EngineVersion)
+			}
+			if !new.HighAvailabilityConfig.Equal(old.HighAvailabilityConfig) {
+				highAvailabilityConfigData, diags := new.HighAvailabilityConfig.ToPtr(ctx)
+				response.Diagnostics.Append(diags...)
+				if response.Diagnostics.HasError() {
+					return
+				}
+
+				input.DesiredCapacity = fwflex.Int32FromFrameworkInt64(ctx, highAvailabilityConfigData.DesiredCapacity)
+			}
+			if !new.InstanceType.Equal(old.InstanceType) {
+				input.InstanceType = fwflex.StringFromFramework(ctx, new.InstanceType)
+			}
+			if !new.PreferredMaintenanceWindow.Equal(old.PreferredMaintenanceWindow) {
+				input.PreferredMaintenanceWindow = fwflex.StringFromFramework(ctx, new.PreferredMaintenanceWindow)
+			}
+		}
+		_, err := conn.UpdateEnvironment(ctx, input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating Mainframe Modernization Environment (%s)", new.ID.ValueString()), err.Error())
+
+			return
+		}
+
+		if _, err := waitEnvironmentUpdated(ctx, conn, new.ID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("waiting for Mainframe Modernization Environment (%s) update", new.ID.ValueString()), err.Error())
+
+			return
+		}
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+}

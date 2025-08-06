@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appsync
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appsync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResolverCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppSyncClient(ctx)
+
+	apiID, typeName, fieldName := d.Get("api_id").(string), d.Get(names.AttrType).(string), d.Get(names.AttrField).(string)
+	id := resolverCreateResourceID(apiID, typeName, fieldName)
+	input := &appsync.CreateResolverInput{
+		ApiId:     aws.String(apiID),
+		FieldName: aws.String(fieldName),
+		Kind:      awstypes.ResolverKind(d.Get("kind").(string)),
+		TypeName:  aws.String(typeName),
+	}
+
+	if v, ok := d.GetOk("caching_config"); ok {
+		input.CachingConfig = expandResolverCachingConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("code"); ok {
+		input.Code = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("data_source"); ok {
+		input.DataSourceName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("max_batch_size"); ok {
+		input.MaxBatchSize = int32(v.(int))
+	}
+
+	if v, ok := d.GetOk("pipeline_config"); ok && len(v.([]any)) > 0 {
+		input.PipelineConfig = expandPipelineConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("request_template"); ok {
+		input.RequestMappingTemplate = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("response_template"); ok {
+		input.ResponseMappingTemplate = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("runtime"); ok && len(v.([]any)) > 0 {
+		input.Runtime = expandRuntime(v.([]any))
+	}
+
+	if v, ok := d.GetOk("sync_config"); ok && len(v.([]any)) > 0 {
+		input.SyncConfig = expandSyncConfig(v.([]any))
+	}
+
+	_, err := retryResolverOp(ctx, apiID, func() (any, error) {
+		return conn.CreateResolver(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating AppSync Resolver (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceResolverRead(ctx, d, meta)...)
+}

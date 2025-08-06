@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudcontrol
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudcontrol"
+	"github.com/aws/aws-sdk-go-v2/service/cloudcontrol/types"
+	cfschema "github.com/hashicorp/aws-cloudformation-resource-schema-sdk-go"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfcloudformation "github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mattbaird/jsonpatch"
+)
+func findProgressEventByRequestToken(ctx context.Context, conn *cloudcontrol.Client, requestToken string) (*types.ProgressEvent, error) {
+	input := &cloudcontrol.GetResourceRequestStatusInput{
+		RequestToken: aws.String(requestToken),
+	}
+
+	output, err := conn.GetResourceRequestStatus(ctx, input)
+
+	if errs.IsA[*types.RequestTokenNotFoundException](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil || output.ProgressEvent == nil {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	return output.ProgressEvent, nil
+}

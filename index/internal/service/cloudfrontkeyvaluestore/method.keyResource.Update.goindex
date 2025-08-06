@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfrontkeyvaluestore
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfrontkeyvaluestore"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfrontkeyvaluestore/types"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *keyResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new keyResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudFrontKeyValueStoreClient(ctx)
+
+	if !new.Value.Equal(old.Value) {
+		kvsARN := new.KvsARN.ValueString()
+
+		// Updating a key changes the etag of the key value store.
+		// Use a mutex serialize actions
+		mutexKey := kvsARN
+		conns.GlobalMutexKV.Lock(mutexKey)
+		defer conns.GlobalMutexKV.Unlock(mutexKey)
+
+		etag, err := findETagByARN(ctx, conn, kvsARN)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("reading CloudFront KeyValueStore ETag (%s)", kvsARN), err.Error())
+
+			return
+		}
+
+		input := &cloudfrontkeyvaluestore.PutKeyInput{}
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, input)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		// Additional fields.
+		input.IfMatch = etag
+
+		output, err := conn.PutKey(ctx, input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating CloudFront KeyValueStore (%s) Key (%s)", kvsARN, new.Key.ValueString()), err.Error())
+
+			return
+		}
+
+		// Set values for unknowns.
+		new.TotalSizeInBytes = fwflex.Int64ToFramework(ctx, output.TotalSizeInBytes)
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+}

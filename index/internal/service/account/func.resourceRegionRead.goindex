@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/account
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/account"
+	"github.com/aws/aws-sdk-go-v2/service/account/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRegionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AccountClient(ctx)
+
+	var accountID, region string
+	if strings.Contains(d.Id(), flex.ResourceIdSeparator) {
+		parts, err := flex.ExpandResourceId(d.Id(), regionResourceIDPartCount, false)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		accountID = parts[0]
+		region = parts[1]
+	} else {
+		region = d.Id()
+	}
+
+	output, err := findRegionOptStatus(ctx, conn, accountID, region)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Account Region (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrAccountID, accountID)
+	d.Set(names.AttrEnabled, output.RegionOptStatus == types.RegionOptStatusEnabled || output.RegionOptStatus == types.RegionOptStatusEnabledByDefault)
+	d.Set("opt_status", string(output.RegionOptStatus))
+	d.Set("region_name", output.RegionName)
+
+	return diags
+}

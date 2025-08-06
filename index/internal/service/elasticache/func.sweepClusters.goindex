@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepClusters(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	input := &elasticache.DescribeCacheClustersInput{
+		ShowCacheClustersNotInReplicationGroups: aws.Bool(true),
+	}
+	conn := client.ElastiCacheClient(ctx)
+	var sweeperErrs *multierror.Error
+
+	pages := elasticache.NewDescribeCacheClustersPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping ElastiCache Cluster sweep for %s: %s", region, err)
+			return sweeperErrs.ErrorOrNil() // In case we have completed some pages, but had errors
+		}
+
+		if err != nil {
+			sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("Error retrieving ElastiCache Clusters: %w", err))
+		}
+
+		for _, v := range page.CacheClusters {
+			id := aws.ToString(v.CacheClusterId)
+
+			log.Printf("[INFO] Deleting ElastiCache Cluster: %s", id)
+			err := deleteCacheCluster(ctx, conn, id, "")
+
+			if err != nil {
+				log.Printf("[ERROR] Failed to delete ElastiCache Cache Cluster (%s): %s", id, err)
+				sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error deleting ElastiCache Cache Cluster (%s): %w", id, err))
+			}
+
+			const (
+				timeout = 40 * time.Minute
+			)
+			if _, err := waitCacheClusterDeleted(ctx, conn, id, timeout); err != nil {
+				log.Printf("[ERROR] Failed waiting for ElastiCache Cache Cluster (%s) to be deleted: %s", id, err)
+				sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error deleting ElastiCache Cache Cluster (%s): waiting for completion: %w", id, err))
+			}
+		}
+	}
+
+	return sweeperErrs.ErrorOrNil()
+}

@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/logs
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMetricFilterDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LogsClient(ctx)
+
+	// Creating multiple filters on the same log group can sometimes cause
+	// clashes, so use a mutex here (and on creation) to serialise actions on
+	// log groups.
+	mutexKey := fmt.Sprintf(`log-group-%s`, d.Get(names.AttrLogGroupName))
+	conns.GlobalMutexKV.Lock(mutexKey)
+	defer conns.GlobalMutexKV.Unlock(mutexKey)
+
+	log.Printf("[INFO] Deleting CloudWatch Logs Metric Filter: %s", d.Id())
+	_, err := conn.DeleteMetricFilter(ctx, &cloudwatchlogs.DeleteMetricFilterInput{
+		FilterName:   aws.String(d.Id()),
+		LogGroupName: aws.String(d.Get(names.AttrLogGroupName).(string)),
+	})
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting CloudWatch Logs Metric Filter (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

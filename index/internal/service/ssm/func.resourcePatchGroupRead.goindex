@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourcePatchGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSMClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), patchGroupResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	patchGroup, baselineID := parts[0], parts[1]
+	group, err := findPatchGroupByTwoPartKey(ctx, conn, patchGroup, baselineID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SSM Patch Group %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SSM Patch Group (%s): %s", d.Id(), err)
+	}
+
+	var groupBaselineID string
+	if group.BaselineIdentity != nil {
+		groupBaselineID = aws.ToString(group.BaselineIdentity.BaselineId)
+	}
+	d.Set("baseline_id", groupBaselineID)
+	d.Set("patch_group", group.PatchGroup)
+
+	return diags
+}

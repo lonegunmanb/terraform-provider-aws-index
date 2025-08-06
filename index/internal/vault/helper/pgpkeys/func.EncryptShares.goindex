@@ -1,0 +1,40 @@
+package github.com/hashicorp/terraform-provider-aws/internal/vault/helper/pgpkeys
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
+)
+func EncryptShares(input [][]byte, pgpKeys []string) ([]string, [][]byte, error) {
+	if len(input) != len(pgpKeys) {
+		return nil, nil, fmt.Errorf("mismatch between number items to encrypt and number of PGP keys")
+	}
+	encryptedShares := make([][]byte, 0, len(pgpKeys))
+	entities, err := GetEntities(pgpKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i, entity := range entities {
+		ctBuf := bytes.NewBuffer(nil)
+		pt, err := openpgp.Encrypt(ctBuf, []*openpgp.Entity{entity}, nil, nil, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("setting up encryption for PGP message: %w", err)
+		}
+		_, err = pt.Write(input[i])
+		if err != nil {
+			return nil, nil, fmt.Errorf("encrypting PGP message: %w", err)
+		}
+		pt.Close()
+		encryptedShares = append(encryptedShares, ctBuf.Bytes())
+	}
+
+	fingerprints, err := GetFingerprints(nil, entities)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return fingerprints, encryptedShares, nil
+}

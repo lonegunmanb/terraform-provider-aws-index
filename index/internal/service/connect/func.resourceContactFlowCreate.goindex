@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfio "github.com/hashicorp/terraform-provider-aws/internal/io"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceContactFlowCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID := d.Get(names.AttrInstanceID).(string)
+	name := d.Get(names.AttrName).(string)
+	input := &connect.CreateContactFlowInput{
+		Name:       aws.String(name),
+		InstanceId: aws.String(instanceID),
+		Tags:       getTagsIn(ctx),
+		Type:       awstypes.ContactFlowType(d.Get(names.AttrType).(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("filename"); ok {
+		v := v.(string)
+		// Grab an exclusive lock so that we're only reading one contact flow into
+		// memory at a time.
+		// See https://github.com/hashicorp/terraform/issues/9364
+		conns.GlobalMutexKV.Lock(contactFlowMutexKey)
+		defer conns.GlobalMutexKV.Unlock(contactFlowMutexKey)
+
+		contents, err := tfio.ReadFileContents(v)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.Content = aws.String(string(contents))
+	} else if v, ok := d.GetOk(names.AttrContent); ok {
+		input.Content = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateContactFlow(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Connect Contact Flow (%s): %s", name, err)
+	}
+
+	id := contactFlowCreateResourceID(instanceID, aws.ToString(output.ContactFlowId))
+	d.SetId(id)
+
+	return append(diags, resourceContactFlowRead(ctx, d, meta)...)
+}

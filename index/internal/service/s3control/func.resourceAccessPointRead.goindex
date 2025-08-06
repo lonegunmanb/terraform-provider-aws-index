@@ -1,0 +1,150 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3control
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/s3control"
+	"github.com/aws/aws-sdk-go-v2/service/s3control/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAccessPointRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3ControlClient(ctx)
+
+	accountID, name, err := AccessPointParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	output, err := findAccessPointByTwoPartKey(ctx, conn, accountID, name)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] S3 Access Point (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading S3 Access Point (%s): %s", d.Id(), err)
+	}
+
+	s3OnOutposts := arn.IsARN(name)
+
+	if s3OnOutposts {
+		accessPointARN, err := arn.Parse(name)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		// https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3onoutposts.html#amazons3onoutposts-resources-for-iam-policies.
+		bucketARN := arn.ARN{
+			Partition: accessPointARN.Partition,
+			Service:   accessPointARN.Service,
+			Region:    accessPointARN.Region,
+			AccountID: accessPointARN.AccountID,
+			Resource: strings.Replace(
+				accessPointARN.Resource,
+				fmt.Sprintf("accesspoint/%s", aws.ToString(output.Name)),
+				fmt.Sprintf("bucket/%s", aws.ToString(output.Bucket)),
+				1,
+			),
+		}
+
+		d.Set(names.AttrARN, name)
+		d.Set(names.AttrBucket, bucketARN.String())
+	} else {
+		apARN, err := arn.Parse(aws.ToString(output.AccessPointArn))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "parsing S3 Access Point (%s): %s", d.Id(), err)
+		}
+
+		switch service := apARN.Service; service {
+		case "s3":
+			// https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html#amazons3-resources-for-iam-policies.
+			accessPointARN := arn.ARN{
+				Partition: meta.(*conns.AWSClient).Partition(ctx),
+				Service:   "s3",
+				Region:    meta.(*conns.AWSClient).Region(ctx),
+				AccountID: accountID,
+				Resource:  fmt.Sprintf("accesspoint/%s", aws.ToString(output.Name)),
+			}
+
+			d.Set(names.AttrARN, accessPointARN.String())
+			d.Set(names.AttrBucket, output.Bucket)
+		case "s3express":
+			// https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazons3.html#amazons3-resources-for-iam-policies.
+			accessPointARN := arn.ARN{
+				Partition: meta.(*conns.AWSClient).Partition(ctx),
+				Service:   "s3express",
+				Region:    meta.(*conns.AWSClient).Region(ctx),
+				AccountID: accountID,
+				Resource:  fmt.Sprintf("accesspoint/%s", aws.ToString(output.Name)),
+			}
+
+			d.Set(names.AttrARN, accessPointARN.String())
+			d.Set(names.AttrBucket, output.Bucket)
+		default:
+			return sdkdiag.AppendErrorf(diags, "unknown S3 Access Point service %s", service)
+		}
+	}
+
+	d.Set(names.AttrAccountID, accountID)
+	d.Set(names.AttrAlias, output.Alias)
+	d.Set("bucket_account_id", output.BucketAccountId)
+	d.Set(names.AttrDomainName, meta.(*conns.AWSClient).RegionalHostname(ctx, fmt.Sprintf("%s-%s.s3-accesspoint", aws.ToString(output.Name), accountID)))
+	d.Set(names.AttrEndpoints, output.Endpoints)
+	d.Set(names.AttrName, output.Name)
+	d.Set("network_origin", output.NetworkOrigin)
+	if output.PublicAccessBlockConfiguration != nil {
+		if err := d.Set("public_access_block_configuration", []any{flattenPublicAccessBlockConfiguration(output.PublicAccessBlockConfiguration)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting public_access_block_configuration: %s", err)
+		}
+	} else {
+		d.Set("public_access_block_configuration", nil)
+	}
+	if output.VpcConfiguration != nil {
+		if err := d.Set(names.AttrVPCConfiguration, []any{flattenVPCConfiguration(output.VpcConfiguration)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting vpc_configuration: %s", err)
+		}
+	} else {
+		d.Set(names.AttrVPCConfiguration, nil)
+	}
+
+	policy, status, err := findAccessPointPolicyAndStatusByTwoPartKey(ctx, conn, accountID, name)
+
+	if err == nil && policy != "" {
+		if s3OnOutposts {
+			d.Set("has_public_access_policy", false)
+		} else {
+			d.Set("has_public_access_policy", status.IsPublic)
+		}
+
+		policyToSet, err := verify.PolicyToSet(d.Get(names.AttrPolicy).(string), policy)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		d.Set(names.AttrPolicy, policyToSet)
+	} else if policy == "" || tfresource.NotFound(err) {
+		d.Set("has_public_access_policy", false)
+		d.Set(names.AttrPolicy, nil)
+	} else {
+		return sdkdiag.AppendErrorf(diags, "reading S3 Access Point (%s) policy: %s", d.Id(), err)
+	}
+
+	return diags
+}

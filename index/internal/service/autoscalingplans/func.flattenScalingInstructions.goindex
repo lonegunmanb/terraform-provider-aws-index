@@ -1,0 +1,120 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscalingplans
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscalingplans"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscalingplans/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenScalingInstructions(scalingInstructions []awstypes.ScalingInstruction) []any {
+	vScalingInstructions := []any{}
+
+	for _, scalingInstruction := range scalingInstructions {
+		mScalingInstruction := map[string]any{
+			"disable_dynamic_scaling":                  aws.ToBool(scalingInstruction.DisableDynamicScaling),
+			names.AttrMaxCapacity:                      int(aws.ToInt32(scalingInstruction.MaxCapacity)),
+			"min_capacity":                             int(aws.ToInt32(scalingInstruction.MinCapacity)),
+			"predictive_scaling_max_capacity_behavior": scalingInstruction.PredictiveScalingMaxCapacityBehavior,
+			"predictive_scaling_max_capacity_buffer":   int(aws.ToInt32(scalingInstruction.PredictiveScalingMaxCapacityBuffer)),
+			"predictive_scaling_mode":                  string(scalingInstruction.PredictiveScalingMode),
+			names.AttrResourceID:                       aws.ToString(scalingInstruction.ResourceId),
+			"scalable_dimension":                       string(scalingInstruction.ScalableDimension),
+			"scaling_policy_update_behavior":           string(scalingInstruction.ScalingPolicyUpdateBehavior),
+			"scheduled_action_buffer_time":             int(aws.ToInt32(scalingInstruction.ScheduledActionBufferTime)),
+			"service_namespace":                        string(scalingInstruction.ServiceNamespace),
+		}
+
+		if customizedLoadMetricSpecification := scalingInstruction.CustomizedLoadMetricSpecification; customizedLoadMetricSpecification != nil {
+			mDimensions := map[string]any{}
+			for _, dimension := range customizedLoadMetricSpecification.Dimensions {
+				mDimensions[aws.ToString(dimension.Name)] = aws.ToString(dimension.Value)
+			}
+
+			mScalingInstruction["customized_load_metric_specification"] = []any{
+				map[string]any{
+					"dimensions":         mDimensions,
+					names.AttrMetricName: aws.ToString(customizedLoadMetricSpecification.MetricName),
+					names.AttrNamespace:  aws.ToString(customizedLoadMetricSpecification.Namespace),
+					"statistic":          string(customizedLoadMetricSpecification.Statistic),
+					names.AttrUnit:       aws.ToString(customizedLoadMetricSpecification.Unit),
+				},
+			}
+		}
+
+		if predefinedLoadMetricSpecification := scalingInstruction.PredefinedLoadMetricSpecification; predefinedLoadMetricSpecification != nil {
+			mScalingInstruction["predefined_load_metric_specification"] = []any{
+				map[string]any{
+					"predefined_load_metric_type": string(predefinedLoadMetricSpecification.PredefinedLoadMetricType),
+					"resource_label":              aws.ToString(predefinedLoadMetricSpecification.ResourceLabel),
+				},
+			}
+		}
+
+		if targetTrackingConfigurations := scalingInstruction.TargetTrackingConfigurations; targetTrackingConfigurations != nil {
+			vTargetTrackingConfigurations := []any{}
+
+			for _, targetTrackingConfiguration := range targetTrackingConfigurations {
+				mTargetTrackingConfiguration := map[string]any{
+					"disable_scale_in":          aws.ToBool(targetTrackingConfiguration.DisableScaleIn),
+					"estimated_instance_warmup": int(aws.ToInt32(targetTrackingConfiguration.EstimatedInstanceWarmup)),
+					"scale_in_cooldown":         int(aws.ToInt32(targetTrackingConfiguration.ScaleInCooldown)),
+					"scale_out_cooldown":        int(aws.ToInt32(targetTrackingConfiguration.ScaleOutCooldown)),
+					"target_value":              aws.ToFloat64(targetTrackingConfiguration.TargetValue),
+				}
+
+				if customizedScalingMetricSpecification := targetTrackingConfiguration.CustomizedScalingMetricSpecification; customizedScalingMetricSpecification != nil {
+					mDimensions := map[string]any{}
+					for _, dimension := range customizedScalingMetricSpecification.Dimensions {
+						mDimensions[aws.ToString(dimension.Name)] = aws.ToString(dimension.Value)
+					}
+
+					mTargetTrackingConfiguration["customized_scaling_metric_specification"] = []any{
+						map[string]any{
+							"dimensions":         mDimensions,
+							names.AttrMetricName: aws.ToString(customizedScalingMetricSpecification.MetricName),
+							names.AttrNamespace:  aws.ToString(customizedScalingMetricSpecification.Namespace),
+							"statistic":          string(customizedScalingMetricSpecification.Statistic),
+							names.AttrUnit:       aws.ToString(customizedScalingMetricSpecification.Unit),
+						},
+					}
+				}
+
+				if predefinedScalingMetricSpecification := targetTrackingConfiguration.PredefinedScalingMetricSpecification; predefinedScalingMetricSpecification != nil {
+					mTargetTrackingConfiguration["predefined_scaling_metric_specification"] = []any{
+						map[string]any{
+							"predefined_scaling_metric_type": string(predefinedScalingMetricSpecification.PredefinedScalingMetricType),
+							"resource_label":                 aws.ToString(predefinedScalingMetricSpecification.ResourceLabel),
+						},
+					}
+				}
+
+				vTargetTrackingConfigurations = append(vTargetTrackingConfigurations, mTargetTrackingConfiguration)
+			}
+
+			mScalingInstruction["target_tracking_configuration"] = vTargetTrackingConfigurations
+		}
+
+		vScalingInstructions = append(vScalingInstructions, mScalingInstruction)
+	}
+
+	return vScalingInstructions
+}

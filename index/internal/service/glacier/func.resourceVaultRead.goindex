@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glacier
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glacier"
+	"github.com/aws/aws-sdk-go-v2/service/glacier/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVaultRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlacierClient(ctx)
+
+	output, err := findVaultByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Glaier Vault (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Glacier Vault (%s): %s", d.Id(), err)
+	}
+
+	d.Set("access_policy", nil)
+	d.Set(names.AttrARN, output.VaultARN)
+	d.Set(names.AttrLocation, fmt.Sprintf("/%s/vaults/%s", meta.(*conns.AWSClient).AccountID(ctx), d.Id()))
+	d.Set(names.AttrName, output.VaultName)
+	d.Set("notification", nil)
+
+	if output, err := conn.GetVaultAccessPolicy(ctx, &glacier.GetVaultAccessPolicyInput{
+		VaultName: aws.String(d.Id()),
+	}); err != nil {
+		// "An error occurred (ResourceNotFoundException) when calling the GetVaultAccessPolicy operation: No vault access policy is set for: ..."
+		if !errs.IsA[*types.ResourceNotFoundException](err) {
+			return sdkdiag.AppendErrorf(diags, "reading Glacier Vault (%s) access policy: %s", d.Id(), err)
+		}
+	} else if output != nil && output.Policy != nil {
+		policy, err := verify.PolicyToSet(d.Get("access_policy").(string), aws.ToString(output.Policy.Policy))
+
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		d.Set("access_policy", policy)
+	}
+
+	if output, err := conn.GetVaultNotifications(ctx, &glacier.GetVaultNotificationsInput{
+		VaultName: aws.String(d.Id()),
+	}); err != nil {
+		// "An error occurred (ResourceNotFoundException) when calling the GetVaultNotifications operation: No notification configuration is set for vault: ..."
+		if !errs.IsA[*types.ResourceNotFoundException](err) {
+			return sdkdiag.AppendErrorf(diags, "reading Glacier Vault (%s) notifications: %s", d.Id(), err)
+		}
+	} else if output != nil && output.VaultNotificationConfig != nil {
+		apiObject := output.VaultNotificationConfig
+		tfMap := map[string]any{}
+
+		if v := apiObject.Events; v != nil {
+			tfMap["events"] = v
+		}
+
+		if v := apiObject.SNSTopic; v != nil {
+			tfMap["sns_topic"] = aws.ToString(v)
+		}
+
+		if err := d.Set("notification", []any{tfMap}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting notification: %s", err)
+		}
+	}
+
+	return diags
+}

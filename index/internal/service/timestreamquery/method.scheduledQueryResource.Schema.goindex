@@ -1,0 +1,542 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/timestreamquery
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/timestreamquery"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/timestreamquery/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *scheduledQueryResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN: framework.ARNAttributeComputedOnly(),
+			names.AttrCreationTime: schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			names.AttrExecutionRoleARN: schema.StringAttribute{
+				Required: true,
+			},
+			names.AttrKMSKeyID: schema.StringAttribute{
+				Optional: true,
+			},
+			names.AttrName: schema.StringAttribute{
+				Required: true,
+			},
+			"next_invocation_time": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			"previous_invocation_time": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			"query_string": schema.StringAttribute{
+				Required: true,
+			},
+			names.AttrState: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.ScheduledQueryState](), // ENABLED, DISABLED
+				Computed:   true,
+			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
+		},
+		Blocks: map[string]schema.Block{
+			"error_report_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[errorReportConfiguration](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeBetween(1, 1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"s3_configuration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[s3Configuration](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeBetween(1, 1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrBucketName: schema.StringAttribute{
+										Required: true,
+									},
+									"encryption_option": schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.S3EncryptionOption](),
+										Optional:   true,
+										Computed:   true,
+									},
+									"object_key_prefix": schema.StringAttribute{
+										Optional: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"last_run_summary": schema.ListNestedBlock{ // Entirely Computed
+				CustomType: fwtypes.NewListNestedObjectTypeOf[scheduledQueryRunSummary](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"failure_reason": schema.StringAttribute{
+							Computed: true,
+						},
+						"invocation_time": schema.StringAttribute{
+							CustomType: timetypes.RFC3339Type{},
+							Computed:   true,
+						},
+						"run_status": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.ScheduledQueryRunStatus](),
+							Computed:   true,
+						},
+						"trigger_time": schema.StringAttribute{
+							CustomType: timetypes.RFC3339Type{},
+							Computed:   true,
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"error_report_location": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[errorReportLocation](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"s3_report_location": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[s3ReportLocation](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrBucketName: schema.StringAttribute{
+													Computed: true,
+												},
+												"object_key": schema.StringAttribute{
+													Computed: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"execution_stats": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[executionStats](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"bytes_metered": schema.Int64Attribute{
+										Computed: true,
+									},
+									"cumulative_bytes_scanned": schema.Int64Attribute{
+										Computed: true,
+									},
+									"data_writes": schema.Int64Attribute{
+										Computed: true,
+									},
+									"execution_time_in_millis": schema.Int64Attribute{
+										Computed: true,
+									},
+									"query_result_rows": schema.Int64Attribute{
+										Computed: true,
+									},
+									"records_ingested": schema.Int64Attribute{
+										Computed: true,
+									},
+								},
+							},
+						},
+						"query_insights_response": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[queryInsightsResponse](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"output_bytes": schema.Int64Attribute{
+										Computed: true,
+									},
+									"output_rows": schema.Int64Attribute{
+										Computed: true,
+									},
+									"query_table_count": schema.Int64Attribute{
+										Computed: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"query_spatial_coverage": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[querySpatialCoverage](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												names.AttrMax: schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[querySpatialCoverageMax](ctx),
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"partition_key": schema.ListAttribute{
+																CustomType:  fwtypes.ListOfStringType,
+																ElementType: types.StringType,
+																Computed:    true,
+															},
+															"table_arn": schema.StringAttribute{
+																Computed: true,
+															},
+															names.AttrValue: schema.Float64Attribute{
+																Computed: true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+									"query_temporal_range": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[queryTemporalRange](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												names.AttrMax: schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[queryTemporalRangeMax](ctx),
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"table_arn": schema.StringAttribute{
+																Computed: true,
+															},
+															names.AttrValue: schema.Int64Attribute{
+																Computed: true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"notification_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[notificationConfiguration](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeBetween(1, 1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"sns_configuration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[snsConfiguration](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeBetween(1, 1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrTopicARN: schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"recently_failed_runs": schema.ListNestedBlock{ // Entirely Computed
+				CustomType: fwtypes.NewListNestedObjectTypeOf[scheduledQueryRunSummary](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"failure_reason": schema.StringAttribute{
+							Computed: true,
+						},
+						"invocation_time": schema.StringAttribute{
+							CustomType: timetypes.RFC3339Type{},
+							Computed:   true,
+						},
+						"run_status": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.ScheduledQueryRunStatus](),
+							Computed:   true,
+						},
+						"trigger_time": schema.StringAttribute{
+							CustomType: timetypes.RFC3339Type{},
+							Computed:   true,
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"error_report_location": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[errorReportLocation](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"s3_report_location": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[s3ReportLocation](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrBucketName: schema.StringAttribute{
+													Computed: true,
+												},
+												"object_key": schema.StringAttribute{
+													Computed: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"execution_stats": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[executionStats](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"bytes_metered": schema.Int64Attribute{
+										Computed: true,
+									},
+									"cumulative_bytes_scanned": schema.Int64Attribute{
+										Computed: true,
+									},
+									"data_writes": schema.Int64Attribute{
+										Computed: true,
+									},
+									"execution_time_in_millis": schema.Int64Attribute{
+										Computed: true,
+									},
+									"query_result_rows": schema.Int64Attribute{
+										Computed: true,
+									},
+									"records_ingested": schema.Int64Attribute{
+										Computed: true,
+									},
+								},
+							},
+						},
+						"query_insights_response": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[queryInsightsResponse](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"output_bytes": schema.Int64Attribute{
+										Computed: true,
+									},
+									"output_rows": schema.Int64Attribute{
+										Computed: true,
+									},
+									"query_table_count": schema.Int64Attribute{
+										Computed: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"query_spatial_coverage": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[querySpatialCoverage](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												names.AttrMax: schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[querySpatialCoverageMax](ctx),
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"partition_key": schema.ListAttribute{
+																CustomType:  fwtypes.ListOfStringType,
+																ElementType: types.StringType,
+																Computed:    true,
+															},
+															"table_arn": schema.StringAttribute{
+																Computed: true,
+															},
+															names.AttrValue: schema.Float64Attribute{
+																Computed: true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+									"query_temporal_range": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[queryTemporalRange](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												names.AttrMax: schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[queryTemporalRangeMax](ctx),
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"table_arn": schema.StringAttribute{
+																Computed: true,
+															},
+															names.AttrValue: schema.Int64Attribute{
+																Computed: true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"schedule_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[scheduleConfiguration](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeBetween(1, 1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrScheduleExpression: schema.StringAttribute{
+							Required: true,
+						},
+					},
+				},
+			},
+			"target_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[targetConfiguration](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeBetween(1, 1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"timestream_configuration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[timestreamConfiguration](ctx),
+							Validators: []validator.List{
+								listvalidator.AtLeastOneOf(
+									path.MatchRelative().AtName("mixed_measure_mapping"),
+									path.MatchRelative().AtName("multi_measure_mappings"),
+								),
+								listvalidator.SizeAtMost(1),
+								listvalidator.IsRequired(),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrDatabaseName: schema.StringAttribute{
+										Required: true,
+									},
+									names.AttrTableName: schema.StringAttribute{
+										Required: true,
+									},
+									"time_column": schema.StringAttribute{
+										Required: true,
+									},
+									"measure_name_column": schema.StringAttribute{
+										Optional: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"dimension_mapping": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[dimensionMapping](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtLeast(1),
+											listvalidator.IsRequired(),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"dimension_value_type": schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.DimensionValueType](),
+													Required:   true,
+												},
+												names.AttrName: schema.StringAttribute{
+													Required: true,
+												},
+											},
+										},
+									},
+									"mixed_measure_mapping": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[mixedMeasureMapping](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"measure_value_type": schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.MeasureValueType](),
+													Required:   true,
+												},
+												"measure_name": schema.StringAttribute{
+													Optional: true,
+												},
+												"source_column": schema.StringAttribute{
+													Optional: true,
+												},
+												"target_measure_name": schema.StringAttribute{
+													Optional: true,
+												},
+											},
+											Blocks: map[string]schema.Block{
+												"multi_measure_attribute_mapping": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[multiMeasureAttributeMapping](ctx),
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"measure_value_type": schema.StringAttribute{
+																CustomType: fwtypes.StringEnumType[awstypes.ScalarMeasureValueType](),
+																Required:   true,
+															},
+															"source_column": schema.StringAttribute{
+																Required: true,
+															},
+															"target_multi_measure_attribute_name": schema.StringAttribute{
+																Optional: true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+									"multi_measure_mappings": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[multiMeasureMappings](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"target_multi_measure_name": schema.StringAttribute{
+													Optional: true,
+												},
+											},
+											Blocks: map[string]schema.Block{
+												"multi_measure_attribute_mapping": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[multiMeasureAttributeMapping](ctx),
+													Validators: []validator.List{
+														listvalidator.IsRequired(),
+														listvalidator.SizeAtLeast(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"measure_value_type": schema.StringAttribute{
+																CustomType: fwtypes.StringEnumType[awstypes.ScalarMeasureValueType](),
+																Required:   true,
+															},
+															"source_column": schema.StringAttribute{
+																Required: true,
+															},
+															"target_multi_measure_attribute_name": schema.StringAttribute{
+																Optional: true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+	}
+}

@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func statusConstraint(ctx context.Context, conn *servicecatalog.Client, acceptLanguage, id string) retry.StateRefreshFunc {
+	return func() (any, string, error) {
+		input := &servicecatalog.DescribeConstraintInput{
+			Id: aws.String(id),
+		}
+
+		if acceptLanguage != "" {
+			input.AcceptLanguage = aws.String(acceptLanguage)
+		}
+
+		output, err := conn.DescribeConstraint(ctx, input)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, statusNotFound, &retry.NotFoundError{
+				Message: fmt.Sprintf("constraint not found (accept language %s, ID: %s): %s", acceptLanguage, id, err),
+			}
+		}
+
+		if err != nil {
+			return nil, string(awstypes.StatusFailed), fmt.Errorf("describing constraint: %w", err)
+		}
+
+		if output == nil || output.ConstraintDetail == nil {
+			return nil, statusNotFound, &retry.NotFoundError{
+				Message: fmt.Sprintf("describing constraint (accept language %s, ID: %s): empty response", acceptLanguage, id),
+			}
+		}
+
+		return output, string(output.Status), err
+	}
+}

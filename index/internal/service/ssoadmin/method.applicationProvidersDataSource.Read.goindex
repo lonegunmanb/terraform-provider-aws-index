@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *applicationProvidersDataSource) Read(ctx context.Context, request datasource.ReadRequest, response *datasource.ReadResponse) {
+	var data applicationProvidersDataSourceModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := d.Meta().SSOAdminClient(ctx)
+
+	var apiObjects []awstypes.ApplicationProvider
+	var input ssoadmin.ListApplicationProvidersInput
+	pages := ssoadmin.NewListApplicationProvidersPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			response.Diagnostics.AddError("reading SSO Application Providers", err.Error())
+
+			return
+		}
+
+		apiObjects = append(apiObjects, page.ApplicationProviders...)
+	}
+
+	data.ID = fwflex.StringValueToFramework(ctx, d.Meta().Region(ctx))
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, apiObjects, &data.ApplicationProviders)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

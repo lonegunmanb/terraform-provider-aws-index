@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexmodels
+import (
+	"context"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findLatestSlotTypeVersionByName(ctx context.Context, conn *lexmodelbuildingservice.Client, name string) (string, error) {
+	input := &lexmodelbuildingservice.GetSlotTypeVersionsInput{
+		Name: aws.String(name),
+	}
+	var latestVersion int
+
+	pages := lexmodelbuildingservice.NewGetSlotTypeVersionsPaginator(conn, input)
+
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return "", err
+		}
+
+		for _, slot := range page.SlotTypes {
+			version := aws.ToString(slot.Version)
+
+			if version == SlotTypeVersionLatest {
+				continue
+			}
+
+			if version, err := strconv.Atoi(version); err != nil {
+				continue
+			} else if version > latestVersion {
+				latestVersion = version
+			}
+		}
+	}
+
+	if latestVersion == 0 {
+		return SlotTypeVersionLatest, nil
+	}
+
+	return strconv.Itoa(latestVersion), nil
+}

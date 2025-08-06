@@ -1,0 +1,210 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"log"
+	"maps"
+	"os"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	awsbase "github.com/hashicorp/aws-sdk-go-base/v2"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/internal/attribute"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (p *sdkProvider) configure(ctx context.Context, d *schema.ResourceData) (any, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	terraformVersion := p.provider.TerraformVersion
+	if terraformVersion == "" {
+		// Terraform 0.12 introduced this field to the protocol
+		// We can therefore assume that if it's missing it's 0.10 or 0.11
+		terraformVersion = "0.11+compatible"
+	}
+
+	config := conns.Config{
+		AccessKey:                      d.Get("access_key").(string),
+		CustomCABundle:                 d.Get("custom_ca_bundle").(string),
+		EC2MetadataServiceEndpoint:     d.Get("ec2_metadata_service_endpoint").(string),
+		EC2MetadataServiceEndpointMode: d.Get("ec2_metadata_service_endpoint_mode").(string),
+		Endpoints:                      make(map[string]string),
+		Insecure:                       d.Get("insecure").(bool),
+		MaxRetries:                     25, // Set default here, not in schema (muxing with v6 provider).
+		Profile:                        d.Get("profile").(string),
+		Region:                         d.Get("region").(string),
+		S3UsePathStyle:                 d.Get("s3_use_path_style").(bool),
+		SecretKey:                      d.Get("secret_key").(string),
+		SkipCredsValidation:            d.Get("skip_credentials_validation").(bool),
+		SkipRegionValidation:           d.Get("skip_region_validation").(bool),
+		SkipRequestingAccountId:        d.Get("skip_requesting_account_id").(bool),
+		STSRegion:                      d.Get("sts_region").(string),
+		TerraformVersion:               terraformVersion,
+		Token:                          d.Get("token").(string),
+		TokenBucketRateLimiterCapacity: d.Get("token_bucket_rate_limiter_capacity").(int),
+		UseDualStackEndpoint:           d.Get("use_dualstack_endpoint").(bool),
+		UseFIPSEndpoint:                d.Get("use_fips_endpoint").(bool),
+	}
+
+	if v, ok := d.Get("retry_mode").(string); ok && v != "" {
+		mode, err := aws.ParseRetryMode(v)
+		if err != nil {
+			return nil, sdkdiag.AppendFromErr(diags, err)
+		}
+		config.RetryMode = mode
+	}
+
+	if v, ok := d.Get("s3_us_east_1_regional_endpoint").(string); ok && v != "" {
+		endpoint := conns.NormalizeS3USEast1RegionalEndpoint(v)
+		if endpoint == "legacy" {
+			diags = append(diags,
+				errs.NewAttributeWarningDiagnostic(
+					cty.GetAttrPath("s3_us_east_1_regional_endpoint"),
+					"Global S3 Endpoint Support Deprecated",
+					"Support for the global S3 endpoint is deprecated. The \"s3_us_east_1_regional_endpoint\" "+
+						"argument will be removed in a future major version. Remove this argument from the "+
+						"configuration, or set it to \"regional\" to verify connectivity with the regional "+
+						"S3 endpoint instead.",
+				),
+			)
+		}
+		config.S3USEast1RegionalEndpoint = endpoint
+	}
+
+	if v, ok := d.GetOk("allowed_account_ids"); ok && v.(*schema.Set).Len() > 0 {
+		config.AllowedAccountIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("assume_role"); ok {
+		path := cty.GetAttrPath("assume_role")
+		v := v.([]any)
+		if len(v) == 1 {
+			if v[0] == nil {
+				diags = append(diags,
+					errs.NewAttributeRequiredWillBeError(path.IndexInt(0), "role_arn"),
+				)
+			} else {
+				l := v[0].(map[string]any)
+				if s, ok := l["role_arn"]; !ok || s == "" {
+					diags = append(diags,
+						errs.NewAttributeRequiredWillBeError(path.IndexInt(0), "role_arn"),
+					)
+				} else {
+					ar, dg := expandAssumeRoles(ctx, path, v)
+					diags = append(diags, dg...)
+					if dg.HasError() {
+						return nil, diags
+					}
+					config.AssumeRole = ar
+				}
+			}
+		} else if len(v) > 1 {
+			ar, dg := expandAssumeRoles(ctx, path, v)
+			diags = append(diags, dg...)
+			if dg.HasError() {
+				return nil, diags
+			}
+			config.AssumeRole = ar
+		}
+	}
+
+	if v, ok := d.GetOk("assume_role_with_web_identity"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		config.AssumeRoleWithWebIdentity = expandAssumeRoleWithWebIdentity(ctx, v.([]any)[0].(map[string]any))
+		tflog.Info(ctx, "assume_role_with_web_identity configuration set", map[string]any{
+			"tf_aws.assume_role_with_web_identity.role_arn":     config.AssumeRoleWithWebIdentity.RoleARN,
+			"tf_aws.assume_role_with_web_identity.session_name": config.AssumeRoleWithWebIdentity.SessionName,
+		})
+	}
+
+	if v, ok := d.GetOk("default_tags"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		config.DefaultTagsConfig = expandDefaultTags(ctx, v.([]any)[0].(map[string]any))
+	} else {
+		config.DefaultTagsConfig = expandDefaultTags(ctx, nil)
+	}
+
+	v := d.Get("endpoints")
+	endpoints, dx := expandEndpoints(ctx, v.(*schema.Set).List())
+	diags = append(diags, dx...)
+	if diags.HasError() {
+		return nil, diags
+	}
+	config.Endpoints = endpoints
+
+	if v, ok := d.GetOk("forbidden_account_ids"); ok && v.(*schema.Set).Len() > 0 {
+		config.ForbiddenAccountIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOkExists("http_proxy"); ok {
+		if s, sok := v.(string); sok {
+			config.HTTPProxy = aws.String(s)
+		}
+	}
+	if v, ok := d.GetOkExists("https_proxy"); ok {
+		if s, sok := v.(string); sok {
+			config.HTTPSProxy = aws.String(s)
+		}
+	}
+
+	if v, ok := d.Get("no_proxy").(string); ok && v != "" {
+		config.NoProxy = v
+	}
+
+	if v, ok := d.GetOk("ignore_tags"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		config.IgnoreTagsConfig = expandIgnoreTags(ctx, v.([]any)[0].(map[string]any))
+	} else {
+		config.IgnoreTagsConfig = expandIgnoreTags(ctx, nil)
+	}
+
+	if v, ok := d.GetOk("max_retries"); ok {
+		config.MaxRetries = v.(int)
+	}
+
+	if v, ok := d.GetOk("shared_credentials_files"); ok && len(v.([]any)) > 0 {
+		config.SharedCredentialsFiles = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("shared_config_files"); ok && len(v.([]any)) > 0 {
+		config.SharedConfigFiles = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, null, _ := nullable.Bool(d.Get("skip_metadata_api_check").(string)).ValueBool(); !null {
+		if v {
+			config.EC2MetadataServiceEnableState = imds.ClientDisabled
+		} else {
+			config.EC2MetadataServiceEnableState = imds.ClientEnabled
+		}
+	}
+
+	var c *conns.AWSClient
+	if v, ok := p.provider.Meta().(*conns.AWSClient); ok {
+		c = v
+	} else {
+		c = new(conns.AWSClient)
+	}
+	c, ds := config.ConfigureProvider(ctx, c)
+	diags = append(diags, ds...)
+
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	return c, diags
+}

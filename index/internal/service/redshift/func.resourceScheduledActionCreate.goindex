@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceScheduledActionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &redshift.CreateScheduledActionInput{
+		Enable:              aws.Bool(d.Get("enable").(bool)),
+		IamRole:             aws.String(d.Get("iam_role").(string)),
+		Schedule:            aws.String(d.Get(names.AttrSchedule).(string)),
+		ScheduledActionName: aws.String(name),
+		TargetAction:        expandScheduledActionType(d.Get("target_action").([]any)[0].(map[string]any)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.ScheduledActionDescription = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("end_time"); ok {
+		t, _ := time.Parse(time.RFC3339, v.(string))
+
+		input.EndTime = aws.Time(t)
+	}
+
+	if v, ok := d.GetOk(names.AttrStartTime); ok {
+		t, _ := time.Parse(time.RFC3339, v.(string))
+
+		input.StartTime = aws.Time(t)
+	}
+
+	log.Printf("[DEBUG] Creating Redshift Scheduled Action: %#v", input)
+	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateScheduledAction(ctx, input)
+		},
+		func(err error) (bool, error) {
+			if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "The IAM role must delegate access to Amazon Redshift scheduler") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Redshift Scheduled Action (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*redshift.CreateScheduledActionOutput).ScheduledActionName))
+
+	return append(diags, resourceScheduledActionRead(ctx, d, meta)...)
+}

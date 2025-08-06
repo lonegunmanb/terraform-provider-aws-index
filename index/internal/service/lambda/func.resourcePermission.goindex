@@ -1,0 +1,106 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermission() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourcePermissionCreate,
+		ReadWithoutTimeout:   resourcePermissionRead,
+		DeleteWithoutTimeout: resourcePermissionDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: resourcePermissionImport,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrAction: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validPermissionAction(),
+			},
+			"event_source_token": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: validPermissionEventSourceToken(),
+			},
+			"function_name": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validFunctionName(),
+			},
+			"function_url_auth_type": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ForceNew:         true,
+				ValidateDiagFunc: enum.Validate[awstypes.FunctionUrlAuthType](),
+			},
+			names.AttrPrincipal: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"principal_org_id": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+			"qualifier": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: validQualifier(),
+			},
+			"source_account": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: verify.ValidAccountID,
+			},
+			"source_arn": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: verify.ValidARN,
+			},
+			"statement_id": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				Computed:      true,
+				ForceNew:      true,
+				ValidateFunc:  validPolicyStatementID(),
+				ConflictsWith: []string{"statement_id_prefix"},
+			},
+			"statement_id_prefix": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				Computed:      true,
+				ForceNew:      true,
+				ValidateFunc:  validPolicyStatementID(),
+				ConflictsWith: []string{"statement_id"},
+			},
+		},
+	}
+}

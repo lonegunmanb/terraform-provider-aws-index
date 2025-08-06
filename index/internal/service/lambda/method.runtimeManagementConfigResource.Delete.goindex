@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *runtimeManagementConfigResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	conn := r.Meta().LambdaClient(ctx)
+
+	var state runtimeManagementConfigResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := &lambda.PutRuntimeManagementConfigInput{
+		FunctionName:    state.FunctionName.ValueStringPointer(),
+		UpdateRuntimeOn: awstypes.UpdateRuntimeOnAuto,
+	}
+	if !state.Qualifier.IsNull() && state.Qualifier.ValueString() != "" {
+		in.Qualifier = state.Qualifier.ValueStringPointer()
+	}
+
+	_, err := conn.PutRuntimeManagementConfig(ctx, in)
+	if err != nil {
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return
+		}
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Lambda, create.ErrActionDeleting, ResNameRuntimeManagementConfig, state.FunctionName.String(), err),
+			err.Error(),
+		)
+		return
+	}
+}

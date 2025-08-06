@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amplify
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amplify"
+	"github.com/aws/aws-sdk-go-v2/service/amplify/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitDomainAssociationAvailable(ctx context.Context, conn *amplify.Client, appID, domainName string) (*types.DomainAssociation, error) {
+	const (
+		timeout = 15 * time.Minute
+	)
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(
+			types.DomainStatusUpdating,
+			types.DomainStatusInProgress,
+			types.DomainStatusPendingVerification,
+			types.DomainStatusPendingDeployment,
+		),
+		Target: enum.Slice(
+			types.DomainStatusAvailable,
+		),
+		Refresh: statusDomainAssociation(ctx, conn, appID, domainName),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if v, ok := outputRaw.(*types.DomainAssociation); ok {
+		if v.DomainStatus == types.DomainStatusFailed {
+			tfresource.SetLastError(err, errors.New(aws.ToString(v.StatusReason)))
+		}
+
+		return v, err
+	}
+
+	return nil, err
+}

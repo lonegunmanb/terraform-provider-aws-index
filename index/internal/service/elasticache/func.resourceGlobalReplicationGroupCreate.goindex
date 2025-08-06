@@ -1,0 +1,128 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	gversion "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGlobalReplicationGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElastiCacheClient(ctx)
+
+	id := d.Get("global_replication_group_id_suffix").(string)
+	input := &elasticache.CreateGlobalReplicationGroupInput{
+		GlobalReplicationGroupIdSuffix: aws.String(id),
+		PrimaryReplicationGroupId:      aws.String(d.Get("primary_replication_group_id").(string)),
+	}
+
+	if v, ok := d.GetOk("global_replication_group_description"); ok {
+		input.GlobalReplicationGroupDescription = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateGlobalReplicationGroup(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating ElastiCache Global Replication Group (%s): %s", id, err)
+	}
+
+	d.SetId(aws.ToString(output.GlobalReplicationGroup.GlobalReplicationGroupId))
+
+	globalReplicationGroup, err := waitGlobalReplicationGroupAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ElastiCache Global Replication Group (%s) create: %s", d.Id(), err)
+	}
+
+	if v, ok := d.GetOk("automatic_failover_enabled"); ok {
+		if v := v.(bool); v == flattenGlobalReplicationGroupAutomaticFailoverEnabled(globalReplicationGroup.Members) {
+			log.Printf("[DEBUG] Not updating ElastiCache Global Replication Group (%s) automatic failover: no change from %t", d.Id(), v)
+		} else {
+			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationAutomaticFailoverUpdater(v), "automatic failover", d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("cache_node_type"); ok {
+		if v.(string) == aws.ToString(globalReplicationGroup.CacheNodeType) {
+			log.Printf("[DEBUG] Not updating ElastiCache Global Replication Group (%s) node type: no change from %q", d.Id(), v)
+		} else {
+			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupNodeTypeUpdater(v.(string)), "node type", d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	if v, ok := d.GetOk(names.AttrEngineVersion); ok {
+		requestedVersion, _ := normalizeEngineVersion(v.(string))
+
+		engineVersion, err := gversion.NewVersion(aws.ToString(globalReplicationGroup.EngineVersion))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating ElastiCache Global Replication Group (%s) engine version on creation: error reading engine version: %s", d.Id(), err)
+		}
+
+		diff := diffVersion(requestedVersion, engineVersion)
+
+		if diff[0] == -1 || diff[1] == -1 { // Ignore patch version downgrade
+			return sdkdiag.AppendErrorf(diags, "updating ElastiCache Global Replication Group (%s) engine version on creation: cannot downgrade version when creating, is %s, want %s", d.Id(), engineVersion.String(), requestedVersion.String())
+		}
+
+		p := d.Get(names.AttrParameterGroupName).(string)
+
+		if diff[0] == 1 {
+			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMajorUpdater(v.(string), p), "engine version (major)", d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		} else if diff[1] == 1 {
+			if p != "" {
+				return sdkdiag.AppendErrorf(diags, "cannot change parameter group name on minor engine version upgrade, upgrading from %s to %s", engineVersion.String(), requestedVersion.String())
+			}
+			if t, _ := regexp.MatchString(`[6-9]\.x`, v.(string)); !t {
+				if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMinorUpdater(v.(string)), "engine version (minor)", d.Timeout(schema.TimeoutCreate)); err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("num_node_groups"); ok {
+		if oldNodeGroupCount, newNodeGroupCount := len(globalReplicationGroup.GlobalNodeGroups), v.(int); newNodeGroupCount != oldNodeGroupCount {
+			if newNodeGroupCount > oldNodeGroupCount {
+				if err := increaseGlobalReplicationGroupNodeGroupCount(ctx, conn, d.Id(), newNodeGroupCount, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+			} else if newNodeGroupCount < oldNodeGroupCount {
+				ids := tfslices.ApplyToAll(globalReplicationGroup.GlobalNodeGroups, func(v awstypes.GlobalNodeGroup) string {
+					return aws.ToString(v.GlobalNodeGroupId)
+				})
+				if err := decreaseGlobalReplicationGroupNodeGroupCount(ctx, conn, d.Id(), newNodeGroupCount, ids, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+			}
+		}
+	}
+
+	return append(diags, resourceGlobalReplicationGroupRead(ctx, d, meta)...)
+}

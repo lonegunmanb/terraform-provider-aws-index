@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/medialive
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/medialive"
+	"github.com/aws/aws-sdk-go-v2/service/medialive/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceChannelRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).MediaLiveClient(ctx)
+
+	out, err := FindChannelByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] MediaLive Channel (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.MediaLive, create.ErrActionReading, ResNameChannel, d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, out.Arn)
+	d.Set(names.AttrName, out.Name)
+	d.Set("channel_class", out.ChannelClass)
+	d.Set("channel_id", out.Id)
+	d.Set("log_level", out.LogLevel)
+	d.Set(names.AttrRoleARN, out.RoleArn)
+
+	if err := d.Set("cdi_input_specification", flattenChannelCdiInputSpecification(out.CdiInputSpecification)); err != nil {
+		return create.AppendDiagError(diags, names.MediaLive, create.ErrActionSetting, ResNameChannel, d.Id(), err)
+	}
+	if err := d.Set("input_attachments", flattenChannelInputAttachments(out.InputAttachments)); err != nil {
+		return create.AppendDiagError(diags, names.MediaLive, create.ErrActionSetting, ResNameChannel, d.Id(), err)
+	}
+	if err := d.Set("destinations", flattenChannelDestinations(out.Destinations)); err != nil {
+		return create.AppendDiagError(diags, names.MediaLive, create.ErrActionSetting, ResNameChannel, d.Id(), err)
+	}
+	if err := d.Set("encoder_settings", flattenChannelEncoderSettings(out.EncoderSettings)); err != nil {
+		return create.AppendDiagError(diags, names.MediaLive, create.ErrActionSetting, ResNameChannel, d.Id(), err)
+	}
+	if err := d.Set("input_specification", flattenChannelInputSpecification(out.InputSpecification)); err != nil {
+		return create.AppendDiagError(diags, names.MediaLive, create.ErrActionSetting, ResNameChannel, d.Id(), err)
+	}
+	if err := d.Set("maintenance", flattenChannelMaintenance(out.Maintenance)); err != nil {
+		return create.AppendDiagError(diags, names.MediaLive, create.ErrActionSetting, ResNameChannel, d.Id(), err)
+	}
+	if err := d.Set("vpc", flattenChannelVPC(out.Vpc)); err != nil {
+		return create.AppendDiagError(diags, names.MediaLive, create.ErrActionSetting, ResNameChannel, d.Id(), err)
+	}
+
+	return diags
+}

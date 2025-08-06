@@ -1,0 +1,37 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codecatalyst
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codecatalyst"
+	"github.com/aws/aws-sdk-go-v2/service/codecatalyst/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitDevEnvironmentUpdated(ctx context.Context, conn *codecatalyst.Client, id string, spaceName *string, projectName *string, timeout time.Duration) (*codecatalyst.GetDevEnvironmentOutput, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending:                   enum.Slice(types.DevEnvironmentStatusStopping, types.DevEnvironmentStatusPending, types.DevEnvironmentStatusStopped),
+		Target:                    enum.Slice(types.DevEnvironmentStatusRunning),
+		Refresh:                   statusDevEnvironment(ctx, conn, id, spaceName, projectName),
+		Timeout:                   timeout,
+		NotFoundChecks:            20,
+		ContinuousTargetOccurence: 2,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+	if out, ok := outputRaw.(*codecatalyst.GetDevEnvironmentOutput); ok {
+		return out, err
+	}
+
+	return nil, err
+}

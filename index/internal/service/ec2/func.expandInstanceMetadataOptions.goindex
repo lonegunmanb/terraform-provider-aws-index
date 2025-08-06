@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandInstanceMetadataOptions(l []any) *awstypes.InstanceMetadataOptionsRequest {
+	if len(l) == 0 || l[0] == nil {
+		return nil
+	}
+
+	m := l[0].(map[string]any)
+
+	opts := &awstypes.InstanceMetadataOptionsRequest{
+		HttpEndpoint: awstypes.InstanceMetadataEndpointState(m["http_endpoint"].(string)),
+	}
+
+	if m["http_endpoint"].(string) == string(awstypes.InstanceMetadataEndpointStateEnabled) {
+		// These parameters are not allowed unless HttpEndpoint is enabled
+		if v, ok := m["http_protocol_ipv6"].(string); ok && v != "" {
+			opts.HttpProtocolIpv6 = awstypes.InstanceMetadataProtocolState(v)
+		}
+
+		if v, ok := m["http_tokens"].(string); ok && v != "" {
+			opts.HttpTokens = awstypes.HttpTokensState(v)
+		}
+
+		if v, ok := m["http_put_response_hop_limit"].(int); ok && v != 0 {
+			opts.HttpPutResponseHopLimit = aws.Int32(int32(v))
+		}
+
+		if v, ok := m["instance_metadata_tags"].(string); ok && v != "" {
+			opts.InstanceMetadataTags = awstypes.InstanceMetadataTagsState(v)
+		}
+	}
+
+	return opts
+}

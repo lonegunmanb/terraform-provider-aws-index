@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataQualityJobDefinitionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	var name string
+	if v, ok := d.GetOk(names.AttrName); ok {
+		name = v.(string)
+	} else {
+		name = id.UniqueId()
+	}
+
+	var roleArn string
+	if v, ok := d.GetOk(names.AttrRoleARN); ok {
+		roleArn = v.(string)
+	}
+
+	createOpts := &sagemaker.CreateDataQualityJobDefinitionInput{
+		DataQualityAppSpecification: expandDataQualityAppSpecification(d.Get("data_quality_app_specification").([]any)),
+		DataQualityJobInput:         expandDataQualityJobInput(d.Get("data_quality_job_input").([]any)),
+		DataQualityJobOutputConfig:  expandMonitoringOutputConfig(d.Get("data_quality_job_output_config").([]any)),
+		JobDefinitionName:           aws.String(name),
+		JobResources:                expandMonitoringResources(d.Get("job_resources").([]any)),
+		RoleArn:                     aws.String(roleArn),
+		Tags:                        getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("data_quality_baseline_config"); ok && len(v.([]any)) > 0 {
+		createOpts.DataQualityBaselineConfig = expandDataQualityBaselineConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("network_config"); ok && len(v.([]any)) > 0 {
+		createOpts.NetworkConfig = expandMonitoringNetworkConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("stopping_condition"); ok && len(v.([]any)) > 0 {
+		createOpts.StoppingCondition = expandMonitoringStoppingCondition(v.([]any))
+	}
+
+	_, err := conn.CreateDataQualityJobDefinition(ctx, createOpts)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Data Quality Job Definition (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	return append(diags, resourceDataQualityJobDefinitionRead(ctx, d, meta)...)
+}

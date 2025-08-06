@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func statusProduct(ctx context.Context, conn *servicecatalog.Client, acceptLanguage, productID string) retry.StateRefreshFunc {
+	return func() (any, string, error) {
+		input := &servicecatalog.DescribeProductAsAdminInput{
+			Id: aws.String(productID),
+		}
+
+		if acceptLanguage != "" {
+			input.AcceptLanguage = aws.String(acceptLanguage)
+		}
+
+		output, err := conn.DescribeProductAsAdmin(ctx, input)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, statusNotFound, err
+		}
+
+		if errs.IsA[*awstypes.ResourceInUseException](err) || errs.IsA[*awstypes.LimitExceededException](err) {
+			return nil, statusUnavailable, err
+		}
+
+		if err != nil {
+			return nil, string(awstypes.StatusFailed), fmt.Errorf("describing product status: %w", err)
+		}
+
+		if output == nil || output.ProductViewDetail == nil {
+			return nil, statusUnavailable, fmt.Errorf("describing product status: empty product view detail")
+		}
+
+		return output, string(output.ProductViewDetail.Status), err
+	}
+}

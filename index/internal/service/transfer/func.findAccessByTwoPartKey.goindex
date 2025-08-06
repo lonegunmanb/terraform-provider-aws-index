@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/transfer
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/transfer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/transfer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findAccessByTwoPartKey(ctx context.Context, conn *transfer.Client, serverID, externalID string) (*awstypes.DescribedAccess, error) {
+	input := &transfer.DescribeAccessInput{
+		ExternalId: aws.String(externalID),
+		ServerId:   aws.String(serverID),
+	}
+
+	output, err := conn.DescribeAccess(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil || output.Access == nil {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	return output.Access, nil
+}

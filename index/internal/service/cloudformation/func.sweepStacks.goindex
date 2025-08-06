@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tforganizations "github.com/hashicorp/terraform-provider-aws/internal/service/organizations"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepStacks(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.CloudFormationClient(ctx)
+	input := cloudformation.ListStacksInput{
+		StackStatusFilter: []awstypes.StackStatus{
+			awstypes.StackStatusCreateComplete,
+			awstypes.StackStatusImportComplete,
+			awstypes.StackStatusRollbackComplete,
+			awstypes.StackStatusUpdateComplete,
+		},
+	}
+	sweepResources := make([]sweep.Sweepable, 0)
+
+	pages := cloudformation.NewListStacksPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.StackSummaries {
+			name := aws.ToString(v.StackName)
+			input := cloudformation.UpdateTerminationProtectionInput{
+				EnableTerminationProtection: aws.Bool(false),
+				StackName:                   aws.String(name),
+			}
+
+			log.Printf("[INFO] Disabling termination protection for CloudFormation Stack: %s", name)
+			_, err := conn.UpdateTerminationProtection(ctx, &input)
+
+			if err != nil {
+				log.Printf("[ERROR] Disabling termination protection for CloudFormation Stack (%s): %s", name, err)
+				continue
+			}
+
+			r := resourceStack()
+			d := r.Data(nil)
+			d.SetId(name)
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	return sweepResources, nil
+}

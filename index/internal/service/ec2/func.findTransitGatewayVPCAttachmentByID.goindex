@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findTransitGatewayVPCAttachmentByID(ctx context.Context, conn *ec2.Client, id string) (*awstypes.TransitGatewayVpcAttachment, error) {
+	input := ec2.DescribeTransitGatewayVpcAttachmentsInput{
+		TransitGatewayAttachmentIds: []string{id},
+	}
+
+	output, err := findTransitGatewayVPCAttachment(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// See https://docs.aws.amazon.com/vpc/latest/tgw/tgw-vpc-attachments.html#vpc-attachment-lifecycle.
+	switch state := output.State; state {
+	case awstypes.TransitGatewayAttachmentStateDeleted,
+		awstypes.TransitGatewayAttachmentStateFailed,
+		awstypes.TransitGatewayAttachmentStateRejected:
+		return nil, &retry.NotFoundError{
+			Message:     string(state),
+			LastRequest: &input,
+		}
+	}
+
+	// Eventual consistency check.
+	if aws.ToString(output.TransitGatewayAttachmentId) != id {
+		return nil, &retry.NotFoundError{
+			LastRequest: &input,
+		}
+	}
+
+	return output, nil
+}

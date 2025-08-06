@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSchemaCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	input := &glue.CreateSchemaInput{
+		SchemaName:       aws.String(d.Get("schema_name").(string)),
+		SchemaDefinition: aws.String(d.Get("schema_definition").(string)),
+		DataFormat:       awstypes.DataFormat(d.Get("data_format").(string)),
+		Tags:             getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("registry_arn"); ok {
+		input.RegistryId = createRegistryID(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("compatibility"); ok {
+		input.Compatibility = awstypes.Compatibility(v.(string))
+	}
+
+	log.Printf("[DEBUG] Creating Glue Schema: %+v", input)
+	output, err := conn.CreateSchema(ctx, input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Glue Schema: %s", err)
+	}
+	d.SetId(aws.ToString(output.SchemaArn))
+
+	_, err = waitSchemaAvailable(ctx, conn, d.Id())
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Glue Schema (%s) to be Available: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceSchemaRead(ctx, d, meta)...)
+}

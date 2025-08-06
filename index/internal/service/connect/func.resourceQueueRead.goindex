@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceQueueRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID, queueID, err := queueParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	queue, err := findQueueByTwoPartKey(ctx, conn, instanceID, queueID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Connect Queue (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Connect Queue (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, queue.QueueArn)
+	d.Set(names.AttrDescription, queue.Description)
+	d.Set("hours_of_operation_id", queue.HoursOfOperationId)
+	d.Set(names.AttrInstanceID, instanceID)
+	d.Set("max_contacts", queue.MaxContacts)
+	d.Set(names.AttrName, queue.Name)
+	if err := d.Set("outbound_caller_config", flattenOutboundCallerConfig(queue.OutboundCallerConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting outbound_caller_config: %s", err)
+	}
+	d.Set("queue_id", queue.QueueId)
+	d.Set(names.AttrStatus, queue.Status)
+
+	quickConnects, err := findQueueQuickConnectSummariesByTwoPartKey(ctx, conn, instanceID, queueID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Connect Queue (%s) Quick Connect summaries: %s", d.Id(), err)
+	}
+
+	d.Set("quick_connect_ids", tfslices.ApplyToAll(quickConnects, func(v awstypes.QuickConnectSummary) string {
+		return aws.ToString(v.Id)
+	}))
+
+	setTagsOut(ctx, queue.Tags)
+
+	return diags
+}

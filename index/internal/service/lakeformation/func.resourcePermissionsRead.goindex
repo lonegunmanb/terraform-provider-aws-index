@@ -1,0 +1,249 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LakeFormationClient(ctx)
+
+	input := &lakeformation.ListPermissionsInput{
+		Principal: &awstypes.DataLakePrincipal{
+			DataLakePrincipalIdentifier: aws.String(d.Get(names.AttrPrincipal).(string)),
+		},
+		Resource: &awstypes.Resource{},
+	}
+
+	if v, ok := d.GetOk(names.AttrCatalogID); ok {
+		input.CatalogId = aws.String(v.(string))
+	}
+
+	if _, ok := d.GetOk("catalog_resource"); ok {
+		input.Resource.Catalog = ExpandCatalogResource()
+	}
+
+	if _, ok := d.GetOk("data_cells_filter"); ok {
+		input.Resource.DataCellsFilter = ExpandDataCellsFilter(d.Get("data_cells_filter").([]any))
+	}
+
+	if v, ok := d.GetOk("data_location"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.DataLocation = ExpandDataLocationResource(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDatabase); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.Database = ExpandDatabaseResource(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("lf_tag"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.LFTag = ExpandLFTagKeyResource(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("lf_tag_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.LFTagPolicy = ExpandLFTagPolicyResource(v.([]any)[0].(map[string]any))
+	}
+
+	tableType := ""
+
+	if v, ok := d.GetOk("table"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.Table = ExpandTableResource(v.([]any)[0].(map[string]any))
+		tableType = TableTypeTable
+	}
+
+	if v, ok := d.GetOk("table_with_columns"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		// can't ListPermissions for TableWithColumns, so use Table instead
+		input.Resource.Table = ExpandTableWithColumnsResourceAsTable(v.([]any)[0].(map[string]any))
+		tableType = TableTypeTableWithColumns
+	}
+
+	columnNames := make([]string, 0)
+	excludedColumnNames := make([]string, 0)
+	columnWildcard := false
+
+	if tableType == TableTypeTableWithColumns {
+		if v, ok := d.GetOk("table_with_columns.0.wildcard"); ok {
+			columnWildcard = v.(bool)
+		}
+
+		if v, ok := d.GetOk("table_with_columns.0.column_names"); ok {
+			if v, ok := v.(*schema.Set); ok && v.Len() > 0 {
+				columnNames = flex.ExpandStringValueSet(v)
+			}
+		}
+
+		if v, ok := d.GetOk("table_with_columns.0.excluded_column_names"); ok {
+			if v, ok := v.(*schema.Set); ok && v.Len() > 0 {
+				excludedColumnNames = flex.ExpandStringValueSet(v)
+			}
+		}
+	}
+
+	log.Printf("[DEBUG] Reading Lake Formation permissions: %v", input)
+
+	allPermissions, err := waitPermissionsReady(ctx, conn, input, tableType, columnNames, excludedColumnNames, columnWildcard)
+
+	if !d.IsNewResource() {
+		if errs.IsA[*awstypes.EntityNotFoundException](err) {
+			log.Printf("[WARN] Resource Lake Formation permissions (%s) not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if errs.IsAErrorMessageContains[*awstypes.AccessDeniedException](err, "Resource does not exist") {
+			log.Printf("[WARN] Resource Lake Formation permissions (%s) not found, removing from state: %s", d.Id(), err)
+			d.SetId("")
+			return diags
+		}
+
+		if len(allPermissions) == 0 {
+			log.Printf("[WARN] Resource Lake Formation permissions (%s) not found, removing from state (0 permissions)", d.Id())
+			d.SetId("")
+			return diags
+		}
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Lake Formation permissions: %s", err)
+	}
+
+	// clean permissions = filter out permissions that do not pertain to this specific resource
+	cleanPermissions := FilterPermissions(input, tableType, columnNames, excludedColumnNames, columnWildcard, allPermissions)
+
+	if len(cleanPermissions) == 0 {
+		log.Printf("[WARN] No Lake Formation permissions (%s) found", d.Id())
+		d.Set("catalog_resource", false)
+		d.Set("data_location", nil)
+		d.Set(names.AttrDatabase, nil)
+		d.Set("lf_tag", nil)
+		d.Set("lf_tag_policy", nil)
+		d.Set("table_with_columns", nil)
+		d.Set("table", nil)
+		return diags
+	}
+
+	if len(cleanPermissions) != len(allPermissions) {
+		log.Printf("[INFO] Resource Lake Formation clean permissions (%d) and all permissions (%d) have different lengths (this is not necessarily a problem): %s", len(cleanPermissions), len(allPermissions), d.Id())
+	}
+
+	d.Set(names.AttrPrincipal, cleanPermissions[0].Principal.DataLakePrincipalIdentifier)
+	d.Set(names.AttrPermissions, flattenResourcePermissions(cleanPermissions))
+	d.Set("permissions_with_grant_option", flattenGrantPermissions(cleanPermissions))
+
+	if cleanPermissions[0].Resource.Catalog != nil {
+		d.Set("catalog_resource", true)
+	} else {
+		d.Set("catalog_resource", false)
+	}
+
+	if cleanPermissions[0].Resource.DataLocation != nil {
+		if err := d.Set("data_location", []any{flattenDataLocationResource(cleanPermissions[0].Resource.DataLocation)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting data_location: %s", err)
+		}
+	} else {
+		d.Set("data_location", nil)
+	}
+
+	if cleanPermissions[0].Resource.Database != nil {
+		if err := d.Set(names.AttrDatabase, []any{flattenDatabaseResource(cleanPermissions[0].Resource.Database)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting database: %s", err)
+		}
+	} else {
+		d.Set(names.AttrDatabase, nil)
+	}
+
+	if cleanPermissions[0].Resource.DataCellsFilter != nil {
+		if err := d.Set("data_cells_filter", flattenDataCellsFilter(cleanPermissions[0].Resource.DataCellsFilter)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting data_cells_filter: %s", err)
+		}
+	} else {
+		d.Set("data_cells_filter", nil)
+	}
+
+	if cleanPermissions[0].Resource.LFTag != nil {
+		if err := d.Set("lf_tag", []any{flattenLFTagKeyResource(cleanPermissions[0].Resource.LFTag)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting database: %s", err)
+		}
+	} else {
+		d.Set("lf_tag", nil)
+	}
+
+	if cleanPermissions[0].Resource.LFTagPolicy != nil {
+		if err := d.Set("lf_tag_policy", []any{flattenLFTagPolicyResource(cleanPermissions[0].Resource.LFTagPolicy)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting database: %s", err)
+		}
+	} else {
+		d.Set("lf_tag_policy", nil)
+	}
+
+	tableSet := false
+
+	if v, ok := d.GetOk("table"); ok && len(v.([]any)) > 0 {
+		// since perm list could include TableWithColumns, get the right one
+		for _, perm := range cleanPermissions {
+			if perm.Resource == nil {
+				continue
+			}
+
+			if perm.Resource.TableWithColumns != nil && perm.Resource.TableWithColumns.ColumnWildcard != nil {
+				if err := d.Set("table", []any{flattenTableColumnsResourceAsTable(perm.Resource.TableWithColumns)}); err != nil {
+					return sdkdiag.AppendErrorf(diags, "setting table: %s", err)
+				}
+				tableSet = true
+				break
+			}
+
+			if perm.Resource.Table != nil {
+				if err := d.Set("table", []any{flattenTableResource(perm.Resource.Table)}); err != nil {
+					return sdkdiag.AppendErrorf(diags, "setting table: %s", err)
+				}
+				tableSet = true
+				break
+			}
+		}
+	}
+
+	if !tableSet {
+		d.Set("table", nil)
+	}
+
+	twcSet := false
+
+	if v, ok := d.GetOk("table_with_columns"); ok && len(v.([]any)) > 0 {
+		// since perm list could include Table, get the right one
+		for _, perm := range cleanPermissions {
+			if perm.Resource.TableWithColumns != nil {
+				if err := d.Set("table_with_columns", []any{flattenTableColumnsResource(perm.Resource.TableWithColumns)}); err != nil {
+					return sdkdiag.AppendErrorf(diags, "setting table_with_columns: %s", err)
+				}
+				twcSet = true
+				break
+			}
+		}
+	}
+
+	if !twcSet {
+		d.Set("table_with_columns", nil)
+	}
+
+	return diags
+}

@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexmodels
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBotAliasRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LexModelsClient(ctx)
+
+	resp, err := conn.GetBotAlias(ctx, &lexmodelbuildingservice.GetBotAliasInput{
+		BotName: aws.String(d.Get("bot_name").(string)),
+		Name:    aws.String(d.Get(names.AttrName).(string)),
+	})
+	if errs.IsA[*awstypes.NotFoundException](err) {
+		log.Printf("[WARN] Bot alias (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "getting bot alias '%s': %s", d.Id(), err)
+	}
+
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		Service:   "lex",
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("bot:%s", d.Id()),
+	}
+	d.Set(names.AttrARN, arn.String())
+
+	d.Set("bot_name", resp.BotName)
+	d.Set("bot_version", resp.BotVersion)
+	d.Set("checksum", resp.Checksum)
+	d.Set(names.AttrCreatedDate, resp.CreatedDate.Format(time.RFC3339))
+	d.Set(names.AttrDescription, resp.Description)
+	d.Set(names.AttrLastUpdatedDate, resp.LastUpdatedDate.Format(time.RFC3339))
+	d.Set(names.AttrName, resp.Name)
+
+	if resp.ConversationLogs != nil {
+		d.Set("conversation_logs", flattenConversationLogs(resp.ConversationLogs))
+	}
+
+	return diags
+}

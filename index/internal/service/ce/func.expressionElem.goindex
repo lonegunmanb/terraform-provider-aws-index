@@ -1,0 +1,139 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ce
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/costexplorer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/costexplorer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expressionElem(level int) *schema.Resource {
+	// This is the non-recursive part of the schema.
+	expressionSchema := map[string]*schema.Schema{
+		"cost_category": {
+			Type:     schema.TypeList,
+			MaxItems: 1,
+			Optional: true,
+			Elem: &schema.Resource{
+				Schema: map[string]*schema.Schema{
+					names.AttrKey: {
+						Type:         schema.TypeString,
+						Optional:     true,
+						ValidateFunc: validation.StringLenBetween(1, 50),
+					},
+					"match_options": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Schema{
+							Type:             schema.TypeString,
+							ValidateDiagFunc: enum.Validate[awstypes.MatchOption](),
+						},
+					},
+					names.AttrValues: {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Schema{
+							Type:         schema.TypeString,
+							ValidateFunc: validation.StringLenBetween(0, 1024),
+						},
+					},
+				},
+			},
+		},
+		"dimension": {
+			Type:     schema.TypeList,
+			MaxItems: 1,
+			Optional: true,
+			Elem: &schema.Resource{
+				Schema: map[string]*schema.Schema{
+					names.AttrKey: {
+						Type:             schema.TypeString,
+						Optional:         true,
+						ValidateDiagFunc: enum.Validate[awstypes.Dimension](),
+					},
+					"match_options": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Schema{
+							Type:             schema.TypeString,
+							ValidateDiagFunc: enum.Validate[awstypes.MatchOption](),
+						},
+					},
+					names.AttrValues: {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Schema{
+							Type:         schema.TypeString,
+							ValidateFunc: validation.StringLenBetween(0, 1024),
+						},
+					},
+				},
+			},
+		},
+		names.AttrTags: {
+			Type:     schema.TypeList,
+			MaxItems: 1,
+			Optional: true,
+			Elem: &schema.Resource{
+				Schema: map[string]*schema.Schema{
+					names.AttrKey: {
+						Type:     schema.TypeString,
+						Optional: true,
+					},
+					"match_options": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Schema{
+							Type:             schema.TypeString,
+							ValidateDiagFunc: enum.Validate[awstypes.MatchOption](),
+						},
+					},
+					names.AttrValues: {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Schema{
+							Type:         schema.TypeString,
+							ValidateFunc: validation.StringLenBetween(0, 1024),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if level > 1 {
+		// Add in the recursive part of the schema.
+		expressionSchema["and"] = &schema.Schema{
+			Type:     schema.TypeSet,
+			Optional: true,
+			Elem:     expressionElem(level - 1),
+		}
+		expressionSchema["not"] = &schema.Schema{
+			Type:     schema.TypeList,
+			MaxItems: 1,
+			Optional: true,
+			Elem:     expressionElem(level - 1),
+		}
+		expressionSchema["or"] = &schema.Schema{
+			Type:     schema.TypeSet,
+			Optional: true,
+			Elem:     expressionElem(level - 1),
+		}
+	}
+
+	return &schema.Resource{
+		Schema: expressionSchema,
+	}
+}

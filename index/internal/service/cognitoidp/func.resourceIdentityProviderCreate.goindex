@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIdentityProviderCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	providerName := d.Get(names.AttrProviderName).(string)
+	userPoolID := d.Get(names.AttrUserPoolID).(string)
+	id := identityProviderCreateResourceID(userPoolID, providerName)
+	input := &cognitoidentityprovider.CreateIdentityProviderInput{
+		ProviderName: aws.String(providerName),
+		ProviderType: awstypes.IdentityProviderTypeType(d.Get("provider_type").(string)),
+		UserPoolId:   aws.String(userPoolID),
+	}
+
+	if v, ok := d.GetOk("attribute_mapping"); ok && len(v.(map[string]any)) > 0 {
+		input.AttributeMapping = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("idp_identifiers"); ok && len(v.([]any)) > 0 {
+		input.IdpIdentifiers = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("provider_details"); ok && len(v.(map[string]any)) > 0 {
+		input.ProviderDetails = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	_, err := conn.CreateIdentityProvider(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Cognito Identity Provider (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceIdentityProviderRead(ctx, d, meta)...)
+}

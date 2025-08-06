@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findDataShareAuthorizationByID(ctx context.Context, conn *redshift.Client, id string) (*awstypes.DataShare, error) {
+	parts, err := intflex.ExpandResourceId(id, dataShareAuthorizationIDPartCount, false)
+	if err != nil {
+		return nil, err
+	}
+
+	in := &redshift.DescribeDataSharesInput{
+		DataShareArn: aws.String(parts[0]),
+	}
+
+	out, err := conn.DescribeDataShares(ctx, in)
+	if errs.IsA[*awstypes.ResourceNotFoundFault](err) ||
+		errs.IsAErrorMessageContains[*awstypes.InvalidDataShareFault](err, "because the ARN doesn't exist.") {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: in,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	if out == nil || len(out.DataShares) == 0 {
+		return nil, tfresource.NewEmptyResultError(in)
+	}
+	if len(out.DataShares) != 1 {
+		return nil, tfresource.NewTooManyResultsError(len(out.DataShares), in)
+	}
+
+	// Verify a share with the expected consumer identifier is present and the
+	// status is one of "AUTHORIZED" or "ACTIVE".
+	share := out.DataShares[0]
+	for _, assoc := range share.DataShareAssociations {
+		if aws.ToString(assoc.ConsumerIdentifier) == parts[1] {
+			switch assoc.Status {
+			case awstypes.DataShareStatusAuthorized, awstypes.DataShareStatusActive:
+				return &share, nil
+			}
+		}
+	}
+
+	return nil, &retry.NotFoundError{
+		LastError:   err,
+		LastRequest: in,
+	}
+}

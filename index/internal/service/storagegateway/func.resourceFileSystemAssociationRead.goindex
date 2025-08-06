@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/storagegateway
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/storagegateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFileSystemAssociationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).StorageGatewayClient(ctx)
+
+	filesystem, err := findFileSystemAssociationByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Storage Gateway File System Association (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Storage Gateway File System Association (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, filesystem.FileSystemAssociationARN)
+	d.Set("audit_destination_arn", filesystem.AuditDestinationARN)
+	if err := d.Set("cache_attributes", flattenFileSystemAssociationCacheAttributes(filesystem.CacheAttributes)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting cache_attributes: %s", err)
+	}
+	d.Set("gateway_arn", filesystem.GatewayARN)
+	d.Set("location_arn", filesystem.LocationARN)
+
+	setTagsOut(ctx, filesystem.Tags)
+
+	return diags
+}

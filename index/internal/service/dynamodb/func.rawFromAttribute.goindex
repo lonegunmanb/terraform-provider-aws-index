@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"fmt"
+
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func rawFromAttribute(a awstypes.AttributeValue) (any, error) {
+	m := map[string]any{}
+
+	switch a := a.(type) {
+	case *awstypes.AttributeValueMemberB:
+		m[dataTypeDescriptorBinary] = itypes.Base64Encode(a.Value)
+	case *awstypes.AttributeValueMemberBOOL:
+		m[dataTypeDescriptorBoolean] = a.Value
+	case *awstypes.AttributeValueMemberBS:
+		m[dataTypeDescriptorBinarySet] = tfslices.ApplyToAll(a.Value, itypes.Base64Encode)
+	case *awstypes.AttributeValueMemberL:
+		v, err := tfslices.ApplyToAllWithError(a.Value, rawFromAttribute)
+		if err != nil {
+			return nil, err
+		}
+		m[dataTypeDescriptorList] = v
+	case *awstypes.AttributeValueMemberM:
+		v, err := tfmaps.ApplyToAllValuesWithError(a.Value, rawFromAttribute)
+		if err != nil {
+			return nil, err
+		}
+		m[dataTypeDescriptorMap] = v
+	case *awstypes.AttributeValueMemberN:
+		m[dataTypeDescriptorNumber] = a.Value
+	case *awstypes.AttributeValueMemberNS:
+		m[dataTypeDescriptorNumberSet] = a.Value
+	case *awstypes.AttributeValueMemberNULL:
+		m[dataTypeDescriptorNull] = a.Value
+	case *awstypes.AttributeValueMemberS:
+		m[dataTypeDescriptorString] = a.Value
+	case *awstypes.AttributeValueMemberSS:
+		m[dataTypeDescriptorStringSet] = a.Value
+	default:
+		return nil, fmt.Errorf("unexpected attribute type: %T", a)
+	}
+
+	return m, nil
+}

@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"regexp"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	gversion "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func engineVersionIsDowngrade(diff getChangeDiffer) (bool, error) {
+	o, n := diff.GetChange(names.AttrEngineVersion)
+	if o == "6.x" || o == "7.x" {
+		actual := diff.Get("engine_version_actual")
+		aVersion, err := gversion.NewVersion(actual.(string))
+		if err != nil {
+			return false, fmt.Errorf("parsing current engine_version: %w", err)
+		}
+		nVersion, err := normalizeEngineVersion(n.(string))
+		if err != nil {
+			return false, fmt.Errorf("parsing new engine_version: %w", err)
+		}
+
+		aSegments := aVersion.Segments()
+		nSegments := nVersion.Segments()
+
+		if nSegments[0] != aSegments[0] {
+			return nSegments[0] < aSegments[0], nil
+		}
+		return nSegments[1] < aSegments[1], nil
+	}
+
+	oVersion, err := normalizeEngineVersion(o.(string))
+	if err != nil {
+		return false, fmt.Errorf("parsing old engine_version: %w", err)
+	}
+	nVersion, err := normalizeEngineVersion(n.(string))
+	if err != nil {
+		return false, fmt.Errorf("parsing new engine_version: %w", err)
+	}
+
+	return nVersion.LessThan(oVersion), nil
+}

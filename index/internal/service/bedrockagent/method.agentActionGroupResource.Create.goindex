@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagent
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagent"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagent/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *agentActionGroupResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data agentActionGroupResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().BedrockAgentClient(ctx)
+
+	input := &bedrockagent.CreateAgentActionGroupInput{}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	output, err := conn.CreateAgentActionGroup(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError("creating Bedrock Agent Action Group", err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.ActionGroupID = fwflex.StringToFramework(ctx, output.AgentActionGroup.ActionGroupId)
+	data.ActionGroupState = fwtypes.StringEnumValue(output.AgentActionGroup.ActionGroupState)
+	id, err := data.setID()
+	if err != nil {
+		response.Diagnostics.AddError("flattening resource ID Bedrock Agent Action Group", err.Error())
+		return
+	}
+	data.ID = types.StringValue(id)
+
+	if data.PrepareAgent.ValueBool() {
+		if _, err := prepareAgent(ctx, conn, data.AgentID.ValueString(), r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+			response.Diagnostics.AddError("preparing Agent", err.Error())
+
+			return
+		}
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

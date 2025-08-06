@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceFleetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	fleet, err := findInstanceFleetByTwoPartKey(ctx, conn, d.Get("cluster_id").(string), d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EMR Instance Fleet (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EMR Instance Fleet (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("instance_type_configs", flattenInstanceTypeSpecifications(fleet.InstanceTypeSpecifications)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting instance_type_configs: %s", err)
+	}
+	if err := d.Set("launch_specifications", flattenInstanceFleetProvisioningSpecifications(fleet.LaunchSpecifications)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting launch_specifications: %s", err)
+	}
+	d.Set(names.AttrName, fleet.Name)
+	d.Set("provisioned_on_demand_capacity", fleet.ProvisionedOnDemandCapacity)
+	d.Set("provisioned_spot_capacity", fleet.ProvisionedSpotCapacity)
+	d.Set("target_on_demand_capacity", fleet.TargetOnDemandCapacity)
+	d.Set("target_spot_capacity", fleet.TargetSpotCapacity)
+
+	return diags
+}

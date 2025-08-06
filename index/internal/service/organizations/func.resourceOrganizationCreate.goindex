@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/organizations
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOrganizationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OrganizationsClient(ctx)
+
+	input := &organizations.CreateOrganizationInput{
+		FeatureSet: awstypes.OrganizationFeatureSet(d.Get("feature_set").(string)),
+	}
+
+	output, err := conn.CreateOrganization(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Organizations Organization: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.Organization.Id))
+
+	if v, ok := d.GetOk("aws_service_access_principals"); ok && v.(*schema.Set).Len() > 0 {
+		for _, v := range flex.ExpandStringValueSet(v.(*schema.Set)) {
+			if err := enableServicePrincipal(ctx, conn, v); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("enabled_policy_types"); ok && v.(*schema.Set).Len() > 0 {
+		defaultRoot, err := findDefaultRoot(ctx, conn)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Organizations Organization (%s) default root: %s", d.Id(), err)
+		}
+
+		defaultRootID := aws.ToString(defaultRoot.Id)
+
+		for _, v := range flex.ExpandStringValueSet(v.(*schema.Set)) {
+			if err := enablePolicyType(ctx, conn, awstypes.PolicyType(v), defaultRootID); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	return append(diags, resourceOrganizationRead(ctx, d, meta)...)
+}

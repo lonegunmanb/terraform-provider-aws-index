@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProvisioningArtifactRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	artifactID, productID, err := provisioningArtifactParseID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "parsing Service Catalog Provisioning Artifact ID (%s): %s", d.Id(), err)
+	}
+
+	output, err := waitProvisioningArtifactReady(ctx, conn, artifactID, productID, d.Timeout(schema.TimeoutRead))
+
+	if !d.IsNewResource() && errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		log.Printf("[WARN] Service Catalog Provisioning Artifact (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "describing Service Catalog Provisioning Artifact (%s): %s", d.Id(), err)
+	}
+
+	if output == nil || output.ProvisioningArtifactDetail == nil {
+		return sdkdiag.AppendErrorf(diags, "getting Service Catalog Provisioning Artifact (%s): empty response", d.Id())
+	}
+
+	if v, ok := output.Info["ImportFromPhysicalId"]; ok {
+		d.Set("template_physical_id", v)
+	}
+
+	if v, ok := output.Info["LoadTemplateFromURL"]; ok {
+		d.Set("template_url", v)
+	}
+
+	pad := output.ProvisioningArtifactDetail
+
+	d.Set("active", pad.Active)
+	if pad.CreatedTime != nil {
+		d.Set(names.AttrCreatedTime, pad.CreatedTime.Format(time.RFC3339))
+	}
+	d.Set(names.AttrDescription, pad.Description)
+	d.Set("guidance", pad.Guidance)
+	d.Set(names.AttrName, pad.Name)
+	d.Set("product_id", productID)
+	d.Set("provisioning_artifact_id", artifactID)
+	d.Set(names.AttrType, pad.Type)
+
+	return diags
+}

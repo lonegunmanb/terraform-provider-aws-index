@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHostedPrivateVirtualInterfaceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+	input := &directconnect.AllocatePrivateVirtualInterfaceInput{
+		ConnectionId: aws.String(d.Get(names.AttrConnectionID).(string)),
+		NewPrivateVirtualInterfaceAllocation: &awstypes.NewPrivateVirtualInterfaceAllocation{
+			AddressFamily:        awstypes.AddressFamily(d.Get("address_family").(string)),
+			Asn:                  int32(d.Get("bgp_asn").(int)),
+			Mtu:                  aws.Int32(int32(d.Get("mtu").(int))),
+			VirtualInterfaceName: aws.String(d.Get(names.AttrName).(string)),
+			Vlan:                 int32(d.Get("vlan").(int)),
+		},
+		OwnerAccount: aws.String(d.Get(names.AttrOwnerAccountID).(string)),
+	}
+
+	if v, ok := d.GetOk("amazon_address"); ok {
+		input.NewPrivateVirtualInterfaceAllocation.AmazonAddress = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("bgp_auth_key"); ok {
+		input.NewPrivateVirtualInterfaceAllocation.AuthKey = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("customer_address"); ok {
+		input.NewPrivateVirtualInterfaceAllocation.CustomerAddress = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("mtu"); ok {
+		input.NewPrivateVirtualInterfaceAllocation.Mtu = aws.Int32(int32(v.(int)))
+	}
+
+	output, err := conn.AllocatePrivateVirtualInterface(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Direct Connect Hosted Private Virtual Interface: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.VirtualInterfaceId))
+
+	if _, err := waitHostedPrivateVirtualInterfaceAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Direct Connect Hosted Private Virtual Interface (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceHostedPrivateVirtualInterfaceRead(ctx, d, meta)...)
+}

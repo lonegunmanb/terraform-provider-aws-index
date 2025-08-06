@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findClusterSnapshotByID(ctx context.Context, conn *redshift.Client, id string) (*awstypes.Snapshot, error) {
+	input := &redshift.DescribeClusterSnapshotsInput{
+		SnapshotIdentifier: aws.String(id),
+	}
+
+	output, err := conn.DescribeClusterSnapshots(ctx, input)
+
+	if errs.IsA[*awstypes.ClusterNotFoundFault](err) || errs.IsA[*awstypes.ClusterSnapshotNotFoundFault](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil || len(output.Snapshots) == 0 {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	if count := len(output.Snapshots); count > 1 {
+		return nil, tfresource.NewTooManyResultsError(count, input)
+	}
+
+	if status := aws.ToString(output.Snapshots[0].Status); status == clusterSnapshotStatusDeleted {
+		return nil, &retry.NotFoundError{
+			Message:     status,
+			LastRequest: input,
+		}
+	}
+
+	return tfresource.AssertSingleValueResult(output.Snapshots)
+}

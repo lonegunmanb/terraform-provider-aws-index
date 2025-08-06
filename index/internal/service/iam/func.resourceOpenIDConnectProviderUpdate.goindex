@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOpenIDConnectProviderUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	if d.HasChange("thumbprint_list") {
+		if v := d.Get("thumbprint_list").([]any); len(v) > 0 {
+			// Issues with an update to clear the thumbprint_list:
+			// - A cleared thumbprint_list will have a length of 0, and not enter this block.
+			// - Setting it to empty triggers an API error (the API requires either no thumbprints at
+			//   **creation** or at least one thumbprint on update).
+			// - Removing the thumbprint_list attribute entirely doesn’t work because it won’t register as
+			//   a change (no diff is detected).
+			// See https://github.com/hashicorp/terraform-provider-aws/issues/40509
+			input := &iam.UpdateOpenIDConnectProviderThumbprintInput{
+				OpenIDConnectProviderArn: aws.String(d.Id()),
+				ThumbprintList:           flex.ExpandStringValueList(v),
+			}
+
+			if _, err := conn.UpdateOpenIDConnectProviderThumbprint(ctx, input); err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating IAM OIDC Provider (%s) thumbprint: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange("client_id_list") {
+		o, n := d.GetChange("client_id_list")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		for _, v := range ns.Difference(os).List() {
+			v := v.(string)
+			input := &iam.AddClientIDToOpenIDConnectProviderInput{
+				ClientID:                 aws.String(v),
+				OpenIDConnectProviderArn: aws.String(d.Id()),
+			}
+
+			_, err := conn.AddClientIDToOpenIDConnectProvider(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "adding IAM OIDC Provider (%s) client ID (%s): %s", d.Id(), v, err)
+			}
+		}
+
+		for _, v := range os.Difference(ns).List() {
+			v := v.(string)
+			input := &iam.RemoveClientIDFromOpenIDConnectProviderInput{
+				ClientID:                 aws.String(v),
+				OpenIDConnectProviderArn: aws.String(d.Id()),
+			}
+
+			_, err := conn.RemoveClientIDFromOpenIDConnectProvider(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "removing IAM OIDC Provider (%s) client ID (%s): %s", d.Id(), v, err)
+			}
+		}
+	}
+
+	return append(diags, resourceOpenIDConnectProviderRead(ctx, d, meta)...)
+}

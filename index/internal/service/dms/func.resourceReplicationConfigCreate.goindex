@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicationConfigCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DMSClient(ctx)
+
+	replicationConfigID := d.Get("replication_config_identifier").(string)
+	input := &dms.CreateReplicationConfigInput{
+		ReplicationConfigIdentifier: aws.String(replicationConfigID),
+		ReplicationType:             awstypes.MigrationTypeValue(d.Get("replication_type").(string)),
+		SourceEndpointArn:           aws.String(d.Get("source_endpoint_arn").(string)),
+		TableMappings:               aws.String(d.Get("table_mappings").(string)),
+		Tags:                        getTagsIn(ctx),
+		TargetEndpointArn:           aws.String(d.Get("target_endpoint_arn").(string)),
+	}
+
+	if v, ok := d.GetOk("compute_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.ComputeConfig = expandComputeConfigInput(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("replication_settings"); ok {
+		input.ReplicationSettings = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("resource_identifier"); ok {
+		input.ResourceIdentifier = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("supplemental_settings"); ok {
+		input.SupplementalSettings = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateReplicationConfig(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DMS Replication Config (%s): %s", replicationConfigID, err)
+	}
+
+	d.SetId(aws.ToString(output.ReplicationConfig.ReplicationConfigArn))
+
+	if d.Get("start_replication").(bool) {
+		if err := startReplication(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceReplicationConfigRead(ctx, d, meta)...)
+}

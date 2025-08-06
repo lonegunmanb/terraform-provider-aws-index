@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	smithyjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func (expander autoExpander) map_(ctx context.Context, vFrom basetypes.MapValuable, vTo reflect.Value) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	v, d := vFrom.ToMapValue(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	switch v.ElementType(ctx).(type) {
+	case basetypes.StringTypable:
+		diags.Append(expander.mapOfString(ctx, v, vTo)...)
+		return diags
+
+	case basetypes.MapTypable:
+		data, d := v.ToMapValue(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+		switch tMapElem := vTo.Type().Elem(); tMapElem.Kind() {
+		case reflect.Map:
+			//
+			// types.Map(OfMap) -> map[string]map[string]string.
+			//
+			switch k := tMapElem.Elem().Kind(); k {
+			case reflect.String:
+				tflog.SubsystemTrace(ctx, subsystemName, "Expanding with ElementsAs", map[string]any{
+					logAttrKeySourceSize: len(data.Elements()),
+				})
+				var out map[string]map[string]string
+				diags.Append(data.ElementsAs(ctx, &out, false)...)
+
+				if diags.HasError() {
+					return diags
+				}
+
+				vTo.Set(reflect.ValueOf(out))
+				return diags
+
+			case reflect.Pointer:
+				switch k := tMapElem.Elem().Elem().Kind(); k {
+				case reflect.String:
+					//
+					// types.Map(OfMap) -> map[string]map[string]*string.
+					//
+					tflog.SubsystemTrace(ctx, subsystemName, "Expanding with ElementsAs", map[string]any{
+						logAttrKeySourceSize: len(data.Elements()),
+					})
+					var to map[string]map[string]*string
+					diags.Append(data.ElementsAs(ctx, &to, false)...)
+
+					if diags.HasError() {
+						return diags
+					}
+
+					vTo.Set(reflect.ValueOf(to))
+					return diags
+				}
+			}
+		}
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "AutoFlex Expand; incompatible types", map[string]any{
+		"from": fmt.Sprintf("map[string, %s]", v.ElementType(ctx)),
+		"to":   vTo.Kind(),
+	})
+
+	return diags
+}

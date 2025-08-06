@@ -1,0 +1,153 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionsDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LakeFormationClient(ctx)
+
+	input := &lakeformation.RevokePermissionsInput{
+		Permissions:                flex.ExpandStringyValueSet[awstypes.Permission](d.Get(names.AttrPermissions).(*schema.Set)),
+		PermissionsWithGrantOption: flex.ExpandStringyValueSet[awstypes.Permission](d.Get("permissions_with_grant_option").(*schema.Set)),
+		Principal: &awstypes.DataLakePrincipal{
+			DataLakePrincipalIdentifier: aws.String(d.Get(names.AttrPrincipal).(string)),
+		},
+		Resource: &awstypes.Resource{},
+	}
+
+	if v, ok := d.GetOk(names.AttrCatalogID); ok {
+		input.CatalogId = aws.String(v.(string))
+	}
+
+	if _, ok := d.GetOk("catalog_resource"); ok {
+		input.Resource.Catalog = ExpandCatalogResource()
+	}
+
+	if v, ok := d.GetOk("data_cells_filter"); ok {
+		input.Resource.DataCellsFilter = ExpandDataCellsFilter(v.([]any))
+	}
+
+	if v, ok := d.GetOk("data_location"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.DataLocation = ExpandDataLocationResource(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDatabase); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.Database = ExpandDatabaseResource(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("lf_tag"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.LFTag = ExpandLFTagKeyResource(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("lf_tag_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.LFTagPolicy = ExpandLFTagPolicyResource(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("table"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.Table = ExpandTableResource(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("table_with_columns"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Resource.TableWithColumns = expandTableColumnsResource(v.([]any)[0].(map[string]any))
+	}
+
+	if input.Resource == nil || reflect.DeepEqual(input.Resource, &awstypes.Resource{}) {
+		// if resource is empty, don't delete = it won't delete anything since this is the predicate
+		log.Printf("[WARN] No Lake Formation Resource with permissions to revoke")
+		return diags
+	}
+
+	err := retry.RetryContext(ctx, permissionsDeleteRetryTimeout, func() *retry.RetryError {
+		var err error
+		_, err = conn.RevokePermissions(ctx, input)
+		if err != nil {
+			if errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "register the S3 path") {
+				return retry.RetryableError(err)
+			}
+			if errs.IsA[*awstypes.ConcurrentModificationException](err) {
+				return retry.RetryableError(err)
+			}
+			if errs.IsAErrorMessageContains[*awstypes.AccessDeniedException](err, "is not authorized to access requested permissions") {
+				return retry.RetryableError(err)
+			}
+
+			return retry.NonRetryableError(fmt.Errorf("unable to revoke Lake Formation Permissions: %w", err))
+		}
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		_, err = conn.RevokePermissions(ctx, input)
+	}
+
+	if errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "No permissions revoked. Grantee") {
+		return diags
+	}
+
+	if errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "cannot grant/revoke permission on non-existent column") {
+		return diags
+	}
+
+	if errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "Cell Filter not found") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "unable to revoke LakeFormation Permissions (input: %v): %s", input, err)
+	}
+
+	// Attempted to add a waiter here to wait for delete to complete. However, ListPermissions() returns
+	// permissions, at least for catalog/CREATE_DATABASE permission, even if they do not exist. That makes
+	// knowing when the delete is complete impossible. Instead, we'll retry until we get the right error.
+
+	// Knowing when the delete is complete is complicated:
+	// You can't just wait until permissions = 0 because there could be many other unrelated permissions
+	// on the resource and filtering is non-trivial for table with columns.
+
+	err = retry.RetryContext(ctx, permissionsDeleteRetryTimeout, func() *retry.RetryError {
+		var err error
+		_, err = conn.RevokePermissions(ctx, input)
+
+		if !errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "No permissions revoked. Grantee has no") {
+			return retry.RetryableError(err)
+		}
+
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		_, err = conn.RevokePermissions(ctx, input)
+	}
+
+	if errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "No permissions revoked. Grantee") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "unable to revoke LakeFormation Permissions (input: %v): %s", input, err)
+	}
+
+	return diags
+}

@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecs
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAccountSettingDefaultDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ECSClient(ctx)
+
+	settingName := awstypes.SettingName(d.Get(names.AttrName).(string))
+	settingValue := "disabled"
+
+	// Default value: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-maintenance.html#task-retirement-change.
+	if settingName == awstypes.SettingNameFargateTaskRetirementWaitPeriod {
+		const (
+			fargateTaskRetirementWaitPeriodValue = "7"
+		)
+		settingValue = fargateTaskRetirementWaitPeriodValue
+	}
+
+	if settingName == awstypes.SettingNameDefaultLogDriverMode {
+		const (
+			defaultLogDriverModeValue = "non-blocking"
+		)
+		settingValue = defaultLogDriverModeValue
+	}
+
+	log.Printf("[WARN] Deleting ECS Account Setting Default: %s", settingName)
+	input := &ecs.PutAccountSettingDefaultInput{
+		Name:  settingName,
+		Value: aws.String(settingValue),
+	}
+
+	_, err := conn.PutAccountSettingDefault(ctx, input)
+
+	if errs.IsAErrorMessageContains[*awstypes.InvalidParameterException](err, "You can no longer disable") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "disabling ECS Account Setting Default (%s): %s", settingName, err)
+	}
+
+	return diags
+}

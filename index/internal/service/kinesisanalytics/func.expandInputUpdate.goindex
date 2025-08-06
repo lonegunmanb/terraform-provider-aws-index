@@ -1,0 +1,131 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kinesisanalytics
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kinesisanalytics"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kinesisanalytics/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandInputUpdate(vInput []any) awstypes.InputUpdate {
+	inputUpdate := awstypes.InputUpdate{}
+
+	if len(vInput) == 0 || vInput[0] == nil {
+		return inputUpdate
+	}
+
+	mInput := vInput[0].(map[string]any)
+
+	if vInputId, ok := mInput[names.AttrID].(string); ok && vInputId != "" {
+		inputUpdate.InputId = aws.String(vInputId)
+	}
+
+	if vInputParallelism, ok := mInput["parallelism"].([]any); ok && len(vInputParallelism) > 0 && vInputParallelism[0] != nil {
+		inputParallelismUpdate := &awstypes.InputParallelismUpdate{}
+
+		mInputParallelism := vInputParallelism[0].(map[string]any)
+
+		if vCount, ok := mInputParallelism["count"].(int); ok {
+			inputParallelismUpdate.CountUpdate = aws.Int32(int32(vCount))
+		}
+
+		inputUpdate.InputParallelismUpdate = inputParallelismUpdate
+	}
+
+	if vInputProcessingConfiguration, ok := mInput["processing_configuration"].([]any); ok && len(vInputProcessingConfiguration) > 0 && vInputProcessingConfiguration[0] != nil {
+		inputProcessingConfigurationUpdate := &awstypes.InputProcessingConfigurationUpdate{}
+
+		mInputProcessingConfiguration := vInputProcessingConfiguration[0].(map[string]any)
+
+		if vInputLambdaProcessor, ok := mInputProcessingConfiguration["lambda"].([]any); ok && len(vInputLambdaProcessor) > 0 && vInputLambdaProcessor[0] != nil {
+			inputLambdaProcessorUpdate := &awstypes.InputLambdaProcessorUpdate{}
+
+			mInputLambdaProcessor := vInputLambdaProcessor[0].(map[string]any)
+
+			if vResourceArn, ok := mInputLambdaProcessor[names.AttrResourceARN].(string); ok && vResourceArn != "" {
+				inputLambdaProcessorUpdate.ResourceARNUpdate = aws.String(vResourceArn)
+			}
+			if vRoleArn, ok := mInputLambdaProcessor[names.AttrRoleARN].(string); ok && vRoleArn != "" {
+				inputLambdaProcessorUpdate.RoleARNUpdate = aws.String(vRoleArn)
+			}
+
+			inputProcessingConfigurationUpdate.InputLambdaProcessorUpdate = inputLambdaProcessorUpdate
+		}
+
+		inputUpdate.InputProcessingConfigurationUpdate = inputProcessingConfigurationUpdate
+	}
+
+	if vInputSchema, ok := mInput[names.AttrSchema].([]any); ok && len(vInputSchema) > 0 && vInputSchema[0] != nil {
+		inputSchemaUpdate := &awstypes.InputSchemaUpdate{}
+
+		mInputSchema := vInputSchema[0].(map[string]any)
+
+		if vRecordColumns, ok := mInputSchema["record_columns"].([]any); ok {
+			inputSchemaUpdate.RecordColumnUpdates = expandRecordColumns(vRecordColumns)
+		}
+
+		if vRecordEncoding, ok := mInputSchema["record_encoding"].(string); ok && vRecordEncoding != "" {
+			inputSchemaUpdate.RecordEncodingUpdate = aws.String(vRecordEncoding)
+		}
+
+		if vRecordFormat, ok := mInputSchema["record_format"].([]any); ok {
+			inputSchemaUpdate.RecordFormatUpdate = expandRecordFormat(vRecordFormat)
+		}
+
+		inputUpdate.InputSchemaUpdate = inputSchemaUpdate
+	}
+
+	if vKinesisFirehoseInput, ok := mInput["kinesis_firehose"].([]any); ok && len(vKinesisFirehoseInput) > 0 && vKinesisFirehoseInput[0] != nil {
+		kinesisFirehoseInputUpdate := &awstypes.KinesisFirehoseInputUpdate{}
+
+		mKinesisFirehoseInput := vKinesisFirehoseInput[0].(map[string]any)
+
+		if vResourceArn, ok := mKinesisFirehoseInput[names.AttrResourceARN].(string); ok && vResourceArn != "" {
+			kinesisFirehoseInputUpdate.ResourceARNUpdate = aws.String(vResourceArn)
+		}
+		if vRoleArn, ok := mKinesisFirehoseInput[names.AttrRoleARN].(string); ok && vRoleArn != "" {
+			kinesisFirehoseInputUpdate.RoleARNUpdate = aws.String(vRoleArn)
+		}
+
+		inputUpdate.KinesisFirehoseInputUpdate = kinesisFirehoseInputUpdate
+	}
+
+	if vKinesisStreamsInput, ok := mInput["kinesis_stream"].([]any); ok && len(vKinesisStreamsInput) > 0 && vKinesisStreamsInput[0] != nil {
+		kinesisStreamsInputUpdate := &awstypes.KinesisStreamsInputUpdate{}
+
+		mKinesisStreamsInput := vKinesisStreamsInput[0].(map[string]any)
+
+		if vResourceArn, ok := mKinesisStreamsInput[names.AttrResourceARN].(string); ok && vResourceArn != "" {
+			kinesisStreamsInputUpdate.ResourceARNUpdate = aws.String(vResourceArn)
+		}
+		if vRoleArn, ok := mKinesisStreamsInput[names.AttrRoleARN].(string); ok && vRoleArn != "" {
+			kinesisStreamsInputUpdate.RoleARNUpdate = aws.String(vRoleArn)
+		}
+
+		inputUpdate.KinesisStreamsInputUpdate = kinesisStreamsInputUpdate
+	}
+
+	if vNamePrefix, ok := mInput[names.AttrNamePrefix].(string); ok && vNamePrefix != "" {
+		inputUpdate.NamePrefixUpdate = aws.String(vNamePrefix)
+	}
+
+	return inputUpdate
+}

@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOrganizationConfigurationFeaturePut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GuardDutyClient(ctx)
+
+	detectorID := d.Get("detector_id").(string)
+
+	// We have seen occasional acceptance test failures when updating multiple features on the same detector concurrently,
+	// so use a mutex to ensure that multiple features being updated concurrently don't trample on each other.
+	conns.GlobalMutexKV.Lock(detectorID)
+	defer conns.GlobalMutexKV.Unlock(detectorID)
+
+	output, err := FindOrganizationConfigurationByID(ctx, conn, detectorID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading GuardDuty Organization Configuration (%s): %s", detectorID, err)
+	}
+
+	name := d.Get(names.AttrName).(string)
+	feature := awstypes.OrganizationFeatureConfiguration{
+		AutoEnable: awstypes.OrgFeatureStatus(d.Get("auto_enable").(string)),
+		Name:       awstypes.OrgFeature(name),
+	}
+
+	if v, ok := d.GetOk("additional_configuration"); ok && len(v.([]any)) > 0 {
+		feature.AdditionalConfiguration = expandOrganizationAdditionalConfigurations(v.([]any))
+	}
+
+	input := &guardduty.UpdateOrganizationConfigurationInput{
+		AutoEnableOrganizationMembers: output.AutoEnableOrganizationMembers,
+		DetectorId:                    aws.String(detectorID),
+		Features:                      []awstypes.OrganizationFeatureConfiguration{feature},
+	}
+
+	_, err = conn.UpdateOrganizationConfiguration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating GuardDuty Organization Configuration (%s) Feature (%s): %s", detectorID, name, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(organizationConfigurationFeatureCreateResourceID(detectorID, name))
+	}
+
+	return append(diags, resourceOrganizationConfigurationFeatureRead(ctx, d, meta)...)
+}

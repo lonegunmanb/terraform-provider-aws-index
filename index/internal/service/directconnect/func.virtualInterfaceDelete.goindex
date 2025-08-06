@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func virtualInterfaceDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+	log.Printf("[DEBUG] Deleting Direct Connect Virtual Interface: %s", d.Id())
+	input := directconnect.DeleteVirtualInterfaceInput{
+		VirtualInterfaceId: aws.String(d.Id()),
+	}
+	_, err := conn.DeleteVirtualInterface(ctx, &input)
+
+	if errs.IsAErrorMessageContains[*awstypes.DirectConnectClientException](err, "does not exist") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Direct Connect Virtual Interface (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitVirtualInterfaceDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Direct Connect Virtual Interface (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

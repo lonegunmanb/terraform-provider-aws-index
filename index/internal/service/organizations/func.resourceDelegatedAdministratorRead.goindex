@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/organizations
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDelegatedAdministratorRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OrganizationsClient(ctx)
+
+	accountID, servicePrincipal, err := delegatedAdministratorParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	delegatedAccount, err := findDelegatedAdministratorByTwoPartKey(ctx, conn, accountID, servicePrincipal)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Organizations Delegated Administrator %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Organizations Delegated Administrator (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrAccountID, accountID)
+	d.Set(names.AttrARN, delegatedAccount.Arn)
+	d.Set("delegation_enabled_date", aws.ToTime(delegatedAccount.DelegationEnabledDate).Format(time.RFC3339))
+	d.Set(names.AttrEmail, delegatedAccount.Email)
+	d.Set("joined_method", delegatedAccount.JoinedMethod)
+	d.Set("joined_timestamp", aws.ToTime(delegatedAccount.JoinedTimestamp).Format(time.RFC3339))
+	d.Set(names.AttrName, delegatedAccount.Name)
+	d.Set("service_principal", servicePrincipal)
+	d.Set(names.AttrStatus, delegatedAccount.Status)
+
+	return diags
+}

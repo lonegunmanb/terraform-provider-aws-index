@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagent
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagent"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagent/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *agentActionGroupResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new agentActionGroupResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().BedrockAgentClient(ctx)
+
+	if !new.ActionGroupExecutor.Equal(old.ActionGroupExecutor) ||
+		!new.ActionGroupName.Equal(old.ActionGroupName) ||
+		!new.ActionGroupState.Equal(old.ActionGroupState) ||
+		!new.APISchema.Equal(old.APISchema) ||
+		!new.Description.Equal(old.Description) ||
+		!new.FunctionSchema.Equal(old.FunctionSchema) ||
+		!new.ParentActionGroupSignature.Equal(old.ParentActionGroupSignature) {
+		input := &bedrockagent.UpdateAgentActionGroupInput{}
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, input)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		_, err := conn.UpdateAgentActionGroup(ctx, input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating Bedrock Agent Action Group (%s)", new.ID.ValueString()), err.Error())
+
+			return
+		}
+	}
+
+	output, err := findAgentActionGroupByThreePartKey(ctx, conn, new.ActionGroupID.ValueString(), new.AgentID.ValueString(), new.AgentVersion.ValueString())
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading Bedrock Agent Action Group (%s)", new.ID.ValueString()), err.Error())
+
+		return
+	}
+
+	if new.PrepareAgent.ValueBool() {
+		if _, err := prepareAgent(ctx, conn, new.AgentID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
+			response.Diagnostics.AddError("preparing Agent", err.Error())
+
+			return
+		}
+	}
+
+	new.ActionGroupState = fwtypes.StringEnumValue(output.ActionGroupState)
+
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+}

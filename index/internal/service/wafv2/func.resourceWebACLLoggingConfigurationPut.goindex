@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWebACLLoggingConfigurationPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFV2Client(ctx)
+
+	resourceARN := d.Get(names.AttrResourceARN).(string)
+	config := &awstypes.LoggingConfiguration{
+		LogDestinationConfigs: flex.ExpandStringValueSet(d.Get("log_destination_configs").(*schema.Set)),
+		ResourceArn:           aws.String(resourceARN),
+	}
+
+	if v, ok := d.GetOk("logging_filter"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		config.LoggingFilter = expandLoggingFilter(v.([]any))
+	}
+
+	if v, ok := d.GetOk("redacted_fields"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		config.RedactedFields = expandRedactedFields(v.([]any))
+	} else {
+		config.RedactedFields = []awstypes.FieldToMatch{}
+	}
+
+	input := &wafv2.PutLoggingConfigurationInput{
+		LoggingConfiguration: config,
+	}
+
+	output, err := conn.PutLoggingConfiguration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting WAFv2 WebACL Logging Configuration (%s): %s", resourceARN, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(aws.ToString(output.LoggingConfiguration.ResourceArn))
+	}
+
+	return append(diags, resourceWebACLLoggingConfigurationRead(ctx, d, meta)...)
+}

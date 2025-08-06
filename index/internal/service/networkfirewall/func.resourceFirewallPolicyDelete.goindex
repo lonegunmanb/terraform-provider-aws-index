@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkfirewall
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkfirewall"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkfirewall/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFirewallPolicyDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NetworkFirewallClient(ctx)
+
+	log.Printf("[DEBUG] Deleting NetworkFirewall Firewall Policy: %s", d.Id())
+	const (
+		timeout = 10 * time.Minute
+	)
+	_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidOperationException](ctx, timeout, func() (any, error) {
+		return conn.DeleteFirewallPolicy(ctx, &networkfirewall.DeleteFirewallPolicyInput{
+			FirewallPolicyArn: aws.String(d.Id()),
+		})
+	}, "Unable to delete the object because it is still in use")
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting NetworkFirewall Firewall Policy (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitFirewallPolicyDeleted(ctx, conn, d.Id(), timeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for NetworkFirewall Firewall Policy (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

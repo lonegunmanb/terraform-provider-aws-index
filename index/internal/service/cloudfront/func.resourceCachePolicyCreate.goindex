@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCachePolicyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	apiObject := &awstypes.CachePolicyConfig{
+		DefaultTTL: aws.Int64(int64(d.Get("default_ttl").(int))),
+		MaxTTL:     aws.Int64(int64(d.Get("max_ttl").(int))),
+		MinTTL:     aws.Int64(int64(d.Get("min_ttl").(int))),
+		Name:       aws.String(name),
+	}
+
+	if v, ok := d.GetOk(names.AttrComment); ok {
+		apiObject.Comment = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("parameters_in_cache_key_and_forwarded_to_origin"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.ParametersInCacheKeyAndForwardedToOrigin = expandParametersInCacheKeyAndForwardedToOrigin(v.([]any)[0].(map[string]any))
+	}
+
+	input := &cloudfront.CreateCachePolicyInput{
+		CachePolicyConfig: apiObject,
+	}
+
+	output, err := conn.CreateCachePolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudFront Cache Policy (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.CachePolicy.Id))
+
+	return append(diags, resourceCachePolicyRead(ctx, d, meta)...)
+}

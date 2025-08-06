@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ses
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainIdentityVerificationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SESClient(ctx)
+
+	domainName := d.Get(names.AttrDomain).(string)
+	_, err := tfresource.RetryUntilEqual(ctx, d.Timeout(schema.TimeoutCreate), awstypes.VerificationStatusSuccess, func() (awstypes.VerificationStatus, error) {
+		att, err := findIdentityVerificationAttributesByIdentity(ctx, conn, domainName)
+
+		if err != nil {
+			return "", err
+		}
+
+		return att.VerificationStatus, nil
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SES Domain Identity Verification (%s): %s", domainName, err)
+	}
+
+	d.SetId(domainName)
+
+	return append(diags, resourceDomainIdentityVerificationRead(ctx, d, meta)...)
+}

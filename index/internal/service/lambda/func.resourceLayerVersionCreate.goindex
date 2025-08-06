@@ -1,0 +1,90 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfio "github.com/hashicorp/terraform-provider-aws/internal/io"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLayerVersionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
+
+	layerName := d.Get("layer_name").(string)
+	filename, hasFilename := d.GetOk("filename")
+	s3Bucket, bucketOk := d.GetOk(names.AttrS3Bucket)
+	s3Key, keyOk := d.GetOk("s3_key")
+	s3ObjectVersion, versionOk := d.GetOk("s3_object_version")
+
+	if !hasFilename && !bucketOk && !keyOk && !versionOk {
+		return sdkdiag.AppendErrorf(diags, "filename or s3_* attributes must be set")
+	}
+
+	var layerContent *awstypes.LayerVersionContentInput
+	if hasFilename {
+		conns.GlobalMutexKV.Lock(mutexLayerKey)
+		defer conns.GlobalMutexKV.Unlock(mutexLayerKey)
+
+		file, err := tfio.ReadFileContents(filename.(string))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading ZIP file (%s): %s", filename, err)
+		}
+
+		layerContent = &awstypes.LayerVersionContentInput{
+			ZipFile: file,
+		}
+	} else {
+		if !bucketOk || !keyOk {
+			return sdkdiag.AppendErrorf(diags, "s3_bucket and s3_key must all be set while using s3 code source")
+		}
+		layerContent = &awstypes.LayerVersionContentInput{
+			S3Bucket: aws.String(s3Bucket.(string)),
+			S3Key:    aws.String(s3Key.(string)),
+		}
+		if versionOk {
+			layerContent.S3ObjectVersion = aws.String(s3ObjectVersion.(string))
+		}
+	}
+
+	input := &lambda.PublishLayerVersionInput{
+		Content:     layerContent,
+		Description: aws.String(d.Get(names.AttrDescription).(string)),
+		LayerName:   aws.String(layerName),
+		LicenseInfo: aws.String(d.Get("license_info").(string)),
+	}
+
+	if v, ok := d.GetOk("compatible_architectures"); ok && v.(*schema.Set).Len() > 0 {
+		input.CompatibleArchitectures = flex.ExpandStringyValueSet[awstypes.Architecture](v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("compatible_runtimes"); ok && v.(*schema.Set).Len() > 0 {
+		input.CompatibleRuntimes = flex.ExpandStringyValueSet[awstypes.Runtime](v.(*schema.Set))
+	}
+
+	output, err := conn.PublishLayerVersion(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "publishing Lambda Layer (%s) Version: %s", layerName, err)
+	}
+
+	d.SetId(aws.ToString(output.LayerVersionArn))
+
+	return append(diags, resourceLayerVersionRead(ctx, d, meta)...)
+}

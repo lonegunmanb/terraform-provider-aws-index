@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func initSecurityGroupRule(ruleMap map[string]map[string]any, perm awstypes.IpPermission, desc string) map[string]any {
+	var fromPort, toPort int32
+	if v := perm.FromPort; v != nil {
+		fromPort = aws.ToInt32(v)
+	}
+	if v := perm.ToPort; v != nil {
+		toPort = aws.ToInt32(v)
+	}
+	k := fmt.Sprintf("%s-%d-%d-%s", aws.ToString(perm.IpProtocol), fromPort, toPort, desc)
+	rule, ok := ruleMap[k]
+	if !ok {
+		rule = make(map[string]any)
+		ruleMap[k] = rule
+	}
+	rule[names.AttrProtocol] = aws.ToString(perm.IpProtocol)
+	rule["from_port"] = fromPort
+	rule["to_port"] = toPort
+	if desc != "" {
+		rule[names.AttrDescription] = desc
+	}
+
+	return rule
+}

@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHubRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	hub, err := findHubByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		d.SetId("")
+		log.Printf("[WARN] Unable to find SageMaker AI Hub (%s); removing from state", d.Id())
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SageMaker AI Hub (%s): %s", d.Id(), err)
+	}
+
+	d.Set("hub_name", hub.HubName)
+	d.Set(names.AttrARN, hub.HubArn)
+	d.Set("hub_description", hub.HubDescription)
+	d.Set("hub_display_name", hub.HubDisplayName)
+	d.Set("hub_search_keywords", flex.FlattenStringValueSet(hub.HubSearchKeywords))
+
+	if err := d.Set("s3_storage_config", flattenS3StorageConfig(hub.S3StorageConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting s3_storage_config for SageMaker AI Hub (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

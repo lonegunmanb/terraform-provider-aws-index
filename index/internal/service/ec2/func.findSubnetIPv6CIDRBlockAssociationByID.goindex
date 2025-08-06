@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findSubnetIPv6CIDRBlockAssociationByID(ctx context.Context, conn *ec2.Client, associationID string) (*awstypes.SubnetIpv6CidrBlockAssociation, error) {
+	input := ec2.DescribeSubnetsInput{
+		Filters: newAttributeFilterList(map[string]string{
+			"ipv6-cidr-block-association.association-id": associationID,
+		}),
+	}
+
+	output, err := findSubnet(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	for _, association := range output.Ipv6CidrBlockAssociationSet {
+		if aws.ToString(association.AssociationId) == associationID {
+			if state := association.Ipv6CidrBlockState.State; state == awstypes.SubnetCidrBlockStateCodeDisassociated {
+				return nil, &retry.NotFoundError{Message: string(state)}
+			}
+
+			return &association, nil
+		}
+	}
+
+	return nil, &retry.NotFoundError{}
+}

@@ -1,0 +1,93 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"errors"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAssociationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSMClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		// AWS creates a new version every time the association is updated, so everything should be passed in the update.
+		input := &ssm.UpdateAssociationInput{
+			AssociationId: aws.String(d.Id()),
+		}
+
+		if v, ok := d.GetOk("apply_only_at_cron_interval"); ok {
+			input.ApplyOnlyAtCronInterval = v.(bool)
+		}
+
+		if v, ok := d.GetOk("association_name"); ok {
+			input.AssociationName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("automation_target_parameter_name"); ok {
+			input.AutomationTargetParameterName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("compliance_severity"); ok {
+			input.ComplianceSeverity = awstypes.AssociationComplianceSeverity(v.(string))
+		}
+
+		if v, ok := d.GetOk("document_version"); ok {
+			input.DocumentVersion = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("max_concurrency"); ok {
+			input.MaxConcurrency = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("max_errors"); ok {
+			input.MaxErrors = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("output_location"); ok {
+			input.OutputLocation = expandAssociationOutputLocation(v.([]any))
+		}
+
+		if v, ok := d.GetOk(names.AttrParameters); ok {
+			input.Parameters = expandParameters(v.(map[string]any))
+		}
+
+		if v, ok := d.GetOk(names.AttrScheduleExpression); ok {
+			input.ScheduleExpression = aws.String(v.(string))
+		}
+
+		if d.HasChange("sync_compliance") {
+			input.SyncCompliance = awstypes.AssociationSyncCompliance(d.Get("sync_compliance").(string))
+		}
+
+		if _, ok := d.GetOk("targets"); ok {
+			input.Targets = expandTargets(d.Get("targets").([]any))
+		}
+
+		_, err := conn.UpdateAssociation(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating SSM Association (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceAssociationRead(ctx, d, meta)...)
+}

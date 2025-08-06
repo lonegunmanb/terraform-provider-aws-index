@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+)
+func FilterTableWithColumnsPermissions(principal *string, twc *awstypes.TableResource, columnNames []string, excludedColumnNames []string, columnWildcard bool, allPermissions []awstypes.PrincipalResourcePermissions) []awstypes.PrincipalResourcePermissions {
+	// CREATE PERMS (in)       = ALL, ALTER, DELETE, DESCRIBE, DROP, INSERT, SELECT on TableWithColumns, Name = (Table Name), ColumnWildcard
+	//        LIST PERMS (out) = ALL, ALTER, DELETE, DESCRIBE, DROP, INSERT         on Table, Name = (Table Name)
+	//        LIST PERMS (out) = SELECT                                             on TableWithColumns, Name = (Table Name), ColumnWildcard
+
+	var cleanPermissions []awstypes.PrincipalResourcePermissions
+
+	for _, perm := range allPermissions {
+		if aws.ToString(principal) != aws.ToString(perm.Principal.DataLakePrincipalIdentifier) {
+			continue
+		}
+
+		if perm.Resource.TableWithColumns != nil && perm.Resource.TableWithColumns.ColumnNames != nil {
+			if StringSlicesEqualIgnoreOrder(perm.Resource.TableWithColumns.ColumnNames, columnNames) {
+				cleanPermissions = append(cleanPermissions, perm)
+				continue
+			}
+		}
+
+		if perm.Resource.TableWithColumns != nil && perm.Resource.TableWithColumns.ColumnWildcard != nil && (columnWildcard || len(excludedColumnNames) > 0) {
+			if perm.Resource.TableWithColumns.ColumnWildcard.ExcludedColumnNames == nil && len(excludedColumnNames) == 0 {
+				cleanPermissions = append(cleanPermissions, perm)
+				continue
+			}
+
+			if len(excludedColumnNames) > 0 && StringSlicesEqualIgnoreOrder(perm.Resource.TableWithColumns.ColumnWildcard.ExcludedColumnNames, excludedColumnNames) {
+				cleanPermissions = append(cleanPermissions, perm)
+				continue
+			}
+		}
+
+		if perm.Resource.Table != nil && aws.ToString(perm.Resource.Table.Name) == aws.ToString(twc.Name) {
+			cleanPermissions = append(cleanPermissions, perm)
+			continue
+		}
+	}
+
+	return cleanPermissions
+}

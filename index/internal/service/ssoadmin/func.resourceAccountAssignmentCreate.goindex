@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceAccountAssignmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSOAdminClient(ctx)
+
+	instanceARN := d.Get("instance_arn").(string)
+	permissionSetARN := d.Get("permission_set_arn").(string)
+	principalID := d.Get("principal_id").(string)
+	principalType := d.Get("principal_type").(string)
+	targetID := d.Get("target_id").(string)
+	targetType := d.Get("target_type").(string)
+
+	// We need to check if the assignment exists before creating it since the AWS SSO API doesn't prevent us from creating duplicates.
+	_, err := findAccountAssignmentByFivePartKey(ctx, conn, principalID, principalType, targetID, permissionSetARN, instanceARN)
+
+	if err == nil {
+		return sdkdiag.AppendErrorf(diags, "creating SSO Account Assignment for %s (%s): already exists", principalType, principalID)
+	} else if !tfresource.NotFound(err) {
+		return sdkdiag.AppendErrorf(diags, "listing SSO Account Assignments for Account ID (%s) Permission Set (%s): %s", targetID, permissionSetARN, err)
+	}
+
+	input := &ssoadmin.CreateAccountAssignmentInput{
+		InstanceArn:      aws.String(instanceARN),
+		PermissionSetArn: aws.String(permissionSetARN),
+		PrincipalId:      aws.String(principalID),
+		PrincipalType:    awstypes.PrincipalType(principalType),
+		TargetId:         aws.String(targetID),
+		TargetType:       awstypes.TargetType(targetType),
+	}
+
+	output, err := conn.CreateAccountAssignment(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SSO Account Assignment for %s (%s): %s", principalType, principalID, err)
+	}
+
+	if _, err := waitAccountAssignmentCreated(ctx, conn, instanceARN, aws.ToString(output.AccountAssignmentCreationStatus.RequestId), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for SSO Account Assignment for %s (%s) create: %s", principalType, principalID, err)
+	}
+
+	d.SetId(fmt.Sprintf("%s,%s,%s,%s,%s,%s", principalID, principalType, targetID, targetType, permissionSetARN, instanceARN))
+
+	return append(diags, resourceAccountAssignmentRead(ctx, d, meta)...)
+}

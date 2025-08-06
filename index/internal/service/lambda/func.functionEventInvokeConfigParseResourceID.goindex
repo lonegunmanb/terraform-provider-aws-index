@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func functionEventInvokeConfigParseResourceID(id string) (string, string, error) {
+	if arn.IsARN(id) {
+		parsedARN, err := arn.Parse(id)
+
+		if err != nil {
+			return "", "", fmt.Errorf("parsing ARN (%s): %s", id, err)
+		}
+
+		function := strings.TrimPrefix(parsedARN.Resource, "function:")
+
+		if !strings.Contains(function, ":") {
+			// Return ARN for function name to match configuration
+			return id, "", nil
+		}
+
+		functionParts := strings.Split(function, ":")
+
+		if len(functionParts) != 2 || functionParts[0] == "" || functionParts[1] == "" {
+			return "", "", fmt.Errorf("unexpected format of function resource (%s), expected name:qualifier", id)
+		}
+
+		qualifier := functionParts[1]
+		// Return ARN minus qualifier for function name to match configuration
+		functionName := strings.TrimSuffix(id, fmt.Sprintf(":%s", qualifier))
+
+		return functionName, qualifier, nil
+	}
+
+	if !strings.Contains(id, ":") {
+		return id, "", nil
+	}
+
+	idParts := strings.Split(id, ":")
+
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		return "", "", fmt.Errorf("unexpected format of ID (%s), expected name or name:qualifier", id)
+	}
+
+	return idParts[0], idParts[1], nil
+}

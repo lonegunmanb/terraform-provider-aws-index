@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceuserPoolClientsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	userPoolID := d.Get(names.AttrUserPoolID).(string)
+	input := &cognitoidentityprovider.ListUserPoolClientsInput{
+		UserPoolId: aws.String(userPoolID),
+	}
+	var clientIDs, clientNames []string
+
+	pages := cognitoidentityprovider.NewListUserPoolClientsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Cognito User Pool Clients (%s): %s", userPoolID, err)
+		}
+
+		for _, v := range page.UserPoolClients {
+			clientNames = append(clientNames, aws.ToString(v.ClientName))
+			clientIDs = append(clientIDs, aws.ToString(v.ClientId))
+		}
+	}
+
+	d.SetId(userPoolID)
+	d.Set("client_ids", clientIDs)
+	d.Set("client_names", clientNames)
+
+	return diags
+}

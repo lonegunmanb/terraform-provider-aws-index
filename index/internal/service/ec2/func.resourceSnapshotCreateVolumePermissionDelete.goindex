@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSnapshotCreateVolumePermissionDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	snapshotID, accountID, err := ebsSnapshotCreateVolumePermissionParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	log.Printf("[DEBUG] Deleting EBS Snapshot CreateVolumePermission: %s", d.Id())
+	input := ec2.ModifySnapshotAttributeInput{
+		Attribute: awstypes.SnapshotAttributeNameCreateVolumePermission,
+		CreateVolumePermission: &awstypes.CreateVolumePermissionModifications{
+			Remove: []awstypes.CreateVolumePermission{
+				{UserId: aws.String(accountID)},
+			},
+		},
+		SnapshotId: aws.String(snapshotID),
+	}
+	_, err = conn.ModifySnapshotAttribute(ctx, &input)
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidSnapshotNotFound) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting EBS Snapshot CreateVolumePermission (%s): %s", d.Id(), err)
+	}
+
+	_, err = tfresource.RetryUntilNotFound(ctx, d.Timeout(schema.TimeoutDelete), func() (any, error) {
+		return findCreateSnapshotCreateVolumePermissionByTwoPartKey(ctx, conn, snapshotID, accountID)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EBS Snapshot CreateVolumePermission delete (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

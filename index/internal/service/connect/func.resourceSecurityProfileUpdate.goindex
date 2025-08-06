@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSecurityProfileUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID, securityProfileID, err := securityProfileParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &connect.UpdateSecurityProfileInput{
+			InstanceId:        aws.String(instanceID),
+			SecurityProfileId: aws.String(securityProfileID),
+		}
+
+		if d.HasChange(names.AttrDescription) {
+			input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		}
+
+		if d.HasChange(names.AttrPermissions) {
+			input.Permissions = flex.ExpandStringValueSet(d.Get(names.AttrPermissions).(*schema.Set))
+		}
+
+		_, err = conn.UpdateSecurityProfile(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Security Profile (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceSecurityProfileRead(ctx, d, meta)...)
+}

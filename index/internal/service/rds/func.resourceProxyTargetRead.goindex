@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProxyTargetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	dbProxyName, targetGroupName, targetType, rdsResourceID, err := proxyTargetParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	dbProxyTarget, err := findDBProxyTargetByFourPartKey(ctx, conn, dbProxyName, targetGroupName, targetType, rdsResourceID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] RDS DB Proxy Target (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading RDS DB Proxy Target (%s): %s", d.Id(), err)
+	}
+
+	switch dbProxyTarget.Type {
+	case types.TargetTypeRdsInstance:
+		d.Set("db_instance_identifier", dbProxyTarget.RdsResourceId)
+	default:
+		d.Set("db_cluster_identifier", dbProxyTarget.RdsResourceId)
+	}
+	d.Set("db_proxy_name", dbProxyName)
+	d.Set(names.AttrEndpoint, dbProxyTarget.Endpoint)
+	d.Set(names.AttrPort, dbProxyTarget.Port)
+	d.Set("rds_resource_id", dbProxyTarget.RdsResourceId)
+	d.Set(names.AttrTargetARN, dbProxyTarget.TargetArn)
+	d.Set("target_group_name", targetGroupName)
+	d.Set("tracked_cluster_id", dbProxyTarget.TrackedClusterId)
+	d.Set(names.AttrType, dbProxyTarget.Type)
+
+	return diags
+}

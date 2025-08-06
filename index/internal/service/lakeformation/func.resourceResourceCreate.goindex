@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LakeFormationClient(ctx)
+
+	resourceARN := d.Get(names.AttrARN).(string)
+	input := &lakeformation.RegisterResourceInput{
+		ResourceArn: aws.String(resourceARN),
+	}
+
+	if v, ok := d.GetOk("hybrid_access_enabled"); ok {
+		input.HybridAccessEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk(names.AttrRoleARN); ok {
+		input.RoleArn = aws.String(v.(string))
+	} else {
+		input.UseServiceLinkedRole = aws.Bool(true)
+	}
+
+	if v, ok := d.GetOkExists("use_service_linked_role"); ok {
+		input.UseServiceLinkedRole = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("with_federation"); ok {
+		input.WithFederation = aws.Bool(v.(bool))
+	}
+
+	_, err := conn.RegisterResource(ctx, input)
+
+	if errs.IsA[*awstypes.AlreadyExistsException](err) {
+		log.Printf("[WARN] Lake Formation Resource (%s) already exists", resourceARN)
+	} else if err != nil {
+		return sdkdiag.AppendErrorf(diags, "registering Lake Formation Resource (%s): %s", resourceARN, err)
+	}
+
+	d.SetId(resourceARN)
+
+	return append(diags, resourceResourceRead(ctx, d, meta)...)
+}

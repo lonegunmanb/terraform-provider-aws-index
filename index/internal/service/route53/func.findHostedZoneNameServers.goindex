@@ -1,0 +1,40 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findHostedZoneNameServers(ctx context.Context, conn *route53.Client, zoneID, zoneName string) ([]string, error) {
+	output, err := findHostedZoneByID(ctx, conn, zoneID)
+
+	if err != nil {
+		return nil, fmt.Errorf("reading Route53 Hosted Zone (%s): %w", zoneID, err)
+	}
+
+	var nameServers []string
+
+	if output.DelegationSet != nil {
+		nameServers = output.DelegationSet.NameServers
+	}
+
+	if output.HostedZone.Config != nil && output.HostedZone.Config.PrivateZone {
+		nameServers, err = findNameServersByZone(ctx, conn, zoneID, zoneName)
+
+		if err != nil {
+			return nil, fmt.Errorf("reading Route53 Hosted Zone (%s) name servers: %w", zoneID, err)
+		}
+	}
+
+	return nameServers, nil
+}

@@ -1,0 +1,176 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/athena
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkGroup() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceWorkGroupCreate,
+		ReadWithoutTimeout:   resourceWorkGroupRead,
+		UpdateWithoutTimeout: resourceWorkGroupUpdate,
+		DeleteWithoutTimeout: resourceWorkGroupDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrConfiguration: {
+				Type:             schema.TypeList,
+				Optional:         true,
+				MaxItems:         1,
+				DiffSuppressFunc: verify.SuppressMissingOptionalConfigurationBlock,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"bytes_scanned_cutoff_per_query": {
+							Type:     schema.TypeInt,
+							Optional: true,
+							ValidateFunc: validation.Any(
+								validation.IntAtLeast(10485760),
+								validation.IntInSlice([]int{0}),
+							),
+						},
+						"enforce_workgroup_configuration": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  true,
+						},
+						names.AttrEngineVersion: {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"effective_engine_version": {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"selected_engine_version": {
+										Type:     schema.TypeString,
+										Optional: true,
+										Default:  "AUTO",
+									},
+								},
+							},
+						},
+						"execution_role": {
+							Type:         schema.TypeString,
+							Optional:     true,
+							ValidateFunc: verify.ValidARN,
+						},
+						"publish_cloudwatch_metrics_enabled": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  true,
+						},
+						"result_configuration": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"acl_configuration": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"s3_acl_option": {
+													Type:             schema.TypeString,
+													Required:         true,
+													ValidateDiagFunc: enum.Validate[types.S3AclOption](),
+												},
+											},
+										},
+									},
+									names.AttrEncryptionConfiguration: {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"encryption_option": {
+													Type:             schema.TypeString,
+													Optional:         true,
+													ValidateDiagFunc: enum.Validate[types.EncryptionOption](),
+												},
+												names.AttrKMSKeyARN: {
+													Type:         schema.TypeString,
+													Optional:     true,
+													ValidateFunc: verify.ValidARN,
+												},
+											},
+										},
+									},
+									names.AttrExpectedBucketOwner: {
+										Type:     schema.TypeString,
+										Optional: true,
+									},
+									"output_location": {
+										Type:     schema.TypeString,
+										Optional: true,
+									},
+								},
+							},
+						},
+						"requester_pays_enabled": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  false,
+						},
+					},
+				},
+			},
+			names.AttrDescription: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: validation.StringLenBetween(0, 1024),
+			},
+			names.AttrForceDestroy: {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+			},
+			names.AttrName: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+				ValidateFunc: validation.All(
+					validation.StringLenBetween(1, 128),
+					validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_.-]+$`), "must contain only alphanumeric characters, periods, underscores, and hyphens"),
+				),
+			},
+			names.AttrState: {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          types.WorkGroupStateEnabled,
+				ValidateDiagFunc: enum.Validate[types.WorkGroupState](),
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+		},
+	}
+}

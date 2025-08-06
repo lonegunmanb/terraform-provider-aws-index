@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func writeV1BlockDevice(is *terraform.InstanceState, oldBd map[string]string) {
+	code := create.StringHashcode(oldBd[names.AttrDeviceName])
+	bdType := "ebs_block_device"
+	if vn, ok := oldBd[names.AttrVirtualName]; ok && strings.HasPrefix(vn, "ephemeral") {
+		bdType = "ephemeral_block_device"
+	} else if dn, ok := oldBd[names.AttrDeviceName]; ok && dn == "/dev/sda1" {
+		bdType = "root_block_device"
+	}
+
+	switch bdType {
+	case "ebs_block_device":
+		delete(oldBd, names.AttrVirtualName)
+	case "root_block_device":
+		delete(oldBd, names.AttrVirtualName)
+		delete(oldBd, names.AttrEncrypted)
+		delete(oldBd, names.AttrSnapshotID)
+	case "ephemeral_block_device":
+		delete(oldBd, names.AttrDeleteOnTermination)
+		delete(oldBd, names.AttrEncrypted)
+		delete(oldBd, names.AttrIOPS)
+		delete(oldBd, names.AttrVolumeSize)
+		delete(oldBd, names.AttrVolumeType)
+	}
+	for attr, val := range oldBd {
+		attrKey := fmt.Sprintf("%s.%d.%s", bdType, code, attr)
+		is.Attributes[attrKey] = val
+	}
+
+	countAttr := fmt.Sprintf("%s.#", bdType)
+	count, _ := strconv.Atoi(is.Attributes[countAttr])
+	is.Attributes[countAttr] = strconv.Itoa(count + 1)
+}

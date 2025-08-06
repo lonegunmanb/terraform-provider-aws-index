@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/budgets
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/budgets"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/budgets/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBudgetActionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).BudgetsClient(ctx)
+
+	accountID := d.Get(names.AttrAccountID).(string)
+	if accountID == "" {
+		accountID = meta.(*conns.AWSClient).AccountID(ctx)
+	}
+	input := &budgets.CreateBudgetActionInput{
+		AccountId:        aws.String(accountID),
+		ActionThreshold:  expandBudgetActionActionThreshold(d.Get("action_threshold").([]any)),
+		ActionType:       awstypes.ActionType(d.Get("action_type").(string)),
+		ApprovalModel:    awstypes.ApprovalModel(d.Get("approval_model").(string)),
+		BudgetName:       aws.String(d.Get("budget_name").(string)),
+		Definition:       expandBudgetActionActionDefinition(d.Get("definition").([]any)),
+		ExecutionRoleArn: aws.String(d.Get(names.AttrExecutionRoleARN).(string)),
+		NotificationType: awstypes.NotificationType(d.Get("notification_type").(string)),
+		Subscribers:      expandBudgetActionSubscriber(d.Get("subscriber").(*schema.Set)),
+		ResourceTags:     getTagsIn(ctx),
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.AccessDeniedException](ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateBudgetAction(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Budget Action: %s", err)
+	}
+
+	output := outputRaw.(*budgets.CreateBudgetActionOutput)
+	actionID := aws.ToString(output.ActionId)
+	budgetName := aws.ToString(output.BudgetName)
+
+	d.SetId(BudgetActionCreateResourceID(accountID, actionID, budgetName))
+
+	return append(diags, resourceBudgetActionRead(ctx, d, meta)...)
+}

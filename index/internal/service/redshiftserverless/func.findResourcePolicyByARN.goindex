@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshiftserverless
+import (
+	"context"
+	"encoding/json"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfiam "github.com/hashicorp/terraform-provider-aws/internal/service/iam"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findResourcePolicyByARN(ctx context.Context, conn *redshiftserverless.Client, arn string) (*awstypes.ResourcePolicy, error) {
+	input := &redshiftserverless.GetResourcePolicyInput{
+		ResourceArn: aws.String(arn),
+	}
+
+	output, err := conn.GetResourcePolicy(ctx, input)
+
+	if errs.IsAErrorMessageContains[*awstypes.ResourceNotFoundException](err, "does not exist") {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	return output.ResourcePolicy, nil
+}

@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appsync
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appsync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAPIKeyUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppSyncClient(ctx)
+
+	apiID, keyID, err := apiKeyParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &appsync.UpdateApiKeyInput{
+		ApiId: aws.String(apiID),
+		Id:    aws.String(keyID),
+	}
+
+	if d.HasChange(names.AttrDescription) {
+		input.Description = aws.String(d.Get(names.AttrDescription).(string))
+	}
+
+	if d.HasChange("expires") {
+		t, _ := time.Parse(time.RFC3339, d.Get("expires").(string))
+		input.Expires = t.Unix()
+	}
+
+	_, err = conn.UpdateApiKey(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Appsync API Key (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceAPIKeyRead(ctx, d, meta)...)
+}

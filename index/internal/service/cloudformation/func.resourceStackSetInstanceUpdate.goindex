@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStackSetInstanceUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	if d.HasChanges("parameter_overrides", "operation_preferences") {
+		parts, err := flex.ExpandResourceId(d.Id(), stackSetInstanceResourceIDPartCount, false)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		stackSetName, accountOrOrgID, region := parts[0], parts[1], parts[2]
+		input := &cloudformation.UpdateStackInstancesInput{
+			Accounts:           []string{accountOrOrgID},
+			OperationId:        aws.String(sdkid.UniqueId()),
+			ParameterOverrides: []awstypes.Parameter{},
+			Regions:            []string{region},
+			StackSetName:       aws.String(stackSetName),
+		}
+
+		callAs := d.Get("call_as").(string)
+		if v, ok := d.GetOk("call_as"); ok {
+			input.CallAs = awstypes.CallAs(v.(string))
+		}
+
+		if v, ok := d.GetOk("parameter_overrides"); ok {
+			input.ParameterOverrides = expandParameters(v.(map[string]any))
+		}
+
+		if v, ok := d.GetOk("operation_preferences"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.OperationPreferences = expandOperationPreferences(v.([]any)[0].(map[string]any))
+		}
+
+		output, err := conn.UpdateStackInstances(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudFormation StackSet Instance (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitStackSetOperationSucceeded(ctx, conn, stackSetName, aws.ToString(output.OperationId), callAs, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for CloudFormation StackSet Instance (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceStackSetInstanceRead(ctx, d, meta)...)
+}

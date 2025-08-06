@@ -1,0 +1,159 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/neptune
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/neptune"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/neptune/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func globalClusterUpgradeMinorEngineVersion(ctx context.Context, conn *neptune.Client, globalClusterID, engineVersion string, clusterMembers *schema.Set, timeout time.Duration) error {
+	log.Printf("[INFO] Performing Neptune Global Cluster (%s) minor version (%s) upgrade", globalClusterID, engineVersion)
+	var (
+		primaryMember    map[string]any
+		secondaryMembers []map[string]any
+	)
+	for _, tfMapRaw := range clusterMembers.List() {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if isWriter, ok := tfMap["is_writer"].(bool); ok && isWriter {
+			primaryMember = tfMap
+		} else {
+			secondaryMembers = append(secondaryMembers, tfMap)
+		}
+	}
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(secondaryMembers))
+	// Upgrade all secondary clusters in parallel
+	for _, tfMap := range secondaryMembers {
+		wg.Add(1)
+		go func(tfMap map[string]any) {
+			defer wg.Done()
+			memberARN, ok := tfMap["db_cluster_arn"].(string)
+			if !ok || memberARN == "" {
+				return
+			}
+			clusterID, clusterRegion, err := clusterIDAndRegionFromARN(memberARN)
+			if err != nil || clusterID == "" {
+				errChan <- err
+				return
+			}
+			optFn := func(o *neptune.Options) { o.Region = clusterRegion }
+			if _, err := waitGlobalClusterMemberUpdated(ctx, conn, clusterID, timeout, optFn); err != nil {
+				errChan <- err
+				return
+			}
+			input := &neptune.ModifyDBClusterInput{
+				ApplyImmediately:    aws.Bool(true),
+				DBClusterIdentifier: aws.String(clusterID),
+				EngineVersion:       aws.String(engineVersion),
+			}
+			_, err = tfresource.RetryWhen(ctx, timeout,
+				func() (any, error) {
+					return conn.ModifyDBCluster(ctx, input, optFn)
+				},
+				func(err error) (bool, error) {
+					if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "IAM role ARN value is invalid or does not include the required permissions") {
+						return true, err
+					}
+					if errs.IsAErrorMessageContains[*awstypes.InvalidDBClusterStateFault](err, "Cannot modify engine version without a primary instance in DB cluster") {
+						return false, err
+					}
+					if errs.IsA[*awstypes.InvalidDBClusterStateFault](err) {
+						return true, err
+					}
+					return false, err
+				},
+			)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if _, err := waitGlobalClusterMemberUpdated(ctx, conn, clusterID, timeout, optFn); err != nil {
+				errChan <- err
+				return
+			}
+		}(tfMap)
+	}
+	wg.Wait()
+	close(errChan)
+	for err := range errChan {
+		if err != nil {
+			return err
+		}
+	}
+	// Upgrade primary member last
+	if primaryMember != nil {
+		memberARN, ok := primaryMember["db_cluster_arn"].(string)
+		if ok && memberARN != "" {
+			clusterID, clusterRegion, err := clusterIDAndRegionFromARN(memberARN)
+			if err != nil || clusterID == "" {
+				return err
+			}
+			optFn := func(o *neptune.Options) { o.Region = clusterRegion }
+			if _, err := waitGlobalClusterMemberUpdated(ctx, conn, clusterID, timeout, optFn); err != nil {
+				return err
+			}
+			input := &neptune.ModifyDBClusterInput{
+				ApplyImmediately:    aws.Bool(true),
+				DBClusterIdentifier: aws.String(clusterID),
+				EngineVersion:       aws.String(engineVersion),
+			}
+			_, err = tfresource.RetryWhen(ctx, timeout,
+				func() (any, error) {
+					return conn.ModifyDBCluster(ctx, input, optFn)
+				},
+				func(err error) (bool, error) {
+					if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "IAM role ARN value is invalid or does not include the required permissions") {
+						return true, err
+					}
+					if errs.IsAErrorMessageContains[*awstypes.InvalidDBClusterStateFault](err, "Cannot modify engine version without a primary instance in DB cluster") {
+						return false, err
+					}
+					if errs.IsA[*awstypes.InvalidDBClusterStateFault](err) {
+						return true, err
+					}
+					if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "upgrade global replicas first before upgrading the primary member") {
+						return false, err
+					}
+					return false, err
+				},
+			)
+			if err != nil {
+				return err
+			}
+			if _, err := waitGlobalClusterMemberUpdated(ctx, conn, clusterID, timeout, optFn); err != nil {
+				return err
+			}
+		}
+	}
+	globalCluster, err := findGlobalClusterByID(ctx, conn, globalClusterID)
+	if err != nil {
+		return fmt.Errorf("after minor engine_version upgrade to Neptune Global Cluster (%s) members: %w", globalClusterID, err)
+	}
+	if aws.ToString(globalCluster.EngineVersion) != engineVersion {
+		log.Printf("[DEBUG] Neptune Global Cluster (%s) upgrade did not take effect, trying again", globalClusterID)
+		return globalClusterUpgradeMinorEngineVersion(ctx, conn, globalClusterID, engineVersion, clusterMembers, timeout)
+	}
+	return nil
+}

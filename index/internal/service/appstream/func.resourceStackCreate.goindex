@@ -1,0 +1,88 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appstream
+import (
+	"context"
+	"errors"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appstream"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appstream/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStackCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppStreamClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := appstream.CreateStackInput{
+		Name: aws.String(name),
+		Tags: getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("access_endpoints"); ok {
+		input.AccessEndpoints = expandAccessEndpoints(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("application_settings"); ok {
+		input.ApplicationSettings = expandApplicationSettings(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrDisplayName); ok {
+		input.DisplayName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("embed_host_domains"); ok {
+		input.EmbedHostDomains = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("feedback_url"); ok {
+		input.FeedbackURL = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("redirect_url"); ok {
+		input.RedirectURL = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("storage_connectors"); ok {
+		input.StorageConnectors = expandStorageConnectors(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("streaming_experience_settings"); ok {
+		input.StreamingExperienceSettings = expandStreamingExperienceSettings(v.([]any))
+	}
+
+	if v, ok := d.GetOk("user_settings"); ok {
+		input.UserSettings = expandUserSettings(v.(*schema.Set).List())
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.ResourceNotFoundException](ctx, stackOperationTimeout, func() (any, error) {
+		return conn.CreateStack(ctx, &input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating AppStream Stack (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*appstream.CreateStackOutput).Stack.Name))
+
+	return append(diags, resourceStackRead(ctx, d, meta)...)
+}

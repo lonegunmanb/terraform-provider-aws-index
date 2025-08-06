@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cleanrooms
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cleanrooms"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cleanrooms/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *membershipResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data membershipResourceModel
+	conn := r.Meta().CleanRoomsClient(ctx)
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	tflog.Debug(ctx, "deleting CleanRooms Membership", map[string]any{
+		names.AttrID: data.ID.ValueString(),
+	})
+
+	input := cleanrooms.DeleteMembershipInput{
+		MembershipIdentifier: data.ID.ValueStringPointer(),
+	}
+
+	_, err := conn.DeleteMembership(ctx, &input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return
+	}
+
+	// Occurs when the membership was created with the same account as the collaboration.
+	// There is no way to force delete the membership as it is default to the collaboration itself.
+	if errs.IsAErrorMessageContains[*awstypes.ConflictException](err, "Cannot delete membership for the creator of the collaboration while their membership is still ACTIVE") {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.CleanRooms, create.ErrActionDeleting, ResNameMembership, data.ID.String(), err),
+			err.Error(),
+		)
+	}
+}

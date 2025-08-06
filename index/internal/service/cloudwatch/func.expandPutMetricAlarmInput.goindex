@@ -1,0 +1,101 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
+import (
+	"context"
+	"errors"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandPutMetricAlarmInput(ctx context.Context, d *schema.ResourceData) *cloudwatch.PutMetricAlarmInput {
+	apiObject := &cloudwatch.PutMetricAlarmInput{
+		AlarmName:          aws.String(d.Get("alarm_name").(string)),
+		ComparisonOperator: types.ComparisonOperator(d.Get("comparison_operator").(string)),
+		EvaluationPeriods:  aws.Int32(int32(d.Get("evaluation_periods").(int))),
+		Tags:               getTagsIn(ctx),
+		TreatMissingData:   aws.String(d.Get("treat_missing_data").(string)),
+	}
+
+	if v := d.Get("actions_enabled"); v != nil {
+		apiObject.ActionsEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("alarm_actions"); ok && v.(*schema.Set).Len() > 0 {
+		apiObject.AlarmActions = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("alarm_description"); ok {
+		apiObject.AlarmDescription = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("datapoints_to_alarm"); ok {
+		apiObject.DatapointsToAlarm = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("dimensions"); ok && len(v.(map[string]any)) > 0 {
+		apiObject.Dimensions = expandMetricAlarmDimensions(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("evaluate_low_sample_count_percentiles"); ok {
+		apiObject.EvaluateLowSampleCountPercentile = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("extended_statistic"); ok {
+		apiObject.ExtendedStatistic = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("insufficient_data_actions"); ok && v.(*schema.Set).Len() > 0 {
+		apiObject.InsufficientDataActions = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk(names.AttrMetricName); ok {
+		apiObject.MetricName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("metric_query"); ok && v.(*schema.Set).Len() > 0 {
+		apiObject.Metrics = expandMetricAlarmMetrics(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk(names.AttrNamespace); ok {
+		apiObject.Namespace = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("ok_actions"); ok && v.(*schema.Set).Len() > 0 {
+		apiObject.OKActions = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("period"); ok {
+		apiObject.Period = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("statistic"); ok {
+		apiObject.Statistic = types.Statistic(v.(string))
+	}
+
+	if v, ok := d.GetOk("threshold_metric_id"); ok {
+		apiObject.ThresholdMetricId = aws.String(v.(string))
+	} else {
+		apiObject.Threshold = aws.Float64(d.Get("threshold").(float64))
+	}
+
+	if v, ok := d.GetOk(names.AttrUnit); ok {
+		apiObject.Unit = types.StandardUnit(v.(string))
+	}
+
+	return apiObject
+}

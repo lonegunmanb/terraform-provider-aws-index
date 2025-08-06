@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProxyTargetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	dbProxyName := d.Get("db_proxy_name").(string)
+	targetGroupName := d.Get("target_group_name").(string)
+	input := &rds.RegisterDBProxyTargetsInput{
+		DBProxyName:     aws.String(dbProxyName),
+		TargetGroupName: aws.String(targetGroupName),
+	}
+
+	if v, ok := d.GetOk("db_cluster_identifier"); ok {
+		input.DBClusterIdentifiers = []string{v.(string)}
+	}
+
+	if v, ok := d.GetOk("db_instance_identifier"); ok {
+		input.DBInstanceIdentifiers = []string{v.(string)}
+	}
+
+	const (
+		timeout = 5 * time.Minute
+	)
+	outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[*types.InvalidDBInstanceStateFault](ctx, timeout,
+		func() (any, error) {
+			return conn.RegisterDBProxyTargets(ctx, input)
+		},
+		"CREATING")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "registering RDS DB Proxy Target (%s/%s): %s", dbProxyName, targetGroupName, err)
+	}
+
+	dbProxyTarget := outputRaw.(*rds.RegisterDBProxyTargetsOutput).DBProxyTargets[0]
+	d.SetId(proxyTargetCreateResourceID(dbProxyName, targetGroupName, string(dbProxyTarget.Type), aws.ToString(dbProxyTarget.RdsResourceId)))
+
+	return append(diags, resourceProxyTargetRead(ctx, d, meta)...)
+}

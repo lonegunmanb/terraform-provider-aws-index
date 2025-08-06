@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findTargetHealthDescription(ctx context.Context, conn *elasticloadbalancingv2.Client, input *elasticloadbalancingv2.DescribeTargetHealthInput) (*awstypes.TargetHealthDescription, error) {
+	output, err := findTargetHealthDescriptions(ctx, conn, input, func(v *awstypes.TargetHealthDescription) bool {
+		// This will catch targets being removed by hand (draining as we plan) or that have been removed for a while
+		// without trying to re-create ones that are just not in use. For example, a target can be `unused` if the
+		// target group isnt assigned to anything, a scenario where we don't want to continuously recreate the resource.
+		if v := v.TargetHealth; v != nil {
+			switch v.Reason {
+			case awstypes.TargetHealthReasonEnumDeregistrationInProgress, awstypes.TargetHealthReasonEnumNotRegistered:
+				return false
+			default:
+				return true
+			}
+		}
+
+		return false
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return tfresource.AssertSingleValueResult(output)
+}

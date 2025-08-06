@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appflow
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appflow"
+	"github.com/aws/aws-sdk-go-v2/service/appflow/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFlowCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).AppFlowClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &appflow.CreateFlowInput{
+		FlowName:                  aws.String(name),
+		DestinationFlowConfigList: expandDestinationFlowConfigs(d.Get("destination_flow_config").([]any)),
+		SourceFlowConfig:          expandSourceFlowConfig(d.Get("source_flow_config").([]any)[0].(map[string]any)),
+		Tags:                      getTagsIn(ctx),
+		Tasks:                     expandTasks(d.Get("task").(*schema.Set).List()),
+		TriggerConfig:             expandTriggerConfig(d.Get("trigger_config").([]any)[0].(map[string]any)),
+	}
+
+	if v, ok := d.GetOk("metadata_catalog_config"); ok {
+		input.MetadataCatalogConfig = expandMetadataCatalogConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("kms_arn"); ok {
+		input.KmsArn = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateFlow(ctx, input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating AppFlow Flow (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	return append(diags, resourceFlowRead(ctx, d, meta)...)
+}

@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/acctest
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/md5"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
+	"math/big"
+	"strings"
+	"testing"
+	"time"
+)
+func TLSRSAX509LocallySignedCertificatePEM(t *testing.T, caKeyPem, caCertificatePem, keyPem, commonName string) string {
+	t.Helper()
+
+	caCertificateBlock, _ := pem.Decode([]byte(caCertificatePem))
+
+	caCertificate, err := x509.ParseCertificate(caCertificateBlock.Bytes)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	caKeyBlock, _ := pem.Decode([]byte(caKeyPem))
+
+	caKey, err := x509.ParsePKCS1PrivateKey(caKeyBlock.Bytes)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keyBlock, _ := pem.Decode([]byte(keyPem))
+
+	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	serialNumber, err := rand.Int(rand.Reader, tlsX509CertificateSerialNumberLimit)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certificate := &x509.Certificate{
+		BasicConstraintsValid: true,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		NotAfter:              time.Now().Add(hoursForCertificateValidity * time.Hour),
+		NotBefore:             time.Now(),
+		SerialNumber:          serialNumber,
+		Subject: pkix.Name{
+			CommonName:   commonName,
+			Organization: []string{"ACME Examples, Inc"},
+		},
+	}
+
+	certificateBytes, err := x509.CreateCertificate(rand.Reader, certificate, caCertificate, &key.PublicKey, caKey)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certificateBlock := &pem.Block{
+		Bytes: certificateBytes,
+		Type:  PEMBlockTypeCertificate,
+	}
+
+	return string(pem.EncodeToMemory(certificateBlock))
+}

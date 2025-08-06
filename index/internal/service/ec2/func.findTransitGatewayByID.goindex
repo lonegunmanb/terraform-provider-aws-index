@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findTransitGatewayByID(ctx context.Context, conn *ec2.Client, id string) (*awstypes.TransitGateway, error) {
+	input := ec2.DescribeTransitGatewaysInput{
+		TransitGatewayIds: []string{id},
+	}
+
+	output, err := findTransitGateway(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if state := output.State; state == awstypes.TransitGatewayStateDeleted {
+		return nil, &retry.NotFoundError{
+			Message:     string(state),
+			LastRequest: &input,
+		}
+	}
+
+	// Eventual consistency check.
+	if aws.ToString(output.TransitGatewayId) != id {
+		return nil, &retry.NotFoundError{
+			LastRequest: &input,
+		}
+	}
+
+	return output, nil
+}

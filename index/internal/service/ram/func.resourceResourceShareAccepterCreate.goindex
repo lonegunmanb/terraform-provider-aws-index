@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"errors"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ram"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourceShareAccepterCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RAMClient(ctx)
+
+	shareARN := d.Get("share_arn").(string)
+	maybeInvitation, err := findMaybeResourceShareInvitationByResourceShareARNAndStatus(ctx, conn, shareARN, string(awstypes.ResourceShareInvitationStatusPending))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading pending RAM Resource Share (%s) invitation: %s", shareARN, err)
+	}
+
+	var invitationExists bool
+	var invitationARN string
+	if maybeInvitation.IsSome() {
+		invitationExists = true
+		invitationARN = aws.ToString(maybeInvitation.MustUnwrap().ResourceShareInvitationArn)
+	}
+
+	if !invitationExists || invitationARN == "" {
+		return sdkdiag.AppendErrorf(diags, "No pending RAM Resource Share (%s) invitation found\n\n"+
+			"NOTE: If both AWS accounts are in the same AWS Organization and RAM Sharing with AWS Organizations is enabled, this resource is not necessary",
+			shareARN)
+	}
+
+	input := &ram.AcceptResourceShareInvitationInput{
+		ClientToken:                aws.String(id.UniqueId()),
+		ResourceShareInvitationArn: aws.String(invitationARN),
+	}
+
+	output, err := conn.AcceptResourceShareInvitation(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "accepting RAM Resource Share (%s) invitation (%s): %s", shareARN, invitationARN, err)
+	}
+
+	d.SetId(shareARN)
+
+	invitationARN = aws.ToString(output.ResourceShareInvitation.ResourceShareInvitationArn)
+	if _, err := waitResourceShareInvitationAccepted(ctx, conn, invitationARN, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RAM Resource Share (%s) invitation (%s) accept: %s", shareARN, invitationARN, err)
+	}
+
+	_, err = tfresource.RetryWhenNotFound(ctx, resourceSharePropagationTimeout, func() (any, error) {
+		return findResourceShareOwnerOtherAccountsByARN(ctx, conn, d.Id())
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RAM Resource Share (%s) create: %s", shareARN, err)
+	}
+
+	return append(diags, resourceResourceShareAccepterRead(ctx, d, meta)...)
+}

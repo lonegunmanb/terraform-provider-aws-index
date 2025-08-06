@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dax
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dax"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dax/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DAXClient(ctx)
+
+	req := &dax.DeleteClusterInput{
+		ClusterName: aws.String(d.Id()),
+	}
+	err := retry.RetryContext(ctx, 5*time.Minute, func() *retry.RetryError {
+		_, err := conn.DeleteCluster(ctx, req)
+		if errs.IsA[*awstypes.InvalidClusterStateFault](err) {
+			return retry.RetryableError(err)
+		}
+
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		_, err = conn.DeleteCluster(ctx, req)
+	}
+
+	if errs.IsA[*awstypes.ClusterNotFoundFault](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting DAX cluster: %s", err)
+	}
+
+	log.Printf("[DEBUG] Waiting for deletion: %v", d.Id())
+	stateConf := &retry.StateChangeConf{
+		Pending:    []string{"creating", "available", "deleting", "incompatible-parameters", "incompatible-network"},
+		Target:     []string{},
+		Refresh:    clusterStateRefreshFunc(ctx, conn, d.Id(), "", []string{}),
+		Timeout:    d.Timeout(schema.TimeoutDelete),
+		MinTimeout: 10 * time.Second,
+		Delay:      30 * time.Second,
+	}
+
+	_, sterr := stateConf.WaitForStateContext(ctx)
+	if sterr != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DAX (%s) to delete: %s", d.Id(), sterr)
+	}
+
+	return diags
+}

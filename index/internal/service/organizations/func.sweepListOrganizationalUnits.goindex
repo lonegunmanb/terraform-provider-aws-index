@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/organizations
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func sweepListOrganizationalUnits(ctx context.Context, client *conns.AWSClient, r *schema.Resource, parentID string) ([]sweep.Sweepable, error) {
+	conn := client.OrganizationsClient(ctx)
+
+	var sweepResources []sweep.Sweepable
+
+	input := organizations.ListOrganizationalUnitsForParentInput{
+		ParentId: aws.String(parentID),
+	}
+	pages := organizations.NewListOrganizationalUnitsForParentPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, ou := range page.OrganizationalUnits {
+			childOUs, err := sweepListOrganizationalUnits(ctx, client, r, aws.ToString(ou.Id))
+			if err != nil {
+				return nil, err
+			}
+			sweepResources = append(sweepResources, childOUs...)
+
+			d := r.Data(nil)
+			d.SetId(aws.ToString(ou.Id))
+
+			sweepResources = append(sweepResources, newOrganizationalUnitSweeper(r, d, client))
+		}
+	}
+
+	return sweepResources, nil
+}

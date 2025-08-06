@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/auditmanager
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/auditmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/auditmanager/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *frameworkShareResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data frameworkShareResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().AuditManagerClient(ctx)
+
+	// Framework share requests in certain statuses must be revoked before deletion.
+	id := fwflex.StringValueFromFramework(ctx, data.ID)
+	output, err := findFrameworkShareByID(ctx, conn, id)
+
+	if tfresource.NotFound(err) {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading Audit Manager Framework Share (%s)", id), err.Error())
+
+		return
+	}
+
+	nonRevokable := []awstypes.ShareRequestStatus{
+		awstypes.ShareRequestStatusDeclined,
+		awstypes.ShareRequestStatusExpired,
+		awstypes.ShareRequestStatusFailed,
+		awstypes.ShareRequestStatusRevoked,
+	}
+	if !slices.Contains(nonRevokable, output.Status) {
+		input := auditmanager.UpdateAssessmentFrameworkShareInput{
+			RequestId:   aws.String(id),
+			RequestType: awstypes.ShareRequestTypeSent,
+			Action:      awstypes.ShareRequestActionRevoke,
+		}
+		_, err := conn.UpdateAssessmentFrameworkShare(ctx, &input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("revoking Audit Manager Framework Share (%s)", id), err.Error())
+
+			return
+		}
+	}
+
+	input := auditmanager.DeleteAssessmentFrameworkShareInput{
+		RequestId:   aws.String(id),
+		RequestType: awstypes.ShareRequestTypeSent,
+	}
+	_, err = conn.DeleteAssessmentFrameworkShare(ctx, &input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("deleting Audit Manager Framework Share (%s)", id), err.Error())
+
+		return
+	}
+}

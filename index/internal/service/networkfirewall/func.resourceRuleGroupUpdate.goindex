@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkfirewall
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkfirewall"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkfirewall/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRuleGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NetworkFirewallClient(ctx)
+
+	if d.HasChanges(names.AttrDescription, names.AttrEncryptionConfiguration, "rule_group", "rules", names.AttrType) {
+		input := &networkfirewall.UpdateRuleGroupInput{
+			EncryptionConfiguration: expandEncryptionConfiguration(d.Get(names.AttrEncryptionConfiguration).([]any)),
+			RuleGroupArn:            aws.String(d.Id()),
+			Type:                    awstypes.RuleGroupType(d.Get(names.AttrType).(string)),
+			UpdateToken:             aws.String(d.Get("update_token").(string)),
+		}
+
+		if v, ok := d.GetOk(names.AttrDescription); ok {
+			input.Description = aws.String(v.(string))
+		}
+
+		// Network Firewall UpdateRuleGroup API method only allows one of Rules or RuleGroup
+		// else, request returns "InvalidRequestException: Exactly one of Rules or RuleGroup must be set";
+		// Here, "rules" takes precedence as "rule_group" is Computed from "rules" when configured
+		// Reference: https://github.com/hashicorp/terraform-provider-aws/issues/19414
+		if d.HasChange("rules") {
+			input.Rules = aws.String(d.Get("rules").(string))
+		} else if d.HasChange("rule_group") {
+			if v, ok := d.GetOk("rule_group"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.RuleGroup = expandRuleGroup(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		// If neither "rules" or "rule_group" are set at this point, neither have changed but
+		// at least one must still be sent to allow other attributes (ex. description) to update.
+		// Give precedence again to "rules", as documented above.
+		if input.Rules == nil && input.RuleGroup == nil {
+			if v, ok := d.GetOk("rules"); ok {
+				input.Rules = aws.String(v.(string))
+			} else if v, ok := d.GetOk("rule_group"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.RuleGroup = expandRuleGroup(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		_, err := conn.UpdateRuleGroup(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating NetworkFirewall Rule Group (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceRuleGroupRead(ctx, d, meta)...)
+}

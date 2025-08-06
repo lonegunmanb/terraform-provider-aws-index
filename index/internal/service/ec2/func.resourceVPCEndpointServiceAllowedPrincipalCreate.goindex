@@ -1,0 +1,39 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceVPCEndpointServiceAllowedPrincipalCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	serviceID := d.Get("vpc_endpoint_service_id").(string)
+	principalARN := d.Get("principal_arn").(string)
+
+	input := ec2.ModifyVpcEndpointServicePermissionsInput{
+		AddAllowedPrincipals: []string{principalARN},
+		ServiceId:            aws.String(serviceID),
+	}
+	output, err := conn.ModifyVpcEndpointServicePermissions(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "modifying EC2 VPC Endpoint Service (%s) permissions: %s", serviceID, err)
+	}
+
+	for _, v := range output.AddedPrincipals {
+		if aws.ToString(v.Principal) == principalARN {
+			d.SetId(aws.ToString(v.ServicePermissionId))
+		}
+	}
+
+	return append(diags, resourceVPCEndpointServiceAllowedPrincipalRead(ctx, d, meta)...)
+}

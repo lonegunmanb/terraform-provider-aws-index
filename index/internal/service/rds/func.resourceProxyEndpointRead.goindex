@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProxyEndpointRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	dbProxyName, dbProxyEndpointName, err := proxyEndpointParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	dbProxyEndpoint, err := findDBProxyEndpointByTwoPartKey(ctx, conn, dbProxyName, dbProxyEndpointName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] RDS DB Proxy Endpoint (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading RDS DB Proxy Endpoint (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, dbProxyEndpoint.DBProxyEndpointArn)
+	d.Set("db_proxy_endpoint_name", dbProxyEndpoint.DBProxyEndpointName)
+	d.Set("db_proxy_name", dbProxyEndpoint.DBProxyName)
+	d.Set(names.AttrEndpoint, dbProxyEndpoint.Endpoint)
+	d.Set("is_default", dbProxyEndpoint.IsDefault)
+	d.Set("target_role", dbProxyEndpoint.TargetRole)
+	d.Set(names.AttrVPCID, dbProxyEndpoint.VpcId)
+	d.Set(names.AttrVPCSecurityGroupIDs, dbProxyEndpoint.VpcSecurityGroupIds)
+	d.Set("vpc_subnet_ids", dbProxyEndpoint.VpcSubnetIds)
+
+	return diags
+}

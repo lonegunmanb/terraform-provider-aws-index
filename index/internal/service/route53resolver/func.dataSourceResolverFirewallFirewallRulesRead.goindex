@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53resolver
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53resolver/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceResolverFirewallFirewallRulesRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53ResolverClient(ctx)
+
+	firewallRuleGroupID := d.Get("firewall_rule_group_id").(string)
+	rules, err := findFirewallRules(ctx, conn, firewallRuleGroupID, func(rule awstypes.FirewallRule) bool {
+		if v, ok := d.GetOk(names.AttrAction); ok && string(rule.Action) != v.(string) {
+			return false
+		}
+
+		if v, ok := d.GetOk(names.AttrPriority); ok && aws.ToInt32(rule.Priority) != int32(v.(int)) {
+			return false
+		}
+
+		return true
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Route53 Resolver Firewall Rules (%s): %s", firewallRuleGroupID, err)
+	}
+
+	if n := len(rules); n == 0 {
+		return sdkdiag.AppendErrorf(diags, "no Route53 Resolver Firewall Rules matched")
+	} else if n > 1 {
+		return sdkdiag.AppendErrorf(diags, "%d Route53 Resolver Firewall Rules matched; use additional constraints to reduce matches to a single Firewall Rule", n)
+	}
+
+	if err := d.Set("firewall_rules", flattenFirewallRules(rules)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting firewall_rules: %s", err)
+	}
+
+	d.SetId(firewallRuleGroupID)
+
+	return diags
+}

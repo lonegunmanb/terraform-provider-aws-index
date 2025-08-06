@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/resourceexplorer2
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/service/resourceexplorer2"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *searchDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	conn := d.Meta().ResourceExplorer2Client(ctx)
+
+	var data searchDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if data.ViewArn.IsNull() {
+		data.ID = types.StringValue(fmt.Sprintf(",%s", data.QueryString.ValueString()))
+	} else {
+		data.ID = types.StringValue(fmt.Sprintf("%s,%s", data.ViewArn.ValueString(), data.QueryString.ValueString()))
+	}
+
+	input := &resourceexplorer2.SearchInput{
+		QueryString: data.QueryString.ValueStringPointer(),
+	}
+	if !data.ViewArn.IsNull() {
+		input.ViewArn = data.ViewArn.ValueStringPointer()
+	}
+
+	paginator := resourceexplorer2.NewSearchPaginator(conn, input)
+
+	var out resourceexplorer2.SearchOutput
+	commonFieldsSet := false
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.ResourceExplorer2, create.ErrActionReading, DSNameSearch, data.ID.String(), err),
+				err.Error(),
+			)
+			return
+		}
+
+		if page != nil && len(page.Resources) > 0 {
+			if !commonFieldsSet {
+				out.Count = page.Count
+				out.ViewArn = page.ViewArn
+				commonFieldsSet = true
+			}
+			out.Resources = append(out.Resources, page.Resources...)
+		}
+	}
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, out, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}

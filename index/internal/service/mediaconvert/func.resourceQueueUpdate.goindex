@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mediaconvert
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mediaconvert"
+	"github.com/aws/aws-sdk-go-v2/service/mediaconvert/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceQueueUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).MediaConvertClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &mediaconvert.UpdateQueueInput{
+			Name:   aws.String(d.Id()),
+			Status: types.QueueStatus(d.Get(names.AttrStatus).(string)),
+		}
+
+		if v, ok := d.GetOk("concurrent_jobs"); ok {
+			input.ConcurrentJobs = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk(names.AttrDescription); ok {
+			input.Description = aws.String(v.(string))
+		}
+
+		if v, ok := d.Get("reservation_plan_settings").([]any); ok && len(v) > 0 && v[0] != nil {
+			input.ReservationPlanSettings = expandReservationPlanSettings(v[0].(map[string]any))
+		}
+
+		_, err := conn.UpdateQueue(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Media Convert Queue (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceQueueRead(ctx, d, meta)...)
+}

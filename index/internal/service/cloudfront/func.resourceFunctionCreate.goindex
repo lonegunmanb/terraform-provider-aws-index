@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFunctionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	functionName := d.Get(names.AttrName).(string)
+	input := &cloudfront.CreateFunctionInput{
+		FunctionCode: []byte(d.Get("code").(string)),
+		FunctionConfig: &awstypes.FunctionConfig{
+			Comment: aws.String(d.Get(names.AttrComment).(string)),
+			Runtime: awstypes.FunctionRuntime(d.Get("runtime").(string)),
+		},
+		Name: aws.String(functionName),
+	}
+
+	if v, ok := d.GetOk("key_value_store_associations"); ok {
+		input.FunctionConfig.KeyValueStoreAssociations = expandKeyValueStoreAssociations(v.(*schema.Set).List())
+	}
+
+	output, err := conn.CreateFunction(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudFront Function (%s): %s", functionName, err)
+	}
+
+	d.SetId(aws.ToString(output.FunctionSummary.Name))
+
+	if d.Get("publish").(bool) {
+		input := &cloudfront.PublishFunctionInput{
+			Name:    aws.String(d.Id()),
+			IfMatch: output.ETag,
+		}
+
+		_, err := conn.PublishFunction(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "publishing CloudFront Function (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceFunctionRead(ctx, d, meta)...)
+}

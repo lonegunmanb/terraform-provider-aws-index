@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProductRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	output, err := waitProductReady(ctx, conn, d.Get("accept_language").(string), d.Id(), d.Timeout(schema.TimeoutRead))
+
+	if !d.IsNewResource() && errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		log.Printf("[WARN] Service Catalog Product (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "describing Service Catalog Product (%s): %s", d.Id(), err)
+	}
+
+	if output == nil || output.ProductViewDetail == nil || output.ProductViewDetail.ProductViewSummary == nil {
+		return sdkdiag.AppendErrorf(diags, "getting Service Catalog Product (%s): empty response", d.Id())
+	}
+
+	pvs := output.ProductViewDetail.ProductViewSummary
+
+	d.Set(names.AttrARN, output.ProductViewDetail.ProductARN)
+	if output.ProductViewDetail.CreatedTime != nil {
+		d.Set(names.AttrCreatedTime, output.ProductViewDetail.CreatedTime.Format(time.RFC3339))
+	}
+	d.Set(names.AttrDescription, pvs.ShortDescription)
+	d.Set("distributor", pvs.Distributor)
+	d.Set("has_default_path", pvs.HasDefaultPath)
+	d.Set(names.AttrName, pvs.Name)
+	d.Set(names.AttrOwner, pvs.Owner)
+	d.Set(names.AttrStatus, output.ProductViewDetail.Status)
+	d.Set("support_description", pvs.SupportDescription)
+	d.Set("support_email", pvs.SupportEmail)
+	d.Set("support_url", pvs.SupportUrl)
+	d.Set(names.AttrType, pvs.Type)
+
+	setTagsOut(ctx, output.Tags)
+
+	return diags
+}

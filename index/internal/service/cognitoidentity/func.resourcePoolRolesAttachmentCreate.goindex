@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidentity
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentity"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentity/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePoolRolesAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIdentityClient(ctx)
+
+	// Validates role keys to be either authenticated or unauthenticated,
+	// since ValidateFunc validates only the value not the key.
+	if errors := validRoles(d.Get("roles").(map[string]any)); len(errors) > 0 {
+		return sdkdiag.AppendErrorf(diags, "validating Roles: %v", errors)
+	}
+
+	params := &cognitoidentity.SetIdentityPoolRolesInput{
+		IdentityPoolId: aws.String(d.Get("identity_pool_id").(string)),
+		Roles:          expandIdentityPoolRoles(d.Get("roles").(map[string]any)),
+	}
+
+	if v, ok := d.GetOk("role_mapping"); ok {
+		errors := validateRoleMappings(v.(*schema.Set).List())
+
+		if len(errors) > 0 {
+			return sdkdiag.AppendErrorf(diags, "validating ambiguous role resolution: %v", errors)
+		}
+
+		params.RoleMappings = expandIdentityPoolRoleMappingsAttachment(v.(*schema.Set).List())
+	}
+
+	log.Printf("[DEBUG] Creating Cognito Identity Pool Roles Association: %#v", params)
+	_, err := conn.SetIdentityPoolRoles(ctx, params)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Cognito Identity Pool Roles Association: %s", err)
+	}
+
+	d.SetId(d.Get("identity_pool_id").(string))
+
+	return append(diags, resourcePoolRolesAttachmentRead(ctx, d, meta)...)
+}

@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceAutomatedBackupsReplicationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	sourceDBInstanceARN := d.Get("source_db_instance_arn").(string)
+	input := &rds.StartDBInstanceAutomatedBackupsReplicationInput{
+		BackupRetentionPeriod: aws.Int32(int32(d.Get(names.AttrRetentionPeriod).(int))),
+		SourceDBInstanceArn:   aws.String(sourceDBInstanceARN),
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		input.KmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("pre_signed_url"); ok {
+		input.PreSignedUrl = aws.String(v.(string))
+	}
+
+	output, err := conn.StartDBInstanceAutomatedBackupsReplication(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "starting RDS Instance Automated Backups Replication (%s): %s", sourceDBInstanceARN, err)
+	}
+
+	d.SetId(aws.ToString(output.DBInstanceAutomatedBackup.DBInstanceAutomatedBackupsArn))
+
+	if _, err := waitDBInstanceAutomatedBackupCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RDS DB Instance Automated Backup (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceInstanceAutomatedBackupsReplicationRead(ctx, d, meta)...)
+}

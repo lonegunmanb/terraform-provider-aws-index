@@ -1,0 +1,122 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOutboundConnection() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceOutboundConnectionCreate,
+		ReadWithoutTimeout:   resourceOutboundConnectionRead,
+		DeleteWithoutTimeout: resourceOutboundConnectionDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(5 * time.Minute),
+			Delete: schema.DefaultTimeout(5 * time.Minute),
+		},
+
+		SchemaFunc: func() map[string]*schema.Schema {
+			outboundConnectionDomainInfoSchema := func() *schema.Schema {
+				return &schema.Schema{
+					Type:     schema.TypeList,
+					Required: true,
+					ForceNew: true,
+					MaxItems: 1,
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							names.AttrDomainName: {
+								Type:     schema.TypeString,
+								Required: true,
+								ForceNew: true,
+							},
+							names.AttrOwnerID: {
+								Type:     schema.TypeString,
+								Required: true,
+								ForceNew: true,
+							},
+							names.AttrRegion: {
+								Type:     schema.TypeString,
+								Required: true,
+								ForceNew: true,
+							},
+						},
+					},
+				}
+			}
+
+			return map[string]*schema.Schema{
+				"accept_connection": {
+					Type:     schema.TypeBool,
+					Optional: true,
+					ForceNew: true,
+					Default:  false,
+				},
+				"connection_alias": {
+					Type:     schema.TypeString,
+					Required: true,
+					ForceNew: true,
+				},
+				"connection_mode": {
+					Type:             schema.TypeString,
+					Optional:         true,
+					ForceNew:         true,
+					Computed:         true,
+					ValidateDiagFunc: enum.Validate[awstypes.ConnectionMode](),
+				},
+				"connection_properties": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"cross_cluster_search": {
+								Type:     schema.TypeList,
+								Optional: true,
+								ForceNew: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"skip_unavailable": {
+											Type:     schema.TypeString,
+											Optional: true,
+											ForceNew: true,
+										},
+									},
+								},
+							},
+							names.AttrEndpoint: {
+								Type:     schema.TypeString,
+								Computed: true,
+							},
+						},
+					},
+				},
+				"connection_status": {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+				"local_domain_info":  outboundConnectionDomainInfoSchema(),
+				"remote_domain_info": outboundConnectionDomainInfoSchema(),
+			}
+		},
+	}
+}

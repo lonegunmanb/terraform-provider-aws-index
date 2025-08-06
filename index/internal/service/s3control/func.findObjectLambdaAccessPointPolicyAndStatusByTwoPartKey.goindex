@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3control
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3control"
+	"github.com/aws/aws-sdk-go-v2/service/s3control/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findObjectLambdaAccessPointPolicyAndStatusByTwoPartKey(ctx context.Context, conn *s3control.Client, accountID, name string) (string, *types.PolicyStatus, error) {
+	inputGAPPFOL := &s3control.GetAccessPointPolicyForObjectLambdaInput{
+		AccountId: aws.String(accountID),
+		Name:      aws.String(name),
+	}
+
+	outputGAPPFOL, err := conn.GetAccessPointPolicyForObjectLambda(ctx, inputGAPPFOL)
+
+	if tfawserr.ErrCodeEquals(err, errCodeNoSuchAccessPoint, errCodeNoSuchAccessPointPolicy) {
+		return "", nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: inputGAPPFOL,
+		}
+	}
+
+	if err != nil {
+		return "", nil, err
+	}
+
+	if outputGAPPFOL == nil {
+		return "", nil, tfresource.NewEmptyResultError(inputGAPPFOL)
+	}
+
+	policy := aws.ToString(outputGAPPFOL.Policy)
+
+	if policy == "" {
+		return "", nil, tfresource.NewEmptyResultError(inputGAPPFOL)
+	}
+
+	inputGAPPSFOL := &s3control.GetAccessPointPolicyStatusForObjectLambdaInput{
+		AccountId: aws.String(accountID),
+		Name:      aws.String(name),
+	}
+
+	outputGAPPSFOL, err := conn.GetAccessPointPolicyStatusForObjectLambda(ctx, inputGAPPSFOL)
+
+	if tfawserr.ErrCodeEquals(err, errCodeNoSuchAccessPoint, errCodeNoSuchAccessPointPolicy) {
+		return "", nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: inputGAPPSFOL,
+		}
+	}
+
+	if err != nil {
+		return "", nil, err
+	}
+
+	if outputGAPPSFOL == nil || outputGAPPSFOL.PolicyStatus == nil {
+		return "", nil, tfresource.NewEmptyResultError(inputGAPPSFOL)
+	}
+
+	return policy, outputGAPPSFOL.PolicyStatus, nil
+}

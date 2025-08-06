@@ -1,0 +1,107 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIntegrationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayV2Client(ctx)
+
+	input := &apigatewayv2.CreateIntegrationInput{
+		ApiId:           aws.String(d.Get("api_id").(string)),
+		IntegrationType: awstypes.IntegrationType(d.Get("integration_type").(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrConnectionID); ok {
+		input.ConnectionId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("connection_type"); ok {
+		input.ConnectionType = awstypes.ConnectionType(v.(string))
+	}
+
+	if v, ok := d.GetOk("content_handling_strategy"); ok {
+		input.ContentHandlingStrategy = awstypes.ContentHandlingStrategy(v.(string))
+	}
+
+	if v, ok := d.GetOk("credentials_arn"); ok {
+		input.CredentialsArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("integration_method"); ok {
+		input.IntegrationMethod = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("integration_subtype"); ok {
+		input.IntegrationSubtype = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("integration_uri"); ok {
+		input.IntegrationUri = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("passthrough_behavior"); ok {
+		input.PassthroughBehavior = awstypes.PassthroughBehavior(v.(string))
+	}
+
+	if v, ok := d.GetOk("payload_format_version"); ok {
+		input.PayloadFormatVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("request_parameters"); ok {
+		input.RequestParameters = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("request_templates"); ok {
+		input.RequestTemplates = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("response_parameters"); ok && v.(*schema.Set).Len() > 0 {
+		input.ResponseParameters = expandIntegrationResponseParameters(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("template_selection_expression"); ok {
+		input.TemplateSelectionExpression = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("timeout_milliseconds"); ok {
+		input.TimeoutInMillis = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("tls_config"); ok {
+		input.TlsConfig = expandTLSConfig(v.([]any))
+	}
+
+	output, err := conn.CreateIntegration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway v2 Integration: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.IntegrationId))
+
+	return append(diags, resourceIntegrationRead(ctx, d, meta)...)
+}

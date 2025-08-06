@@ -1,0 +1,107 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *dataCellsFilterResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().LakeFormationClient(ctx)
+
+	var plan dataCellsFilterResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := &lakeformation.CreateDataCellsFilterInput{}
+
+	resp.Diagnostics.Append(fwflex.Expand(ctx, plan, in)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	planTD, diags := plan.TableData.ToPtr(ctx)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	_, err := conn.CreateDataCellsFilter(ctx, in)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LakeFormation, create.ErrActionCreating, ResNameDataCellsFilter, planTD.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	idParts := []string{
+		planTD.DatabaseName.ValueString(),
+		planTD.Name.ValueString(),
+		planTD.TableCatalogID.ValueString(),
+		planTD.TableName.ValueString(),
+	}
+	id, err := intflex.FlattenResourceId(idParts, dataCellsFilterIDPartCount, false)
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LakeFormation, create.ErrActionFlatteningResourceId, ResNameDataCellsFilter, planTD.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	state := plan
+	state.ID = fwflex.StringValueToFramework(ctx, id)
+
+	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
+	outputRaws, err := tfresource.RetryWhenNotFound(ctx, createTimeout, func() (any, error) {
+		return findDataCellsFilterByID(ctx, conn, state.ID.ValueString())
+	})
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LakeFormation, create.ErrActionCreating, ResNameDataCellsFilter, planTD.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	output := outputRaws.(*awstypes.DataCellsFilter)
+	td := tableData{}
+	resp.Diagnostics.Append(fwflex.Flatten(ctx, output, &td)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	state.TableData = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &td)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+}

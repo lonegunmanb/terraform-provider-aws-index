@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenConnectionHTTPParameters(apiObject *types.ConnectionHttpParameters, d *schema.ResourceData, path string) []map[string]any {
+	if apiObject == nil {
+		return nil
+	}
+
+	var bodyParameters []map[string]any
+	for i, param := range apiObject.BodyParameters {
+		tfMap := make(map[string]any)
+		tfMap["is_value_secret"] = param.IsValueSecret
+		tfMap[names.AttrKey] = aws.ToString(param.Key)
+
+		if param.Value != nil {
+			tfMap[names.AttrValue] = aws.ToString(param.Value)
+		} else if v, ok := d.GetOk(fmt.Sprintf("%s.0.body.%d.value", path, i)); ok {
+			tfMap[names.AttrValue] = v.(string)
+		}
+
+		bodyParameters = append(bodyParameters, tfMap)
+	}
+
+	var headerParameters []map[string]any
+	for i, param := range apiObject.HeaderParameters {
+		tfMap := make(map[string]any)
+		tfMap["is_value_secret"] = param.IsValueSecret
+		tfMap[names.AttrKey] = aws.ToString(param.Key)
+
+		if param.Value != nil {
+			tfMap[names.AttrValue] = aws.ToString(param.Value)
+		} else if v, ok := d.GetOk(fmt.Sprintf("%s.0.header.%d.value", path, i)); ok {
+			tfMap[names.AttrValue] = v.(string)
+		}
+		headerParameters = append(headerParameters, tfMap)
+	}
+
+	var queryStringParameters []map[string]any
+	for i, param := range apiObject.QueryStringParameters {
+		tfMap := make(map[string]any)
+		tfMap["is_value_secret"] = param.IsValueSecret
+		tfMap[names.AttrKey] = aws.ToString(param.Key)
+
+		if param.Value != nil {
+			tfMap[names.AttrValue] = aws.ToString(param.Value)
+		} else if v, ok := d.GetOk(fmt.Sprintf("%s.0.query_string.%d.value", path, i)); ok {
+			tfMap[names.AttrValue] = v.(string)
+		}
+		queryStringParameters = append(queryStringParameters, tfMap)
+	}
+
+	parameters := make(map[string]any)
+	parameters["body"] = bodyParameters
+	parameters[names.AttrHeader] = headerParameters
+	parameters["query_string"] = queryStringParameters
+
+	return []map[string]any{parameters}
+}

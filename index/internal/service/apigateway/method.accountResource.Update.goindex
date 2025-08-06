@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *accountResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var state, plan accountResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	diff, d := flex.Diff(ctx, plan, state)
+	response.Diagnostics.Append(d...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		conn := r.Meta().APIGatewayClient(ctx)
+
+		input := apigateway.UpdateAccountInput{}
+
+		if plan.CloudwatchRoleARN.IsNull() || plan.CloudwatchRoleARN.ValueString() == "" {
+			input.PatchOperations = []awstypes.PatchOperation{
+				{
+					Op:    awstypes.OpReplace,
+					Path:  aws.String("/cloudwatchRoleArn"),
+					Value: nil,
+				},
+			}
+		} else {
+			input.PatchOperations = []awstypes.PatchOperation{
+				{
+					Op:    awstypes.OpReplace,
+					Path:  aws.String("/cloudwatchRoleArn"),
+					Value: plan.CloudwatchRoleARN.ValueStringPointer(),
+				},
+			}
+		}
+
+		output, err := tfresource.RetryGWhen(ctx, propagationTimeout,
+			func() (*apigateway.UpdateAccountOutput, error) {
+				return conn.UpdateAccount(ctx, &input)
+			},
+			func(err error) (bool, error) {
+				if errs.IsAErrorMessageContains[*awstypes.BadRequestException](err, "The role ARN does not have required permissions") {
+					return true, err
+				}
+				if errs.IsAErrorMessageContains[*awstypes.BadRequestException](err, "API Gateway could not successfully write to CloudWatch Logs using the ARN specified") {
+					return true, err
+				}
+				return false, err
+			},
+		)
+		if err != nil {
+			response.Diagnostics.AddError("updating API Gateway Account", err.Error())
+			return
+		}
+
+		response.Diagnostics.Append(flex.Flatten(ctx, output, &plan)...)
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+}

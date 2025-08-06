@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/grafana
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/grafana"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/grafana/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkspaceSAMLConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GrafanaClient(ctx)
+
+	saml, err := findSAMLConfigurationByID(ctx, conn, d.Id())
+
+	if tfresource.NotFound(err) && !d.IsNewResource() {
+		log.Printf("[WARN] Grafana Workspace SAML Configuration (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Grafana Workspace SAML Configuration (%s): %s", d.Id(), err)
+	}
+
+	d.Set("admin_role_values", saml.Configuration.RoleValues.Admin)
+	d.Set("allowed_organizations", saml.Configuration.AllowedOrganizations)
+	d.Set("editor_role_values", saml.Configuration.RoleValues.Editor)
+	d.Set("email_assertion", saml.Configuration.AssertionAttributes.Email)
+	d.Set("groups_assertion", saml.Configuration.AssertionAttributes.Groups)
+	d.Set("idp_metadata_url", "")
+	d.Set("idp_metadata_xml", "")
+	switch v := saml.Configuration.IdpMetadata.(type) {
+	case *awstypes.IdpMetadataMemberUrl:
+		d.Set("idp_metadata_url", v.Value)
+	case *awstypes.IdpMetadataMemberXml:
+		d.Set("idp_metadata_xml", v.Value)
+	}
+	d.Set("login_assertion", saml.Configuration.AssertionAttributes.Login)
+	d.Set("login_validity_duration", saml.Configuration.LoginValidityDuration)
+	d.Set("name_assertion", saml.Configuration.AssertionAttributes.Name)
+	d.Set("org_assertion", saml.Configuration.AssertionAttributes.Org)
+	d.Set("role_assertion", saml.Configuration.AssertionAttributes.Role)
+	d.Set(names.AttrStatus, saml.Status)
+
+	return diags
+}

@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTargetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppAutoScalingClient(ctx)
+
+	outputRaw, err := tfresource.RetryWhenNewResourceNotFound(ctx, 2*time.Minute,
+		func() (any, error) {
+			return FindTargetByThreePartKey(ctx, conn, d.Id(), d.Get("service_namespace").(string), d.Get("scalable_dimension").(string))
+		},
+		d.IsNewResource(),
+	)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Application AutoScaling Target (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Application AutoScaling Target (%s): %s", d.Id(), err)
+	}
+
+	t := outputRaw.(*awstypes.ScalableTarget)
+
+	d.Set(names.AttrARN, t.ScalableTargetARN)
+	d.Set(names.AttrMaxCapacity, t.MaxCapacity)
+	d.Set("min_capacity", t.MinCapacity)
+	d.Set(names.AttrResourceID, t.ResourceId)
+	d.Set(names.AttrRoleARN, t.RoleARN)
+	d.Set("scalable_dimension", t.ScalableDimension)
+	d.Set("service_namespace", t.ServiceNamespace)
+	if err := d.Set("suspended_state", flattenSuspendedState(t.SuspendedState)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting suspended_state: %s", err)
+	}
+
+	return diags
+}

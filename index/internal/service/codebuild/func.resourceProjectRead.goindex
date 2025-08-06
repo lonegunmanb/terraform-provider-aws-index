@@ -1,0 +1,110 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codebuild
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProjectRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeBuildClient(ctx)
+
+	project, err := findProjectByNameOrARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CodeBuild Project (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CodeBuild Project (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, project.Arn)
+	if project.Artifacts != nil {
+		if err := d.Set("artifacts", []any{flattenProjectArtifacts(project.Artifacts)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting artifacts: %s", err)
+		}
+	} else {
+		d.Set("artifacts", nil)
+	}
+	if project.Badge != nil {
+		d.Set("badge_enabled", project.Badge.BadgeEnabled)
+		d.Set("badge_url", project.Badge.BadgeRequestUrl)
+	} else {
+		d.Set("badge_enabled", false)
+		d.Set("badge_url", "")
+	}
+	if err := d.Set("build_batch_config", flattenBuildBatchConfig(project.BuildBatchConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting build_batch_config: %s", err)
+	}
+	d.Set("build_timeout", project.TimeoutInMinutes)
+	if err := d.Set("cache", flattenProjectCache(project.Cache)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting cache: %s", err)
+	}
+	d.Set("concurrent_build_limit", project.ConcurrentBuildLimit)
+	d.Set(names.AttrDescription, project.Description)
+	d.Set("encryption_key", project.EncryptionKey)
+	if err := d.Set(names.AttrEnvironment, flattenProjectEnvironment(project.Environment)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting environment: %s", err)
+	}
+	if err := d.Set("file_system_locations", flattenProjectFileSystemLocations(project.FileSystemLocations)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting file_system_locations: %s", err)
+	}
+	if err := d.Set("logs_config", flattenLogsConfig(project.LogsConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting logs_config: %s", err)
+	}
+	d.Set(names.AttrName, project.Name)
+	if v := project.ProjectVisibility; v != "" {
+		d.Set("project_visibility", project.ProjectVisibility)
+	} else {
+		d.Set("project_visibility", types.ProjectVisibilityTypePrivate)
+	}
+	d.Set("public_project_alias", project.PublicProjectAlias)
+	d.Set("resource_access_role", project.ResourceAccessRole)
+	d.Set("queued_timeout", project.QueuedTimeoutInMinutes)
+	if err := d.Set("secondary_artifacts", flattenProjectSecondaryArtifacts(project.SecondaryArtifacts)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting secondary_artifacts: %s", err)
+	}
+	if err := d.Set("secondary_sources", flattenProjectSecondarySources(project.SecondarySources)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting secondary_sources: %s", err)
+	}
+	if err := d.Set("secondary_source_version", flattenProjectSecondarySourceVersions(project.SecondarySourceVersions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting secondary_source_version: %s", err)
+	}
+	d.Set(names.AttrServiceRole, project.ServiceRole)
+	if project.Source != nil {
+		if err := d.Set(names.AttrSource, []any{flattenProjectSource(project.Source)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting source: %s", err)
+		}
+	} else {
+		d.Set(names.AttrSource, nil)
+	}
+	d.Set("source_version", project.SourceVersion)
+	if err := d.Set(names.AttrVPCConfig, flattenVPCConfig(project.VpcConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting vpc_config: %s", err)
+	}
+
+	setTagsOut(ctx, project.Tags)
+
+	return diags
+}

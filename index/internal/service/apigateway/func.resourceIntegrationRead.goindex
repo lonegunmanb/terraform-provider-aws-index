@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIntegrationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	integration, err := findIntegrationByThreePartKey(ctx, conn, d.Get("http_method").(string), d.Get(names.AttrResourceID).(string), d.Get("rest_api_id").(string))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] API Gateway Integration (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading API Gateway Integration (%s): %s", d.Id(), err)
+	}
+
+	d.Set("cache_key_parameters", integration.CacheKeyParameters)
+	d.Set("cache_namespace", integration.CacheNamespace)
+	d.Set(names.AttrConnectionID, integration.ConnectionId)
+	d.Set("connection_type", types.ConnectionTypeInternet)
+	if integration.ConnectionType != "" {
+		d.Set("connection_type", integration.ConnectionType)
+	}
+	d.Set("content_handling", integration.ContentHandling)
+	d.Set("credentials", integration.Credentials)
+	d.Set("integration_http_method", integration.HttpMethod)
+	d.Set("passthrough_behavior", integration.PassthroughBehavior)
+	d.Set("request_parameters", integration.RequestParameters)
+	// We need to explicitly convert key = nil values into key = "", which aws.ToStringMap() removes
+	requestTemplates := make(map[string]string)
+	maps.Copy(requestTemplates, integration.RequestTemplates)
+	d.Set("request_templates", requestTemplates)
+	d.Set("timeout_milliseconds", integration.TimeoutInMillis)
+	d.Set(names.AttrType, integration.Type)
+	d.Set(names.AttrURI, integration.Uri)
+
+	if err := d.Set("tls_config", flattenTLSConfig(integration.TlsConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting tls_config: %s", err)
+	}
+
+	return diags
+}

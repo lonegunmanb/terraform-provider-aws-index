@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/swf
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/swf"
+	"github.com/aws/aws-sdk-go-v2/service/swf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SWFClient(ctx)
+
+	name := create.Name(d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string))
+	input := &swf.RegisterDomainInput{
+		Name:                                   aws.String(name),
+		Tags:                                   getTagsIn(ctx),
+		WorkflowExecutionRetentionPeriodInDays: aws.String(d.Get("workflow_execution_retention_period_in_days").(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	_, err := conn.RegisterDomain(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SWF Domain (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	return append(diags, resourceDomainRead(ctx, d, meta)...)
+}

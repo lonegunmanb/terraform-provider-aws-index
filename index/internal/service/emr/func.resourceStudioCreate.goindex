@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStudioCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &emr.CreateStudioInput{
+		AuthMode:                 awstypes.AuthMode(d.Get("auth_mode").(string)),
+		DefaultS3Location:        aws.String(d.Get("default_s3_location").(string)),
+		EngineSecurityGroupId:    aws.String(d.Get("engine_security_group_id").(string)),
+		Name:                     aws.String(name),
+		ServiceRole:              aws.String(d.Get(names.AttrServiceRole).(string)),
+		SubnetIds:                flex.ExpandStringValueSet(d.Get(names.AttrSubnetIDs).(*schema.Set)),
+		Tags:                     getTagsIn(ctx),
+		VpcId:                    aws.String(d.Get(names.AttrVPCID).(string)),
+		WorkspaceSecurityGroupId: aws.String(d.Get("workspace_security_group_id").(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("encryption_key_arn"); ok {
+		input.EncryptionKeyArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("idp_auth_url"); ok {
+		input.IdpAuthUrl = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("idp_relay_state_parameter_name"); ok {
+		input.IdpRelayStateParameterName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("user_role"); ok {
+		input.UserRole = aws.String(v.(string))
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateStudio(ctx, input)
+		},
+		func(err error) (bool, error) {
+			if errs.IsAErrorMessageContains[*awstypes.InvalidRequestException](err, "entity does not have permissions to assume role") ||
+				errs.IsAErrorMessageContains[*awstypes.InvalidRequestException](err, "Service role does not have permission to access") ||
+				errs.IsAErrorMessageContains[*awstypes.InvalidRequestException](err, "'ServiceRole' does not have permission to access") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EMR Studio (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*emr.CreateStudioOutput).StudioId))
+
+	return append(diags, resourceStudioRead(ctx, d, meta)...)
+}

@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"strconv"
+
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func upgradeLifecycleRuleModelStateFromV0(ctx context.Context, old fwtypes.ListNestedObjectValueOf[lifecycleRuleModelV0], diags *diag.Diagnostics) (result fwtypes.ListNestedObjectValueOf[lifecycleRuleModel]) {
+	oldRules, d := old.ToSlice(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return result
+	}
+
+	newRules := make([]lifecycleRuleModel, len(oldRules))
+	for i, oldRule := range oldRules {
+		newRule := lifecycleRuleModel{
+			AbortIncompleteMultipartUpload: upgradeAbortIncompleteMultipartStateFromV0(ctx, oldRule.AbortIncompleteMultipartUpload, diags),
+			Expiration:                     upgradeLifecycleExpirationModelStateFromV0(ctx, oldRule.Expiration, diags),
+			Filter:                         upgradeLifecycleRuleFilterModelStateFromV0(ctx, oldRule.Filter, diags),
+			ID:                             oldRule.ID,
+			NoncurrentVersionExpirations:   upgradeNoncurrentVersionExpirationModelStateFromV0(ctx, oldRule.NoncurrentVersionExpirations, diags),
+			NoncurrentVersionTransitions:   upgradeNoncurrentVersionTransitionModelStateFromV0(ctx, oldRule.NoncurrentVersionTransitions, diags),
+			Prefix:                         oldRule.Prefix,
+			Status:                         oldRule.Status,
+			Transitions:                    upgradeTransitionModelStateFromV0(ctx, oldRule.Transitions, diags),
+		}
+
+		if diags.HasError() {
+			return result
+		}
+
+		newRules[i] = newRule
+	}
+
+	result, d = fwtypes.NewListNestedObjectValueOfValueSlice(ctx, newRules)
+	diags.Append(d...)
+	if diags.HasError() {
+		return result
+	}
+
+	return result
+}

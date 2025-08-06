@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/organizations
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourcePolicyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OrganizationsClient(ctx)
+
+	policy, err := structure.NormalizeJsonString(d.Get(names.AttrContent).(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &organizations.PutResourcePolicyInput{
+		Content: aws.String(policy),
+		Tags:    getTagsIn(ctx),
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.FinalizingOrganizationException](ctx, organizationFinalizationTimeout, func() (any, error) {
+		return conn.PutResourcePolicy(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Organizations Resource Policy: %s", err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*organizations.PutResourcePolicyOutput).ResourcePolicy.ResourcePolicySummary.Id))
+
+	return append(diags, resourceResourcePolicyRead(ctx, d, meta)...)
+}

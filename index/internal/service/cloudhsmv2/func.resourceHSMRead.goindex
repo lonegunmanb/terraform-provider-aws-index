@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudhsmv2
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHSMRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudHSMV2Client(ctx)
+
+	hsm, err := findHSMByTwoPartKey(ctx, conn, d.Id(), d.Get("hsm_eni_id").(string))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudHSMv2 HSM (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudHSMv2 HSM (%s): %s", d.Id(), err)
+	}
+
+	// When matched by ENI ID, the ID should updated.
+	if aws.ToString(hsm.HsmId) != d.Id() {
+		d.SetId(aws.ToString(hsm.HsmId))
+	}
+
+	d.Set(names.AttrAvailabilityZone, hsm.AvailabilityZone)
+	d.Set("cluster_id", hsm.ClusterId)
+	d.Set("hsm_eni_id", hsm.EniId)
+	d.Set("hsm_id", hsm.HsmId)
+	d.Set("hsm_state", hsm.State)
+	d.Set(names.AttrIPAddress, hsm.EniIp)
+	d.Set(names.AttrSubnetID, hsm.SubnetId)
+
+	return diags
+}

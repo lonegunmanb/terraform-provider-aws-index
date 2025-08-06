@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apprunner
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apprunner"
+	"github.com/aws/aws-sdk-go-v2/service/apprunner/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServiceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).AppRunnerClient(ctx)
+
+	name := d.Get(names.AttrServiceName).(string)
+	input := &apprunner.CreateServiceInput{
+		ServiceName:         aws.String(name),
+		SourceConfiguration: expandServiceSourceConfiguration(d.Get("source_configuration").([]any)),
+		Tags:                getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("auto_scaling_configuration_arn"); ok {
+		input.AutoScalingConfigurationArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrEncryptionConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.EncryptionConfiguration = expandServiceEncryptionConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("health_check_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.HealthCheckConfiguration = expandServiceHealthCheckConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("instance_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.InstanceConfiguration = expandServiceInstanceConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrNetworkConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.NetworkConfiguration = expandNetworkConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("observability_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.ObservabilityConfiguration = expandServiceObservabilityConfiguration(v.([]any))
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[*types.InvalidRequestException](ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateService(ctx, input)
+	}, "Error in assuming instance role")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating App Runner Service (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*apprunner.CreateServiceOutput).Service.ServiceArn))
+
+	if _, err := waitServiceCreated(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for App Runner Service (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceServiceRead(ctx, d, meta)...)
+}

@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReservedInstanceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	input := &rds.PurchaseReservedDBInstancesOfferingInput{
+		ReservedDBInstancesOfferingId: aws.String(d.Get("offering_id").(string)),
+		Tags:                          getTagsIn(ctx),
+	}
+
+	if v, ok := d.Get(names.AttrInstanceCount).(int); ok && v > 0 {
+		input.DBInstanceCount = aws.Int32(int32(d.Get(names.AttrInstanceCount).(int)))
+	}
+
+	if v, ok := d.Get("reservation_id").(string); ok && v != "" {
+		input.ReservedDBInstanceId = aws.String(v)
+	}
+
+	output, err := conn.PurchaseReservedDBInstancesOffering(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating RDS Reserved Instance: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.ReservedDBInstance.ReservedDBInstanceId))
+
+	if _, err := waitReservedInstanceCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RDS Reserved Instance (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceReservedInstanceRead(ctx, d, meta)...)
+}

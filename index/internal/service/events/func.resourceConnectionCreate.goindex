@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConnectionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EventsClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := eventbridge.CreateConnectionInput{
+		AuthorizationType: types.ConnectionAuthorizationType(d.Get("authorization_type").(string)),
+		AuthParameters:    expandCreateConnectionAuthRequestParameters(d.Get("auth_parameters").([]any)),
+		Name:              aws.String(name),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("invocation_connectivity_parameters"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.InvocationConnectivityParameters = expandConnectivityResourceParameters(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("kms_key_identifier"); ok {
+		input.KmsKeyIdentifier = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateConnection(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EventBridge Connection (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if _, err := waitConnectionCreated(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EventBridge Connection (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceConnectionRead(ctx, d, meta)...)
+}

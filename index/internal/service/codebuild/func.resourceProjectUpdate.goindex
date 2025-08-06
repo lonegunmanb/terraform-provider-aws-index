@@ -1,0 +1,182 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codebuild
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProjectUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeBuildClient(ctx)
+
+	if d.HasChanges("project_visibility", "resource_access_role") {
+		input := &codebuild.UpdateProjectVisibilityInput{
+			ProjectArn:        aws.String(d.Id()),
+			ProjectVisibility: types.ProjectVisibilityType(d.Get("project_visibility").(string)),
+		}
+
+		if v, ok := d.GetOk("resource_access_role"); ok {
+			input.ResourceAccessRole = aws.String(v.(string))
+		}
+
+		_, err := conn.UpdateProjectVisibility(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CodeBuild Project (%s) visibility: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChangesExcept("project_visibility", "resource_access_role") {
+		input := &codebuild.UpdateProjectInput{
+			Name: aws.String(d.Get(names.AttrName).(string)),
+		}
+
+		if d.HasChange("artifacts") {
+			if v, ok := d.GetOk("artifacts"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.Artifacts = expandProjectArtifacts(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("badge_enabled") {
+			input.BadgeEnabled = aws.Bool(d.Get("badge_enabled").(bool))
+		}
+
+		if d.HasChange("build_batch_config") {
+			if v, ok := d.GetOk("build_batch_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.BuildBatchConfig = expandProjectBuildBatchConfig(v.([]any)[0].(map[string]any))
+			} else {
+				input.BuildBatchConfig = &types.ProjectBuildBatchConfig{}
+			}
+		}
+
+		if d.HasChange("cache") {
+			if v, ok := d.GetOk("cache"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.Cache = expandProjectCache(v.([]any)[0].(map[string]any))
+			} else {
+				input.Cache = &types.ProjectCache{
+					Type: types.CacheTypeNoCache,
+				}
+			}
+		}
+
+		if d.HasChange("concurrent_build_limit") {
+			if v := int32(d.Get("concurrent_build_limit").(int)); v != 0 {
+				input.ConcurrentBuildLimit = aws.Int32(v)
+			} else {
+				input.ConcurrentBuildLimit = aws.Int32(-1)
+			}
+		}
+
+		if d.HasChange(names.AttrDescription) {
+			input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		}
+
+		if d.HasChange("encryption_key") {
+			input.EncryptionKey = aws.String(d.Get("encryption_key").(string))
+		}
+
+		if d.HasChange(names.AttrEnvironment) {
+			if v, ok := d.GetOk(names.AttrEnvironment); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.Environment = expandProjectEnvironment(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("file_system_locations") {
+			if v, ok := d.GetOk("file_system_locations"); ok && v.(*schema.Set).Len() > 0 {
+				input.FileSystemLocations = expandProjectFileSystemLocations(v.(*schema.Set).List())
+			} else {
+				input.FileSystemLocations = []types.ProjectFileSystemLocation{}
+			}
+		}
+
+		if d.HasChange("logs_config") {
+			input.LogsConfig = expandProjectLogsConfig(d.Get("logs_config"))
+		}
+
+		if d.HasChange("queued_timeout") {
+			input.QueuedTimeoutInMinutes = aws.Int32(int32(d.Get("queued_timeout").(int)))
+		}
+
+		if d.HasChange("secondary_artifacts") {
+			if v, ok := d.GetOk("secondary_artifacts"); ok && v.(*schema.Set).Len() > 0 {
+				input.SecondaryArtifacts = expandProjectSecondaryArtifacts(v.(*schema.Set).List())
+			} else {
+				input.SecondaryArtifacts = []types.ProjectArtifacts{}
+			}
+		}
+
+		if d.HasChange("secondary_sources") {
+			if v, ok := d.GetOk("secondary_sources"); ok && v.(*schema.Set).Len() > 0 {
+				input.SecondarySources = expandProjectSecondarySources(v.(*schema.Set).List())
+			} else {
+				input.SecondarySources = []types.ProjectSource{}
+			}
+		}
+
+		if d.HasChange("secondary_source_version") {
+			if v, ok := d.GetOk("secondary_source_version"); ok && v.(*schema.Set).Len() > 0 {
+				input.SecondarySourceVersions = expandProjectSecondarySourceVersions(v.(*schema.Set).List())
+			} else {
+				input.SecondarySourceVersions = []types.ProjectSourceVersion{}
+			}
+		}
+
+		if d.HasChange(names.AttrServiceRole) {
+			input.ServiceRole = aws.String(d.Get(names.AttrServiceRole).(string))
+		}
+
+		if d.HasChange(names.AttrSource) {
+			if v, ok := d.GetOk(names.AttrSource); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.Source = expandProjectSource(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("source_version") {
+			input.SourceVersion = aws.String(d.Get("source_version").(string))
+		}
+
+		if d.HasChange("build_timeout") {
+			input.TimeoutInMinutes = aws.Int32(int32(d.Get("build_timeout").(int)))
+		}
+
+		if d.HasChange(names.AttrVPCConfig) {
+			if v, ok := d.GetOk(names.AttrVPCConfig); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.VpcConfig = expandVPCConfig(v.([]any)[0].(map[string]any))
+			} else {
+				input.VpcConfig = &types.VpcConfig{}
+			}
+		}
+
+		// The documentation clearly says "The replacement set of tags for this build project."
+		// But its a slice of pointers so if not set for every update, they get removed.
+		input.Tags = getTagsIn(ctx)
+
+		_, err := tfresource.RetryWhenIsAErrorMessageContains[*types.InvalidInputException](ctx, propagationTimeout, func() (any, error) {
+			return conn.UpdateProject(ctx, input)
+		}, "ot authorized to perform")
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CodeBuild Project (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceProjectRead(ctx, d, meta)...)
+}

@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/memorydb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/memorydb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/memorydb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).MemoryDBClient(ctx)
+
+	user, err := findUserByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] MemoryDB User (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading MemoryDB User (%s): %s", d.Id(), err)
+	}
+
+	d.Set("access_string", user.AccessString)
+	d.Set(names.AttrARN, user.ARN)
+	if v := user.Authentication; v != nil {
+		tfMap := map[string]any{
+			"passwords":      d.Get("authentication_mode.0.passwords"),
+			"password_count": aws.ToInt32(v.PasswordCount),
+			names.AttrType:   v.Type,
+		}
+
+		if err := d.Set("authentication_mode", []any{tfMap}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting authentication_mode: %s", err)
+		}
+	}
+	d.Set("minimum_engine_version", user.MinimumEngineVersion)
+	d.Set(names.AttrUserName, user.Name)
+
+	return diags
+}

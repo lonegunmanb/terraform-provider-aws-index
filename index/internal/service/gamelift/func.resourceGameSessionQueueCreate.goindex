@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/gamelift
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/gamelift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/gamelift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGameSessionQueueCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GameLiftClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &gamelift.CreateGameSessionQueueInput{
+		Name:                  aws.String(name),
+		Destinations:          expandGameSessionQueueDestinations(d.Get("destinations").([]any)),
+		PlayerLatencyPolicies: expandGameSessionPlayerLatencyPolicies(d.Get("player_latency_policy").([]any)),
+		TimeoutInSeconds:      aws.Int32(int32(d.Get("timeout_in_seconds").(int))),
+		Tags:                  getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("custom_event_data"); ok {
+		input.CustomEventData = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("notification_target"); ok {
+		input.NotificationTarget = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateGameSessionQueue(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating GameLift Game Session Queue (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.GameSessionQueue.Name))
+
+	return append(diags, resourceGameSessionQueueRead(ctx, d, meta)...)
+}

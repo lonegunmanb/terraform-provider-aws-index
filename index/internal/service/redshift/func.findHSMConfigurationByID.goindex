@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findHSMConfigurationByID(ctx context.Context, conn *redshift.Client, id string) (*awstypes.HsmConfiguration, error) {
+	input := redshift.DescribeHsmConfigurationsInput{
+		HsmConfigurationIdentifier: aws.String(id),
+	}
+
+	output, err := conn.DescribeHsmConfigurations(ctx, &input)
+	if errs.IsA[*awstypes.HsmConfigurationNotFoundFault](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil || len(output.HsmConfigurations) == 0 {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	if count := len(output.HsmConfigurations); count > 1 {
+		return nil, tfresource.NewTooManyResultsError(count, input)
+	}
+
+	return tfresource.AssertSingleValueResult(output.HsmConfigurations)
+}

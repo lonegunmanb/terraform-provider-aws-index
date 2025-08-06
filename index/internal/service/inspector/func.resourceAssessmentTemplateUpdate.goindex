@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/inspector/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAssessmentTemplateUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).InspectorClient(ctx)
+
+	if d.HasChange("event_subscription") {
+		old, new := d.GetChange("event_subscription")
+		oldSet := old.(*schema.Set)
+		newSet := new.(*schema.Set)
+
+		eventSubscriptionsToAdd := newSet.Difference(oldSet)
+		eventSubscriptionsToRemove := oldSet.Difference(newSet)
+
+		templateId := aws.String(d.Id())
+
+		addEventSubscriptionsInput := expandEventSubscriptions(eventSubscriptionsToAdd.List(), templateId)
+		removeEventSubscriptionsInput := expandEventSubscriptions(eventSubscriptionsToRemove.List(), templateId)
+
+		if err := subscribeToEvents(ctx, conn, addEventSubscriptionsInput); err != nil {
+			return create.AppendDiagError(diags, names.Inspector, create.ErrActionUpdating, ResNameAssessmentTemplate, d.Id(), err)
+		}
+
+		if err := unsubscribeFromEvents(ctx, conn, removeEventSubscriptionsInput); err != nil {
+			return create.AppendDiagError(diags, names.Inspector, create.ErrActionUpdating, ResNameAssessmentTemplate, d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceAssessmentTemplateRead(ctx, d, meta)...)
+}

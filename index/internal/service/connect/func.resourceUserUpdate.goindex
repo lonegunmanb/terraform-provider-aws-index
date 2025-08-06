@@ -1,0 +1,119 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID, userID, err := userParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	// User has 5 update APIs
+	// UpdateUserHierarchyWithContext: Assigns the specified hierarchy group to the specified user.
+	// UpdateUserIdentityInfoWithContext: Updates the identity information for the specified user.
+	// UpdateUserPhoneConfigWithContext: Updates the phone configuration settings for the specified user.
+	// UpdateUserRoutingProfileWithContext: Assigns the specified routing profile to the specified user.
+	// UpdateUserSecurityProfilesWithContext: Assigns the specified security profiles to the specified user.
+
+	// updates to hierarchy_group_id
+	if d.HasChange("hierarchy_group_id") {
+		input := &connect.UpdateUserHierarchyInput{
+			InstanceId: aws.String(instanceID),
+			UserId:     aws.String(userID),
+		}
+
+		if v, ok := d.GetOk("hierarchy_group_id"); ok {
+			input.HierarchyGroupId = aws.String(v.(string))
+		}
+
+		_, err = conn.UpdateUserHierarchy(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect User (%s) HierarchyGroupId: %s", d.Id(), err)
+		}
+	}
+
+	// updates to identity_info
+	if d.HasChange("identity_info") {
+		input := &connect.UpdateUserIdentityInfoInput{
+			IdentityInfo: expandUserIdentityInfo(d.Get("identity_info").([]any)),
+			InstanceId:   aws.String(instanceID),
+			UserId:       aws.String(userID),
+		}
+
+		_, err = conn.UpdateUserIdentityInfo(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect User (%s) IdentityInfo: %s", d.Id(), err)
+		}
+	}
+
+	// updates to phone_config
+	if d.HasChange("phone_config") {
+		input := &connect.UpdateUserPhoneConfigInput{
+			InstanceId:  aws.String(instanceID),
+			PhoneConfig: expandUserPhoneConfig(d.Get("phone_config").([]any)),
+			UserId:      aws.String(userID),
+		}
+
+		_, err = conn.UpdateUserPhoneConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect User (%s) PhoneConfig: %s", d.Id(), err)
+		}
+	}
+
+	// updates to routing_profile_id
+	if d.HasChange("routing_profile_id") {
+		input := &connect.UpdateUserRoutingProfileInput{
+			InstanceId:       aws.String(instanceID),
+			RoutingProfileId: aws.String(d.Get("routing_profile_id").(string)),
+			UserId:           aws.String(userID),
+		}
+
+		_, err = conn.UpdateUserRoutingProfile(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect User (%s) RoutingProfileId: %s", d.Id(), err)
+		}
+	}
+
+	// updates to security_profile_ids
+	if d.HasChange("security_profile_ids") {
+		input := &connect.UpdateUserSecurityProfilesInput{
+			InstanceId:         aws.String(instanceID),
+			SecurityProfileIds: flex.ExpandStringValueSet(d.Get("security_profile_ids").(*schema.Set)),
+			UserId:             aws.String(userID),
+		}
+
+		_, err = conn.UpdateUserSecurityProfiles(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect User (%s) SecurityProfileIds: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceUserRead(ctx, d, meta)...)
+}

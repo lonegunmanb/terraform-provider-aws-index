@@ -1,0 +1,469 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func RegisterSweepers() {
+	resource.AddTestSweepers("aws_customer_gateway", &resource.Sweeper{
+		Name: "aws_customer_gateway",
+		F:    sweepCustomerGateways,
+		Dependencies: []string{
+			"aws_vpn_connection",
+		},
+	})
+
+	resource.AddTestSweepers("aws_ec2_capacity_reservation", &resource.Sweeper{
+		Name: "aws_ec2_capacity_reservation",
+		F:    sweepCapacityReservations,
+	})
+
+	resource.AddTestSweepers("aws_ec2_carrier_gateway", &resource.Sweeper{
+		Name: "aws_ec2_carrier_gateway",
+		F:    sweepCarrierGateways,
+	})
+
+	resource.AddTestSweepers("aws_ec2_client_vpn_endpoint", &resource.Sweeper{
+		Name: "aws_ec2_client_vpn_endpoint",
+		F:    sweepClientVPNEndpoints,
+		Dependencies: []string{
+			"aws_ec2_client_vpn_network_association",
+		},
+	})
+
+	resource.AddTestSweepers("aws_ec2_client_vpn_network_association", &resource.Sweeper{
+		Name: "aws_ec2_client_vpn_network_association",
+		F:    sweepClientVPNNetworkAssociations,
+	})
+
+	resource.AddTestSweepers("aws_ec2_fleet", &resource.Sweeper{
+		Name: "aws_ec2_fleet",
+		F:    sweepFleets,
+	})
+
+	resource.AddTestSweepers("aws_ebs_volume", &resource.Sweeper{
+		Name: "aws_ebs_volume",
+		Dependencies: []string{
+			"aws_instance",
+		},
+		F: sweepEBSVolumes,
+	})
+
+	resource.AddTestSweepers("aws_ebs_snapshot", &resource.Sweeper{
+		Name: "aws_ebs_snapshot",
+		F:    sweepEBSSnapshots,
+		Dependencies: []string{
+			"aws_ami",
+		},
+	})
+
+	resource.AddTestSweepers("aws_egress_only_internet_gateway", &resource.Sweeper{
+		Name: "aws_egress_only_internet_gateway",
+		F:    sweepEgressOnlyInternetGateways,
+	})
+
+	resource.AddTestSweepers("aws_eip", &resource.Sweeper{
+		Name: "aws_eip",
+		Dependencies: []string{
+			"aws_eip_domain_name",
+			"aws_vpc",
+		},
+		F: sweepEIPs,
+	})
+
+	resource.AddTestSweepers("aws_eip_domain_name", &resource.Sweeper{
+		Name: "aws_eip_domain_name",
+		F:    sweepEIPDomainNames,
+	})
+
+	resource.AddTestSweepers("aws_flow_log", &resource.Sweeper{
+		Name: "aws_flow_log",
+		F:    sweepFlowLogs,
+	})
+
+	resource.AddTestSweepers("aws_ec2_host", &resource.Sweeper{
+		Name: "aws_ec2_host",
+		F:    sweepHosts,
+		Dependencies: []string{
+			"aws_instance",
+		},
+	})
+
+	resource.AddTestSweepers("aws_instance", &resource.Sweeper{
+		Name: "aws_instance",
+		F:    sweepInstances,
+		Dependencies: []string{
+			"aws_autoscaling_group",
+			"aws_spot_fleet_request",
+			"aws_spot_instance_request",
+		},
+	})
+
+	resource.AddTestSweepers("aws_internet_gateway", &resource.Sweeper{
+		Name: "aws_internet_gateway",
+		Dependencies: []string{
+			"aws_subnet",
+		},
+		F: sweepInternetGateways,
+	})
+
+	resource.AddTestSweepers("aws_key_pair", &resource.Sweeper{
+		Name: "aws_key_pair",
+		Dependencies: []string{
+			"aws_elastic_beanstalk_environment",
+			"aws_instance",
+			"aws_spot_fleet_request",
+			"aws_spot_instance_request",
+		},
+		F: sweepKeyPairs,
+	})
+
+	resource.AddTestSweepers("aws_launch_template", &resource.Sweeper{
+		Name: "aws_launch_template",
+		Dependencies: []string{
+			"aws_autoscaling_group",
+			"aws_batch_compute_environment",
+		},
+		F: sweepLaunchTemplates,
+	})
+
+	resource.AddTestSweepers("aws_nat_gateway", &resource.Sweeper{
+		Name: "aws_nat_gateway",
+		F:    sweepNATGateways,
+	})
+
+	resource.AddTestSweepers("aws_network_acl", &resource.Sweeper{
+		Name: "aws_network_acl",
+		F:    sweepNetworkACLs,
+	})
+
+	resource.AddTestSweepers("aws_network_interface", &resource.Sweeper{
+		Name: "aws_network_interface",
+		F:    sweepNetworkInterfaces,
+		Dependencies: []string{
+			"aws_db_proxy",
+			"aws_directory_service_directory",
+			"aws_ec2_client_vpn_endpoint",
+			"aws_ec2_traffic_mirror_session",
+			"aws_ec2_transit_gateway_vpc_attachment",
+			"aws_eks_cluster",
+			"aws_elb",
+			"aws_instance",
+			"aws_lb",
+			"aws_nat_gateway",
+			"aws_rds_cluster",
+			"aws_rds_global_cluster",
+		},
+	})
+
+	resource.AddTestSweepers("aws_ec2_managed_prefix_list", &resource.Sweeper{
+		Name: "aws_ec2_managed_prefix_list",
+		F:    sweepManagedPrefixLists,
+		Dependencies: []string{
+			"aws_route_table",
+			"aws_security_group",
+			"aws_networkfirewall_rule_group",
+		},
+	})
+
+	resource.AddTestSweepers("aws_ec2_network_insights_path", &resource.Sweeper{
+		Name: "aws_ec2_network_insights_path",
+		F:    sweepNetworkInsightsPaths,
+	})
+
+	resource.AddTestSweepers("aws_placement_group", &resource.Sweeper{
+		Name: "aws_placement_group",
+		F:    sweepPlacementGroups,
+		Dependencies: []string{
+			"aws_autoscaling_group",
+			"aws_instance",
+			"aws_launch_template",
+			"aws_spot_fleet_request",
+			"aws_spot_instance_request",
+		},
+	})
+
+	resource.AddTestSweepers("aws_route_table", &resource.Sweeper{
+		Name: "aws_route_table",
+		F:    sweepRouteTables,
+	})
+
+	resource.AddTestSweepers("aws_security_group", &resource.Sweeper{
+		Name: "aws_security_group",
+		Dependencies: []string{
+			"aws_subnet",
+		},
+		F: sweepSecurityGroups,
+	})
+
+	resource.AddTestSweepers("aws_spot_fleet_request", &resource.Sweeper{
+		Name: "aws_spot_fleet_request",
+		F:    sweepSpotFleetRequests,
+	})
+
+	resource.AddTestSweepers("aws_spot_instance_request", &resource.Sweeper{
+		Name: "aws_spot_instance_request",
+		F:    sweepSpotInstanceRequests,
+	})
+
+	awsv2.Register("aws_subnet", sweepSubnets,
+		"aws_appstream_fleet",
+		"aws_appstream_image_builder",
+		"aws_autoscaling_group",
+		"aws_batch_compute_environment",
+		"aws_elastic_beanstalk_environment",
+		"aws_cloud9_environment_ec2",
+		"aws_cloudhsm_v2_cluster",
+		"aws_codestarconnections_host",
+		"aws_db_subnet_group",
+		"aws_directory_service_directory",
+		"aws_dms_replication_subnet_group",
+		"aws_docdb_subnet_group",
+		"aws_ec2_client_vpn_endpoint",
+		"aws_ec2_instance_connect_endpoint",
+		"aws_ec2_transit_gateway_vpc_attachment",
+		"aws_efs_file_system",
+		"aws_eks_cluster",
+		"aws_elasticache_cluster",
+		"aws_elasticache_replication_group",
+		"aws_elasticache_serverless_cache",
+		"aws_elasticache_subnet_group",
+		"aws_elasticsearch_domain",
+		"aws_elb",
+		"aws_emr_cluster",
+		"aws_emr_studio",
+		"aws_fsx_lustre_file_system",
+		"aws_fsx_ontap_file_system",
+		"aws_fsx_openzfs_file_system",
+		"aws_fsx_windows_file_system",
+		"aws_grafana_workspace",
+		"aws_iot_topic_rule_destination",
+		"aws_lambda_function",
+		"aws_lb",
+		"aws_memorydb_subnet_group",
+		"aws_mq_broker",
+		"aws_msk_cluster",
+		"aws_network_interface",
+		"aws_networkfirewall_firewall",
+		"aws_opensearch_domain",
+		"aws_quicksight_vpc_connection",
+		"aws_redshift_cluster",
+		"aws_redshift_subnet_group",
+		"aws_route53_resolver_endpoint",
+		"aws_sagemaker_notebook_instance",
+		"aws_spot_fleet_request",
+		"aws_spot_instance_request",
+		"aws_vpc_endpoint",
+	)
+
+	resource.AddTestSweepers("aws_ec2_traffic_mirror_filter", &resource.Sweeper{
+		Name: "aws_ec2_traffic_mirror_filter",
+		F:    sweepTrafficMirrorFilters,
+		Dependencies: []string{
+			"aws_ec2_traffic_mirror_session",
+		},
+	})
+
+	resource.AddTestSweepers("aws_ec2_traffic_mirror_session", &resource.Sweeper{
+		Name: "aws_ec2_traffic_mirror_session",
+		F:    sweepTrafficMirrorSessions,
+	})
+
+	resource.AddTestSweepers("aws_ec2_traffic_mirror_target", &resource.Sweeper{
+		Name: "aws_ec2_traffic_mirror_target",
+		F:    sweepTrafficMirrorTargets,
+		Dependencies: []string{
+			"aws_ec2_traffic_mirror_session",
+		},
+	})
+
+	resource.AddTestSweepers("aws_ec2_transit_gateway_peering_attachment", &resource.Sweeper{
+		Name: "aws_ec2_transit_gateway_peering_attachment",
+		F:    sweepTransitGatewayPeeringAttachments,
+	})
+
+	resource.AddTestSweepers("aws_ec2_transit_gateway_multicast_domain", &resource.Sweeper{
+		Name: "aws_ec2_transit_gateway_multicast_domain",
+		F:    sweepTransitGatewayMulticastDomains,
+	})
+
+	resource.AddTestSweepers("aws_ec2_transit_gateway", &resource.Sweeper{
+		Name: "aws_ec2_transit_gateway",
+		F:    sweepTransitGateways,
+		Dependencies: []string{
+			"aws_dx_gateway_association",
+			"aws_ec2_transit_gateway_vpc_attachment",
+			"aws_ec2_transit_gateway_peering_attachment",
+			"aws_networkmanager_transit_gateway_route_table_attachment",
+			"aws_vpn_connection",
+		},
+	})
+
+	resource.AddTestSweepers("aws_ec2_transit_gateway_connect_peer", &resource.Sweeper{
+		Name: "aws_ec2_transit_gateway_connect_peer",
+		F:    sweepTransitGatewayConnectPeers,
+	})
+
+	resource.AddTestSweepers("aws_ec2_transit_gateway_connect", &resource.Sweeper{
+		Name: "aws_ec2_transit_gateway_connect",
+		F:    sweepTransitGatewayConnects,
+		Dependencies: []string{
+			"aws_ec2_transit_gateway_connect_peer",
+			"aws_networkmanager_connect_attachment",
+		},
+	})
+
+	resource.AddTestSweepers("aws_ec2_transit_gateway_vpc_attachment", &resource.Sweeper{
+		Name: "aws_ec2_transit_gateway_vpc_attachment",
+		F:    sweepTransitGatewayVPCAttachments,
+		Dependencies: []string{
+			"aws_ec2_transit_gateway_connect",
+			"aws_ec2_transit_gateway_multicast_domain",
+		},
+	})
+
+	resource.AddTestSweepers("aws_vpc_dhcp_options", &resource.Sweeper{
+		Name: "aws_vpc_dhcp_options",
+		F:    sweepVPCDHCPOptions,
+	})
+
+	resource.AddTestSweepers("aws_vpc_endpoint", &resource.Sweeper{
+		Name: "aws_vpc_endpoint",
+		F:    sweepVPCEndpoints,
+		Dependencies: []string{
+			"aws_route_table",
+			"aws_sagemaker_workforce",
+			"aws_vpc_endpoint_connection_accepter",
+		},
+	})
+
+	resource.AddTestSweepers("aws_vpc_endpoint_connection_accepter", &resource.Sweeper{
+		Name: "aws_vpc_endpoint_connection_accepter",
+		F:    sweepVPCEndpointConnectionAccepters,
+	})
+
+	resource.AddTestSweepers("aws_vpc_endpoint_service", &resource.Sweeper{
+		Name: "aws_vpc_endpoint_service",
+		F:    sweepVPCEndpointServices,
+		Dependencies: []string{
+			"aws_vpc_endpoint",
+		},
+	})
+
+	resource.AddTestSweepers("aws_vpc_peering_connection", &resource.Sweeper{
+		Name: "aws_vpc_peering_connection",
+		F:    sweepVPCPeeringConnections,
+	})
+
+	resource.AddTestSweepers("aws_vpc", &resource.Sweeper{
+		Name: "aws_vpc",
+		Dependencies: []string{
+			"aws_ec2_carrier_gateway",
+			"aws_egress_only_internet_gateway",
+			"aws_internet_gateway",
+			"aws_nat_gateway",
+			"aws_network_acl",
+			"aws_networkmanager_vpc_attachment",
+			"aws_vpc_route_server_vpc_association",
+			"aws_route_table",
+			"aws_security_group",
+			"aws_subnet",
+			"aws_vpc_peering_connection",
+			"aws_vpn_gateway",
+			"aws_vpclattice_service_network",
+			"aws_vpclattice_target_group",
+		},
+		F: sweepVPCs,
+	})
+
+	resource.AddTestSweepers("aws_vpn_connection", &resource.Sweeper{
+		Name: "aws_vpn_connection",
+		F:    sweepVPNConnections,
+	})
+
+	resource.AddTestSweepers("aws_vpn_gateway", &resource.Sweeper{
+		Name: "aws_vpn_gateway",
+		F:    sweepVPNGateways,
+		Dependencies: []string{
+			"aws_dx_gateway_association",
+			"aws_networkmanager_site_to_site_vpn_attachment",
+			"aws_vpn_connection",
+		},
+	})
+
+	awsv2.Register("aws_vpc_ipam", sweepIPAMs)
+	awsv2.Register("aws_vpc_ipam_resource_discovery", sweepIPAMResourceDiscoveries)
+
+	resource.AddTestSweepers("aws_ami", &resource.Sweeper{
+		Name: "aws_ami",
+		F:    sweepAMIs,
+	})
+
+	resource.AddTestSweepers("aws_vpc_network_performance_metric_subscription", &resource.Sweeper{
+		Name: "aws_vpc_network_performance_metric_subscription",
+		F:    sweepNetworkPerformanceMetricSubscriptions,
+	})
+
+	resource.AddTestSweepers("aws_ec2_instance_connect_endpoint", &resource.Sweeper{
+		Name: "aws_ec2_instance_connect_endpoint",
+		F:    sweepInstanceConnectEndpoints,
+	})
+
+	resource.AddTestSweepers("aws_verifiedaccess_trust_provider", &resource.Sweeper{
+		Name: "aws_verifiedaccess_trust_provider",
+		F:    sweepVerifiedAccessTrustProviders,
+		Dependencies: []string{
+			"aws_verifiedaccess_instance_trust_provider_attachment",
+		},
+	})
+
+	resource.AddTestSweepers("aws_verifiedaccess_instance_trust_provider_attachment", &resource.Sweeper{
+		Name: "aws_verifiedaccess_instance_trust_provider_attachment",
+		F:    sweepVerifiedAccessTrustProviderAttachments,
+		Dependencies: []string{
+			"aws_verifiedaccess_group",
+		},
+	})
+
+	resource.AddTestSweepers("aws_verifiedaccess_group", &resource.Sweeper{
+		Name: "aws_verifiedaccess_group",
+		F:    sweepVerifiedAccessGroups,
+		Dependencies: []string{
+			"aws_verifiedaccess_endpoint",
+		},
+	})
+
+	resource.AddTestSweepers("aws_verifiedaccess_endpoint", &resource.Sweeper{
+		Name: "aws_verifiedaccess_endpoint",
+		F:    sweepVerifiedAccessEndpoints,
+	})
+
+	resource.AddTestSweepers("aws_verifiedaccess_instance", &resource.Sweeper{
+		Name: "aws_verifiedaccess_instance",
+		F:    sweepVerifiedAccessInstances,
+		Dependencies: []string{
+			"aws_verifiedaccess_trust_provider",
+		},
+	})
+
+	awsv2.Register("aws_vpc_route_server", sweepRouteServers, "aws_vpc_route_server_vpc_association")
+	awsv2.Register("aws_vpc_route_server_vpc_association", sweepRouteServerAssociations, "aws_vpc_route_server_endpoint", "aws_vpc_route_server_propagation")
+	awsv2.Register("aws_vpc_route_server_endpoint", sweepRouteServerEndpoints, "aws_vpc_route_server_peer")
+	awsv2.Register("aws_vpc_route_server_peer", sweepRouteServerPeers)
+	awsv2.Register("aws_vpc_route_server_propagation", sweepRouteServerPropagations)
+}

@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apprunner
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apprunner"
+	"github.com/aws/aws-sdk-go-v2/service/apprunner/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServiceUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).AppRunnerClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &apprunner.UpdateServiceInput{
+			ServiceArn: aws.String(d.Id()),
+		}
+
+		if d.HasChange("auto_scaling_configuration_arn") {
+			input.AutoScalingConfigurationArn = aws.String(d.Get("auto_scaling_configuration_arn").(string))
+		}
+
+		if d.HasChange("health_check_configuration") {
+			input.HealthCheckConfiguration = expandServiceHealthCheckConfiguration(d.Get("health_check_configuration").([]any))
+		}
+
+		if d.HasChange("instance_configuration") {
+			input.InstanceConfiguration = expandServiceInstanceConfiguration(d.Get("instance_configuration").([]any))
+		}
+
+		if d.HasChange(names.AttrNetworkConfiguration) {
+			input.NetworkConfiguration = expandNetworkConfiguration(d.Get(names.AttrNetworkConfiguration).([]any))
+		}
+
+		if d.HasChange("observability_configuration") {
+			input.ObservabilityConfiguration = expandServiceObservabilityConfiguration(d.Get("observability_configuration").([]any))
+		}
+
+		if d.HasChange("source_configuration") {
+			input.SourceConfiguration = expandServiceSourceConfiguration(d.Get("source_configuration").([]any))
+		}
+
+		_, err := conn.UpdateService(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating App Runner Service (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitServiceUpdated(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for App Runner Service (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceServiceRead(ctx, d, meta)...)
+}

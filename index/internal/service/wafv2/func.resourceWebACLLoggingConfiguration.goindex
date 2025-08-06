@@ -1,0 +1,170 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWebACLLoggingConfiguration() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceWebACLLoggingConfigurationPut,
+		ReadWithoutTimeout:   resourceWebACLLoggingConfigurationRead,
+		UpdateWithoutTimeout: resourceWebACLLoggingConfigurationPut,
+		DeleteWithoutTimeout: resourceWebACLLoggingConfigurationDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		SchemaFunc: func() map[string]*schema.Schema {
+			return map[string]*schema.Schema{
+				"log_destination_configs": {
+					Type:     schema.TypeSet,
+					Required: true,
+					ForceNew: true,
+					MinItems: 1,
+					MaxItems: 100,
+					Elem: &schema.Schema{
+						Type:         schema.TypeString,
+						ValidateFunc: verify.ValidARN,
+					},
+					Description: "AWS Kinesis Firehose Delivery Stream ARNs",
+				},
+				"logging_filter": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"default_behavior": {
+								Type:             schema.TypeString,
+								Required:         true,
+								ValidateDiagFunc: enum.Validate[awstypes.FilterBehavior](),
+							},
+							names.AttrFilter: {
+								Type:     schema.TypeSet,
+								Required: true,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"behavior": {
+											Type:             schema.TypeString,
+											Required:         true,
+											ValidateDiagFunc: enum.Validate[awstypes.FilterBehavior](),
+										},
+										names.AttrCondition: {
+											Type:     schema.TypeSet,
+											Required: true,
+											MinItems: 1,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													"action_condition": {
+														Type:     schema.TypeList,
+														Optional: true,
+														MaxItems: 1,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																names.AttrAction: {
+																	Type:             schema.TypeString,
+																	Required:         true,
+																	ValidateDiagFunc: enum.Validate[awstypes.ActionValue](),
+																},
+															},
+														},
+													},
+													"label_name_condition": {
+														Type:     schema.TypeList,
+														Optional: true,
+														MaxItems: 1,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																"label_name": {
+																	Type:     schema.TypeString,
+																	Required: true,
+																	ValidateFunc: validation.All(
+																		validation.StringLenBetween(1, 1024),
+																		validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_\-:]+$`), "must contain only alphanumeric characters, underscores, hyphens, and colons"),
+																	),
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+										"requirement": {
+											Type:             schema.TypeString,
+											Required:         true,
+											ValidateDiagFunc: enum.Validate[awstypes.FilterRequirement](),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"redacted_fields": {
+					// To allow this argument and its nested fields with Empty Schemas (e.g. "method")
+					// to be correctly interpreted, this argument must be of type List,
+					// otherwise, at apply-time a field configured as an empty block
+					// (e.g. body {}) will result in a nil redacted_fields attribute
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 100,
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"method":       emptySchema(),
+							"query_string": emptySchema(),
+							"single_header": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										names.AttrName: {
+											Type:     schema.TypeString,
+											Required: true,
+											ValidateFunc: validation.All(
+												validation.StringLenBetween(1, 40),
+												// The value is returned in lower case by the API.
+												// Trying to solve it with StateFunc and/or DiffSuppressFunc resulted in hash problem of the rule field or didn't work.
+												validation.StringMatch(regexache.MustCompile(`^[0-9a-z_-]+$`), "must contain only lowercase alphanumeric characters, underscores, and hyphens"),
+											),
+										},
+									},
+								},
+							},
+							"uri_path": emptySchema(),
+						},
+					},
+					Description:      "Parts of the request to exclude from logs",
+					DiffSuppressFunc: suppressRedactedFieldsDiff,
+				},
+				names.AttrResourceARN: {
+					Type:         schema.TypeString,
+					Required:     true,
+					ForceNew:     true,
+					ValidateFunc: verify.ValidARN,
+					Description:  "AWS WebACL ARN",
+				},
+			}
+		},
+	}
+}

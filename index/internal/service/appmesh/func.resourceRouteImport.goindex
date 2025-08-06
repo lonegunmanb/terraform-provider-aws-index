@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appmesh"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRouteImport(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+	parts := strings.Split(d.Id(), "/")
+	if len(parts) != 3 {
+		return []*schema.ResourceData{}, fmt.Errorf("wrong format of import ID (%s), use: 'mesh-name/virtual-router-name/route-name'", d.Id())
+	}
+
+	meshName := parts[0]
+	virtualRouterName := parts[1]
+	name := parts[2]
+
+	conn := meta.(*conns.AWSClient).AppMeshClient(ctx)
+
+	route, err := findRouteByFourPartKey(ctx, conn, meshName, "", virtualRouterName, name)
+
+	if err != nil {
+		return nil, err
+	}
+
+	d.SetId(aws.ToString(route.Metadata.Uid))
+	d.Set("mesh_name", route.MeshName)
+	d.Set(names.AttrName, route.RouteName)
+	d.Set("virtual_router_name", route.VirtualRouterName)
+
+	return []*schema.ResourceData{d}, nil
+}

@@ -1,0 +1,249 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	clusterID := d.Get(names.AttrClusterIdentifier).(string)
+	inputR := &redshift.RestoreFromClusterSnapshotInput{
+		AllowVersionUpgrade:              aws.Bool(d.Get("allow_version_upgrade").(bool)),
+		AutomatedSnapshotRetentionPeriod: aws.Int32(int32(d.Get("automated_snapshot_retention_period").(int))),
+		ClusterIdentifier:                aws.String(clusterID),
+		Port:                             aws.Int32(int32(d.Get(names.AttrPort).(int))),
+		NodeType:                         aws.String(d.Get("node_type").(string)),
+		PubliclyAccessible:               aws.Bool(d.Get(names.AttrPubliclyAccessible).(bool)),
+	}
+	inputC := &redshift.CreateClusterInput{
+		AllowVersionUpgrade:              aws.Bool(d.Get("allow_version_upgrade").(bool)),
+		AutomatedSnapshotRetentionPeriod: aws.Int32(int32(d.Get("automated_snapshot_retention_period").(int))),
+		ClusterIdentifier:                aws.String(clusterID),
+		ClusterVersion:                   aws.String(d.Get("cluster_version").(string)),
+		DBName:                           aws.String(d.Get(names.AttrDatabaseName).(string)),
+		MasterUsername:                   aws.String(d.Get("master_username").(string)),
+		NodeType:                         aws.String(d.Get("node_type").(string)),
+		Port:                             aws.Int32(int32(d.Get(names.AttrPort).(int))),
+		PubliclyAccessible:               aws.Bool(d.Get(names.AttrPubliclyAccessible).(bool)),
+		Tags:                             getTagsIn(ctx),
+	}
+
+	// get write-only value from configuration
+	masterPasswordWO, di := flex.GetWriteOnlyStringValue(d, cty.GetAttrPath("master_password_wo"))
+	diags = append(diags, di...)
+	if diags.HasError() {
+		return diags
+	}
+
+	if v, ok := d.GetOk("aqua_configuration_status"); ok {
+		inputR.AquaConfigurationStatus = awstypes.AquaConfigurationStatus(v.(string))
+		inputC.AquaConfigurationStatus = awstypes.AquaConfigurationStatus(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrAvailabilityZone); ok {
+		inputR.AvailabilityZone = aws.String(v.(string))
+		inputC.AvailabilityZone = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("availability_zone_relocation_enabled"); ok {
+		inputR.AvailabilityZoneRelocation = aws.Bool(v.(bool))
+		inputC.AvailabilityZoneRelocation = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("cluster_parameter_group_name"); ok {
+		inputR.ClusterParameterGroupName = aws.String(v.(string))
+		inputC.ClusterParameterGroupName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("cluster_subnet_group_name"); ok {
+		inputR.ClusterSubnetGroupName = aws.String(v.(string))
+		inputC.ClusterSubnetGroupName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("default_iam_role_arn"); ok {
+		inputR.DefaultIamRoleArn = aws.String(v.(string))
+		inputC.DefaultIamRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("elastic_ip"); ok {
+		inputR.ElasticIp = aws.String(v.(string))
+		inputC.ElasticIp = aws.String(v.(string))
+	}
+
+	isEncrypted := true
+	v := d.Get(names.AttrEncrypted)
+	if v, null, _ := nullable.Bool(v.(string)).ValueBool(); !null {
+		isEncrypted = v
+	}
+
+	if v, ok := d.GetOk("enhanced_vpc_routing"); ok {
+		inputR.EnhancedVpcRouting = aws.Bool(v.(bool))
+		inputC.EnhancedVpcRouting = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("iam_roles"); ok {
+		inputR.IamRoles = flex.ExpandStringValueSet(v.(*schema.Set))
+		inputC.IamRoles = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		inputR.KmsKeyId = aws.String(v.(string))
+		inputC.KmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("maintenance_track_name"); ok {
+		inputR.MaintenanceTrackName = aws.String(v.(string))
+		inputC.MaintenanceTrackName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("manage_master_password"); ok {
+		inputR.ManageMasterPassword = aws.Bool(v.(bool))
+		inputC.ManageMasterPassword = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("manual_snapshot_retention_period"); ok {
+		inputR.ManualSnapshotRetentionPeriod = aws.Int32(int32(v.(int)))
+		inputC.ManualSnapshotRetentionPeriod = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("master_password"); ok {
+		inputC.MasterUserPassword = aws.String(v.(string))
+	}
+
+	if masterPasswordWO != "" {
+		inputC.MasterUserPassword = aws.String(masterPasswordWO)
+	}
+
+	if v, ok := d.GetOk("master_password_secret_kms_key_id"); ok {
+		inputR.MasterPasswordSecretKmsKeyId = aws.String(v.(string))
+		inputC.MasterPasswordSecretKmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("multi_az"); ok {
+		inputR.MultiAZ = aws.Bool(v.(bool))
+		inputC.MultiAZ = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("number_of_nodes"); ok {
+		inputR.NumberOfNodes = aws.Int32(int32(v.(int)))
+		// NumberOfNodes set below for CreateCluster.
+	}
+
+	if v, ok := d.GetOk(names.AttrPreferredMaintenanceWindow); ok {
+		inputR.PreferredMaintenanceWindow = aws.String(v.(string))
+		inputC.PreferredMaintenanceWindow = aws.String(v.(string))
+	}
+
+	if v := d.Get(names.AttrVPCSecurityGroupIDs).(*schema.Set); v.Len() > 0 {
+		inputR.VpcSecurityGroupIds = flex.ExpandStringValueSet(v)
+		inputC.VpcSecurityGroupIds = flex.ExpandStringValueSet(v)
+	}
+
+	if v, ok := d.GetOk("snapshot_identifier"); ok {
+		inputR.SnapshotIdentifier = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("snapshot_arn"); ok {
+		inputR.SnapshotArn = aws.String(v.(string))
+	}
+
+	if inputR.SnapshotArn != nil || inputR.SnapshotIdentifier != nil {
+		if v, ok := d.GetOk("owner_account"); ok {
+			inputR.OwnerAccount = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("snapshot_cluster_identifier"); ok {
+			inputR.SnapshotClusterIdentifier = aws.String(v.(string))
+		}
+
+		output, err := conn.RestoreFromClusterSnapshot(ctx, inputR)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "restoring Redshift Cluster (%s) from snapshot: %s", clusterID, err)
+		}
+
+		d.SetId(aws.ToString(output.Cluster.ClusterIdentifier))
+
+		if _, err := waitClusterRestored(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): restoring cluster: %s", d.Id(), err)
+		}
+	} else {
+		if _, ok := d.GetOk("master_password"); !ok && masterPasswordWO == "" {
+			if _, ok := d.GetOk("manage_master_password"); !ok {
+				return sdkdiag.AppendErrorf(diags, `provider.aws: aws_redshift_cluster: %s: one of "manage_master_password" or "master_password" is required`, d.Get(names.AttrClusterIdentifier).(string))
+			}
+		}
+
+		if _, ok := d.GetOk("master_username"); !ok {
+			return sdkdiag.AppendErrorf(diags, `provider.aws: aws_redshift_cluster: %s: "master_username": required field is not set`, d.Get(names.AttrClusterIdentifier).(string))
+		}
+
+		if v := d.Get("number_of_nodes").(int); v > 1 {
+			inputC.ClusterType = aws.String(clusterTypeMultiNode)
+			inputC.NumberOfNodes = aws.Int32(int32(d.Get("number_of_nodes").(int)))
+		} else {
+			inputC.ClusterType = aws.String(clusterTypeSingleNode)
+		}
+
+		output, err := conn.CreateCluster(ctx, inputC)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): %s", clusterID, err)
+		}
+
+		d.SetId(aws.ToString(output.Cluster.ClusterIdentifier))
+
+		if _, err := waitClusterCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): waiting for completion: %s", d.Id(), err)
+		}
+	}
+
+	cluster, err := waitClusterRelocationStatusResolved(ctx, conn, d.Id())
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): waiting for relocation: %s", d.Id(), err)
+	}
+
+	if isEncrypted != aws.ToBool(cluster.Encrypted) {
+		modifyInput := redshift.ModifyClusterInput{
+			ClusterIdentifier: aws.String(d.Id()),
+			Encrypted:         aws.Bool(isEncrypted),
+		}
+		_, err := conn.ModifyCluster(ctx, &modifyInput)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): disabling encryption: %s", d.Id(), err)
+		}
+
+		if _, err := waitClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): disabling encryption: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceClusterRead(ctx, d, meta)...)
+}

@@ -1,0 +1,133 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findRuleMatch(p awstypes.IpPermission, rules []awstypes.IpPermission) (*awstypes.IpPermission, *string) {
+	var rule *awstypes.IpPermission
+	var description *string
+
+	for _, r := range rules {
+		if p.ToPort != nil && r.ToPort != nil && aws.ToInt32(p.ToPort) != aws.ToInt32(r.ToPort) {
+			continue
+		}
+
+		if p.FromPort != nil && r.FromPort != nil && aws.ToInt32(p.FromPort) != aws.ToInt32(r.FromPort) {
+			continue
+		}
+
+		if p.IpProtocol != nil && r.IpProtocol != nil && aws.ToString(p.IpProtocol) != aws.ToString(r.IpProtocol) {
+			continue
+		}
+
+		remaining := len(p.IpRanges)
+		for _, v1 := range p.IpRanges {
+			for _, v2 := range r.IpRanges {
+				if v1.CidrIp == nil || v2.CidrIp == nil {
+					continue
+				}
+				if aws.ToString(v1.CidrIp) == aws.ToString(v2.CidrIp) {
+					remaining--
+
+					if v := v2.Description; v != nil && description == nil {
+						description = v
+					}
+				}
+			}
+		}
+
+		if remaining > 0 {
+			continue
+		}
+
+		remaining = len(p.Ipv6Ranges)
+		for _, v1 := range p.Ipv6Ranges {
+			for _, v2 := range r.Ipv6Ranges {
+				if v1.CidrIpv6 == nil || v2.CidrIpv6 == nil {
+					continue
+				}
+				if aws.ToString(v1.CidrIpv6) == aws.ToString(v2.CidrIpv6) {
+					remaining--
+
+					if v := v2.Description; v != nil && description == nil {
+						description = v
+					}
+				}
+			}
+		}
+
+		if remaining > 0 {
+			continue
+		}
+
+		remaining = len(p.PrefixListIds)
+		for _, v1 := range p.PrefixListIds {
+			for _, v2 := range r.PrefixListIds {
+				if v1.PrefixListId == nil || v2.PrefixListId == nil {
+					continue
+				}
+				if aws.ToString(v1.PrefixListId) == aws.ToString(v2.PrefixListId) {
+					remaining--
+
+					if v := v2.Description; v != nil && description == nil {
+						description = v
+					}
+				}
+			}
+		}
+
+		if remaining > 0 {
+			continue
+		}
+
+		remaining = len(p.UserIdGroupPairs)
+		for _, v1 := range p.UserIdGroupPairs {
+			for _, v2 := range r.UserIdGroupPairs {
+				if v1.GroupId == nil || v2.GroupId == nil {
+					continue
+				}
+				if aws.ToString(v1.GroupId) == aws.ToString(v2.GroupId) {
+					remaining--
+
+					if v := v2.Description; v != nil && description == nil {
+						description = v
+					}
+				}
+			}
+		}
+
+		if remaining > 0 {
+			description = nil
+
+			continue
+		}
+
+		rule = &r
+	}
+
+	return rule, description
+}

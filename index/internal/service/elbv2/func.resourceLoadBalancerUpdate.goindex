@@ -1,0 +1,160 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLoadBalancerUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBV2Client(ctx)
+
+	lbType := awstypes.LoadBalancerTypeEnum(d.Get("load_balancer_type").(string))
+	var attributes []awstypes.LoadBalancerAttribute
+
+	if d.HasChange("access_logs") {
+		if v, ok := d.GetOk("access_logs"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			attributes = append(attributes, expandLoadBalancerAccessLogsAttributes(v.([]any)[0].(map[string]any), true)...)
+		} else {
+			attributes = append(attributes, awstypes.LoadBalancerAttribute{
+				Key:   aws.String(loadBalancerAttributeAccessLogsS3Enabled),
+				Value: flex.BoolValueToString(false),
+			})
+		}
+	}
+
+	if d.HasChange("connection_logs") {
+		if v, ok := d.GetOk("connection_logs"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			attributes = append(attributes, expandLoadBalancerConnectionLogsAttributes(v.([]any)[0].(map[string]any), true)...)
+		} else {
+			attributes = append(attributes, awstypes.LoadBalancerAttribute{
+				Key:   aws.String(loadBalancerAttributeConnectionLogsS3Enabled),
+				Value: flex.BoolValueToString(false),
+			})
+		}
+	}
+
+	attributes = append(attributes, loadBalancerAttributes.expand(d, lbType, true)...)
+
+	if len(attributes) > 0 {
+		if err := modifyLoadBalancerAttributes(ctx, conn, d.Id(), attributes); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChanges("enforce_security_group_inbound_rules_on_private_link_traffic", names.AttrSecurityGroups) {
+		input := &elasticloadbalancingv2.SetSecurityGroupsInput{
+			LoadBalancerArn: aws.String(d.Id()),
+			SecurityGroups:  flex.ExpandStringValueSet(d.Get(names.AttrSecurityGroups).(*schema.Set)),
+		}
+
+		if lbType == awstypes.LoadBalancerTypeEnumNetwork {
+			if v, ok := d.GetOk("enforce_security_group_inbound_rules_on_private_link_traffic"); ok {
+				input.EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic = awstypes.EnforceSecurityGroupInboundRulesOnPrivateLinkTrafficEnum(v.(string))
+			}
+		}
+
+		_, err := conn.SetSecurityGroups(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ELBv2 Load Balancer (%s) security groups: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChanges("subnet_mapping", names.AttrSubnets) {
+		input := &elasticloadbalancingv2.SetSubnetsInput{
+			LoadBalancerArn: aws.String(d.Id()),
+		}
+
+		if d.HasChange("subnet_mapping") {
+			if v, ok := d.GetOk("subnet_mapping"); ok && v.(*schema.Set).Len() > 0 {
+				input.SubnetMappings = expandSubnetMappings(v.(*schema.Set).List())
+			}
+		}
+
+		if d.HasChange(names.AttrSubnets) {
+			if v, ok := d.GetOk(names.AttrSubnets); ok {
+				input.Subnets = flex.ExpandStringValueSet(v.(*schema.Set))
+			}
+		}
+
+		_, err := conn.SetSubnets(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ELBv2 Load Balancer (%s) subnets: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange(names.AttrIPAddressType) {
+		input := &elasticloadbalancingv2.SetIpAddressTypeInput{
+			IpAddressType:   awstypes.IpAddressType(d.Get(names.AttrIPAddressType).(string)),
+			LoadBalancerArn: aws.String(d.Id()),
+		}
+
+		_, err := conn.SetIpAddressType(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ELBv2 Load Balancer (%s) address type: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("ipam_pools") {
+		input := elasticloadbalancingv2.ModifyIpPoolsInput{
+			LoadBalancerArn: aws.String(d.Id()),
+		}
+		if ipamPools := expandIPAMPools(d.Get("ipam_pools").([]any)); ipamPools == nil {
+			input.RemoveIpamPools = []awstypes.RemoveIpamPoolEnum{awstypes.RemoveIpamPoolEnumIpv4}
+		} else {
+			input.IpamPools = ipamPools
+		}
+
+		_, err := conn.ModifyIpPools(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "modifying ELBv2 Load Balancer (%s) IPAM pools: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("minimum_load_balancer_capacity") {
+		if err := modifyCapacityReservation(ctx, conn, d.Id(), expandMinimumLoadBalancerCapacity(d.Get("minimum_load_balancer_capacity").([]any))); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		if _, err := waitCapacityReservationProvisioned(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for ELBv2 Load Balancer (%s) capacity reservation provision: %s", d.Id(), err)
+		}
+	}
+
+	if _, err := waitLoadBalancerActive(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ELBv2 Load Balancer (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceLoadBalancerRead(ctx, d, meta)...)
+}

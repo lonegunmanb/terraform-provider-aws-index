@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *continuousDeploymentPolicyResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new continuousDeploymentPolicyResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudFrontClient(ctx)
+
+	if !new.Enabled.Equal(old.Enabled) ||
+		!new.StagingDistributionDNSNames.Equal(old.StagingDistributionDNSNames) ||
+		!new.TrafficConfig.Equal(old.TrafficConfig) {
+		input := &cloudfront.UpdateContinuousDeploymentPolicyInput{
+			ContinuousDeploymentPolicyConfig: &awstypes.ContinuousDeploymentPolicyConfig{},
+		}
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, input.ContinuousDeploymentPolicyConfig)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		input.Id = new.ID.ValueStringPointer()
+		// Use state ETag value. The planned value will be unknown.
+		input.IfMatch = old.ETag.ValueStringPointer()
+
+		output, err := conn.UpdateContinuousDeploymentPolicy(ctx, input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating CloudFront Continuous Deployment Policy (%s)", new.ID.ValueString()), err.Error())
+
+			return
+		}
+
+		new.ETag = fwflex.StringToFramework(ctx, output.ETag)
+		new.LastModifiedTime = fwflex.TimeToFramework(ctx, output.ContinuousDeploymentPolicy.LastModifiedTime)
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+}

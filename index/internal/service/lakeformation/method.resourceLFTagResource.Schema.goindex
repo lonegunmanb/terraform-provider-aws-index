@@ -1,0 +1,217 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceLFTagResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrCatalogID: catalogIDSchemaOptional(),
+			names.AttrID:        framework.IDAttribute(),
+		},
+		Blocks: map[string]schema.Block{
+			names.AttrDatabase: schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[Database](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrCatalogID: catalogIDSchemaOptional(),
+						names.AttrName: schema.StringAttribute{
+							Required: true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+					},
+				},
+			},
+			"lf_tag": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[LFTag](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtMost(1),
+				},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrCatalogID: catalogIDSchemaOptionalComputed(),
+						names.AttrKey: schema.StringAttribute{
+							Required: true,
+							Validators: []validator.String{
+								stringvalidator.LengthBetween(1, 128),
+							},
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+						names.AttrValue: schema.StringAttribute{
+							Required: true,
+							Validators: []validator.String{
+								stringvalidator.LengthBetween(1, 255),
+								stringvalidator.RegexMatches(regexache.MustCompile(`^([\p{L}\p{Z}\p{N}_.:\*\/=+\-@%]*)$`), ""),
+							},
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+					},
+				},
+			},
+			"table": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[table](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrCatalogID: catalogIDSchemaOptional(),
+						names.AttrDatabaseName: schema.StringAttribute{
+							Required: true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+						names.AttrName: schema.StringAttribute{
+							Optional: true,
+							Validators: []validator.String{
+								stringvalidator.AtLeastOneOf(
+									path.MatchRelative().AtParent().AtName(names.AttrName),
+									path.MatchRelative().AtParent().AtName("wildcard"),
+								),
+							},
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+						"wildcard": schema.BoolAttribute{
+							Optional: true,
+							Validators: []validator.Bool{
+								boolvalidator.AtLeastOneOf(
+									path.MatchRelative().AtParent().AtName(names.AttrName),
+									path.MatchRelative().AtParent().AtName("wildcard"),
+								),
+							},
+							PlanModifiers: []planmodifier.Bool{
+								boolplanmodifier.RequiresReplace(),
+							},
+						},
+					},
+				},
+			},
+			"table_with_columns": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[tableWithColumns](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrCatalogID: catalogIDSchemaOptional(),
+						"column_names": schema.SetAttribute{
+							CustomType: fwtypes.SetOfStringType,
+							Optional:   true,
+							Validators: []validator.Set{
+								setvalidator.AtLeastOneOf(
+									path.MatchRelative().AtParent().AtName("column_names"),
+									path.MatchRelative().AtParent().AtName("column_wildcard"),
+								),
+							},
+							PlanModifiers: []planmodifier.Set{
+								setplanmodifier.RequiresReplace(),
+							},
+						},
+						names.AttrDatabaseName: schema.StringAttribute{
+							Required: true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+						names.AttrName: schema.StringAttribute{
+							Required: true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+								stringplanmodifier.UseStateForUnknown(),
+							},
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"column_wildcard": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[columnWildcardData](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+								listvalidator.AtLeastOneOf(
+									path.MatchRelative().AtParent().AtName("column_names"),
+									path.MatchRelative().AtParent().AtName("column_wildcard"),
+								),
+							},
+							PlanModifiers: []planmodifier.List{
+								listplanmodifier.RequiresReplace(),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"excluded_column_names": schema.SetAttribute{
+										CustomType: fwtypes.SetOfStringType,
+										Optional:   true,
+										PlanModifiers: []planmodifier.Set{
+											setplanmodifier.RequiresReplace(),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Delete: true,
+			}),
+		},
+	}
+}

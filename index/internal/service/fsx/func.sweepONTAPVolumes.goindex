@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepONTAPVolumes(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.FSxClient(ctx)
+
+	var sweepResources []sweep.Sweepable
+
+	input := fsx.DescribeVolumesInput{}
+	pages := fsx.NewDescribeVolumesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.Volumes {
+			if v.VolumeType != awstypes.VolumeTypeOntap {
+				continue
+			}
+			// Skip root volumes
+			if v.OntapConfiguration != nil && aws.ToBool(v.OntapConfiguration.StorageVirtualMachineRoot) {
+				continue
+			}
+
+			var bypassSnaplock bool
+			if v.OntapConfiguration != nil && v.OntapConfiguration.SnaplockConfiguration != nil {
+				bypassSnaplock = true
+			}
+
+			r := resourceONTAPVolume()
+			d := r.Data(nil)
+			d.SetId(aws.ToString(v.VolumeId))
+			d.Set("bypass_snaplock_enterprise_retention", bypassSnaplock)
+			d.Set("skip_final_backup", true)
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	return sweepResources, nil
+}

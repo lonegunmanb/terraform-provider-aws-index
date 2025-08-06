@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceScheduledActionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppAutoScalingClient(ctx)
+
+	scheduledAction, err := findScheduledActionByFourPartKey(ctx, conn, d.Get(names.AttrName).(string), d.Get("service_namespace").(string), d.Get(names.AttrResourceID).(string), d.Get("scalable_dimension").(string))
+
+	if tfresource.NotFound(err) && !d.IsNewResource() {
+		log.Printf("[WARN] Application Auto Scaling Scheduled Action (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Application Auto Scaling Scheduled Action (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, scheduledAction.ScheduledActionARN)
+	if scheduledAction.EndTime != nil {
+		d.Set("end_time", scheduledAction.EndTime.Format(time.RFC3339))
+	}
+	if err := d.Set("scalable_target_action", flattenScalableTargetAction(scheduledAction.ScalableTargetAction)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting scalable_target_action: %s", err)
+	}
+	d.Set(names.AttrSchedule, scheduledAction.Schedule)
+	if scheduledAction.StartTime != nil {
+		d.Set(names.AttrStartTime, scheduledAction.StartTime.Format(time.RFC3339))
+	}
+	d.Set("timezone", scheduledAction.Timezone)
+
+	return diags
+}

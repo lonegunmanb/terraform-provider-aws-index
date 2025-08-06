@@ -1,0 +1,39 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findAuthenticationProfileByID(ctx context.Context, conn *redshift.Client, id string) (*awstypes.AuthenticationProfile, error) {
+	input := redshift.DescribeAuthenticationProfilesInput{
+		AuthenticationProfileName: aws.String(id),
+	}
+
+	output, err := conn.DescribeAuthenticationProfiles(ctx, &input)
+
+	if errs.IsA[*awstypes.AuthenticationProfileNotFoundFault](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil || len(output.AuthenticationProfiles) == 0 {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	if count := len(output.AuthenticationProfiles); count > 1 {
+		return nil, tfresource.NewTooManyResultsError(count, input)
+	}
+
+	return tfresource.AssertSingleValueResult(output.AuthenticationProfiles)
+}

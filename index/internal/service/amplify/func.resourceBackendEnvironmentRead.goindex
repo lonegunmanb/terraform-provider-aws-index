@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amplify
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amplify"
+	"github.com/aws/aws-sdk-go-v2/service/amplify/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBackendEnvironmentRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AmplifyClient(ctx)
+
+	appID, environmentName, err := backendEnvironmentParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	backendEnvironment, err := findBackendEnvironmentByTwoPartKey(ctx, conn, appID, environmentName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Amplify Backend Environment (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Amplify Backend Environment (%s): %s", d.Id(), err)
+	}
+
+	d.Set("app_id", appID)
+	d.Set(names.AttrARN, backendEnvironment.BackendEnvironmentArn)
+	d.Set("deployment_artifacts", backendEnvironment.DeploymentArtifacts)
+	d.Set("environment_name", backendEnvironment.EnvironmentName)
+	d.Set("stack_name", backendEnvironment.StackName)
+
+	return diags
+}

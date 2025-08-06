@@ -1,0 +1,286 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"log"
+	"maps"
+	"os"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	awsbase "github.com/hashicorp/aws-sdk-go-base/v2"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/internal/attribute"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (p *sdkProvider) initialize(ctx context.Context) (map[string]conns.ServicePackage, error) {
+	log.Printf("Initializing Terraform AWS Provider (SDKv2-style)...")
+
+	var errs []error
+	servicePackageMap := make(map[string]conns.ServicePackage)
+
+	for _, sp := range p.servicePackages {
+		servicePackageName := sp.ServicePackageName()
+		servicePackageMap[servicePackageName] = sp
+
+		for _, v := range sp.SDKDataSources(ctx) {
+			typeName := v.TypeName
+
+			if _, ok := p.provider.DataSourcesMap[typeName]; ok {
+				errs = append(errs, fmt.Errorf("duplicate data source: %s", typeName))
+				continue
+			}
+
+			r := v.Factory()
+
+			// Ensure that the correct CRUD handler variants are used.
+			if r.Read != nil || r.ReadContext != nil {
+				errs = append(errs, fmt.Errorf("incorrect Read handler variant: %s data source", typeName))
+				continue
+			}
+
+			var isRegionOverrideEnabled bool
+			if v := v.Region; !tfunique.IsHandleNil(v) && v.Value().IsOverrideEnabled {
+				isRegionOverrideEnabled = true
+			}
+
+			var interceptors interceptorInvocations
+
+			if isRegionOverrideEnabled {
+				v := v.Region.Value()
+				s := r.SchemaMap()
+
+				if _, ok := s[names.AttrRegion]; !ok {
+					// Inject a top-level "region" attribute.
+					regionSchema := attribute.Region()
+
+					if f := r.SchemaFunc; f != nil {
+						r.SchemaFunc = func() map[string]*schema.Schema {
+							s := f()
+							s[names.AttrRegion] = regionSchema
+							return s
+						}
+					} else {
+						r.Schema[names.AttrRegion] = regionSchema
+					}
+				}
+
+				if v.IsValidateOverrideInPartition {
+					interceptors = append(interceptors, interceptorInvocation{
+						when:        Before,
+						why:         Read,
+						interceptor: dataSourceValidateRegion(),
+					})
+				}
+				interceptors = append(interceptors, interceptorInvocation{
+					when:        After,
+					why:         Read,
+					interceptor: setRegionInState(),
+				})
+			}
+
+			if !tfunique.IsHandleNil(v.Tags) {
+				interceptors = append(interceptors, interceptorInvocation{
+					when:        Before | After,
+					why:         Read,
+					interceptor: dataSourceTransparentTagging(v.Tags),
+				})
+			}
+
+			opts := wrappedDataSourceOptions{
+				bootstrapContext: func(ctx context.Context, getAttribute getAttributeFunc, meta any) (context.Context, error) {
+					var overrideRegion string
+
+					if isRegionOverrideEnabled && getAttribute != nil {
+						if region, ok := getAttribute(names.AttrRegion); ok {
+							overrideRegion = region.(string)
+						}
+					}
+
+					ctx = conns.NewResourceContext(ctx, servicePackageName, v.Name, overrideRegion)
+					if c, ok := meta.(*conns.AWSClient); ok {
+						ctx = tftags.NewContext(ctx, c.DefaultTagsConfig(ctx), c.IgnoreTagsConfig(ctx))
+						ctx = c.RegisterLogger(ctx)
+					}
+
+					return ctx, nil
+				},
+				interceptors: interceptors,
+				typeName:     typeName,
+			}
+			wrapDataSource(r, opts)
+			p.provider.DataSourcesMap[typeName] = r
+		}
+
+		for _, resource := range sp.SDKResources(ctx) {
+			typeName := resource.TypeName
+
+			if _, ok := p.provider.ResourcesMap[typeName]; ok {
+				errs = append(errs, fmt.Errorf("duplicate resource: %s", typeName))
+				continue
+			}
+
+			r := resource.Factory()
+
+			// Ensure that the correct CRUD handler variants are used.
+			if r.Create != nil || r.CreateContext != nil {
+				errs = append(errs, fmt.Errorf("incorrect Create handler variant: %s resource", typeName))
+				continue
+			}
+			if r.Read != nil || r.ReadContext != nil {
+				errs = append(errs, fmt.Errorf("incorrect Read handler variant: %s resource", typeName))
+				continue
+			}
+			if r.Update != nil || r.UpdateContext != nil {
+				errs = append(errs, fmt.Errorf("incorrect Update handler variant: %s resource", typeName))
+				continue
+			}
+			if r.Delete != nil || r.DeleteContext != nil {
+				errs = append(errs, fmt.Errorf("incorrect Delete handler variant: %s resource", typeName))
+				continue
+			}
+
+			var isRegionOverrideEnabled bool
+			if v := resource.Region; !tfunique.IsHandleNil(v) && v.Value().IsOverrideEnabled {
+				isRegionOverrideEnabled = true
+			}
+
+			var interceptors interceptorInvocations
+
+			if isRegionOverrideEnabled {
+				v := resource.Region.Value()
+				s := r.SchemaMap()
+
+				if _, ok := s[names.AttrRegion]; !ok {
+					// Inject a top-level "region" attribute.
+					regionSchema := attribute.Region()
+
+					// If the resource defines no Update handler then add a stub to fake out 'Provider.Validate'.
+					if r.UpdateWithoutTimeout == nil {
+						r.UpdateWithoutTimeout = schema.NoopContext
+					}
+
+					if f := r.SchemaFunc; f != nil {
+						r.SchemaFunc = func() map[string]*schema.Schema {
+							s := f()
+							s[names.AttrRegion] = regionSchema
+							return s
+						}
+					} else {
+						r.Schema[names.AttrRegion] = regionSchema
+					}
+				}
+
+				if v.IsValidateOverrideInPartition {
+					interceptors = append(interceptors, interceptorInvocation{
+						when:        Before,
+						why:         CustomizeDiff,
+						interceptor: resourceValidateRegion(),
+					})
+				}
+				interceptors = append(interceptors, interceptorInvocation{
+					when:        Before,
+					why:         CustomizeDiff,
+					interceptor: defaultRegion(),
+				})
+				interceptors = append(interceptors, interceptorInvocation{
+					when:        After,
+					why:         Read,
+					interceptor: setRegionInState(),
+				})
+				// We can't just set the injected "region" attribute to ForceNew because if
+				// a plan is run with '-refresh=false', then after provider v5 to v6 upgrade
+				// the region attribute is not set in state and its value shows a change.
+				interceptors = append(interceptors, interceptorInvocation{
+					when:        Before,
+					why:         CustomizeDiff,
+					interceptor: forceNewIfRegionChanges(),
+				})
+				if resource.Identity.HasInherentRegion() {
+					interceptors = append(interceptors, resourceImportRegionNoDefault())
+				} else {
+					interceptors = append(interceptors, resourceImportRegion())
+				}
+			}
+
+			if !tfunique.IsHandleNil(resource.Tags) {
+				interceptors = append(interceptors, interceptorInvocation{
+					when:        Before | After | Finally,
+					why:         Create | Read | Update,
+					interceptor: resourceTransparentTagging(resource.Tags),
+				})
+				interceptors = append(interceptors, interceptorInvocation{
+					when:        Before,
+					why:         CustomizeDiff,
+					interceptor: setTagsAll(),
+				})
+			}
+
+			if len(resource.Identity.Attributes) > 0 {
+				r.Identity = newResourceIdentity(resource.Identity)
+
+				interceptors = append(interceptors, newIdentityInterceptor(resource.Identity.Attributes))
+			}
+
+			if resource.Import.WrappedImport {
+				if r.Importer != nil && r.Importer.StateContext != nil {
+					errs = append(errs, fmt.Errorf("resource type %s: uses WrappedImport but defines an import function", typeName))
+					continue
+				}
+
+				if resource.Identity.ARN {
+					r.Importer = arnIdentityResourceImporter(resource.Identity)
+				} else if resource.Identity.Singleton {
+					r.Importer = singletonIdentityResourceImporter(resource.Identity)
+				} else {
+					r.Importer = newParameterizedIdentityImporter(resource.Identity)
+				}
+			}
+
+			opts := wrappedResourceOptions{
+				// bootstrapContext is run on all wrapped methods before any interceptors.
+				bootstrapContext: func(ctx context.Context, getAttribute getAttributeFunc, meta any) (context.Context, error) {
+					var overrideRegion string
+
+					if isRegionOverrideEnabled && getAttribute != nil {
+						if region, ok := getAttribute(names.AttrRegion); ok {
+							overrideRegion = region.(string)
+						}
+					}
+
+					ctx = conns.NewResourceContext(ctx, servicePackageName, resource.Name, overrideRegion)
+					if c, ok := meta.(*conns.AWSClient); ok {
+						ctx = tftags.NewContext(ctx, c.DefaultTagsConfig(ctx), c.IgnoreTagsConfig(ctx))
+						ctx = c.RegisterLogger(ctx)
+					}
+
+					return ctx, nil
+				},
+				interceptors: interceptors,
+				typeName:     typeName,
+			}
+			wrapResource(r, opts)
+			p.provider.ResourcesMap[typeName] = r
+		}
+	}
+
+	return servicePackageMap, errors.Join(errs...)
+}

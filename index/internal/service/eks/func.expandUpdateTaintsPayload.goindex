@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandUpdateTaintsPayload(oldTaintsRaw, newTaintsRaw []any) *types.UpdateTaintsPayload {
+	oldTaints := expandTaints(oldTaintsRaw)
+	newTaints := expandTaints(newTaintsRaw)
+
+	var removedTaints []types.Taint
+	for _, ot := range oldTaints {
+		removed := true
+		for _, nt := range newTaints {
+			// If both taint.key and taint.effect are the same, we don't need to remove it.
+			if aws.ToString(nt.Key) == aws.ToString(ot.Key) && nt.Effect == ot.Effect {
+				removed = false
+				break
+			}
+		}
+
+		if removed {
+			removedTaints = append(removedTaints, ot)
+		}
+	}
+
+	var updatedTaints []types.Taint
+	for _, nt := range newTaints {
+		updated := true
+		for _, ot := range oldTaints {
+			if reflect.DeepEqual(nt, ot) {
+				updated = false
+				break
+			}
+		}
+
+		if updated {
+			updatedTaints = append(updatedTaints, nt)
+		}
+	}
+
+	if len(removedTaints) == 0 && len(updatedTaints) == 0 {
+		return nil
+	}
+
+	updateTaintsPayload := &types.UpdateTaintsPayload{}
+
+	if len(removedTaints) > 0 {
+		updateTaintsPayload.RemoveTaints = removedTaints
+	}
+
+	if len(updatedTaints) > 0 {
+		updateTaintsPayload.AddOrUpdateTaints = updatedTaints
+	}
+
+	return updateTaintsPayload
+}

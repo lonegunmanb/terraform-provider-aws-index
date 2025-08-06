@@ -1,0 +1,194 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	instanceOpts, err := buildInstanceOpts(ctx, d, meta)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "collecting instance settings: %s", err)
+	}
+
+	// instance itself
+	tagSpecifications := getTagSpecificationsIn(ctx, awstypes.ResourceTypeInstance)
+
+	// block devices
+	defaultTagsConfig := meta.(*conns.AWSClient).DefaultTagsConfig(ctx)
+	tagSpecifications = append(tagSpecifications,
+		tagSpecificationsFromKeyValue(
+			defaultTagsConfig.MergeTags(tftags.New(ctx, d.Get("volume_tags").(map[string]any))),
+			string(awstypes.ResourceTypeVolume))...)
+
+	input := ec2.RunInstancesInput{
+		BlockDeviceMappings:               instanceOpts.BlockDeviceMappings,
+		CapacityReservationSpecification:  instanceOpts.CapacityReservationSpecification,
+		ClientToken:                       aws.String(id.UniqueId()),
+		CpuOptions:                        instanceOpts.CpuOptions,
+		CreditSpecification:               instanceOpts.CreditSpecification,
+		DisableApiTermination:             instanceOpts.DisableAPITermination,
+		EbsOptimized:                      instanceOpts.EBSOptimized,
+		EnclaveOptions:                    instanceOpts.EnclaveOptions,
+		EnablePrimaryIpv6:                 instanceOpts.EnablePrimaryIpv6,
+		HibernationOptions:                instanceOpts.HibernationOptions,
+		IamInstanceProfile:                instanceOpts.IAMInstanceProfile,
+		ImageId:                           instanceOpts.ImageID,
+		InstanceInitiatedShutdownBehavior: instanceOpts.InstanceInitiatedShutdownBehavior,
+		InstanceMarketOptions:             instanceOpts.InstanceMarketOptions,
+		InstanceType:                      instanceOpts.InstanceType,
+		Ipv6AddressCount:                  instanceOpts.Ipv6AddressCount,
+		Ipv6Addresses:                     instanceOpts.Ipv6Addresses,
+		KeyName:                           instanceOpts.KeyName,
+		LaunchTemplate:                    instanceOpts.LaunchTemplate,
+		MaintenanceOptions:                instanceOpts.MaintenanceOptions,
+		MaxCount:                          aws.Int32(1),
+		MetadataOptions:                   instanceOpts.MetadataOptions,
+		MinCount:                          aws.Int32(1),
+		Monitoring:                        instanceOpts.Monitoring,
+		NetworkInterfaces:                 instanceOpts.NetworkInterfaces,
+		Placement:                         instanceOpts.Placement,
+		PrivateDnsNameOptions:             instanceOpts.PrivateDNSNameOptions,
+		PrivateIpAddress:                  instanceOpts.PrivateIPAddress,
+		SecurityGroupIds:                  instanceOpts.SecurityGroupIDs,
+		SecurityGroups:                    instanceOpts.SecurityGroups,
+		SubnetId:                          instanceOpts.SubnetID,
+		TagSpecifications:                 tagSpecifications,
+		UserData:                          instanceOpts.UserData64,
+	}
+
+	if instanceOpts.DisableAPIStop != nil {
+		input.DisableApiStop = instanceOpts.DisableAPIStop
+	}
+
+	var output *ec2.RunInstancesOutput
+	for l := backoff.NewLoop(iamPropagationTimeout); l.Continue(ctx); {
+		output, err = conn.RunInstances(ctx, &input)
+
+		// IAM instance profiles can take ~10 seconds to propagate in AWS:
+		// http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#launch-instance-with-role-console
+		if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "Invalid IAM Instance Profile") {
+			continue
+		}
+
+		// IAM roles can also take time to propagate in AWS:
+		if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, " has no associated IAM Roles") {
+			continue
+		}
+
+		break
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EC2 Instance: %s", err)
+	}
+
+	instanceID := output.Instances[0].InstanceId
+	d.SetId(aws.ToString(instanceID))
+
+	instance, err := waitInstanceCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EC2 Instance (%s) create: %s", d.Id(), err)
+	}
+
+	// Initialize the connection info
+	if instance.PublicIpAddress != nil {
+		d.SetConnInfo(map[string]string{
+			names.AttrType: "ssh",
+			"host":         aws.ToString(instance.PublicIpAddress),
+		})
+	} else if instance.PrivateIpAddress != nil {
+		d.SetConnInfo(map[string]string{
+			names.AttrType: "ssh",
+			"host":         aws.ToString(instance.PrivateIpAddress),
+		})
+	}
+
+	// tags in root_block_device and ebs_block_device
+	blockDeviceTagsToCreate := map[string]map[string]any{}
+	if v, ok := d.GetOk("root_block_device"); ok {
+		vL := v.([]any)
+		for _, v := range vL {
+			bd := v.(map[string]any)
+
+			blockDeviceTags, ok := bd[names.AttrTags].(map[string]any)
+			if !ok || len(blockDeviceTags) == 0 {
+				continue
+			}
+
+			volID := getRootVolID(instance)
+			if volID == "" {
+				continue
+			}
+
+			blockDeviceTagsToCreate[volID] = blockDeviceTags
+		}
+	}
+
+	if v, ok := d.GetOk("ebs_block_device"); ok {
+		vL := v.(*schema.Set).List()
+		for _, v := range vL {
+			bd := v.(map[string]any)
+
+			blockDeviceTags, ok := bd[names.AttrTags].(map[string]any)
+			if !ok || len(blockDeviceTags) == 0 {
+				continue
+			}
+
+			volID := getVolIDByDeviceName(instance, bd[names.AttrDeviceName].(string))
+			if volID == "" {
+				continue
+			}
+
+			blockDeviceTagsToCreate[volID] = blockDeviceTags
+		}
+	}
+
+	for vol, blockDeviceTags := range blockDeviceTagsToCreate {
+		if err := createTags(ctx, conn, vol, svcTags(tftags.New(ctx, blockDeviceTags))); err != nil {
+			log.Printf("[ERR] Error creating tags for EBS volume %s: %s", vol, err)
+		}
+	}
+
+	// Update if we need to
+	return append(diags, resourceInstanceUpdate(ctx, d, meta)...)
+}

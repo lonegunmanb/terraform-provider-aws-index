@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecs
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterCapacityProvidersPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ECSClient(ctx)
+
+	clusterName := d.Get(names.AttrClusterName).(string)
+	input := &ecs.PutClusterCapacityProvidersInput{
+		CapacityProviders:               flex.ExpandStringValueSet(d.Get("capacity_providers").(*schema.Set)),
+		Cluster:                         aws.String(clusterName),
+		DefaultCapacityProviderStrategy: expandCapacityProviderStrategyItems(d.Get("default_capacity_provider_strategy").(*schema.Set)),
+	}
+
+	err := retryClusterCapacityProvidersPut(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating ECS Cluster Capacity Providers (%s): %s", clusterName, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(clusterName)
+	}
+
+	if _, err := waitClusterAvailable(ctx, conn, clusterName); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ECS Cluster Capacity Providers (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceClusterCapacityProvidersRead(ctx, d, meta)...)
+}

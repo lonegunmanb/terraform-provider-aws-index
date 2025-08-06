@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	gversion "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func deleteGlobalReplicationGroup(ctx context.Context, conn *elasticache.Client, id string, readyTimeout, deleteTimeout time.Duration) error {
+	input := &elasticache.DeleteGlobalReplicationGroupInput{
+		GlobalReplicationGroupId:      aws.String(id),
+		RetainPrimaryReplicationGroup: aws.Bool(true),
+	}
+
+	_, err := tfresource.RetryWhenIsA[*awstypes.InvalidGlobalReplicationGroupStateFault](ctx, readyTimeout, func() (any, error) {
+		return conn.DeleteGlobalReplicationGroup(ctx, input)
+	})
+
+	if errs.IsA[*awstypes.GlobalReplicationGroupNotFoundFault](err) {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("deleting ElastiCache Global Replication Group (%s): %w", id, err)
+	}
+
+	if _, err := waitGlobalReplicationGroupDeleted(ctx, conn, id, deleteTimeout); err != nil {
+		return fmt.Errorf("waiting for ElastiCache Global Replication Group (%s) delete: %w", id, err)
+	}
+
+	return nil
+}

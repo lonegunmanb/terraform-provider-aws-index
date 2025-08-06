@@ -1,0 +1,210 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func readBlockDeviceMappingsFromConfig(ctx context.Context, d *schema.ResourceData, conn *ec2.Client) ([]awstypes.BlockDeviceMapping, error) {
+	blockDevices := make([]awstypes.BlockDeviceMapping, 0)
+
+	if v, ok := d.GetOk("ebs_block_device"); ok {
+		vL := v.(*schema.Set).List()
+		for _, v := range vL {
+			bd := v.(map[string]any)
+			ebs := &awstypes.EbsBlockDevice{
+				DeleteOnTermination: aws.Bool(bd[names.AttrDeleteOnTermination].(bool)),
+			}
+
+			if v, ok := bd[names.AttrSnapshotID].(string); ok && v != "" {
+				ebs.SnapshotId = aws.String(v)
+			}
+
+			if v, ok := bd[names.AttrEncrypted].(bool); ok && v {
+				ebs.Encrypted = aws.Bool(v)
+			}
+
+			if v, ok := bd[names.AttrKMSKeyID].(string); ok && v != "" {
+				ebs.KmsKeyId = aws.String(v)
+			}
+
+			if v, ok := bd[names.AttrVolumeSize].(int); ok && v != 0 {
+				ebs.VolumeSize = aws.Int32(int32(v))
+			}
+
+			if v, ok := bd[names.AttrVolumeType].(string); ok && v != "" {
+				ebs.VolumeType = awstypes.VolumeType(v)
+				if iops, ok := bd[names.AttrIOPS].(int); ok && iops > 0 {
+					if awstypes.VolumeTypeIo1 == ebs.VolumeType || awstypes.VolumeTypeIo2 == ebs.VolumeType || awstypes.VolumeTypeGp3 == ebs.VolumeType {
+						// Condition: This parameter is required for requests to create io1 or io2
+						// volumes and optional for gp3; it is not used in requests to create gp2, st1, sc1, or
+						// standard volumes.
+						// See: http://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_EbsBlockDevice.html
+						ebs.Iops = aws.Int32(int32(iops))
+					} else {
+						// Enforce IOPs usage with a valid volume type
+						// Reference: https://github.com/hashicorp/terraform-provider-aws/issues/12667
+						return nil, fmt.Errorf("creating resource: iops attribute not supported for ebs_block_device with volume_type %s", v)
+					}
+				}
+				if throughput, ok := bd[names.AttrThroughput].(int); ok && throughput > 0 {
+					// `throughput` is only valid for gp3
+					if awstypes.VolumeTypeGp3 == ebs.VolumeType {
+						ebs.Throughput = aws.Int32(int32(throughput))
+					} else {
+						return nil, fmt.Errorf("creating resource: throughput attribute not supported for ebs_block_device with volume_type %s", v)
+					}
+				}
+			}
+
+			blockDevices = append(blockDevices, awstypes.BlockDeviceMapping{
+				DeviceName: aws.String(bd[names.AttrDeviceName].(string)),
+				Ebs:        ebs,
+			})
+		}
+	}
+
+	if v, ok := d.GetOk("ephemeral_block_device"); ok {
+		vL := v.(*schema.Set).List()
+		for _, v := range vL {
+			bd := v.(map[string]any)
+			bdm := awstypes.BlockDeviceMapping{
+				DeviceName:  aws.String(bd[names.AttrDeviceName].(string)),
+				VirtualName: aws.String(bd[names.AttrVirtualName].(string)),
+			}
+			if v, ok := bd["no_device"].(bool); ok && v {
+				bdm.NoDevice = aws.String("")
+				// When NoDevice is true, just ignore VirtualName since it's not needed
+				bdm.VirtualName = nil
+			}
+
+			if bdm.NoDevice == nil && aws.ToString(bdm.VirtualName) == "" {
+				return nil, errors.New("virtual_name cannot be empty when no_device is false or undefined.")
+			}
+
+			blockDevices = append(blockDevices, bdm)
+		}
+	}
+
+	if v, ok := d.GetOk("root_block_device"); ok {
+		vL := v.([]any)
+		for _, v := range vL {
+			bd := v.(map[string]any)
+			ebs := &awstypes.EbsBlockDevice{
+				DeleteOnTermination: aws.Bool(bd[names.AttrDeleteOnTermination].(bool)),
+			}
+
+			if v, ok := bd[names.AttrEncrypted].(bool); ok && v {
+				ebs.Encrypted = aws.Bool(v)
+			}
+
+			if v, ok := bd[names.AttrKMSKeyID].(string); ok && v != "" {
+				ebs.KmsKeyId = aws.String(bd[names.AttrKMSKeyID].(string))
+			}
+
+			if v, ok := bd[names.AttrVolumeSize].(int); ok && v != 0 {
+				ebs.VolumeSize = aws.Int32(int32(v))
+			}
+
+			if v, ok := bd[names.AttrVolumeType].(string); ok && v != "" {
+				ebs.VolumeType = awstypes.VolumeType(v)
+				if iops, ok := bd[names.AttrIOPS].(int); ok && iops > 0 {
+					if awstypes.VolumeTypeIo1 == ebs.VolumeType || awstypes.VolumeTypeIo2 == ebs.VolumeType || awstypes.VolumeTypeGp3 == ebs.VolumeType {
+						// Only set the iops attribute if the volume type is io1, io2, or gp3. Setting otherwise
+						// can trigger a refresh/plan loop based on the computed value that is given
+						// from AWS, and prevent us from specifying 0 as a valid iops.
+						//   See https://github.com/hashicorp/terraform/pull/4146
+						//   See https://github.com/hashicorp/terraform/issues/7765
+						ebs.Iops = aws.Int32(int32(iops))
+					} else {
+						// Enforce IOPs usage with a valid volume type
+						// Reference: https://github.com/hashicorp/terraform-provider-aws/issues/12667
+						return nil, fmt.Errorf("creating resource: iops attribute not supported for root_block_device with volume_type %s", v)
+					}
+				}
+				if throughput, ok := bd[names.AttrThroughput].(int); ok && throughput > 0 {
+					// throughput is only valid for gp3
+					if awstypes.VolumeTypeGp3 == ebs.VolumeType {
+						ebs.Throughput = aws.Int32(int32(throughput))
+					} else {
+						// Enforce throughput usage with a valid volume type
+						return nil, fmt.Errorf("creating resource: throughput attribute not supported for root_block_device with volume_type %s", v)
+					}
+				}
+			}
+
+			var amiID string
+
+			if v, ok := d.GetOk(names.AttrLaunchTemplate); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				launchTemplateData, err := findLaunchTemplateData(ctx, conn, expandLaunchTemplateSpecification(v.([]any)[0].(map[string]any)))
+
+				if err != nil {
+					return nil, err
+				}
+
+				amiID = aws.ToString(launchTemplateData.ImageId)
+			}
+
+			// AMI from configuration overrides the one from the launch template.
+			if v, ok := d.GetOk("ami"); ok {
+				amiID = v.(string)
+			}
+
+			if amiID == "" {
+				return nil, errors.New("`ami` must be set or provided via `launch_template`")
+			}
+
+			if dn, err := findRootDeviceName(ctx, conn, amiID); err == nil {
+				if dn == nil {
+					return nil, fmt.Errorf(
+						"Expected 1 AMI for ID: %s, got none",
+						amiID)
+				}
+
+				blockDevices = append(blockDevices, awstypes.BlockDeviceMapping{
+					DeviceName: dn,
+					Ebs:        ebs,
+				})
+			} else {
+				return nil, err
+			}
+		}
+	}
+
+	return blockDevices, nil
+}

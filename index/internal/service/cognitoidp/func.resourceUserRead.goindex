@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	userPoolID, username := d.Get(names.AttrUserPoolID).(string), d.Get(names.AttrUsername).(string)
+	user, err := findUserByTwoPartKey(ctx, conn, userPoolID, username)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Cognito User %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Cognito User (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrAttributes, flattenAttributeTypes(user.UserAttributes)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting attributes: %s", err)
+	}
+	d.Set(names.AttrCreationDate, user.UserCreateDate.Format(time.RFC3339))
+	d.Set(names.AttrEnabled, user.Enabled)
+	d.Set("last_modified_date", user.UserLastModifiedDate.Format(time.RFC3339))
+	if err := d.Set("mfa_setting_list", user.UserMFASettingList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting mfa_setting_list: %s", err)
+	}
+	d.Set("preferred_mfa_setting", user.PreferredMfaSetting)
+	d.Set(names.AttrStatus, user.UserStatus)
+	d.Set("sub", flattenUserSub(user.UserAttributes))
+	d.Set(names.AttrUserPoolID, userPoolID)
+	d.Set(names.AttrUsername, username)
+
+	return diags
+}

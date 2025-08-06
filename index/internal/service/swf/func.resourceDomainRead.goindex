@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/swf
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/swf"
+	"github.com/aws/aws-sdk-go-v2/service/swf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SWFClient(ctx)
+
+	output, err := findDomainByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SWF Domain (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SWF Domain (%s): %s", d.Id(), err)
+	}
+
+	arn := aws.ToString(output.DomainInfo.Arn)
+	d.Set(names.AttrARN, arn)
+	d.Set(names.AttrDescription, output.DomainInfo.Description)
+	d.Set(names.AttrName, output.DomainInfo.Name)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(output.DomainInfo.Name)))
+	d.Set("workflow_execution_retention_period_in_days", output.Configuration.WorkflowExecutionRetentionPeriodInDays)
+
+	return diags
+}

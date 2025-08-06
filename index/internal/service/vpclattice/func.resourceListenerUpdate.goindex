@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/vpclattice
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/vpclattice"
+	"github.com/aws/aws-sdk-go-v2/service/vpclattice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceListenerUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).VPCLatticeClient(ctx)
+
+	serviceID, listenerID, err := listenerParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := vpclattice.UpdateListenerInput{
+			ListenerIdentifier: aws.String(listenerID),
+			ServiceIdentifier:  aws.String(serviceID),
+		}
+
+		if d.HasChanges(names.AttrDefaultAction) {
+			input.DefaultAction = expandDefaultAction(d.Get(names.AttrDefaultAction).([]any))
+		}
+
+		_, err := conn.UpdateListener(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating VPCLattice Listener (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceListenerRead(ctx, d, meta)...)
+}

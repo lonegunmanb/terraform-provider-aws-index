@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mq
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mq"
+	"github.com/aws/aws-sdk-go-v2/service/mq/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceBrokerEngineTypesRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	client := meta.(*conns.AWSClient).MQClient(ctx)
+
+	input := &mq.DescribeBrokerEngineTypesInput{}
+
+	if v, ok := d.GetOk("engine_type"); ok {
+		input.EngineType = aws.String(v.(string))
+	}
+
+	var engineTypes []types.BrokerEngineType
+	for {
+		output, err := client.DescribeBrokerEngineTypes(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading MQ Broker Engine Types: %s", err)
+		}
+
+		engineTypes = append(engineTypes, output.BrokerEngineTypes...)
+
+		if output.NextToken == nil {
+			break
+		}
+
+		input.NextToken = output.NextToken
+	}
+
+	d.SetId(id.UniqueId())
+
+	if err := d.Set("broker_engine_types", flattenBrokerList(engineTypes)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting broker_engine_types: %s", err)
+	}
+
+	return diags
+}

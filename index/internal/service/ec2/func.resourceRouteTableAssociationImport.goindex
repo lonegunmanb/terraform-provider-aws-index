@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRouteTableAssociationImport(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+	parts := strings.Split(d.Id(), "/")
+	if len(parts) != 2 {
+		return []*schema.ResourceData{}, fmt.Errorf("Unexpected format for import: %s. Use 'subnet ID/route table ID' or 'gateway ID/route table ID", d.Id())
+	}
+
+	targetID := parts[0]
+	routeTableID := parts[1]
+
+	log.Printf("[DEBUG] Importing route table association, target: %s, route table: %s", targetID, routeTableID)
+
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	routeTable, err := findRouteTableByID(ctx, conn, routeTableID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var associationID string
+
+	for _, association := range routeTable.Associations {
+		if aws.ToString(association.SubnetId) == targetID {
+			d.Set(names.AttrSubnetID, targetID)
+			associationID = aws.ToString(association.RouteTableAssociationId)
+
+			break
+		}
+
+		if aws.ToString(association.GatewayId) == targetID {
+			d.Set("gateway_id", targetID)
+			associationID = aws.ToString(association.RouteTableAssociationId)
+
+			break
+		}
+	}
+
+	if associationID == "" {
+		return nil, fmt.Errorf("No association found between route table ID %s and target ID %s", routeTableID, targetID)
+	}
+
+	d.SetId(associationID)
+	d.Set("route_table_id", routeTableID)
+
+	return []*schema.ResourceData{d}, nil
+}

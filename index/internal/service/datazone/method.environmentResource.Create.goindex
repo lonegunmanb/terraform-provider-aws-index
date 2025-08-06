@@ -1,0 +1,94 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datazone"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datazone/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *environmentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().DataZoneClient(ctx)
+
+	var plan environmentResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := &datazone.CreateEnvironmentInput{}
+	resp.Diagnostics.Append(fwflex.Expand(ctx, &plan, in, fwflex.WithFieldNamePrefix("Environment"))...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	out, err := conn.CreateEnvironment(ctx, in)
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.DataZone, create.ErrActionCreating, ResNameEnvironment, plan.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	if out == nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.DataZone, create.ErrActionCreating, ResNameEnvironment, plan.Name.String(), nil),
+			errors.New("empty output").Error(),
+		)
+		return
+	}
+
+	state := plan
+	state.Id = fwflex.StringToFramework(ctx, out.Id)
+
+	// set partial state
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(names.AttrID), out.Id)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("domain_identifier"), out.DomainId)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
+	output, err := waitEnvironmentCreated(ctx, conn, state.DomainIdentifier.ValueString(), state.Id.ValueString(), createTimeout)
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.DataZone, create.ErrActionWaitingForCreation, ResNameEnvironment, plan.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(fwflex.Flatten(ctx, output, &state, fwflex.WithIgnoredFieldNames([]string{"UserParameters"}))...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}

@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/athena
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func queryExecutionResult(ctx context.Context, conn *athena.Client, qeid string) (*types.ResultSet, error) {
+	executionStateConf := &retry.StateChangeConf{
+		Pending:    enum.Slice(types.QueryExecutionStateQueued, types.QueryExecutionStateRunning),
+		Target:     enum.Slice(types.QueryExecutionStateSucceeded),
+		Refresh:    queryExecutionStateRefreshFunc(ctx, conn, qeid),
+		Timeout:    10 * time.Minute,
+		Delay:      3 * time.Second,
+		MinTimeout: 3 * time.Second,
+	}
+	_, err := executionStateConf.WaitForStateContext(ctx)
+
+	if err != nil {
+		return nil, err
+	}
+
+	qrinput := &athena.GetQueryResultsInput{
+		QueryExecutionId: aws.String(qeid),
+	}
+	resp, err := conn.GetQueryResults(ctx, qrinput)
+	if err != nil {
+		return nil, err
+	}
+	return resp.ResultSet, nil
+}

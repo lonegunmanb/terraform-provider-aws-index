@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/acctest
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"math/rand"
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+
+	cleanhttp "github.com/hashicorp/go-cleanhttp"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	sdkacctest "github.com/hashicorp/terraform-plugin-testing/helper/acctest"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider"
+	"github.com/hashicorp/terraform-provider-aws/internal/vcr"
+	"gopkg.in/dnaeon/go-vcr.v4/pkg/cassette"
+	"gopkg.in/dnaeon/go-vcr.v4/pkg/recorder"
+)
+func vcrRandomnessSource(t *testing.T) (*randomnessSource, error) {
+	t.Helper()
+	testName := t.Name()
+
+	randomnessSources.Lock()
+	s, ok := randomnessSources[testName]
+	defer randomnessSources.Unlock()
+
+	if ok {
+		return s, nil
+	}
+
+	vcrMode, err := vcr.Mode()
+	if err != nil {
+		return nil, err
+	}
+
+	switch vcrMode {
+	case recorder.ModeRecordOnly:
+		seed := rand.Int63()
+		s = &randomnessSource{
+			seed:   seed,
+			source: rand.NewSource(seed),
+		}
+	case recorder.ModeReplayOnly:
+		seed, err := readSeedFromFile(vcrSeedFile(vcr.Path(), testName))
+
+		if err != nil {
+			return nil, fmt.Errorf("no cassette found on disk for %s, please replay this testcase in RECORD_ONLY mode - %w", testName, err)
+		}
+
+		s = &randomnessSource{
+			seed:   seed,
+			source: rand.NewSource(seed),
+		}
+	default:
+		t.Log("unsupported VCR mode")
+		t.FailNow()
+	}
+
+	randomnessSources[testName] = s
+
+	return s, nil
+}

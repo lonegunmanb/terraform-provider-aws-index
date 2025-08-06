@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ses
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEventDestinationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SESClient(ctx)
+
+	configurationSetName := d.Get("configuration_set_name").(string)
+	eventDestination, err := findEventDestinationByTwoPartKey(ctx, conn, configurationSetName, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SES Configuration Set Event Destination (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SES Configuration Set Event Destination (%s): %s", d.Id(), err)
+	}
+
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "ses",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("configuration-set/%s:event-destination/%s", configurationSetName, d.Id()),
+	}.String()
+	d.Set(names.AttrARN, arn)
+	if err := d.Set("cloudwatch_destination", flattenCloudWatchDestination(eventDestination.CloudWatchDestination)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting cloudwatch_destination: %s", err)
+	}
+	d.Set("configuration_set_name", configurationSetName)
+	d.Set(names.AttrEnabled, eventDestination.Enabled)
+	if err := d.Set("kinesis_destination", flattenKinesisFirehoseDestination(eventDestination.KinesisFirehoseDestination)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting kinesis_destination: %s", err)
+	}
+	if err := d.Set("matching_types", eventDestination.MatchingEventTypes); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting matching_types: %s", err)
+	}
+	d.Set(names.AttrName, eventDestination.Name)
+	if err := d.Set("sns_destination", flattenSNSDestination(eventDestination.SNSDestination)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting sns_destination: %s", err)
+	}
+
+	return diags
+}

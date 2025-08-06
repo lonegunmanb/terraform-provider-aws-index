@@ -1,0 +1,109 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func launchSpecToMap(ctx context.Context, l awstypes.SpotFleetLaunchSpecification, rootDevName *string) map[string]any {
+	m := make(map[string]any)
+
+	m["root_block_device"] = rootBlockDeviceToSet(l.BlockDeviceMappings, rootDevName)
+	m["ebs_block_device"] = ebsBlockDevicesToSet(l.BlockDeviceMappings, rootDevName)
+	m["ephemeral_block_device"] = ephemeralBlockDevicesToSet(l.BlockDeviceMappings)
+
+	if l.ImageId != nil {
+		m["ami"] = aws.ToString(l.ImageId)
+	}
+
+	if l.InstanceType != "" {
+		m[names.AttrInstanceType] = l.InstanceType
+	}
+
+	if l.SpotPrice != nil {
+		m["spot_price"] = aws.ToString(l.SpotPrice)
+	}
+
+	if l.EbsOptimized != nil {
+		m["ebs_optimized"] = aws.ToBool(l.EbsOptimized)
+	}
+
+	if l.Monitoring != nil && l.Monitoring.Enabled != nil {
+		m["monitoring"] = aws.ToBool(l.Monitoring.Enabled)
+	}
+
+	if l.IamInstanceProfile != nil && l.IamInstanceProfile.Name != nil {
+		m["iam_instance_profile"] = aws.ToString(l.IamInstanceProfile.Name)
+	}
+
+	if l.IamInstanceProfile != nil && l.IamInstanceProfile.Arn != nil {
+		m["iam_instance_profile_arn"] = aws.ToString(l.IamInstanceProfile.Arn)
+	}
+
+	if l.UserData != nil {
+		m["user_data"] = userDataHashSum(aws.ToString(l.UserData))
+	}
+
+	if l.KeyName != nil {
+		m["key_name"] = aws.ToString(l.KeyName)
+	}
+
+	if l.Placement != nil {
+		m[names.AttrAvailabilityZone] = aws.ToString(l.Placement.AvailabilityZone)
+	}
+
+	if l.SubnetId != nil {
+		m[names.AttrSubnetID] = aws.ToString(l.SubnetId)
+	}
+
+	securityGroupIds := &schema.Set{F: schema.HashString}
+	if len(l.NetworkInterfaces) > 0 {
+		m["associate_public_ip_address"] = aws.ToBool(l.NetworkInterfaces[0].AssociatePublicIpAddress)
+		m[names.AttrSubnetID] = aws.ToString(l.NetworkInterfaces[0].SubnetId)
+
+		for _, group := range l.NetworkInterfaces[0].Groups {
+			securityGroupIds.Add(group)
+		}
+	} else {
+		for _, group := range l.SecurityGroups {
+			securityGroupIds.Add(aws.ToString(group.GroupId))
+		}
+	}
+	m[names.AttrVPCSecurityGroupIDs] = securityGroupIds
+
+	if l.WeightedCapacity != nil {
+		m["weighted_capacity"] = strconv.FormatFloat(*l.WeightedCapacity, 'f', 0, 64)
+	}
+
+	if l.TagSpecifications != nil {
+		for _, tagSpecs := range l.TagSpecifications {
+			// only "instance" tags are currently supported: http://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_SpotFleetTagSpecification.html
+			if tagSpecs.ResourceType == awstypes.ResourceTypeInstance {
+				m[names.AttrTags] = keyValueTags(ctx, tagSpecs.Tags).IgnoreAWS().Map()
+			}
+		}
+	}
+
+	return m
+}

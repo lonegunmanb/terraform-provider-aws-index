@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepGlobalReplicationGroups(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	input := &elasticache.DescribeGlobalReplicationGroupsInput{
+		ShowMemberInfo: aws.Bool(true),
+	}
+	conn := client.ElastiCacheClient(ctx)
+
+	var grgGroup multierror.Group
+	var grgErrs *multierror.Error
+
+	pages := elasticache.NewDescribeGlobalReplicationGroupsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping ElastiCache Global Replication Group sweep for %q: %s", region, err)
+			return grgErrs.ErrorOrNil() // In case we have completed some pages, but had errors
+		}
+
+		if err != nil {
+			grgErrs = multierror.Append(grgErrs, fmt.Errorf("listing ElastiCache Global Replication Groups: %w", err))
+		}
+
+		for _, globalReplicationGroup := range page.GlobalReplicationGroups {
+			grgGroup.Go(func() error {
+				id := aws.ToString(globalReplicationGroup.GlobalReplicationGroupId)
+
+				disassociationErrors := disassociateMembers(ctx, conn, globalReplicationGroup)
+				if disassociationErrors != nil {
+					return fmt.Errorf("disassociating ElastiCache Global Replication Group (%s) members: %w", id, disassociationErrors)
+				}
+
+				log.Printf("[INFO] Deleting ElastiCache Global Replication Group: %s", id)
+				err := deleteGlobalReplicationGroup(ctx, conn, id, sweeperGlobalReplicationGroupDefaultUpdatedTimeout, globalReplicationGroupDefaultDeletedTimeout)
+
+				return err
+			})
+		}
+	}
+
+	grgErrs = multierror.Append(grgErrs, grgGroup.Wait())
+
+	return grgErrs.ErrorOrNil()
+}

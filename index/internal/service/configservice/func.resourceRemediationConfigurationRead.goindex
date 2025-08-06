@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRemediationConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConfigServiceClient(ctx)
+
+	remediationConfiguration, err := findRemediationConfigurationByConfigRuleName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] ConfigService Remediation Configuration (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ConfigService Remediation Configuration (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, remediationConfiguration.Arn)
+	d.Set("automatic", remediationConfiguration.Automatic)
+	d.Set("config_rule_name", remediationConfiguration.ConfigRuleName)
+	if err := d.Set("execution_controls", flattenExecutionControls(remediationConfiguration.ExecutionControls)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting execution_controls: %s", err)
+	}
+	d.Set("maximum_automatic_attempts", remediationConfiguration.MaximumAutomaticAttempts)
+	if err := d.Set(names.AttrParameter, flattenRemediationParameterValues(remediationConfiguration.Parameters)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting parameter: %s", err)
+	}
+	d.Set(names.AttrResourceType, remediationConfiguration.ResourceType)
+	d.Set("retry_attempt_seconds", remediationConfiguration.RetryAttemptSeconds)
+	d.Set("target_id", remediationConfiguration.TargetId)
+	d.Set("target_type", remediationConfiguration.TargetType)
+	d.Set("target_version", remediationConfiguration.TargetVersion)
+
+	return diags
+}

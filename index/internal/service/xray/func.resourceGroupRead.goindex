@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/xray
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/xray"
+	"github.com/aws/aws-sdk-go-v2/service/xray/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).XRayClient(ctx)
+
+	group, err := findGroupByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] XRay Group (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading XRay Group (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, group.GroupARN)
+	d.Set("filter_expression", group.FilterExpression)
+	d.Set(names.AttrGroupName, group.GroupName)
+	if err := d.Set("insights_configuration", flattenInsightsConfig(group.InsightsConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting insights_configuration: %s", err)
+	}
+
+	return diags
+}

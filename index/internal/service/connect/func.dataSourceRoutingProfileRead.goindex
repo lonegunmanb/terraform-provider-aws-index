@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceRoutingProfileRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID := d.Get(names.AttrInstanceID).(string)
+	input := &connect.DescribeRoutingProfileInput{
+		InstanceId: aws.String(instanceID),
+	}
+
+	if v, ok := d.GetOk("routing_profile_id"); ok {
+		input.RoutingProfileId = aws.String(v.(string))
+	} else if v, ok := d.GetOk(names.AttrName); ok {
+		name := v.(string)
+		routingProfileSummary, err := findRoutingProfileSummaryByTwoPartKey(ctx, conn, instanceID, name)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Connect Routing Profile (%s) summary: %s", name, err)
+		}
+
+		input.RoutingProfileId = routingProfileSummary.Id
+	}
+
+	routingProfile, err := findRoutingProfile(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Connect Routing Profile: %s", err)
+	}
+
+	routingProfileID := aws.ToString(routingProfile.RoutingProfileId)
+	id := routingProfileCreateResourceID(instanceID, routingProfileID)
+	d.SetId(id)
+	d.Set(names.AttrARN, routingProfile.RoutingProfileArn)
+	d.Set("default_outbound_queue_id", routingProfile.DefaultOutboundQueueId)
+	d.Set(names.AttrDescription, routingProfile.Description)
+	d.Set(names.AttrInstanceID, instanceID)
+	if err := d.Set("media_concurrencies", flattenMediaConcurrencies(routingProfile.MediaConcurrencies)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting media_concurrencies: %s", err)
+	}
+	d.Set(names.AttrName, routingProfile.Name)
+	d.Set("routing_profile_id", routingProfileID)
+
+	queueConfigs, err := findRoutingConfigQueueConfigSummariesByTwoPartKey(ctx, conn, instanceID, routingProfileID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Connect Routing Profile (%s) Queue Config summaries: %s", d.Id(), err)
+	}
+
+	if err := d.Set("queue_configs", flattenRoutingConfigQueueConfigSummaries(queueConfigs)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting queue_configs: %s", err)
+	}
+
+	setTagsOut(ctx, routingProfile.Tags)
+
+	return diags
+}

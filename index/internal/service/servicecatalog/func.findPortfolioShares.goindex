@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findPortfolioShares(ctx context.Context, conn *servicecatalog.Client, portfolioID, shareType, principalID string) ([]awstypes.PortfolioShareDetail, error) {
+	input := &servicecatalog.DescribePortfolioSharesInput{
+		PortfolioId: aws.String(portfolioID),
+		Type:        awstypes.DescribePortfolioShareType(shareType),
+	}
+	var result []awstypes.PortfolioShareDetail
+
+	pages := servicecatalog.NewDescribePortfolioSharesPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: input,
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, detail := range page.PortfolioShareDetails {
+			if strings.Contains(principalID, aws.ToString(detail.PrincipalId)) {
+				result = append(result, detail)
+			}
+		}
+	}
+
+	return result, nil
+}

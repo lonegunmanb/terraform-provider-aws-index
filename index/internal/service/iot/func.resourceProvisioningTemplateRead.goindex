@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProvisioningTemplateRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	output, err := findProvisioningTemplateByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] IoT Provisioning Template %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading IoT Provisioning Template (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, output.TemplateArn)
+	d.Set("default_version_id", output.DefaultVersionId)
+	d.Set(names.AttrDescription, output.Description)
+	d.Set(names.AttrEnabled, output.Enabled)
+	d.Set(names.AttrName, output.TemplateName)
+	if output.PreProvisioningHook != nil {
+		if err := d.Set("pre_provisioning_hook", []any{flattenProvisioningHook(output.PreProvisioningHook)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting pre_provisioning_hook: %s", err)
+		}
+	} else {
+		d.Set("pre_provisioning_hook", nil)
+	}
+	d.Set("provisioning_role_arn", output.ProvisioningRoleArn)
+	d.Set("template_body", output.TemplateBody)
+	d.Set(names.AttrType, output.Type)
+
+	return diags
+}

@@ -1,0 +1,113 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codebuild
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandProjectEnvironment(tfMap map[string]any) *types.ProjectEnvironment {
+	if tfMap == nil {
+		return nil
+	}
+
+	apiObject := &types.ProjectEnvironment{
+		PrivilegedMode: aws.Bool(tfMap["privileged_mode"].(bool)),
+	}
+
+	if v, ok := tfMap[names.AttrCertificate].(string); ok && v != "" {
+		apiObject.Certificate = aws.String(v)
+	}
+
+	if v, ok := tfMap["compute_type"].(string); ok && v != "" {
+		apiObject.ComputeType = types.ComputeType(v)
+	}
+
+	if v, ok := tfMap["fleet"].([]any); ok && len(v) > 0 && v[0] != nil {
+		tfMap := v[0].(map[string]any)
+
+		projectFleet := &types.ProjectFleet{}
+
+		if v, ok := tfMap["fleet_arn"]; ok && v.(string) != "" {
+			projectFleet.FleetArn = aws.String(v.(string))
+		}
+
+		apiObject.Fleet = projectFleet
+	}
+
+	if v, ok := tfMap["image"].(string); ok && v != "" {
+		apiObject.Image = aws.String(v)
+	}
+
+	if v, ok := tfMap["image_pull_credentials_type"].(string); ok && v != "" {
+		apiObject.ImagePullCredentialsType = types.ImagePullCredentialsType(v)
+	}
+
+	if v, ok := tfMap[names.AttrType].(string); ok && v != "" {
+		apiObject.Type = types.EnvironmentType(v)
+	}
+
+	if v, ok := tfMap["registry_credential"].([]any); ok && len(v) > 0 && v[0] != nil {
+		tfMap := v[0].(map[string]any)
+
+		projectRegistryCredential := &types.RegistryCredential{}
+
+		if v, ok := tfMap["credential"]; ok && v.(string) != "" {
+			projectRegistryCredential.Credential = aws.String(v.(string))
+		}
+
+		if v, ok := tfMap["credential_provider"]; ok && v.(string) != "" {
+			projectRegistryCredential.CredentialProvider = types.CredentialProviderType(v.(string))
+		}
+
+		apiObject.RegistryCredential = projectRegistryCredential
+	}
+
+	if v, ok := tfMap["environment_variable"].([]any); ok && len(v) > 0 {
+		projectEnvironmentVariables := make([]types.EnvironmentVariable, 0)
+
+		for _, tfMapRaw := range v {
+			tfMap, ok := tfMapRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			projectEnvironmentVar := types.EnvironmentVariable{}
+
+			if v := tfMap[names.AttrName].(string); v != "" {
+				projectEnvironmentVar.Name = aws.String(v)
+			}
+
+			if v := tfMap[names.AttrType].(string); v != "" {
+				projectEnvironmentVar.Type = types.EnvironmentVariableType(v)
+			}
+
+			if v, ok := tfMap[names.AttrValue].(string); ok {
+				projectEnvironmentVar.Value = aws.String(v)
+			}
+
+			projectEnvironmentVariables = append(projectEnvironmentVariables, projectEnvironmentVar)
+		}
+
+		apiObject.EnvironmentVariables = projectEnvironmentVariables
+	}
+
+	return apiObject
+}

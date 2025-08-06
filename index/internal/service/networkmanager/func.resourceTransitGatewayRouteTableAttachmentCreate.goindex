@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTransitGatewayRouteTableAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	peeringID := d.Get("peering_id").(string)
+	transitGatewayRouteTableARN := d.Get("transit_gateway_route_table_arn").(string)
+	input := &networkmanager.CreateTransitGatewayRouteTableAttachmentInput{
+		PeeringId:                   aws.String(peeringID),
+		Tags:                        getTagsIn(ctx),
+		TransitGatewayRouteTableArn: aws.String(transitGatewayRouteTableARN),
+	}
+
+	output, err := conn.CreateTransitGatewayRouteTableAttachment(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Network Manager Transit Gateway (%s) Route Table (%s) Attachment: %s", peeringID, transitGatewayRouteTableARN, err)
+	}
+
+	d.SetId(aws.ToString(output.TransitGatewayRouteTableAttachment.Attachment.AttachmentId))
+
+	if _, err := waitTransitGatewayRouteTableAttachmentCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Transit Gateway Route Table Attachment (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceTransitGatewayRouteTableAttachmentRead(ctx, d, meta)...)
+}

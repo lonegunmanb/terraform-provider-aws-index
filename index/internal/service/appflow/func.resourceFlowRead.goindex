@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appflow
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appflow"
+	"github.com/aws/aws-sdk-go-v2/service/appflow/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFlowRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).AppFlowClient(ctx)
+
+	flowDefinition, err := findFlowByName(ctx, conn, d.Get(names.AttrName).(string))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] AppFlow Flow (%s) not found, removing from state", d.Get(names.AttrName))
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading AppFlow Flow (%s): %s", d.Get(names.AttrName), err)
+	}
+
+	output, err := findFlowByName(ctx, conn, aws.ToString(flowDefinition.FlowName))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading AppFlow Flow (%s): %s", d.Get(names.AttrName), err)
+	}
+
+	d.Set(names.AttrARN, output.FlowArn)
+	d.Set(names.AttrDescription, output.Description)
+	if err := d.Set("destination_flow_config", flattenDestinationFlowConfigs(output.DestinationFlowConfigList)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting destination_flow_config: %s", err)
+	}
+	d.Set("flow_status", output.FlowStatus)
+	d.Set("kms_arn", output.KmsArn)
+	d.Set(names.AttrName, output.FlowName)
+	if output.SourceFlowConfig != nil {
+		if err := d.Set("source_flow_config", []any{flattenSourceFlowConfig(output.SourceFlowConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting source_flow_config: %s", err)
+		}
+	} else {
+		d.Set("source_flow_config", nil)
+	}
+	if err := d.Set("task", flattenTasks(output.Tasks)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting task: %s", err)
+	}
+	if output.TriggerConfig != nil {
+		if err := d.Set("trigger_config", []any{flattenTriggerConfig(output.TriggerConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting trigger_config: %s", err)
+		}
+	} else {
+		d.Set("trigger_config", nil)
+	}
+
+	if output.MetadataCatalogConfig != nil {
+		if err := d.Set("metadata_catalog_config", flattenMetadataCatalogConfig(output.MetadataCatalogConfig)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting metadata_catalog_config: %s", err)
+		}
+	} else {
+		d.Set("metadata_catalog_config", nil)
+	}
+
+	setTagsOut(ctx, output.Tags)
+
+	return diags
+}

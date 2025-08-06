@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMemberAssociationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Inspector2Client(ctx)
+
+	log.Printf("[DEBUG] Deleting Inspector2 Member Association: %s", d.Id())
+	_, err := conn.DisassociateMember(ctx, &inspector2.DisassociateMemberInput{
+		AccountId: aws.String(d.Id()),
+	})
+
+	// An error occurred (ValidationException) when calling the DisassociateMember operation: The request is rejected because the current account cannot disassociate the given member account ID since the latter is not yet associated to it.
+	if errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "is not yet associated to it") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Inspector2 Member Association (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitMemberAssociationDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Inspector2 Member Association (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfkms "github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func stopEndpointReplicationTasks(ctx context.Context, conn *dms.Client, arn string) ([]awstypes.ReplicationTask, error) {
+	if err := steadyEndpointReplicationTasks(ctx, conn, arn); err != nil {
+		return nil, err
+	}
+
+	tasks, err := findReplicationTasksByEndpointARN(ctx, conn, arn)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var stoppedTasks []awstypes.ReplicationTask
+	for _, task := range tasks {
+		rtID := aws.ToString(task.ReplicationTaskIdentifier)
+		switch aws.ToString(task.Status) {
+		case replicationTaskStatusRunning:
+			err := stopReplicationTask(ctx, conn, rtID)
+
+			if err != nil {
+				return stoppedTasks, err
+			}
+			stoppedTasks = append(stoppedTasks, task)
+		default:
+			continue
+		}
+	}
+
+	return stoppedTasks, nil
+}

@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/macie2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/macie2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/macie2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFindingsFilterUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Macie2Client(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := macie2.UpdateFindingsFilterInput{
+			Id: aws.String(d.Id()),
+		}
+
+		var err error
+		if d.HasChange("finding_criteria") {
+			input.FindingCriteria, err = expandFindingCriteriaFilter(d.Get("finding_criteria").([]any))
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating Macie FindingsFilter (%s): %s", d.Id(), err)
+			}
+		}
+
+		if d.HasChange(names.AttrAction) {
+			input.Action = awstypes.FindingsFilterAction(d.Get(names.AttrAction).(string))
+		}
+
+		if d.HasChange(names.AttrDescription) {
+			input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		}
+
+		if d.HasChange("finding_criteria") {
+			if v, err := expandFindingCriteriaFilter(d.Get("finding_criteria").([]any)); err == nil {
+				input.FindingCriteria = v
+			} else {
+				return sdkdiag.AppendErrorf(diags, "expanding finding_criteria: %s", err)
+			}
+		}
+
+		if d.HasChanges(names.AttrName, names.AttrNamePrefix) {
+			input.Name = aws.String(create.Name(d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string)))
+		}
+
+		if d.HasChange("position") {
+			input.Position = aws.Int32(int32(d.Get("position").(int)))
+		}
+
+		_, err = conn.UpdateFindingsFilter(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Macie Findings Filter (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceFindingsFilterRead(ctx, d, meta)...)
+}

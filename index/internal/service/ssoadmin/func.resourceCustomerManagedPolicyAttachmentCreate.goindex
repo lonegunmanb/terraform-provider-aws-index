@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCustomerManagedPolicyAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSOAdminClient(ctx)
+
+	tfMap := d.Get("customer_managed_policy_reference").([]any)[0].(map[string]any)
+	policyName := tfMap[names.AttrName].(string)
+	policyPath := tfMap[names.AttrPath].(string)
+	instanceARN := d.Get("instance_arn").(string)
+	permissionSetARN := d.Get("permission_set_arn").(string)
+	id := CustomerManagedPolicyAttachmentCreateResourceID(policyName, policyPath, permissionSetARN, instanceARN)
+	input := &ssoadmin.AttachCustomerManagedPolicyReferenceToPermissionSetInput{
+		CustomerManagedPolicyReference: expandCustomerManagedPolicyReference(tfMap),
+		InstanceArn:                    aws.String(instanceARN),
+		PermissionSetArn:               aws.String(permissionSetARN),
+	}
+
+	_, err := conn.AttachCustomerManagedPolicyReferenceToPermissionSet(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SSO Customer Managed Policy Attachment (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	// After the policy has been attached to the permission set, provision in all accounts that use this permission set.
+	if err := provisionPermissionSet(ctx, conn, permissionSetARN, instanceARN, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	return append(diags, resourceCustomerManagedPolicyAttachmentRead(ctx, d, meta)...)
+}

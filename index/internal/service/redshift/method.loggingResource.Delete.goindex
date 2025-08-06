@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *loggingResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	conn := r.Meta().RedshiftClient(ctx)
+
+	var state loggingResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := &redshift.DisableLoggingInput{
+		ClusterIdentifier: state.ID.ValueStringPointer(),
+	}
+
+	// Retry InvalidClusterState faults, which can occur when logging is being enabled.
+	_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidClusterStateFault](ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.DisableLogging(ctx, in)
+		},
+		"There is an operation running on the Cluster",
+	)
+	if err != nil {
+		if errs.IsA[*awstypes.ClusterNotFoundFault](err) {
+			return
+		}
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Redshift, create.ErrActionDeleting, ResNameLogging, state.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+}

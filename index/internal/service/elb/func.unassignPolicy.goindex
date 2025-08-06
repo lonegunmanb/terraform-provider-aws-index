@@ -1,0 +1,88 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elb
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func unassignPolicy(ctx context.Context, conn *elasticloadbalancing.Client, lbName, policyName string) (*policyReassignments, error) {
+	reassignments := &policyReassignments{}
+
+	lb, err := findLoadBalancerByName(ctx, conn, lbName)
+
+	if tfresource.NotFound(err) {
+		return reassignments, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	for _, v := range lb.BackendServerDescriptions {
+		policies := tfslices.Filter(v.PolicyNames, func(v string) bool {
+			return v != policyName
+		})
+
+		if len(v.PolicyNames) != len(policies) {
+			reassignments.backendServerPolicies = append(reassignments.backendServerPolicies, &elasticloadbalancing.SetLoadBalancerPoliciesForBackendServerInput{
+				InstancePort:     v.InstancePort,
+				LoadBalancerName: aws.String(lbName),
+				PolicyNames:      v.PolicyNames,
+			})
+
+			input := &elasticloadbalancing.SetLoadBalancerPoliciesForBackendServerInput{
+				InstancePort:     v.InstancePort,
+				LoadBalancerName: aws.String(lbName),
+				PolicyNames:      policies,
+			}
+
+			_, err = conn.SetLoadBalancerPoliciesForBackendServer(ctx, input)
+
+			if err != nil {
+				return nil, fmt.Errorf("setting ELB Classic Backend Server Policy (%s): %w", lbName, err)
+			}
+		}
+	}
+
+	for _, v := range lb.ListenerDescriptions {
+		policies := tfslices.Filter(v.PolicyNames, func(v string) bool {
+			return v != policyName
+		})
+
+		if len(v.PolicyNames) != len(policies) {
+			reassignments.listenerPolicies = append(reassignments.listenerPolicies, &elasticloadbalancing.SetLoadBalancerPoliciesOfListenerInput{
+				LoadBalancerName: aws.String(lbName),
+				LoadBalancerPort: v.Listener.LoadBalancerPort,
+				PolicyNames:      v.PolicyNames,
+			})
+
+			input := &elasticloadbalancing.SetLoadBalancerPoliciesOfListenerInput{
+				LoadBalancerName: aws.String(lbName),
+				LoadBalancerPort: v.Listener.LoadBalancerPort,
+				PolicyNames:      policies,
+			}
+
+			_, err = conn.SetLoadBalancerPoliciesOfListener(ctx, input)
+
+			if err != nil {
+				return reassignments, fmt.Errorf("setting ELB Classic Listener Policy (%s): %w", lbName, err)
+			}
+		}
+	}
+
+	return reassignments, nil
+}

@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sqs
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/attrmap"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceQueueCustomizeDiff(_ context.Context, diff *schema.ResourceDiff, meta any) error {
+	fifoQueue := diff.Get("fifo_queue").(bool)
+	contentBasedDeduplication := diff.Get("content_based_deduplication").(bool)
+	sqsManagedSSEEnabled := diff.Get("sqs_managed_sse_enabled").(bool)
+
+	if diff.Id() == "" {
+		// Create.
+		name := queueName(diff)
+		var re *regexp.Regexp
+
+		if fifoQueue {
+			re = regexache.MustCompile(`^[0-9A-Za-z_-]{1,75}\.fifo$`)
+		} else {
+			re = regexache.MustCompile(`^[0-9A-Za-z_-]{1,80}$`)
+		}
+
+		if !re.MatchString(name) {
+			return fmt.Errorf("invalid queue name: %s", name)
+		}
+
+		if sqsManagedSSEEnabled {
+			// KmsDataKeyReusePeriodSeconds is only valid for SqsManagedSseEnabled queues.
+			if err := diff.SetNew("kms_data_key_reuse_period_seconds", nil); err != nil {
+				return err
+			}
+		}
+	} else {
+		// Update.
+		if sqsManagedSSEEnabled {
+			if err := diff.Clear("kms_data_key_reuse_period_seconds"); err != nil {
+				return err
+			}
+		}
+	}
+
+	if !fifoQueue && contentBasedDeduplication {
+		return fmt.Errorf("content-based deduplication can only be set for FIFO queue")
+	}
+
+	return nil
+}

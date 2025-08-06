@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTypeCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	typeName := d.Get("type_name").(string)
+	inputRT := cloudformation.RegisterTypeInput{
+		ClientRequestToken:   aws.String(sdkid.UniqueId()),
+		SchemaHandlerPackage: aws.String(d.Get("schema_handler_package").(string)),
+		TypeName:             aws.String(typeName),
+	}
+
+	if v, ok := d.GetOk(names.AttrExecutionRoleARN); ok {
+		inputRT.ExecutionRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("logging_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		inputRT.LoggingConfig = expandLoggingConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrType); ok {
+		inputRT.Type = awstypes.RegistryType(v.(string))
+	}
+
+	outputRT, err := conn.RegisterType(ctx, &inputRT)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "registering CloudFormation Type (%s): %s", typeName, err)
+	}
+
+	outputDTR, err := waitTypeRegistrationProgressStatusComplete(ctx, conn, aws.ToString(outputRT.RegistrationToken))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for CloudFormation Type (%s) register: %s", typeName, err)
+	}
+
+	// Type Version ARN is not available until after registration is complete.
+	d.SetId(aws.ToString(outputDTR.TypeVersionArn))
+
+	_, versionID, err := typeVersionARNToTypeARNAndVersionID(aws.ToString(outputDTR.TypeVersionArn))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	inputSTDV := cloudformation.SetTypeDefaultVersionInput{
+		Type:      inputRT.Type,
+		TypeName:  inputRT.TypeName,
+		VersionId: aws.String(versionID),
+	}
+
+	_, err = conn.SetTypeDefaultVersion(ctx, &inputSTDV)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting default version for CloudFormation Type (%s): %s", typeName, err)
+	}
+
+	return append(diags, resourceTypeRead(ctx, d, meta)...)
+}

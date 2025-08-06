@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *cidrLocationResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data cidrLocationResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().Route53Client(ctx)
+
+	collection, err := findCIDRCollectionByID(ctx, conn, data.CIDRCollectionID.ValueString())
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading Route 53 CIDR Collection (%s)", data.CIDRCollectionID.ValueString()), err.Error())
+
+		return
+	}
+
+	tflog.Debug(ctx, "deleting Route 53 CIDR Location", map[string]any{
+		names.AttrID: data.ID.ValueString(),
+	})
+
+	input := &route53.ChangeCidrCollectionInput{
+		Changes: []awstypes.CidrCollectionChange{{
+			Action:       awstypes.CidrCollectionChangeActionDeleteIfExists,
+			CidrList:     fwflex.ExpandFrameworkStringValueSet(ctx, data.CIDRBlocks),
+			LocationName: data.Name.ValueStringPointer(),
+		}},
+		CollectionVersion: collection.Version,
+		Id:                data.CIDRCollectionID.ValueStringPointer(),
+	}
+
+	_, err = conn.ChangeCidrCollection(ctx, input)
+
+	if errs.IsA[*awstypes.NoSuchCidrCollectionException](err) {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("deleting Route 53 CIDR Location (%s)", data.ID.ValueString()), err.Error())
+
+		return
+	}
+}

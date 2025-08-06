@@ -1,0 +1,548 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexv2models
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelsv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelsv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *slotResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	multValueSettingsLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[MultipleValuesSettingData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"allow_multiple_values": schema.BoolAttribute{
+					Optional: true,
+				},
+			},
+		},
+	}
+
+	obfuscationSettingLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[ObfuscationSettingData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"obfuscation_setting_type": schema.StringAttribute{
+					CustomType: fwtypes.StringEnumType[awstypes.ObfuscationSettingType](),
+					Required:   true,
+				},
+			},
+		},
+	}
+
+	defaultValueSpecificationLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[DefaultValueSpecificationData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Blocks: map[string]schema.Block{
+				"default_value_list": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[DefaultValueData](ctx),
+					Validators: []validator.List{
+						listvalidator.IsRequired(),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrDefaultValue: schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.LengthBetween(1, 202),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	messageNBO := schema.NestedBlockObject{
+		Blocks: map[string]schema.Block{
+			"custom_payload": schema.ListNestedBlock{
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				CustomType: fwtypes.NewListNestedObjectTypeOf[CustomPayload](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrValue: schema.StringAttribute{
+							Required: true,
+						},
+					},
+				},
+			},
+			"image_response_card": schema.ListNestedBlock{
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				CustomType: fwtypes.NewListNestedObjectTypeOf[ImageResponseCard](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"image_url": schema.StringAttribute{
+							Optional: true,
+						},
+						"subtitle": schema.StringAttribute{
+							Optional: true,
+						},
+						"title": schema.StringAttribute{
+							Required: true,
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"button": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[Button](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"text": schema.StringAttribute{
+										Required: true,
+									},
+									names.AttrValue: schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"plain_text_message": schema.ListNestedBlock{
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				CustomType: fwtypes.NewListNestedObjectTypeOf[PlainTextMessage](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrValue: schema.StringAttribute{
+							Required: true,
+						},
+					},
+				},
+			},
+			"ssml_message": schema.ListNestedBlock{
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				CustomType: fwtypes.NewListNestedObjectTypeOf[SSMLMessage](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrValue: schema.StringAttribute{
+							Required: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	messageGroupLNB := schema.ListNestedBlock{
+		Validators: []validator.List{
+			listvalidator.SizeAtLeast(1),
+		},
+		CustomType: fwtypes.NewListNestedObjectTypeOf[MessageGroup](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Blocks: map[string]schema.Block{
+				names.AttrMessage: schema.ListNestedBlock{
+					Validators: []validator.List{
+						listvalidator.SizeBetween(1, 1),
+					},
+					CustomType:   fwtypes.NewListNestedObjectTypeOf[Message](ctx),
+					NestedObject: messageNBO,
+				},
+				"variation": schema.ListNestedBlock{
+					CustomType:   fwtypes.NewListNestedObjectTypeOf[Message](ctx),
+					NestedObject: messageNBO,
+				},
+			},
+		},
+	}
+
+	allowedInputTypesLNB := schema.ListNestedBlock{
+		Validators: []validator.List{
+			listvalidator.SizeBetween(1, 1),
+		},
+		CustomType: fwtypes.NewListNestedObjectTypeOf[AllowedInputTypes](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"allow_audio_input": schema.BoolAttribute{
+					Required: true,
+				},
+				"allow_dtmf_input": schema.BoolAttribute{
+					Required: true,
+				},
+			},
+		},
+	}
+
+	audioSpecificationLNB := schema.ListNestedBlock{
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		CustomType: fwtypes.NewListNestedObjectTypeOf[AudioSpecification](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"end_timeout_ms": schema.Int64Attribute{
+					Required: true,
+					Validators: []validator.Int64{
+						int64validator.AtLeast(1),
+					},
+				},
+				"max_length_ms": schema.Int64Attribute{
+					Required: true,
+					Validators: []validator.Int64{
+						int64validator.AtLeast(1),
+					},
+				},
+			},
+		},
+	}
+
+	dmfSpecificationLNB := schema.ListNestedBlock{
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		CustomType: fwtypes.NewListNestedObjectTypeOf[DTMFSpecification](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"deletion_character": schema.StringAttribute{
+					Required: true,
+					Validators: []validator.String{
+						stringvalidator.RegexMatches(
+							regexache.MustCompile(`^[A-D0-9#*]{1}$`),
+							"alphanumeric characters",
+						),
+					},
+				},
+				"end_character": schema.StringAttribute{
+					Required: true,
+					Validators: []validator.String{
+						stringvalidator.RegexMatches(
+							regexache.MustCompile(`^[A-D0-9#*]{1}$`),
+							"alphanumeric characters",
+						),
+					},
+				},
+				"end_timeout_ms": schema.Int64Attribute{
+					Required: true,
+					Validators: []validator.Int64{
+						int64validator.AtLeast(1),
+					},
+				},
+				"max_length": schema.Int64Attribute{
+					Required: true,
+					Validators: []validator.Int64{
+						int64validator.Between(1, 1024),
+					},
+				},
+			},
+		},
+	}
+
+	audioAndDTMFInputSpecificationLNB := schema.ListNestedBlock{
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		CustomType: fwtypes.NewListNestedObjectTypeOf[AudioAndDTMFInputSpecification](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"start_timeout_ms": schema.Int64Attribute{
+					Required: true,
+					Validators: []validator.Int64{
+						int64validator.AtLeast(1),
+					},
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"audio_specification": audioSpecificationLNB,
+				"dtmf_specification":  dmfSpecificationLNB,
+			},
+		},
+	}
+
+	textInputSpecificationLNB := schema.ListNestedBlock{
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		CustomType: fwtypes.NewListNestedObjectTypeOf[TextInputSpecification](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"start_timeout_ms": schema.Int64Attribute{
+					Required: true,
+					Validators: []validator.Int64{
+						int64validator.AtLeast(1),
+					},
+				},
+			},
+		},
+	}
+
+	promptAttemptsSpecificationLNB := schema.SetNestedBlock{
+		CustomType: fwtypes.NewSetNestedObjectTypeOf[PromptAttemptsSpecification](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{ // nosemgrep:ci.semgrep.framework.map_block_key-meaningful-names
+				"map_block_key": schema.StringAttribute{
+					Required:   true,
+					CustomType: fwtypes.StringEnumType[PromptAttemptsType](),
+				},
+				"allow_interrupt": schema.BoolAttribute{
+					Optional: true,
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"allowed_input_types":                allowedInputTypesLNB,
+				"audio_and_dtmf_input_specification": audioAndDTMFInputSpecificationLNB,
+				"text_input_specification":           textInputSpecificationLNB,
+			},
+		},
+	}
+
+	promptSpecificationLNB := schema.ListNestedBlock{
+		Validators: []validator.List{
+			listvalidator.SizeBetween(1, 1),
+		},
+		CustomType: fwtypes.NewListNestedObjectTypeOf[PromptSpecification](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"allow_interrupt": schema.BoolAttribute{
+					Optional: true,
+				},
+				"max_retries": schema.Int64Attribute{
+					Required: true,
+				},
+				"message_selection_strategy": schema.StringAttribute{
+					Optional: true,
+					Validators: []validator.String{
+						enum.FrameworkValidate[awstypes.MessageSelectionStrategy](),
+					},
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"message_group":                 messageGroupLNB,
+				"prompt_attempts_specification": promptAttemptsSpecificationLNB,
+			},
+		},
+	}
+
+	sampleUtteranceLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[SampleUtterance](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"utterance": schema.StringAttribute{
+					Required: true,
+				},
+			},
+		},
+	}
+
+	slotResolutionSettingLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[SlotResolutionSettingData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"slot_resolution_strategy": schema.StringAttribute{
+					CustomType: fwtypes.StringEnumType[awstypes.SlotResolutionStrategy](),
+					Required:   true,
+				},
+			},
+		},
+	}
+
+	responseSpecificationLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[ResponseSpecification](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"allow_interrupt": schema.BoolAttribute{
+					Optional: true,
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"message_group": messageGroupLNB,
+			},
+		},
+	}
+
+	stillWaitingResponseSpecificationLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[StillWaitingResponseSpecificationData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"allow_interrupt": schema.BoolAttribute{
+					Optional: true,
+				},
+				"frequency_in_seconds": schema.Int64Attribute{
+					Required: true,
+				},
+				"timeout_in_seconds": schema.Int64Attribute{
+					Required: true,
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"message_group": messageGroupLNB,
+			},
+		},
+	}
+
+	waitAndContinueSpecificationLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[WaitAndContinueSpecificationData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"active": schema.BoolAttribute{
+					Optional: true,
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"continue_response":      responseSpecificationLNB,
+				"still_waiting_response": stillWaitingResponseSpecificationLNB,
+				"waiting_response":       responseSpecificationLNB,
+			},
+		},
+	}
+
+	subSlotValueElicitationSettingLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[SubSlotValueElicitationSettingData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Blocks: map[string]schema.Block{
+				"default_value_specification":     defaultValueSpecificationLNB,
+				"prompt_specification":            promptSpecificationLNB,
+				"sample_utterance":                sampleUtteranceLNB,
+				"wait_and_continue_specification": waitAndContinueSpecificationLNB,
+			},
+		},
+	}
+
+	slotSpecificationsLNB := schema.SetNestedBlock{
+		Validators: []validator.Set{
+			setvalidator.SizeAtMost(6),
+		},
+		CustomType: fwtypes.NewSetNestedObjectTypeOf[SlotSpecificationsData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{ // nosemgrep:ci.semgrep.framework.map_block_key-meaningful-names
+				"map_block_key": schema.StringAttribute{
+					Required: true,
+				},
+				"slot_type_id": schema.StringAttribute{
+					Required: true,
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"value_elicitation_setting": subSlotValueElicitationSettingLNB,
+			},
+		},
+	}
+
+	subSlotSettingLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[SubSlotSettingData](ctx),
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				names.AttrExpression: schema.StringAttribute{
+					Optional: true,
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"slot_specification": slotSpecificationsLNB,
+			},
+		},
+	}
+
+	valueElicitationSettingLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[ValueElicitationSettingData](ctx),
+		Validators: []validator.List{
+			listvalidator.IsRequired(),
+			listvalidator.SizeAtMost(1),
+		},
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"slot_constraint": schema.StringAttribute{
+					Required: true,
+					Validators: []validator.String{
+						enum.FrameworkValidate[awstypes.SlotConstraint](),
+					},
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"default_value_specification":     defaultValueSpecificationLNB,
+				"prompt_specification":            promptSpecificationLNB,
+				"sample_utterance":                sampleUtteranceLNB,
+				"slot_resolution_setting":         slotResolutionSettingLNB,
+				"wait_and_continue_specification": waitAndContinueSpecificationLNB,
+			},
+		},
+	}
+
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"bot_id": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"bot_version": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			names.AttrDescription: schema.StringAttribute{
+				Optional: true,
+			},
+			names.AttrID: framework.IDAttribute(),
+			"intent_id": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"locale_id": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"slot_id": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrName: schema.StringAttribute{
+				Required: true,
+			},
+			"slot_type_id": schema.StringAttribute{
+				Computed: true,
+				Optional: true,
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"multiple_values_setting":   multValueSettingsLNB,
+			"obfuscation_setting":       obfuscationSettingLNB,
+			"value_elicitation_setting": valueElicitationSettingLNB,
+			"sub_slot_setting":          subSlotSettingLNB,
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+	}
+}

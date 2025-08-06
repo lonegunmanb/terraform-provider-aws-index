@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketServerSideEncryptionConfigurationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+	expectedBucketOwner := d.Get(names.AttrExpectedBucketOwner).(string)
+	input := &s3.PutBucketEncryptionInput{
+		Bucket: aws.String(bucket),
+		ServerSideEncryptionConfiguration: &types.ServerSideEncryptionConfiguration{
+			Rules: expandServerSideEncryptionRules(d.Get(names.AttrRule).(*schema.Set).List()),
+		},
+	}
+	if expectedBucketOwner != "" {
+		input.ExpectedBucketOwner = aws.String(expectedBucketOwner)
+	}
+
+	_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, bucketPropagationTimeout, func() (any, error) {
+		return conn.PutBucketEncryption(ctx, input)
+	}, errCodeNoSuchBucket, errCodeOperationAborted)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating S3 Bucket (%s) Server-side Encryption Configuration: %s", bucket, err)
+	}
+
+	d.SetId(createResourceID(bucket, expectedBucketOwner))
+
+	_, err = tfresource.RetryWhenNotFound(ctx, bucketPropagationTimeout, func() (any, error) {
+		return findServerSideEncryptionConfiguration(ctx, conn, bucket, expectedBucketOwner)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for S3 Bucket Server-side Encryption Configuration (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceBucketServerSideEncryptionConfigurationRead(ctx, d, meta)...)
+}

@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMemberUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GuardDutyClient(ctx)
+
+	accountID, detectorID, err := DecodeMemberID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating GuardDuty Member (%s): %s", d.Id(), err)
+	}
+
+	if d.HasChange("invite") {
+		if d.Get("invite").(bool) {
+			input := &guardduty.InviteMembersInput{
+				DetectorId:               aws.String(detectorID),
+				AccountIds:               []string{accountID},
+				DisableEmailNotification: aws.Bool(d.Get("disable_email_notification").(bool)),
+				Message:                  aws.String(d.Get("invitation_message").(string)),
+			}
+
+			log.Printf("[INFO] Inviting GuardDuty Member: %+v", input)
+			output, err := conn.InviteMembers(ctx, input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "inviting GuardDuty Member %q: %s", d.Id(), err)
+			}
+
+			// {"unprocessedAccounts":[{"result":"The request is rejected because the current account has already invited or is already the GuardDuty master of the given member account ID.","accountId":"067819342479"}]}
+			if len(output.UnprocessedAccounts) > 0 {
+				return sdkdiag.AppendErrorf(diags, "inviting GuardDuty Member %q: %s", d.Id(), aws.ToString(output.UnprocessedAccounts[0].Result))
+			}
+
+			err = inviteMemberWaiter(ctx, accountID, detectorID, d.Timeout(schema.TimeoutUpdate), conn)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for GuardDuty Member %q invite: %s", d.Id(), err)
+			}
+		} else {
+			input := &guardduty.DisassociateMembersInput{
+				AccountIds: []string{accountID},
+				DetectorId: aws.String(detectorID),
+			}
+			log.Printf("[INFO] Disassociating GuardDuty Member: %+v", input)
+			_, err := conn.DisassociateMembers(ctx, input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "disassociating GuardDuty Member %q: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceMemberRead(ctx, d, meta)...)
+}

@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandCustomizedMetricSpecification(configured []any) *awstypes.CustomizedMetricSpecification {
+	spec := &awstypes.CustomizedMetricSpecification{}
+
+	for _, raw := range configured {
+		data := raw.(map[string]any)
+		if val, ok := data["metrics"].(*schema.Set); ok && val.Len() > 0 {
+			spec.Metrics = expandTargetTrackingMetricDataQueries(val.List())
+		} else {
+			if v, ok := data[names.AttrMetricName]; ok {
+				spec.MetricName = aws.String(v.(string))
+			}
+
+			if v, ok := data[names.AttrNamespace]; ok {
+				spec.Namespace = aws.String(v.(string))
+			}
+
+			if v, ok := data[names.AttrUnit].(string); ok && v != "" {
+				spec.Unit = aws.String(v)
+			}
+
+			if v, ok := data["statistic"]; ok {
+				spec.Statistic = awstypes.MetricStatistic(v.(string))
+			}
+
+			if s, ok := data["dimensions"].(*schema.Set); ok && s.Len() > 0 {
+				dimensions := make([]awstypes.MetricDimension, s.Len())
+				for i, d := range s.List() {
+					dimension := d.(map[string]any)
+					dimensions[i] = awstypes.MetricDimension{
+						Name:  aws.String(dimension[names.AttrName].(string)),
+						Value: aws.String(dimension[names.AttrValue].(string)),
+					}
+				}
+				spec.Dimensions = dimensions
+			}
+		}
+	}
+	return spec
+}

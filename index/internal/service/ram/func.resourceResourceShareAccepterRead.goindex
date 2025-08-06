@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"errors"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ram"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourceShareAccepterRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	accountID := meta.(*conns.AWSClient).AccountID(ctx)
+	conn := meta.(*conns.AWSClient).RAMClient(ctx)
+
+	maybeInvitation, err := findMaybeResourceShareInvitationByResourceShareARNAndStatus(ctx, conn, d.Id(), string(awstypes.ResourceShareInvitationStatusAccepted))
+
+	if err != nil && !errs.IsA[*awstypes.ResourceShareInvitationArnNotFoundException](err) {
+		return sdkdiag.AppendErrorf(diags, "reading accepted RAM Resource Share (%s) invitation: %s", d.Id(), err)
+	}
+
+	if maybeInvitation.IsSome() {
+		invitation := maybeInvitation.MustUnwrap()
+		d.Set("invitation_arn", invitation.ResourceShareInvitationArn)
+		d.Set("receiver_account_id", invitation.ReceiverAccountId)
+	} else {
+		d.Set("receiver_account_id", accountID)
+	}
+
+	resourceShare, err := findResourceShareOwnerOtherAccountsByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] No RAM Resource Share %s found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading RAM Resource Share (%s): %s", d.Id(), err)
+	}
+
+	d.Set("sender_account_id", resourceShare.OwningAccountId)
+	d.Set("share_arn", resourceShare.ResourceShareArn)
+	d.Set("share_id", resourceResourceShareIDFromARN(d.Id()))
+	d.Set("share_name", resourceShare.Name)
+	d.Set(names.AttrStatus, resourceShare.Status)
+
+	input := &ram.ListResourcesInput{
+		MaxResults:        aws.Int32(500),
+		ResourceOwner:     awstypes.ResourceOwnerOtherAccounts,
+		ResourceShareArns: []string{d.Id()},
+	}
+	resources, err := findResources(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading RAM Resource Share (%s) resources: %s", d.Id(), err)
+	}
+
+	resourceARNs := tfslices.ApplyToAll(resources, func(r awstypes.Resource) string {
+		return aws.ToString(r.Arn)
+	})
+	d.Set(names.AttrResources, resourceARNs)
+
+	return diags
+}

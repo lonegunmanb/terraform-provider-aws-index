@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceFleetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	tfMap := map[string]any{
+		names.AttrName:              d.Get(names.AttrName),
+		"target_on_demand_capacity": d.Get("target_on_demand_capacity"),
+		"target_spot_capacity":      d.Get("target_spot_capacity"),
+		"instance_type_configs":     d.Get("instance_type_configs"),
+		"launch_specifications":     d.Get("launch_specifications"),
+	}
+	input := &emr.AddInstanceFleetInput{
+		ClusterId:     aws.String(d.Get("cluster_id").(string)),
+		InstanceFleet: expandInstanceFleetConfig(tfMap, awstypes.InstanceFleetTypeTask),
+	}
+
+	output, err := conn.AddInstanceFleet(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EMR Instance Fleet: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.InstanceFleetId))
+
+	return append(diags, resourceInstanceFleetRead(ctx, d, meta)...)
+}

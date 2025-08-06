@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/signer
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/signer"
+	"github.com/aws/aws-sdk-go-v2/service/signer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSigningProfilePermissionDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SignerClient(ctx)
+
+	profileName := d.Get("profile_name").(string)
+
+	conns.GlobalMutexKV.Lock(profileName)
+	defer conns.GlobalMutexKV.Unlock(profileName)
+
+	output, err := conn.ListProfilePermissions(ctx, &signer.ListProfilePermissionsInput{
+		ProfileName: aws.String(profileName),
+	})
+
+	if errs.IsA[*types.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Signer Signing Profile (%s) Permissions: %s", profileName, err)
+	}
+
+	revisionID := aws.ToString(output.RevisionId)
+	statementID := d.Get("statement_id").(string)
+
+	log.Printf("[DEBUG] Deleting Signer Signing Profile Permission: %s", d.Id())
+	_, err = conn.RemoveProfilePermission(ctx, &signer.RemoveProfilePermissionInput{
+		ProfileName: aws.String(profileName),
+		RevisionId:  aws.String(revisionID),
+		StatementId: aws.String(statementID),
+	})
+
+	if errs.IsA[*types.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Signer Signing Profile Permission (%s): %s", d.Id(), err)
+	}
+
+	_, err = tfresource.RetryUntilNotFound(ctx, propagationTimeout, func() (any, error) {
+		return findPermissionByTwoPartKey(ctx, conn, profileName, statementID)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Signer Signing Profile Permission (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

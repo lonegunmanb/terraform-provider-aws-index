@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (e *clusterAuthEphemeralResource) Open(ctx context.Context, request ephemeral.OpenRequest, response *ephemeral.OpenResponse) {
+	conn := e.Meta().STSClient(ctx)
+	data := clusterAuthEphemeralResourceModel{}
+
+	response.Diagnostics.Append(request.Config.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	generator, err := NewGenerator(false, false)
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.EKS, create.ErrActionReading, ERNameClusterAuth, data.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	token, err := generator.GetWithSTS(ctx, data.Name.ValueString(), conn)
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.EKS, create.ErrActionReading, ERNameClusterAuth, data.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, token, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.Result.Set(ctx, &data)...)
+}

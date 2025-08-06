@@ -1,0 +1,216 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"reflect"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func ResourceResourceLFTags() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceResourceLFTagsCreate,
+		ReadWithoutTimeout:   resourceResourceLFTagsRead,
+		DeleteWithoutTimeout: resourceResourceLFTagsDelete,
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(20 * time.Minute),
+			Delete: schema.DefaultTimeout(20 * time.Minute),
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrCatalogID: {
+				Type:         schema.TypeString,
+				Computed:     true,
+				ForceNew:     true,
+				Optional:     true,
+				ValidateFunc: verify.ValidAccountID,
+			},
+			names.AttrDatabase: {
+				Type:     schema.TypeList,
+				Computed: true,
+				ForceNew: true,
+				MaxItems: 1,
+				Optional: true,
+				ExactlyOneOf: []string{
+					names.AttrDatabase,
+					"table",
+					"table_with_columns",
+				},
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrCatalogID: {
+							Type:         schema.TypeString,
+							Computed:     true,
+							ForceNew:     true,
+							Optional:     true,
+							ValidateFunc: verify.ValidAccountID,
+						},
+						names.AttrName: {
+							Type:     schema.TypeString,
+							ForceNew: true,
+							Required: true,
+						},
+					},
+				},
+			},
+			"lf_tag": {
+				Type:     schema.TypeSet,
+				Required: true,
+				ForceNew: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrCatalogID: {
+							Type:     schema.TypeString,
+							ForceNew: true,
+							Optional: true,
+							Computed: true,
+						},
+						names.AttrKey: {
+							Type:         schema.TypeString,
+							Required:     true,
+							ForceNew:     true,
+							ValidateFunc: validation.StringLenBetween(1, 128),
+						},
+						names.AttrValue: {
+							Type:         schema.TypeString,
+							Required:     true,
+							ForceNew:     true,
+							ValidateFunc: validateLFTagValues(),
+						},
+					},
+				},
+				Set: lfTagsHash,
+			},
+			"table": {
+				Type:     schema.TypeList,
+				Computed: true,
+				ForceNew: true,
+				MaxItems: 1,
+				Optional: true,
+				ExactlyOneOf: []string{
+					names.AttrDatabase,
+					"table",
+					"table_with_columns",
+				},
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrCatalogID: {
+							Type:         schema.TypeString,
+							Computed:     true,
+							ForceNew:     true,
+							Optional:     true,
+							ValidateFunc: verify.ValidAccountID,
+						},
+						names.AttrDatabaseName: {
+							Type:     schema.TypeString,
+							ForceNew: true,
+							Required: true,
+						},
+						names.AttrName: {
+							Type:     schema.TypeString,
+							Computed: true,
+							ForceNew: true,
+							Optional: true,
+							AtLeastOneOf: []string{
+								"table.0.name",
+								"table.0.wildcard",
+							},
+						},
+						"wildcard": {
+							Type:     schema.TypeBool,
+							Default:  false,
+							ForceNew: true,
+							Optional: true,
+							AtLeastOneOf: []string{
+								"table.0.name",
+								"table.0.wildcard",
+							},
+						},
+					},
+				},
+			},
+			"table_with_columns": {
+				Type:     schema.TypeList,
+				Computed: true,
+				ForceNew: true,
+				MaxItems: 1,
+				Optional: true,
+				ExactlyOneOf: []string{
+					names.AttrDatabase,
+					"table",
+					"table_with_columns",
+				},
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrCatalogID: {
+							Type:         schema.TypeString,
+							Computed:     true,
+							ForceNew:     true,
+							Optional:     true,
+							ValidateFunc: verify.ValidAccountID,
+						},
+						"column_names": {
+							Type:     schema.TypeSet,
+							ForceNew: true,
+							Optional: true,
+							Set:      schema.HashString,
+							Elem: &schema.Schema{
+								Type:         schema.TypeString,
+								ValidateFunc: validation.NoZeroValues,
+							},
+							AtLeastOneOf: []string{
+								"table_with_columns.0.column_names",
+								"table_with_columns.0.wildcard",
+							},
+						},
+						names.AttrDatabaseName: {
+							Type:     schema.TypeString,
+							ForceNew: true,
+							Required: true,
+						},
+						"excluded_column_names": {
+							Type:     schema.TypeSet,
+							ForceNew: true,
+							Optional: true,
+							Set:      schema.HashString,
+							Elem: &schema.Schema{
+								Type:         schema.TypeString,
+								ValidateFunc: validation.NoZeroValues,
+							},
+						},
+						names.AttrName: {
+							Type:     schema.TypeString,
+							ForceNew: true,
+							Required: true,
+						},
+						"wildcard": {
+							Type:     schema.TypeBool,
+							Default:  false,
+							ForceNew: true,
+							Optional: true,
+							AtLeastOneOf: []string{
+								"table_with_columns.0.column_names",
+								"table_with_columns.0.wildcard",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

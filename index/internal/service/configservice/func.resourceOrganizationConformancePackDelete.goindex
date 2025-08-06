@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOrganizationConformancePackDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConfigServiceClient(ctx)
+
+	const (
+		timeout = 5 * time.Minute
+	)
+	log.Printf("[DEBUG] Deleting ConfigService Organization Conformance Pack: %s", d.Id())
+	_, err := tfresource.RetryWhenIsA[*types.ResourceInUseException](ctx, timeout, func() (any, error) {
+		return conn.DeleteOrganizationConformancePack(ctx, &configservice.DeleteOrganizationConformancePackInput{
+			OrganizationConformancePackName: aws.String(d.Id()),
+		})
+	})
+
+	if errs.IsA[*types.NoSuchOrganizationConformancePackException](err) || errs.IsA[*types.OrganizationAccessDeniedException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting ConfigService Organization Conformance Pack (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitOrganizationConformancePackDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ConfigService Organization Conformance Pack (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

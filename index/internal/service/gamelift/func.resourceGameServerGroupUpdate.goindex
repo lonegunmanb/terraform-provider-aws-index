@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/gamelift
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/gamelift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/gamelift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfautoscaling "github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGameServerGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GameLiftClient(ctx)
+
+	if d.HasChanges("balancing_strategy", "game_server_protection_policy", "instance_definition", names.AttrRoleARN) {
+		input := &gamelift.UpdateGameServerGroupInput{
+			GameServerGroupName: aws.String(d.Id()),
+			InstanceDefinitions: expandInstanceDefinitions(d.Get("instance_definition").(*schema.Set).List()),
+			RoleArn:             aws.String(d.Get(names.AttrRoleARN).(string)),
+		}
+
+		if v, ok := d.GetOk("balancing_strategy"); ok {
+			input.BalancingStrategy = awstypes.BalancingStrategy(v.(string))
+		}
+
+		if v, ok := d.GetOk("game_server_protection_policy"); ok {
+			input.GameServerProtectionPolicy = awstypes.GameServerProtectionPolicy(v.(string))
+		}
+
+		_, err := conn.UpdateGameServerGroup(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating GameLift Game Server Group (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceGameServerGroupRead(ctx, d, meta)...)
+}

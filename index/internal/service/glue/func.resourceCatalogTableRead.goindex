@@ -1,0 +1,104 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCatalogTableRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	catalogID, dbName, name, err := ReadTableID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	table, err := findTableByName(ctx, conn, catalogID, dbName, name)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Glue Catalog Table (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Glue Catalog Table (%s): %s", d.Id(), err)
+	}
+
+	tableArn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "glue",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("table/%s/%s", dbName, aws.ToString(table.Name)),
+	}.String()
+	d.Set(names.AttrARN, tableArn)
+	d.Set(names.AttrCatalogID, catalogID)
+	d.Set(names.AttrDatabaseName, dbName)
+	d.Set(names.AttrDescription, table.Description)
+	d.Set(names.AttrName, table.Name)
+	d.Set(names.AttrOwner, table.Owner)
+	d.Set("retention", table.Retention)
+
+	if err := d.Set("storage_descriptor", flattenStorageDescriptor(table.StorageDescriptor)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting storage_descriptor: %s", err)
+	}
+
+	if err := d.Set("partition_keys", flattenColumns(table.PartitionKeys)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting partition_keys: %s", err)
+	}
+
+	d.Set("view_original_text", table.ViewOriginalText)
+	d.Set("view_expanded_text", table.ViewExpandedText)
+	d.Set("table_type", table.TableType)
+
+	if err := d.Set(names.AttrParameters, flattenNonManagedParameters(table)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting parameters: %s", err)
+	}
+
+	if table.TargetTable != nil {
+		if err := d.Set("target_table", []any{flattenTableTargetTable(table.TargetTable)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting target_table: %s", err)
+		}
+	} else {
+		d.Set("target_table", nil)
+	}
+
+	input := &glue.GetPartitionIndexesInput{
+		CatalogId:    aws.String(catalogID),
+		DatabaseName: aws.String(dbName),
+		TableName:    aws.String(name),
+	}
+
+	output, err := conn.GetPartitionIndexes(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Glue Catalog Table (%s) partition indexes: %s", d.Id(), err)
+	}
+
+	if output != nil && len(output.PartitionIndexDescriptorList) > 0 {
+		if err := d.Set("partition_index", flattenPartitionIndexes(output.PartitionIndexDescriptorList)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting partition_index: %s", err)
+		}
+	}
+
+	return diags
+}

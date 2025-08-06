@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepIPAMs(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.EC2Client(ctx)
+	var input ec2.DescribeIpamsInput
+	var sweepResources []sweep.Sweepable
+
+	pages := ec2.NewDescribeIpamsPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.Ipams {
+			id := aws.ToString(v.IpamId)
+
+			// Skip free tier IPAMs with CIDRs in public scope, as it will take up to 48 hours for the CIDR to become available for future allocations.
+			if v.Tier == awstypes.IpamTierFree {
+				v, err := findIPAMScopeByID(ctx, conn, aws.ToString(v.PublicDefaultScopeId))
+
+				if err != nil {
+					return nil, err
+				}
+
+				if aws.ToInt32(v.PoolCount) > 0 {
+					log.Printf("[INFO] Skipping IPAM %s: Lingering free tier allocations", id)
+					continue
+				}
+			}
+
+			r := resourceIPAM()
+			d := r.Data(nil)
+			d.SetId(id)
+			d.Set("cascade", true)
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	return sweepResources, nil
+}

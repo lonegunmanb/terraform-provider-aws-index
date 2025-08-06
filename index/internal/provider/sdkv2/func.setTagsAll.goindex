@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2
+import (
+	"context"
+	"fmt"
+	"unique"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/interceptors"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func setTagsAll() customizeDiffInterceptor {
+	return interceptorFunc1[*schema.ResourceDiff, error](func(ctx context.Context, opts customizeDiffInterceptorOptions) error {
+		c := opts.c
+
+		switch d, when, why := opts.d, opts.when, opts.why; when {
+		case Before:
+			switch why {
+			case CustomizeDiff:
+				// Calculate the new value for the `tags_all` attribute.
+				if !d.GetRawPlan().GetAttr(names.AttrTags).IsWhollyKnown() {
+					if err := d.SetNewComputed(names.AttrTagsAll); err != nil {
+						return fmt.Errorf("setting tags_all to Computed: %w", err)
+					}
+					return nil
+				}
+
+				newTags := tftags.New(ctx, d.Get(names.AttrTags).(map[string]any))
+				allTags := c.DefaultTagsConfig(ctx).MergeTags(newTags).IgnoreConfig(c.IgnoreTagsConfig(ctx))
+				if d.HasChange(names.AttrTags) {
+					if newTags.HasZeroValue() {
+						if err := d.SetNewComputed(names.AttrTagsAll); err != nil {
+							return fmt.Errorf("setting tags_all to Computed: %w", err)
+						}
+					}
+
+					if len(allTags) > 0 && (!newTags.HasZeroValue() || !allTags.HasZeroValue()) {
+						if err := d.SetNew(names.AttrTagsAll, allTags.Map()); err != nil {
+							return fmt.Errorf("setting new tags_all diff: %w", err)
+						}
+					}
+
+					if len(allTags) == 0 {
+						if err := d.SetNew(names.AttrTagsAll, allTags.Map()); err != nil {
+							return fmt.Errorf("setting new tags_all diff: %w", err)
+						}
+					}
+				} else {
+					if len(allTags) > 0 && !allTags.HasZeroValue() {
+						if err := d.SetNew(names.AttrTagsAll, allTags.Map()); err != nil {
+							return fmt.Errorf("setting new tags_all diff: %w", err)
+						}
+						return nil
+					}
+
+					var newTagsAll tftags.KeyValueTags
+					if v, ok := d.Get(names.AttrTagsAll).(map[string]any); ok {
+						newTagsAll = tftags.New(ctx, v)
+					}
+					if len(allTags) > 0 && !newTagsAll.DeepEqual(allTags) && allTags.HasZeroValue() {
+						if err := d.SetNewComputed(names.AttrTagsAll); err != nil {
+							return fmt.Errorf("setting tags_all to Computed: %w", err)
+						}
+						return nil
+					}
+				}
+			}
+		}
+
+		return nil
+	})
+}

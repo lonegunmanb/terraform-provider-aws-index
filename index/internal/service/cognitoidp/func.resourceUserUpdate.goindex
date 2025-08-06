@@ -1,0 +1,135 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	userPoolID, username := d.Get(names.AttrUserPoolID).(string), d.Get(names.AttrUsername).(string)
+
+	if d.HasChange(names.AttrAttributes) {
+		o, n := d.GetChange(names.AttrAttributes)
+		upd, del := expandUpdateUserAttributes(o.(map[string]any), n.(map[string]any))
+
+		if len(upd) > 0 {
+			input := &cognitoidentityprovider.AdminUpdateUserAttributesInput{
+				Username:       aws.String(username),
+				UserAttributes: expandAttributeTypes(upd),
+				UserPoolId:     aws.String(userPoolID),
+			}
+
+			if v, ok := d.GetOk("client_metadata"); ok {
+				input.ClientMetadata = flex.ExpandStringValueMap(v.(map[string]any))
+			}
+
+			_, err := conn.AdminUpdateUserAttributes(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating Cognito User (%s) attributes: %s", d.Id(), err)
+			}
+		}
+
+		if len(del) > 0 {
+			input := &cognitoidentityprovider.AdminDeleteUserAttributesInput{
+				Username:           aws.String(username),
+				UserAttributeNames: tfslices.ApplyToAll(del, normalizeUserAttributeKey),
+				UserPoolId:         aws.String(userPoolID),
+			}
+
+			_, err := conn.AdminDeleteUserAttributes(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "deleting Cognito User (%s) attributes: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange(names.AttrEnabled) {
+		if d.Get(names.AttrEnabled).(bool) {
+			input := &cognitoidentityprovider.AdminEnableUserInput{
+				Username:   aws.String(username),
+				UserPoolId: aws.String(userPoolID),
+			}
+
+			_, err := conn.AdminEnableUser(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "enabling Cognito User (%s): %s", d.Id(), err)
+			}
+		} else {
+			input := &cognitoidentityprovider.AdminDisableUserInput{
+				Username:   aws.String(username),
+				UserPoolId: aws.String(userPoolID),
+			}
+
+			_, err := conn.AdminDisableUser(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "disabling Cognito User (%s): %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange("temporary_password") {
+		if v := d.Get("temporary_password").(string); v != "" {
+			input := &cognitoidentityprovider.AdminSetUserPasswordInput{
+				Password:   aws.String(v),
+				Permanent:  false,
+				Username:   aws.String(username),
+				UserPoolId: aws.String(userPoolID),
+			}
+
+			_, err := conn.AdminSetUserPassword(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "setting Cognito User (%s) password: %s", d.Id(), err)
+			}
+		} else {
+			d.Set("temporary_password", nil)
+		}
+	}
+
+	if d.HasChange(names.AttrPassword) {
+		if v := d.Get(names.AttrPassword).(string); v != "" {
+			input := &cognitoidentityprovider.AdminSetUserPasswordInput{
+				Password:   aws.String(v),
+				Permanent:  true,
+				Username:   aws.String(username),
+				UserPoolId: aws.String(userPoolID),
+			}
+
+			_, err := conn.AdminSetUserPassword(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "setting Cognito User (%s) password: %s", d.Id(), err)
+			}
+		} else {
+			d.Set(names.AttrPassword, nil)
+		}
+	}
+
+	return append(diags, resourceUserRead(ctx, d, meta)...)
+}

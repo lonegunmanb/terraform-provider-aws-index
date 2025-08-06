@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTargetDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppAutoScalingClient(ctx)
+
+	input := applicationautoscaling.DeregisterScalableTargetInput{
+		ResourceId:        aws.String(d.Id()),
+		ScalableDimension: awstypes.ScalableDimension(d.Get("scalable_dimension").(string)),
+		ServiceNamespace:  awstypes.ServiceNamespace(d.Get("service_namespace").(string)),
+	}
+
+	log.Printf("[INFO] Deleting Application AutoScaling Target: %s", d.Id())
+	_, err := conn.DeregisterScalableTarget(ctx, &input)
+
+	if errs.IsA[*awstypes.ObjectNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Application AutoScaling Target (%s): %s", d.Id(), err)
+	}
+
+	_, err = tfresource.RetryUntilNotFound(ctx, 5*time.Minute, func() (any, error) {
+		return FindTargetByThreePartKey(ctx, conn, d.Id(), d.Get("service_namespace").(string), d.Get("scalable_dimension").(string))
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Application AutoScaling Target (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

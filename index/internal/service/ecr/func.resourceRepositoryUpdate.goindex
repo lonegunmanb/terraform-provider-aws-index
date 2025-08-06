@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecr
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
+	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRepositoryUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ECRClient(ctx)
+
+	if d.HasChange("image_tag_mutability") {
+		input := &ecr.PutImageTagMutabilityInput{
+			ImageTagMutability: types.ImageTagMutability((d.Get("image_tag_mutability").(string))),
+			RegistryId:         aws.String(d.Get("registry_id").(string)),
+			RepositoryName:     aws.String(d.Id()),
+		}
+
+		_, err := conn.PutImageTagMutability(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ECR Repository (%s) image tag mutability: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("image_scanning_configuration") {
+		input := &ecr.PutImageScanningConfigurationInput{
+			ImageScanningConfiguration: &types.ImageScanningConfiguration{},
+			RegistryId:                 aws.String(d.Get("registry_id").(string)),
+			RepositoryName:             aws.String(d.Id()),
+		}
+
+		if v, ok := d.GetOk("image_scanning_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			tfMap := v.([]any)[0].(map[string]any)
+			input.ImageScanningConfiguration.ScanOnPush = tfMap["scan_on_push"].(bool)
+		}
+
+		_, err := conn.PutImageScanningConfiguration(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ECR Repository (%s) image scanning configuration: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceRepositoryRead(ctx, d, meta)...)
+}

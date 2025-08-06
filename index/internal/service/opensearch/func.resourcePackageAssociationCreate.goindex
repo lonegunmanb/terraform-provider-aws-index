@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePackageAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OpenSearchClient(ctx)
+
+	domainName := d.Get(names.AttrDomainName).(string)
+	packageID := d.Get("package_id").(string)
+	id := fmt.Sprintf("%s-%s", domainName, packageID)
+	input := &opensearch.AssociatePackageInput{
+		DomainName: aws.String(domainName),
+		PackageID:  aws.String(packageID),
+	}
+
+	_, err := conn.AssociatePackage(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating OpenSearch Package Association (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitPackageAssociationCreated(ctx, conn, domainName, packageID, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for OpenSearch Package Association (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourcePackageAssociationRead(ctx, d, meta)...)
+}

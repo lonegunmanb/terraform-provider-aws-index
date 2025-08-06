@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func disableContinuousDeploymentPolicy(ctx context.Context, conn *cloudfront.Client, id string) error {
+	output, err := findContinuousDeploymentPolicyByID(ctx, conn, id)
+
+	if err != nil {
+		return fmt.Errorf("reading CloudFront Continuous Deployment Policy (%s): %w", id, err)
+	}
+
+	if !aws.ToBool(output.ContinuousDeploymentPolicy.ContinuousDeploymentPolicyConfig.Enabled) {
+		return nil
+	}
+
+	output.ContinuousDeploymentPolicy.ContinuousDeploymentPolicyConfig.Enabled = aws.Bool(false)
+
+	input := &cloudfront.UpdateContinuousDeploymentPolicyInput{
+		ContinuousDeploymentPolicyConfig: output.ContinuousDeploymentPolicy.ContinuousDeploymentPolicyConfig,
+		Id:                               output.ContinuousDeploymentPolicy.Id,
+		IfMatch:                          output.ETag,
+	}
+
+	_, err = conn.UpdateContinuousDeploymentPolicy(ctx, input)
+
+	if err != nil {
+		return fmt.Errorf("updating CloudFront Continuous Deployment Policy (%s): %w", id, err)
+	}
+
+	return err
+}

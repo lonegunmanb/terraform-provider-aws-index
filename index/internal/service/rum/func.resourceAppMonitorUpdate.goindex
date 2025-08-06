@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rum
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/rum"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/rum/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAppMonitorUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RUMClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &rum.UpdateAppMonitorInput{
+			Name: aws.String(d.Id()),
+		}
+
+		if d.HasChange("app_monitor_configuration") {
+			input.AppMonitorConfiguration = expandAppMonitorConfiguration(d.Get("app_monitor_configuration").([]any)[0].(map[string]any))
+		}
+
+		if d.HasChange("custom_events") {
+			input.CustomEvents = expandCustomEvents(d.Get("custom_events").([]any)[0].(map[string]any))
+		}
+
+		if d.HasChange("cw_log_enabled") {
+			input.CwLogEnabled = aws.Bool(d.Get("cw_log_enabled").(bool))
+		}
+
+		if d.HasChange(names.AttrDomain) {
+			if v, ok := d.GetOk(names.AttrDomain); ok {
+				input.Domain = aws.String(v.(string))
+			}
+		}
+
+		if d.HasChange("domain_list") {
+			if v, ok := d.GetOk("domain_list"); ok && len(v.([]any)) > 0 {
+				input.DomainList = flex.ExpandStringValueList(v.([]any))
+			}
+		}
+
+		_, err := conn.UpdateAppMonitor(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudWatch RUM App Monitor (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceAppMonitorRead(ctx, d, meta)...)
+}

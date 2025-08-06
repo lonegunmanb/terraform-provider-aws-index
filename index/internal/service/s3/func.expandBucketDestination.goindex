@@ -1,0 +1,101 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandBucketDestination(tfList []any) *types.Destination {
+	if len(tfList) == 0 || tfList[0] == nil {
+		return nil
+	}
+
+	tfMap, ok := tfList[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	apiObject := &types.Destination{}
+
+	if v, ok := tfMap[names.AttrBucket].(string); ok {
+		apiObject.Bucket = aws.String(v)
+	}
+
+	if v, ok := tfMap[names.AttrStorageClass].(string); ok && v != "" {
+		apiObject.StorageClass = types.StorageClass(v)
+	}
+
+	if v, ok := tfMap["replica_kms_key_id"].(string); ok && v != "" {
+		apiObject.EncryptionConfiguration = &types.EncryptionConfiguration{
+			ReplicaKmsKeyID: aws.String(v),
+		}
+	}
+
+	if v, ok := tfMap[names.AttrAccountID].(string); ok && v != "" {
+		apiObject.Account = aws.String(v)
+	}
+
+	if v, ok := tfMap["access_control_translation"].([]any); ok && len(v) > 0 && v[0] != nil {
+		tfMap := v[0].(map[string]any)
+
+		apiObject.AccessControlTranslation = &types.AccessControlTranslation{
+			Owner: types.OwnerOverride(tfMap[names.AttrOwner].(string)),
+		}
+	}
+
+	if v, ok := tfMap["metrics"].([]any); ok && len(v) > 0 && v[0] != nil {
+		tfMap := v[0].(map[string]any)
+
+		apiObject.Metrics = &types.Metrics{
+			EventThreshold: &types.ReplicationTimeValue{
+				Minutes: aws.Int32(int32(tfMap["minutes"].(int))),
+			},
+			Status: types.MetricsStatus(tfMap[names.AttrStatus].(string)),
+		}
+	}
+
+	if v, ok := tfMap["replication_time"].([]any); ok && len(v) > 0 && v[0] != nil {
+		tfMap := v[0].(map[string]any)
+
+		apiObject.ReplicationTime = &types.ReplicationTime{
+			Status: types.ReplicationTimeStatus(tfMap[names.AttrStatus].(string)),
+			Time: &types.ReplicationTimeValue{
+				Minutes: aws.Int32(int32(tfMap["minutes"].(int))),
+			},
+		}
+	}
+
+	return apiObject
+}

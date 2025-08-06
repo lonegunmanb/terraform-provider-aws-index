@@ -1,0 +1,93 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2
+import (
+	"context"
+	"errors"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+)
+func interceptedCRUDHandler[F ~func(context.Context, *schema.ResourceData, any) diag.Diagnostics](bootstrapContext contextFunc, interceptorInvocations interceptorInvocations, f F, why why) F {
+	// We don't run CRUD interceptors if the resource has not defined a corresponding handler function.
+	if f == nil {
+		return nil
+	}
+
+	return func(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+		var diags diag.Diagnostics
+
+		ctx, err := bootstrapContext(ctx, d.GetOk, meta)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		// Before interceptors are run first to last.
+		forward := make([]crudInterceptorInvocation, 0)
+		for _, v := range interceptorInvocations.why(why) {
+			if interceptor, ok := v.interceptor.(crudInterceptor); ok {
+				forward = append(forward, crudInterceptorInvocation{
+					when:        v.when,
+					why:         v.why,
+					interceptor: interceptor,
+				})
+			}
+		}
+
+		when := Before
+		for _, v := range forward {
+			if v.when&when != 0 {
+				opts := crudInterceptorOptions{
+					c:    meta.(*conns.AWSClient),
+					d:    d,
+					when: when,
+					why:  why,
+				}
+				diags = append(diags, v.interceptor.run(ctx, opts)...)
+
+				// Short circuit if any Before interceptor errors.
+				if diags.HasError() {
+					return diags
+				}
+			}
+		}
+
+		// All other interceptors are run last to first.
+		reverse := tfslices.Reverse(forward)
+		diags = f(ctx, d, meta)
+
+		if diags.HasError() {
+			when = OnError
+		} else {
+			when = After
+		}
+		for _, v := range reverse {
+			if v.when&when != 0 {
+				opts := crudInterceptorOptions{
+					c:    meta.(*conns.AWSClient),
+					d:    d,
+					when: when,
+					why:  why,
+				}
+				diags = append(diags, v.interceptor.run(ctx, opts)...)
+			}
+		}
+
+		when = Finally
+		for _, v := range reverse {
+			if v.when&when != 0 {
+				opts := crudInterceptorOptions{
+					c:    meta.(*conns.AWSClient),
+					d:    d,
+					when: when,
+					why:  why,
+				}
+				diags = append(diags, v.interceptor.run(ctx, opts)...)
+			}
+		}
+
+		return diags
+	}
+}

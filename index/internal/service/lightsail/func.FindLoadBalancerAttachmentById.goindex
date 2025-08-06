@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func FindLoadBalancerAttachmentById(ctx context.Context, conn *lightsail.Client, id string) (*string, error) {
+	id_parts := strings.SplitN(id, ",", -1)
+	if len(id_parts) != 2 {
+		return nil, errors.New("invalid load balancer attachment id")
+	}
+
+	lbName := id_parts[0]
+	iName := id_parts[1]
+
+	in := &lightsail.GetLoadBalancerInput{LoadBalancerName: aws.String(lbName)}
+	out, err := conn.GetLoadBalancer(ctx, in)
+
+	if IsANotFoundError(err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: in,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	var entry *string
+	entryExists := false
+
+	for _, n := range out.LoadBalancer.InstanceHealthSummary {
+		if iName == aws.ToString(n.InstanceName) {
+			entry = n.InstanceName
+			entryExists = true
+			break
+		}
+	}
+
+	if !entryExists {
+		return nil, tfresource.NewEmptyResultError(in)
+	}
+
+	return entry, nil
+}

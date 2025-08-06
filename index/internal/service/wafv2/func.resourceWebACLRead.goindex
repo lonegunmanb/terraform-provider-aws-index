@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWebACLRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFV2Client(ctx)
+
+	output, err := findWebACLByThreePartKey(ctx, conn, d.Id(), d.Get(names.AttrName).(string), d.Get(names.AttrScope).(string))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] WAFv2 WebACL (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading WAFv2 WebACL (%s): %s", d.Id(), err)
+	}
+
+	webACL := output.WebACL
+	d.Set("application_integration_url", output.ApplicationIntegrationURL)
+	d.Set(names.AttrARN, webACL.ARN)
+	if err := d.Set("association_config", flattenAssociationConfig(webACL.AssociationConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting association_config: %s", err)
+	}
+	d.Set("capacity", webACL.Capacity)
+	if err := d.Set("captcha_config", flattenCaptchaConfig(webACL.CaptchaConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting captcha_config: %s", err)
+	}
+	if err := d.Set("challenge_config", flattenChallengeConfig(webACL.ChallengeConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting challenge_config: %s", err)
+	}
+	if err := d.Set("custom_response_body", flattenCustomResponseBodies(webACL.CustomResponseBodies)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting custom_response_body: %s", err)
+	}
+	if err := d.Set("data_protection_config", flattenDataProtectionConfig(webACL.DataProtectionConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting data_protection_config: %s", err)
+	}
+	if err := d.Set(names.AttrDefaultAction, flattenDefaultAction(webACL.DefaultAction)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting default_action: %s", err)
+	}
+	d.Set(names.AttrDescription, webACL.Description)
+	d.Set("lock_token", output.LockToken)
+	d.Set(names.AttrName, webACL.Name)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(webACL.Name)))
+	if _, ok := d.GetOk("rule_json"); !ok {
+		rules := filterWebACLRules(webACL.Rules, expandWebACLRules(d.Get(names.AttrRule).(*schema.Set).List()))
+		if err := d.Set(names.AttrRule, flattenWebACLRules(rules)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting rule: %s", err)
+		}
+	} else {
+		d.Set("rule_json", d.Get("rule_json"))
+		d.Set(names.AttrRule, nil)
+	}
+	d.Set("token_domains", webACL.TokenDomains)
+	if err := d.Set("visibility_config", flattenVisibilityConfig(webACL.VisibilityConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting visibility_config: %s", err)
+	}
+
+	return diags
+}

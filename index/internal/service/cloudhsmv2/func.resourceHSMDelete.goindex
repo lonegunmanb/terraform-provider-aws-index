@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudhsmv2
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHSMDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudHSMV2Client(ctx)
+
+	log.Printf("[INFO] Deleting CloudHSMv2 HSM: %s", d.Id())
+	input := cloudhsmv2.DeleteHsmInput{
+		ClusterId: aws.String(d.Get("cluster_id").(string)),
+		HsmId:     aws.String(d.Id()),
+	}
+	_, err := conn.DeleteHsm(ctx, &input)
+
+	if errs.IsA[*types.CloudHsmResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting CloudHSMv2 HSM (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitHSMDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for CloudHSMv2 HSM (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

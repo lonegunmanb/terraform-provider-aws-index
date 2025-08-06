@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRemediationConfigurationPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConfigServiceClient(ctx)
+
+	name := d.Get("config_rule_name").(string)
+	remediationConfiguration := types.RemediationConfiguration{
+		ConfigRuleName: aws.String(name),
+	}
+
+	if v, ok := d.GetOk("automatic"); ok {
+		remediationConfiguration.Automatic = v.(bool)
+	}
+
+	if v, ok := d.GetOk("execution_controls"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		remediationConfiguration.ExecutionControls = expandExecutionControls(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("maximum_automatic_attempts"); ok {
+		remediationConfiguration.MaximumAutomaticAttempts = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk(names.AttrParameter); ok && len(v.([]any)) > 0 {
+		remediationConfiguration.Parameters = expandRemediationParameterValues(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrResourceType); ok {
+		remediationConfiguration.ResourceType = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("retry_attempt_seconds"); ok {
+		remediationConfiguration.RetryAttemptSeconds = aws.Int64(int64(v.(int)))
+	}
+
+	if v, ok := d.GetOk("target_id"); ok {
+		remediationConfiguration.TargetId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("target_type"); ok {
+		remediationConfiguration.TargetType = types.RemediationTargetType(v.(string))
+	}
+
+	if v, ok := d.GetOk("target_version"); ok {
+		remediationConfiguration.TargetVersion = aws.String(v.(string))
+	}
+
+	input := configservice.PutRemediationConfigurationsInput{
+		RemediationConfigurations: []types.RemediationConfiguration{remediationConfiguration},
+	}
+	_, err := conn.PutRemediationConfigurations(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting ConfigService Remediation Configuration (%s): %s", name, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(name)
+	}
+
+	return append(diags, resourceRemediationConfigurationRead(ctx, d, meta)...)
+}

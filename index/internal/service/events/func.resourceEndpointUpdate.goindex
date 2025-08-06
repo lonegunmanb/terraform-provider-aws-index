@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EventsClient(ctx)
+
+	input := &eventbridge.UpdateEndpointInput{
+		Name: aws.String(d.Id()),
+	}
+
+	if d.HasChange(names.AttrDescription) {
+		input.Description = aws.String(d.Get(names.AttrDescription).(string))
+	}
+
+	if d.HasChange("event_bus") {
+		input.EventBuses = expandEndpointEventBuses(d.Get("event_bus").([]any))
+	}
+
+	if d.HasChange("replication_config") {
+		if v, ok := d.GetOk("replication_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.ReplicationConfig = expandReplicationConfig(v.([]any)[0].(map[string]any))
+		}
+	}
+
+	if d.HasChange(names.AttrRoleARN) {
+		input.RoleArn = aws.String(d.Get(names.AttrRoleARN).(string))
+	}
+
+	if d.HasChange("routing_config") {
+		input.RoutingConfig = expandRoutingConfig(d.Get("routing_config").([]any)[0].(map[string]any))
+	}
+
+	_, err := conn.UpdateEndpoint(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating EventBridge Global Endpoint (%s): %s", d.Id(), err)
+	}
+
+	const (
+		timeout = 2 * time.Minute
+	)
+	if _, err := waitEndpointUpdated(ctx, conn, d.Id(), timeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EventBridge Global Endpoint (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceEndpointRead(ctx, d, meta)...)
+}

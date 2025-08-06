@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/url"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+)
+func forEachObjectsPage(ctx context.Context, conn *s3.Client, bucket string, fn func(ctx context.Context, conn *s3.Client, bucket string, page *s3.ListObjectsV2Output) (int64, error)) (int64, error) {
+	input := &s3.ListObjectsV2Input{
+		Bucket:       aws.String(bucket),
+		EncodingType: types.EncodingTypeUrl,
+	}
+	var lastErr error
+	var nObjects int64
+
+	pages := s3.NewListObjectsV2Paginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return nObjects, fmt.Errorf("listing S3 bucket (%s) objects: %w", bucket, err)
+		}
+
+		// Reverse URL-encoding from requested EncodingType: "url"
+		for i, v := range page.Contents {
+			key, err := url.QueryUnescape(aws.ToString(v.Key))
+			if err != nil {
+				return 0, fmt.Errorf("listing S3 bucket (%s) object: unescaping object key: %w", bucket, err)
+			}
+			page.Contents[i].Key = aws.String(key)
+		}
+
+		n, err := fn(ctx, conn, bucket, page)
+		nObjects += n
+
+		if err != nil {
+			lastErr = err
+			break
+		}
+	}
+
+	if lastErr != nil {
+		return nObjects, lastErr
+	}
+
+	return nObjects, nil
+}

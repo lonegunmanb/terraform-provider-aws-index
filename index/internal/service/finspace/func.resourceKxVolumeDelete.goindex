@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/finspace
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/finspace"
+	"github.com/aws/aws-sdk-go-v2/service/finspace/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceKxVolumeDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FinSpaceClient(ctx)
+
+	log.Printf("[INFO] Deleting FinSpace Kx Volume: %s", d.Id())
+	_, err := conn.DeleteKxVolume(ctx, &finspace.DeleteKxVolumeInput{
+		VolumeName:    aws.String(d.Get(names.AttrName).(string)),
+		EnvironmentId: aws.String(d.Get("environment_id").(string)),
+	})
+
+	if err != nil {
+		var nfe *types.ResourceNotFoundException
+		if errors.As(err, &nfe) {
+			return diags
+		}
+
+		return create.AppendDiagError(diags, names.FinSpace, create.ErrActionDeleting, ResNameKxVolume, d.Id(), err)
+	}
+
+	_, err = waitKxVolumeDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete))
+	if err != nil && !tfresource.NotFound(err) {
+		return create.AppendDiagError(diags, names.FinSpace, create.ErrActionWaitingForDeletion, ResNameKxVolume, d.Id(), err)
+	}
+
+	return diags
+}

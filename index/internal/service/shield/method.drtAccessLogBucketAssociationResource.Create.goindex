@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/shield
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/shield"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/shield/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *drtAccessLogBucketAssociationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data drtAccessLogBucketAssociationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().ShieldClient(ctx)
+
+	logBucket := data.LogBucket.ValueString()
+	input := &shield.AssociateDRTLogBucketInput{
+		LogBucket: aws.String(logBucket),
+	}
+
+	_, err := conn.AssociateDRTLogBucket(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating Shield DRT Log Bucket Association (%s)", logBucket), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.setID()
+
+	_, err = tfresource.RetryWhenNotFound(ctx, r.CreateTimeout(ctx, data.Timeouts), func() (any, error) {
+		return findDRTLogBucketAssociation(ctx, conn, logBucket)
+	})
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for Shield DRT Log Bucket Association (%s) create", logBucket), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codestarconnections
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codestarconnections"
+	"github.com/aws/aws-sdk-go-v2/service/codestarconnections/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHostRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeStarConnectionsClient(ctx)
+
+	output, err := findHostByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CodeStar Connections Host (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CodeStar Connections Host (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, d.Id())
+	d.Set(names.AttrName, output.Name)
+	d.Set("provider_endpoint", output.ProviderEndpoint)
+	d.Set("provider_type", output.ProviderType)
+	d.Set(names.AttrStatus, output.Status)
+	if err := d.Set(names.AttrVPCConfiguration, flattenHostVPCConfiguration(output.VpcConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting vpc_configuration: %s", err)
+	}
+
+	return diags
+}

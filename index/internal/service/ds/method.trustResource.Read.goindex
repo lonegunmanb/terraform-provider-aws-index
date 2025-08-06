@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *trustResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	var data trustResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().DSClient(ctx)
+
+	directoryID := data.DirectoryID.ValueString()
+	trustID := data.ID.ValueString()
+	trust, err := findTrustByTwoPartKey(ctx, conn, directoryID, trustID)
+
+	if tfresource.NotFound(err) {
+		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		response.State.RemoveResource(ctx)
+
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading Directory Service Trust (%s)", trustID), err.Error())
+
+		return
+	}
+
+	// Set attributes for import.
+	response.Diagnostics.Append(fwflex.Flatten(ctx, trust, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Directory Trust optionally accepts a remote domain name with a trailing period.
+	domainName := strings.TrimRight(data.RemoteDomainName.ValueString(), ".")
+	forwarder, err := findConditionalForwarderByTwoPartKey(ctx, conn, directoryID, domainName)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading Directory Service Conditional Forwarder (%s)", conditionalForwarderCreateResourceID(directoryID, domainName)), err.Error())
+
+		return
+	}
+
+	data.ConditionalForwarderIPAddrs = fwflex.FlattenFrameworkStringValueSetOfString(ctx, forwarder.DnsIpAddrs)
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

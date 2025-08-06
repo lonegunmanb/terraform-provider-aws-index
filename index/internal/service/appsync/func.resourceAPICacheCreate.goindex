@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appsync
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appsync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAPICacheCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppSyncClient(ctx)
+
+	apiID := d.Get("api_id").(string)
+	input := &appsync.CreateApiCacheInput{
+		ApiCachingBehavior: awstypes.ApiCachingBehavior(d.Get("api_caching_behavior").(string)),
+		ApiId:              aws.String(apiID),
+		Ttl:                int64(d.Get("ttl").(int)),
+		Type:               awstypes.ApiCacheType(d.Get(names.AttrType).(string)),
+	}
+
+	if v, ok := d.GetOk("at_rest_encryption_enabled"); ok {
+		input.AtRestEncryptionEnabled = v.(bool)
+	}
+
+	if v, ok := d.GetOk("transit_encryption_enabled"); ok {
+		input.TransitEncryptionEnabled = v.(bool)
+	}
+
+	_, err := conn.CreateApiCache(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Appsync API Cache (%s): %s", apiID, err)
+	}
+
+	d.SetId(apiID)
+
+	if _, err := waitAPICacheAvailable(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Appsync API Cache (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceAPICacheRead(ctx, d, meta)...)
+}

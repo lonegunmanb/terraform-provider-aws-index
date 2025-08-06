@@ -1,0 +1,124 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicationTaskUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DMSClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll, "replication_instance_arn", "start_replication_task") {
+		if err := stopReplicationTask(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input := &dms.ModifyReplicationTaskInput{
+			MigrationType:      awstypes.MigrationTypeValue(d.Get("migration_type").(string)),
+			ReplicationTaskArn: aws.String(d.Get("replication_task_arn").(string)),
+			TableMappings:      aws.String(d.Get("table_mappings").(string)),
+		}
+
+		if d.HasChange("cdc_start_position") {
+			input.CdcStartPosition = aws.String(d.Get("cdc_start_position").(string))
+		}
+
+		if d.HasChange("cdc_start_time") {
+			if v, ok := d.GetOk("cdc_start_time"); ok {
+				v := v.(string)
+				if t, err := time.Parse(time.RFC3339, v); err != nil {
+					input.CdcStartTime = aws.Time(time.Unix(flex.StringValueToInt64Value(v), 0))
+				} else {
+					input.CdcStartTime = aws.Time(t)
+				}
+			}
+		}
+
+		if d.HasChange("replication_task_settings") {
+			if v, ok := d.GetOk("replication_task_settings"); ok {
+				s, err := normalizeReplicationSettings(v.(string))
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "updating DMS Replication Task (%s): %s", d.Id(), err)
+				}
+				input.ReplicationTaskSettings = aws.String(s)
+			}
+		}
+
+		_, err := conn.ModifyReplicationTask(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "modifying DMS Replication Task (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitReplicationTaskModified(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for DMS Replication Task (%s) update: %s", d.Id(), err)
+		}
+
+		if d.Get("start_replication_task").(bool) {
+			if err := startReplicationTask(ctx, conn, d.Id()); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	if d.HasChange("replication_instance_arn") {
+		if err := stopReplicationTask(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input := &dms.MoveReplicationTaskInput{
+			ReplicationTaskArn:           aws.String(d.Get("replication_task_arn").(string)),
+			TargetReplicationInstanceArn: aws.String(d.Get("replication_instance_arn").(string)),
+		}
+
+		_, err := conn.MoveReplicationTask(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "moving DMS Replication Task (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitReplicationTaskMoved(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for DMS Replication Task (%s) update: %s", d.Id(), err)
+		}
+
+		if d.Get("start_replication_task").(bool) {
+			if err := startReplicationTask(ctx, conn, d.Id()); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	if d.HasChanges("start_replication_task") {
+		var f func(context.Context, *dms.Client, string) error
+		if d.Get("start_replication_task").(bool) {
+			f = startReplicationTask
+		} else {
+			f = stopReplicationTask
+		}
+		if err := f(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceReplicationTaskRead(ctx, d, meta)...)
+}

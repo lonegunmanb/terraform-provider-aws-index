@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCatalogDatabaseUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		catalogID, name, err := ReadCatalogID(d.Id())
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Glue Catalog Database (%s): %s", d.Id(), err)
+		}
+
+		dbUpdateInput := &glue.UpdateDatabaseInput{
+			CatalogId: aws.String(catalogID),
+			Name:      aws.String(name),
+		}
+
+		dbInput := &awstypes.DatabaseInput{
+			Name: aws.String(name),
+		}
+
+		if v, ok := d.GetOk(names.AttrDescription); ok {
+			dbInput.Description = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("location_uri"); ok {
+			dbInput.LocationUri = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrParameters); ok {
+			dbInput.Parameters = flex.ExpandStringValueMap(v.(map[string]any))
+		}
+
+		if v, ok := d.GetOk("federated_database"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			dbInput.FederatedDatabase = expandDatabaseFederatedDatabase(v.([]any)[0].(map[string]any))
+		}
+
+		if v, ok := d.GetOk("create_table_default_permission"); ok && len(v.([]any)) > 0 {
+			dbInput.CreateTableDefaultPermissions = expandDatabasePrincipalPermissions(v.([]any))
+		}
+
+		dbUpdateInput.DatabaseInput = dbInput
+
+		if _, err := conn.UpdateDatabase(ctx, dbUpdateInput); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Glue Catalog Database (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceCatalogDatabaseRead(ctx, d, meta)...)
+}

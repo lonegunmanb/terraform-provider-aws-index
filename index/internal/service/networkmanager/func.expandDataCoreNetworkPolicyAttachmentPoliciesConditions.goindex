@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandDataCoreNetworkPolicyAttachmentPoliciesConditions(tfList []any) ([]*coreNetworkPolicyAttachmentPolicyCondition, error) {
+	apiObjects := make([]*coreNetworkPolicyAttachmentPolicyCondition, 0)
+
+	for i, tfMapRaw := range tfList {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		apiObject := &coreNetworkPolicyAttachmentPolicyCondition{}
+		k := map[string]bool{
+			"operator":      false,
+			names.AttrKey:   false,
+			names.AttrValue: false,
+		}
+
+		typ := tfMap[names.AttrType].(string)
+		apiObject.Type = typ
+
+		if v, ok := tfMap["operator"].(string); ok && v != "" {
+			k["operator"] = true
+			apiObject.Operator = v
+		}
+
+		if v := tfMap[names.AttrKey].(string); ok && v != "" {
+			k[names.AttrKey] = true
+			apiObject.Key = v
+		}
+
+		if v, ok := tfMap[names.AttrValue].(string); ok && v != "" {
+			k[names.AttrValue] = true
+			apiObject.Value = v
+		}
+
+		switch typ {
+		case "any":
+			for _, key := range k {
+				if key {
+					return nil, fmt.Errorf("Conditions %d: You cannot set \"operator\", \"key\", or \"value\" if type = \"any\".", i)
+				}
+			}
+
+		case "tag-exists":
+			if !k[names.AttrKey] || k["operator"] || k[names.AttrValue] {
+				return nil, fmt.Errorf("Conditions %d: You must set \"key\" and cannot set \"operator\", or \"value\" if type = \"tag-exists\".", i)
+			}
+
+		case "tag-value":
+			if !k[names.AttrKey] || !k["operator"] || !k[names.AttrValue] {
+				return nil, fmt.Errorf("Conditions %d: You must set \"key\", \"operator\", and \"value\" if type = \"tag-value\".", i)
+			}
+
+		case names.AttrRegion, "resource-id", "account-id":
+			if k[names.AttrKey] || !k["operator"] || !k[names.AttrValue] {
+				return nil, fmt.Errorf("Conditions %d: You must set \"value\" and \"operator\" and cannot set \"key\" if type = \"region\", \"resource-id\", or \"account-id\".", i)
+			}
+
+		case "attachment-type":
+			if k[names.AttrKey] || !k[names.AttrValue] || tfMap["operator"].(string) != "equals" {
+				return nil, fmt.Errorf("Conditions %d: You must set \"value\", cannot set \"key\" and \"operator\" must be \"equals\" if type = \"attachment-type\".", i)
+			}
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects, nil
+}

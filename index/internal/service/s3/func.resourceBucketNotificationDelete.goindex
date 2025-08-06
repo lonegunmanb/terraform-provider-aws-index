@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketNotificationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	bucket := d.Id()
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+
+	input := &s3.PutBucketNotificationConfigurationInput{
+		Bucket:                    aws.String(bucket),
+		NotificationConfiguration: &types.NotificationConfiguration{},
+	}
+
+	log.Printf("[DEBUG] Deleting S3 Bucket Notification: %s", d.Id())
+	_, err := conn.PutBucketNotificationConfiguration(ctx, input)
+
+	if tfawserr.ErrCodeEquals(err, errCodeNoSuchBucket) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting S3 Bucket Notification (%s): %s", d.Id(), err)
+	}
+
+	// Don't wait for the notification configuration to disappear as it still exists after update.
+
+	return diags
+}

@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePolicyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppAutoScalingClient(ctx)
+
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.FailedResourceAccessException](ctx, propagationTimeout, func() (any, error) {
+		return findScalingPolicyByFourPartKey(ctx, conn, d.Get(names.AttrName).(string), d.Get("service_namespace").(string), d.Get(names.AttrResourceID).(string), d.Get("scalable_dimension").(string))
+	})
+
+	if tfresource.NotFound(err) && !d.IsNewResource() {
+		log.Printf("[WARN] Application Auto Scaling Scaling Policy (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Application Auto Scaling Scaling Policy (%s): %s", d.Id(), err)
+	}
+
+	output := outputRaw.(*awstypes.ScalingPolicy)
+	d.Set("alarm_arns", tfslices.ApplyToAll(output.Alarms, func(v awstypes.Alarm) string {
+		return aws.ToString(v.AlarmARN)
+	}))
+	d.Set(names.AttrARN, output.PolicyARN)
+	d.Set(names.AttrName, output.PolicyName)
+	d.Set("policy_type", output.PolicyType)
+	d.Set(names.AttrResourceID, output.ResourceId)
+	d.Set("scalable_dimension", output.ScalableDimension)
+	d.Set("service_namespace", output.ServiceNamespace)
+	if err := d.Set("step_scaling_policy_configuration", flattenStepScalingPolicyConfiguration(output.StepScalingPolicyConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting step_scaling_policy_configuration: %s", err)
+	}
+	if err := d.Set("target_tracking_scaling_policy_configuration", flattenTargetTrackingScalingPolicyConfiguration(output.TargetTrackingScalingPolicyConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting target_tracking_scaling_policy_configuration: %s", err)
+	}
+
+	return diags
+}

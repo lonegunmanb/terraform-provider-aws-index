@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/identitystore
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceUserRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IdentityStoreClient(ctx)
+
+	identityStoreID := d.Get("identity_store_id").(string)
+
+	var userID string
+
+	if v, ok := d.GetOk("alternate_identifier"); ok && len(v.([]any)) > 0 {
+		input := identitystore.GetUserIdInput{
+			AlternateIdentifier: expandAlternateIdentifier(v.([]any)[0].(map[string]any)),
+			IdentityStoreId:     aws.String(identityStoreID),
+		}
+
+		output, err := conn.GetUserId(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading IdentityStore User (%s): %s", identityStoreID, err)
+		}
+
+		userID = aws.ToString(output.UserId)
+	}
+
+	if v, ok := d.GetOk("user_id"); ok && v.(string) != "" {
+		if userID != "" && userID != v.(string) {
+			// We were given a filter, and it found a user different to this one.
+			return sdkdiag.AppendErrorf(diags, "no Identity Store User found matching criteria; try different search")
+		}
+
+		userID = v.(string)
+	}
+
+	user, err := findUserByTwoPartKey(ctx, conn, identityStoreID, userID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading IdentityStore User (%s): %s", userID, err)
+	}
+
+	d.SetId(aws.ToString(user.UserId))
+	if err := d.Set("addresses", flattenAddresses(user.Addresses)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting addresses: %s", err)
+	}
+	d.Set(names.AttrDisplayName, user.DisplayName)
+	if err := d.Set("emails", flattenEmails(user.Emails)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting emails: %s", err)
+	}
+	if err := d.Set("external_ids", flattenExternalIDs(user.ExternalIds)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting external_ids: %s", err)
+	}
+	d.Set("identity_store_id", user.IdentityStoreId)
+	d.Set("locale", user.Locale)
+	if err := d.Set(names.AttrName, []any{flattenName(user.Name)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting name: %s", err)
+	}
+	d.Set("nickname", user.NickName)
+	if err := d.Set("phone_numbers", flattenPhoneNumbers(user.PhoneNumbers)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting phone_numbers: %s", err)
+	}
+	d.Set("preferred_language", user.PreferredLanguage)
+	d.Set("profile_url", user.ProfileUrl)
+	d.Set("timezone", user.Timezone)
+	d.Set("title", user.Title)
+	d.Set("user_id", user.UserId)
+	d.Set(names.AttrUserName, user.UserName)
+	d.Set("user_type", user.UserType)
+
+	return diags
+}

@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBV2Client(ctx)
+
+	targetGroupARN := d.Get("target_group_arn").(string)
+	input := &elasticloadbalancingv2.RegisterTargetsInput{
+		TargetGroupArn: aws.String(targetGroupARN),
+		Targets: []awstypes.TargetDescription{{
+			Id: aws.String(d.Get("target_id").(string)),
+		}},
+	}
+
+	if v, ok := d.GetOk(names.AttrAvailabilityZone); ok {
+		input.Targets[0].AvailabilityZone = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrPort); ok {
+		input.Targets[0].Port = aws.Int32(int32(v.(int)))
+	}
+
+	const (
+		timeout = 10 * time.Minute
+	)
+	_, err := tfresource.RetryWhenIsA[*awstypes.InvalidTargetException](ctx, timeout, func() (any, error) {
+		return conn.RegisterTargets(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "registering ELBv2 Target Group (%s) target: %s", targetGroupARN, err)
+	}
+
+	//lintignore:R016 // Allow legacy unstable ID usage in managed resource
+	d.SetId(id.PrefixedUniqueId(targetGroupARN + "-"))
+
+	return diags
+}

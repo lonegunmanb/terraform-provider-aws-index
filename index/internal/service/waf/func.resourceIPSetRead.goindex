@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/waf
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/waf"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/waf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIPSetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFClient(ctx)
+
+	ipSet, err := findIPSetByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] WAF IPSet (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading WAF IPSet (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, ipSetARN(ctx, meta.(*conns.AWSClient), d.Id()))
+	var tfList []any
+	for _, descriptor := range ipSet.IPSetDescriptors {
+		tfMap := map[string]any{
+			names.AttrType:  descriptor.Type,
+			names.AttrValue: aws.ToString(descriptor.Value),
+		}
+		tfList = append(tfList, tfMap)
+	}
+	if err := d.Set("ip_set_descriptors", tfList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ip_set_descriptors: %s", err)
+	}
+	d.Set(names.AttrName, ipSet.Name)
+
+	return diags
+}

@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceGatewayAssociationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+	associationID := d.Get("dx_gateway_association_id").(string)
+	input := directconnect.UpdateDirectConnectGatewayAssociationInput{
+		AssociationId: aws.String(associationID),
+	}
+
+	o, n := d.GetChange("allowed_prefixes")
+	os, ns := o.(*schema.Set), n.(*schema.Set)
+
+	if add := ns.Difference(os); add.Len() > 0 {
+		input.AddAllowedPrefixesToDirectConnectGateway = expandRouteFilterPrefixes(add.List())
+	}
+
+	if del := os.Difference(ns); del.Len() > 0 {
+		input.RemoveAllowedPrefixesToDirectConnectGateway = expandRouteFilterPrefixes(del.List())
+	}
+
+	_, err := conn.UpdateDirectConnectGatewayAssociation(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Direct Connect Gateway Association (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitGatewayAssociationUpdated(ctx, conn, associationID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Direct Connect Gateway Association (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceGatewayAssociationRead(ctx, d, meta)...)
+}

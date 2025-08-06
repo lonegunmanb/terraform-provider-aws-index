@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sns
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/davecgh/go-spew/spew"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/attrmap"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTopicSubscriptionCustomizeDiff(_ context.Context, diff *schema.ResourceDiff, _ any) error {
+	hasPolicy := diff.Get("filter_policy").(string) != ""
+	hasScope := !diff.GetRawConfig().GetAttr("filter_policy_scope").IsNull()
+	hadScope := diff.Get("filter_policy_scope").(string) != ""
+
+	if hasPolicy && !hasScope {
+		if !hadScope {
+			// When the filter_policy_scope hasn't been read back from the API,
+			// don't attempt to set a value. Either the default will be computed
+			// on the next read, or this is a partition that doesn't support it.
+			return nil
+		}
+
+		// When the scope is removed from configuration, the API will
+		// continue reading back the last value so long as the policy
+		// itself still exists. The expected result would be to revert
+		// to the default value of the attribute (MessageAttributes).
+		return diff.SetNew("filter_policy_scope", subscriptionFilterPolicyScopeMessageAttributes)
+	}
+
+	if !hasPolicy && !hasScope {
+		// When the policy is not set, the API silently drops the scope.
+		return diff.Clear("filter_policy_scope")
+	}
+
+	if !hasPolicy && hasScope {
+		// Make it explicit that the scope doesn't exist without a policy.
+		return errors.New("filter_policy is required when filter_policy_scope is set")
+	}
+
+	return nil
+}

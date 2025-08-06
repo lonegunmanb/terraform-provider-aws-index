@@ -1,0 +1,105 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/signer
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/signer"
+	"github.com/aws/aws-sdk-go-v2/service/signer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSigningJobRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SignerClient(ctx)
+	jobId := d.Id()
+
+	describeSigningJobOutput, err := findSigningJobByID(ctx, conn, jobId)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Signer Signing Job (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Signer signing job (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("job_id", describeSigningJobOutput.JobId); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job id: %s", err)
+	}
+
+	if err := d.Set("completed_at", aws.ToTime(describeSigningJobOutput.CompletedAt).Format(time.RFC3339)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job completed at: %s", err)
+	}
+
+	if err := d.Set(names.AttrCreatedAt, aws.ToTime(describeSigningJobOutput.CreatedAt).Format(time.RFC3339)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job created at: %s", err)
+	}
+
+	if err := d.Set("job_invoker", describeSigningJobOutput.JobInvoker); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job invoker: %s", err)
+	}
+
+	if err := d.Set("job_owner", describeSigningJobOutput.JobOwner); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job owner: %s", err)
+	}
+
+	if err := d.Set("platform_display_name", describeSigningJobOutput.PlatformDisplayName); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job platform display name: %s", err)
+	}
+
+	if err := d.Set("platform_id", describeSigningJobOutput.PlatformId); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job platform id: %s", err)
+	}
+
+	if err := d.Set("profile_name", describeSigningJobOutput.ProfileName); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job profile name: %s", err)
+	}
+
+	if err := d.Set("profile_version", describeSigningJobOutput.ProfileVersion); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job profile version: %s", err)
+	}
+
+	if err := d.Set("requested_by", describeSigningJobOutput.RequestedBy); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job requested by: %s", err)
+	}
+
+	if err := d.Set("revocation_record", flattenSigningJobRevocationRecord(describeSigningJobOutput.RevocationRecord)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job revocation record: %s", err)
+	}
+
+	signatureExpiresAt := ""
+	if describeSigningJobOutput.SignatureExpiresAt != nil {
+		signatureExpiresAt = aws.ToTime(describeSigningJobOutput.SignatureExpiresAt).Format(time.RFC3339)
+	}
+	if err := d.Set("signature_expires_at", signatureExpiresAt); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job requested by: %s", err)
+	}
+
+	if err := d.Set("signed_object", flattenSigningJobSignedObject(describeSigningJobOutput.SignedObject)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job signed object: %s", err)
+	}
+
+	if err := d.Set(names.AttrSource, flattenSigningJobSource(describeSigningJobOutput.Source)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job source: %s", err)
+	}
+
+	if err := d.Set(names.AttrStatus, describeSigningJobOutput.Status); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job status: %s", err)
+	}
+
+	if err := d.Set(names.AttrStatusReason, describeSigningJobOutput.StatusReason); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting signer signing job status reason: %s", err)
+	}
+
+	return diags
+}

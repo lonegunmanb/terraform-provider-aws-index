@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAMILaunchPermissionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	imageID := d.Get("image_id").(string)
+	accountID := d.Get(names.AttrAccountID).(string)
+	group := d.Get("group").(string)
+	organizationARN := d.Get("organization_arn").(string)
+	organizationalUnitARN := d.Get("organizational_unit_arn").(string)
+	id := amiLaunchPermissionCreateResourceID(imageID, accountID, group, organizationARN, organizationalUnitARN)
+	input := ec2.ModifyImageAttributeInput{
+		Attribute: aws.String(string(awstypes.ImageAttributeNameLaunchPermission)),
+		ImageId:   aws.String(imageID),
+		LaunchPermission: &awstypes.LaunchPermissionModifications{
+			Add: expandLaunchPermissions(accountID, group, organizationARN, organizationalUnitARN),
+		},
+	}
+
+	_, err := conn.ModifyImageAttribute(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating AMI Launch Permission (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceAMILaunchPermissionRead(ctx, d, meta)...)
+}

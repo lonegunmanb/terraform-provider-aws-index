@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecrpublic
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecrpublic"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ecrpublic/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRepositoryDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ECRPublicClient(ctx)
+
+	deleteInput := &ecrpublic.DeleteRepositoryInput{
+		RepositoryName: aws.String(d.Id()),
+		RegistryId:     aws.String(d.Get("registry_id").(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrForceDestroy); ok {
+		force := v.(bool)
+		deleteInput.Force = aws.ToBool(&force)
+	}
+
+	log.Printf("[DEBUG] Deleting ECR Public Repository: (%s)", d.Id())
+	_, err := conn.DeleteRepository(ctx, deleteInput)
+
+	if err != nil {
+		if errs.IsA[*awstypes.RepositoryNotFoundException](err) {
+			return diags
+		}
+		return sdkdiag.AppendErrorf(diags, "deleting ECR Public repository: %s", err)
+	}
+
+	log.Printf("[DEBUG] Waiting for ECR Public Repository %q to be deleted", d.Id())
+	input := &ecrpublic.DescribeRepositoriesInput{
+		RepositoryNames: []string{d.Id()},
+	}
+	err = retry.RetryContext(ctx, d.Timeout(schema.TimeoutDelete), func() *retry.RetryError {
+		_, err = conn.DescribeRepositories(ctx, input)
+		if err != nil {
+			if errs.IsA[*awstypes.RepositoryNotFoundException](err) {
+				return nil
+			}
+			return retry.NonRetryableError(err)
+		}
+
+		return retry.RetryableError(fmt.Errorf("%q: Timeout while waiting for the ECR Public Repository to be deleted", d.Id()))
+	})
+
+	if tfresource.TimedOut(err) {
+		_, err = conn.DescribeRepositories(ctx, input)
+	}
+
+	if errs.IsA[*awstypes.RepositoryNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting ECR Public repository: %s", err)
+	}
+
+	log.Printf("[DEBUG] repository %q deleted.", d.Get(names.AttrRepositoryName).(string))
+
+	return diags
+}

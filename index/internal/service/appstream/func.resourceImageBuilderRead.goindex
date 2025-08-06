@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appstream
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appstream"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appstream/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceImageBuilderRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppStreamClient(ctx)
+
+	imageBuilder, err := findImageBuilderByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] AppStream ImageBuilder (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading AppStream ImageBuilder (%s): %s", d.Id(), err)
+	}
+
+	if err = d.Set("access_endpoint", flattenAccessEndpoints(imageBuilder.AccessEndpoints)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting access_endpoint: %s", err)
+	}
+	d.Set("appstream_agent_version", imageBuilder.AppstreamAgentVersion)
+	arn := aws.ToString(imageBuilder.Arn)
+	d.Set(names.AttrARN, arn)
+	d.Set(names.AttrCreatedTime, aws.ToTime(imageBuilder.CreatedTime).Format(time.RFC3339))
+	d.Set(names.AttrDescription, imageBuilder.Description)
+	d.Set(names.AttrDisplayName, imageBuilder.DisplayName)
+	if imageBuilder.DomainJoinInfo != nil {
+		if err = d.Set("domain_join_info", []any{flattenDomainInfo(imageBuilder.DomainJoinInfo)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting domain_join_info: %s", err)
+		}
+	} else {
+		d.Set("domain_join_info", nil)
+	}
+	d.Set("enable_default_internet_access", imageBuilder.EnableDefaultInternetAccess)
+	d.Set(names.AttrIAMRoleARN, imageBuilder.IamRoleArn)
+	d.Set("image_arn", imageBuilder.ImageArn)
+	d.Set(names.AttrInstanceType, imageBuilder.InstanceType)
+	d.Set(names.AttrName, imageBuilder.Name)
+	d.Set(names.AttrState, imageBuilder.State)
+	if imageBuilder.VpcConfig != nil {
+		if err = d.Set(names.AttrVPCConfig, []any{flattenVPCConfig(imageBuilder.VpcConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting vpc_config: %s", err)
+		}
+	} else {
+		d.Set(names.AttrVPCConfig, nil)
+	}
+
+	return diags
+}

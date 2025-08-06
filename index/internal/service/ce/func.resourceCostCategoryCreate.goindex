@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ce
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/costexplorer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/costexplorer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCostCategoryCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CEClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &costexplorer.CreateCostCategoryDefinitionInput{
+		Name:         aws.String(name),
+		ResourceTags: getTagsIn(ctx),
+		Rules:        expandCostCategoryRules(d.Get(names.AttrRule).([]any)),
+		RuleVersion:  awstypes.CostCategoryRuleVersion(d.Get("rule_version").(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDefaultValue); ok {
+		input.DefaultValue = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("effective_start"); ok {
+		input.EffectiveStart = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("split_charge_rule"); ok {
+		input.SplitChargeRules = expandCostCategorySplitChargeRules(v.(*schema.Set).List())
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.ResourceNotFoundException](ctx, d.Timeout(schema.TimeoutCreate),
+		func() (any, error) {
+			return conn.CreateCostCategoryDefinition(ctx, input)
+		})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Cost Explorer Cost Category (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*costexplorer.CreateCostCategoryDefinitionOutput).CostCategoryArn))
+
+	return append(diags, resourceCostCategoryRead(ctx, d, meta)...)
+}

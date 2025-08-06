@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMaintenanceWindowTaskUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSMClient(ctx)
+
+	input := &ssm.UpdateMaintenanceWindowTaskInput{
+		Priority:     aws.Int32(int32(d.Get(names.AttrPriority).(int))),
+		Replace:      aws.Bool(true),
+		TaskArn:      aws.String(d.Get("task_arn").(string)),
+		WindowId:     aws.String(d.Get("window_id").(string)),
+		WindowTaskId: aws.String(d.Id()),
+	}
+
+	if v, ok := d.GetOk("cutoff_behavior"); ok {
+		input.CutoffBehavior = awstypes.MaintenanceWindowTaskCutoffBehavior(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("max_concurrency"); ok {
+		input.MaxConcurrency = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("max_errors"); ok {
+		input.MaxErrors = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrName); ok {
+		input.Name = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrServiceRoleARN); ok {
+		input.ServiceRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("task_invocation_parameters"); ok {
+		input.TaskInvocationParameters = expandTaskInvocationParameters(v.([]any))
+	}
+
+	if v, ok := d.GetOk("targets"); ok {
+		input.Targets = expandTargets(v.([]any))
+	} else {
+		input.MaxConcurrency = nil
+		input.MaxErrors = nil
+	}
+
+	_, err := conn.UpdateMaintenanceWindowTask(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Maintenance Window Task (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceMaintenanceWindowTaskRead(ctx, d, meta)...)
+}

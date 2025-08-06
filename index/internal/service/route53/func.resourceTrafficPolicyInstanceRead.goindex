@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTrafficPolicyInstanceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	trafficPolicyInstance, err := findTrafficPolicyInstanceByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Route53 Traffic Policy Instance %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Route53 Traffic Policy Instance (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, trafficPolicyInstanceARN(ctx, meta.(*conns.AWSClient), d.Id()))
+	d.Set(names.AttrHostedZoneID, trafficPolicyInstance.HostedZoneId)
+	d.Set(names.AttrName, strings.TrimSuffix(aws.ToString(trafficPolicyInstance.Name), "."))
+	d.Set("traffic_policy_id", trafficPolicyInstance.TrafficPolicyId)
+	d.Set("traffic_policy_version", trafficPolicyInstance.TrafficPolicyVersion)
+	d.Set("ttl", trafficPolicyInstance.TTL)
+
+	return diags
+}

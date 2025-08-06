@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/licensemanager
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/licensemanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/licensemanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceReceivedLicenseRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LicenseManagerClient(ctx)
+
+	arn := d.Get("license_arn").(string)
+	license, err := findReceivedLicenseByARN(ctx, conn, arn)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading License Manager Received License (%s): %s", arn, err)
+	}
+
+	d.SetId(aws.ToString(license.LicenseArn))
+	d.Set("beneficiary", license.Beneficiary)
+	if err := d.Set("consumption_configuration", []any{flattenConsumptionConfiguration(license.ConsumptionConfiguration)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting consumption_configuration: %s", err)
+	}
+	if v := aws.ToString(license.CreateTime); v != "" {
+		d.Set(names.AttrCreateTime, time.Unix(flex.StringValueToInt64Value(v), 0).UTC().Format(time.RFC3339))
+	}
+	if err := d.Set("entitlements", flattenEntitlements(license.Entitlements)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting entitlements: %s", err)
+	}
+	d.Set("home_region", license.HomeRegion)
+	if err := d.Set(names.AttrIssuer, []any{flattenIssuerDetails(license.Issuer)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting issuer: %s", err)
+	}
+	d.Set("license_arn", license.LicenseArn)
+	if err := d.Set("license_metadata", flattenMetadatas(license.LicenseMetadata)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting license_metadata: %s", err)
+	}
+	d.Set("license_name", license.LicenseName)
+	d.Set("product_name", license.ProductName)
+	d.Set("product_sku", license.ProductSKU)
+	if err := d.Set("received_metadata", []any{flattenReceivedMetadata(license.ReceivedMetadata)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting received_metadata: %s", err)
+	}
+	d.Set(names.AttrStatus, license.Status)
+	if err := d.Set("validity", []any{flattenDateTimeRange(license.Validity)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting validity: %s", err)
+	}
+	d.Set(names.AttrVersion, license.Version)
+
+	return diags
+}

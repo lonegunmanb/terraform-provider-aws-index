@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datazone"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datazone/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *environmentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	conn := r.Meta().DataZoneClient(ctx)
+
+	var state environmentResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	out, err := findEnvironmentByID(ctx, conn, state.DomainIdentifier.ValueString(), state.Id.ValueString())
+	if tfresource.NotFound(err) {
+		resp.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.DataZone, create.ErrActionSetting, ResNameEnvironment, state.Id.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(fwflex.Flatten(ctx, out, &state, fwflex.WithIgnoredFieldNamesAppend("UserParameters"),
+		fwflex.WithFieldNamePrefix("Environment"),
+	)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	state.AccountIdentifier = fwflex.StringToFramework(ctx, out.AwsAccountId)
+	state.AccountRegion = fwflex.StringToFramework(ctx, out.AwsAccountRegion)
+	state.ProjectIdentifier = fwflex.StringToFramework(ctx, out.ProjectId)
+	state.ProfileIdentifier = fwflex.StringToFramework(ctx, out.EnvironmentProfileId)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}

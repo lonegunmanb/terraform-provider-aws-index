@@ -1,0 +1,120 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findStackInstancesByNameCallAs(ctx context.Context, meta any, stackSetName, callAs string, deployedByOU bool, accounts, regions []string) (StackInstances, error) {
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	input := &cloudformation.ListStackInstancesInput{
+		StackSetName: aws.String(stackSetName),
+	}
+
+	if callAs != "" {
+		input.CallAs = awstypes.CallAs(callAs)
+	}
+
+	var output StackInstances
+	none := true
+	pages := cloudformation.NewListStackInstancesPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.StackInstanceNotFoundException](err) || errs.IsA[*awstypes.StackSetNotFoundException](err) {
+			return output, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: input,
+			}
+		}
+
+		if err != nil {
+			return output, err
+		}
+
+		none = false
+
+		for _, v := range page.Summaries {
+			if aws.ToString(v.StackSetId) != "" && output.StackSetID == "" {
+				output.StackSetID = aws.ToString(v.StackSetId)
+			}
+
+			output.Summaries = append(output.Summaries, v)
+
+			if aws.ToString(v.Account) != "" {
+				output.Accounts = append(output.Accounts, aws.ToString(v.Account))
+			}
+
+			if aws.ToString(v.Region) != "" {
+				output.Regions = append(output.Regions, aws.ToString(v.Region))
+			}
+
+			if aws.ToString(v.OrganizationalUnitId) != "" {
+				output.OUs = append(output.OUs, aws.ToString(v.OrganizationalUnitId))
+			}
+		}
+	}
+
+	if len(output.Accounts) == 0 && len(accounts) > 0 {
+		output.Accounts = accounts
+	}
+
+	if len(output.Accounts) == 0 && len(accounts) == 0 {
+		output.Accounts = []string{meta.(*conns.AWSClient).AccountID(ctx)}
+	}
+
+	if len(output.Regions) == 0 && len(regions) > 0 {
+		output.Regions = regions
+	}
+
+	if len(output.Regions) == 0 && len(regions) == 0 {
+		output.Regions = []string{meta.(*conns.AWSClient).Region(ctx)}
+	}
+
+	if deployedByOU {
+		return output, nil
+	}
+
+	// set based on the first account and region which means they may not be accurate for all stack instances
+	stackInstance, err := findStackInstanceByFourPartKey(ctx, conn, stackSetName, output.Accounts[0], output.Regions[0], callAs)
+	if none || tfresource.NotFound(err) {
+		return output, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil && !tfresource.NotFound(err) {
+		return output, err
+	}
+
+	if stackInstance != nil && output.StackSetID == "" {
+		output.StackSetID = aws.ToString(stackInstance.StackSetId)
+	}
+
+	if stackInstance != nil && stackInstance.ParameterOverrides != nil {
+		output.ParameterOverrides = stackInstance.ParameterOverrides
+	}
+
+	return output, nil
+}

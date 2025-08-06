@@ -1,0 +1,106 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecs
+import (
+	"context"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceTaskExecutionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ECSClient(ctx)
+
+	cluster := d.Get("cluster").(string)
+	taskDefinition := d.Get("task_definition").(string)
+	id := strings.Join([]string{cluster, taskDefinition}, ",")
+	input := &ecs.RunTaskInput{
+		Cluster:        aws.String(cluster),
+		TaskDefinition: aws.String(taskDefinition),
+	}
+
+	defaultTagsConfig := meta.(*conns.AWSClient).DefaultTagsConfig(ctx)
+	tags := defaultTagsConfig.MergeTags(tftags.New(ctx, d.Get(names.AttrTags).(map[string]any)))
+	if len(tags) > 0 {
+		input.Tags = svcTags(tags.IgnoreAWS())
+	}
+
+	if v, ok := d.GetOk(names.AttrCapacityProviderStrategy); ok {
+		input.CapacityProviderStrategy = expandCapacityProviderStrategyItems(v.(*schema.Set))
+	}
+	if v, ok := d.GetOk("client_token"); ok {
+		input.ClientToken = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk("desired_count"); ok {
+		input.Count = aws.Int32(int32(v.(int)))
+	}
+	if v, ok := d.GetOk("enable_ecs_managed_tags"); ok {
+		input.EnableECSManagedTags = v.(bool)
+	}
+	if v, ok := d.GetOk("enable_execute_command"); ok {
+		input.EnableExecuteCommand = v.(bool)
+	}
+	if v, ok := d.GetOk("group"); ok {
+		input.Group = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk("launch_type"); ok {
+		input.LaunchType = awstypes.LaunchType(v.(string))
+	}
+	if v, ok := d.GetOk(names.AttrNetworkConfiguration); ok {
+		input.NetworkConfiguration = expandNetworkConfiguration(v.([]any))
+	}
+	if v, ok := d.GetOk("overrides"); ok {
+		input.Overrides = expandTaskOverride(v.([]any))
+	}
+	if v, ok := d.GetOk("placement_constraints"); ok {
+		apiObject, err := expandPlacementConstraints(v.(*schema.Set).List())
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.PlacementConstraints = apiObject
+	}
+	if v, ok := d.GetOk("placement_strategy"); ok {
+		apiObject, err := expandPlacementStrategy(v.([]any))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.PlacementStrategy = apiObject
+	}
+	if v, ok := d.GetOk("platform_version"); ok {
+		input.PlatformVersion = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk(names.AttrPropagateTags); ok {
+		input.PropagateTags = awstypes.PropagateTags(v.(string))
+	}
+	if v, ok := d.GetOk("reference_id"); ok {
+		input.ReferenceId = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk("started_by"); ok {
+		input.StartedBy = aws.String(v.(string))
+	}
+
+	output, err := conn.RunTask(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "running ECS Task (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+	d.Set("task_arns", tfslices.ApplyToAll(output.Tasks, func(v awstypes.Task) string {
+		return aws.ToString(v.TaskArn)
+	}))
+
+	return diags
+}

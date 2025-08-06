@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func bucketNameFilter(ctx context.Context, bucket types.Bucket) bool {
+	name := aws.ToString(bucket.Name)
+
+	prefixes := []string{
+		"tf-acc",
+		"tf-object-test",
+		"tf-test",
+		"tftest.applicationversion",
+		"terraform-remote-s3-test",
+		"aws-security-data-lake-", // Orphaned by aws_securitylake_data_lake.
+		"resource-test-terraform",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+
+	defaultNameRegexp := regexache.MustCompile(fmt.Sprintf(`^%s\d+$`, id.UniqueIdPrefix))
+	if defaultNameRegexp.MatchString(name) {
+		return true
+	}
+
+	tflog.Info(ctx, "Skipping resource", map[string]any{
+		"skip_reason": "no match on prefix list",
+	})
+	return false
+}

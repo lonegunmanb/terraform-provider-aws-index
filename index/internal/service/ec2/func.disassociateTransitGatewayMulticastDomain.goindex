@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func disassociateTransitGatewayMulticastDomain(ctx context.Context, conn *ec2.Client, multicastDomainID, attachmentID, subnetID string, timeout time.Duration) error {
+	id := transitGatewayMulticastDomainAssociationCreateResourceID(multicastDomainID, attachmentID, subnetID)
+
+	log.Printf("[DEBUG] Deleting EC2 Transit Gateway Multicast Domain Association: %s", id)
+	input := ec2.DisassociateTransitGatewayMulticastDomainInput{
+		SubnetIds:                       []string{subnetID},
+		TransitGatewayAttachmentId:      aws.String(attachmentID),
+		TransitGatewayMulticastDomainId: aws.String(multicastDomainID),
+	}
+	_, err := conn.DisassociateTransitGatewayMulticastDomain(ctx, &input)
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidTransitGatewayMulticastDomainIdNotFound) {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("deleting EC2 Transit Gateway Multicast Domain Association (%s): %w", id, err)
+	}
+
+	if _, err := waitTransitGatewayMulticastDomainAssociationDeleted(ctx, conn, multicastDomainID, attachmentID, subnetID, timeout); err != nil {
+		return fmt.Errorf("waiting for EC2 Transit Gateway Multicast Domain Association (%s) delete: %w", id, err)
+	}
+
+	return nil
+}

@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserPoolDomainUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	timeout := 5 * time.Minute
+	input := cognitoidentityprovider.UpdateUserPoolDomainInput{
+		Domain:     aws.String(d.Id()),
+		UserPoolId: aws.String(d.Get(names.AttrUserPoolID).(string)),
+	}
+
+	if d.HasChange(names.AttrCertificateARN) {
+		timeout = 60 * time.Minute // Certificate ARN updates on custom domains take more time to become active.
+		input.CustomDomainConfig = &awstypes.CustomDomainConfigType{
+			CertificateArn: aws.String(d.Get(names.AttrCertificateARN).(string)),
+		}
+	}
+
+	if d.HasChange("managed_login_version") {
+		input.ManagedLoginVersion = aws.Int32(int32(d.Get("managed_login_version").(int)))
+	}
+
+	_, err := conn.UpdateUserPoolDomain(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Cognito User Pool Domain (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitUserPoolDomainUpdated(ctx, conn, d.Id(), timeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Cognito User Pool Domain (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceUserPoolDomainRead(ctx, d, meta)...)
+}

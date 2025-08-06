@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/licensemanager
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/licensemanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/licensemanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findReceivedGrants(ctx context.Context, conn *licensemanager.Client, input *licensemanager.ListReceivedGrantsInput, filter tfslices.Predicate[*awstypes.Grant]) ([]awstypes.Grant, error) {
+	var output []awstypes.Grant
+
+	err := listReceivedGrantsPages(ctx, conn, input, func(page *licensemanager.ListReceivedGrantsOutput, lastPage bool) bool {
+		if page == nil {
+			return !lastPage
+		}
+
+		for _, v := range page.Grants {
+			if filter(&v) {
+				output = append(output, v)
+			}
+		}
+
+		return !lastPage
+	})
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return output, err
+}

@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ce
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/costexplorer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/costexplorer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceTagsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CEClient(ctx)
+
+	input := &costexplorer.GetTagsInput{
+		TimePeriod: expandTagsTimePeriod(d.Get("time_period").([]any)[0].(map[string]any)),
+	}
+
+	if v, ok := d.GetOk(names.AttrFilter); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Filter = expandExpression(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("search_string"); ok {
+		input.SearchString = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("sort_by"); ok {
+		input.SortBy = expandTagsSortBys(v.([]any))
+	}
+
+	if v, ok := d.GetOk("tag_key"); ok {
+		input.TagKey = aws.String(v.(string))
+	}
+
+	output, err := conn.GetTags(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Cost Explorer Tags: %s", err)
+	}
+
+	d.SetId(meta.(*conns.AWSClient).AccountID(ctx))
+	d.Set(names.AttrTags, output.Tags)
+
+	return diags
+}

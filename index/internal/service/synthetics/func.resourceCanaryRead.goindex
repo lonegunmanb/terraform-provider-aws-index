@@ -1,0 +1,91 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/synthetics
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/synthetics"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/synthetics/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfio "github.com/hashicorp/terraform-provider-aws/internal/io"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCanaryRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SyntheticsClient(ctx)
+
+	canary, err := FindCanaryByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Synthetics Canary (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Synthetics Canary (%s): %s", d.Id(), err)
+	}
+
+	canaryArn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "synthetics",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("canary:%s", aws.ToString(canary.Name)),
+	}.String()
+	d.Set(names.AttrARN, canaryArn)
+	d.Set("artifact_s3_location", canary.ArtifactS3Location)
+	d.Set("engine_arn", canary.EngineArn)
+	d.Set(names.AttrExecutionRoleARN, canary.ExecutionRoleArn)
+	d.Set("failure_retention_period", canary.FailureRetentionPeriodInDays)
+	d.Set("handler", canary.Code.Handler)
+	d.Set(names.AttrName, canary.Name)
+	d.Set("runtime_version", canary.RuntimeVersion)
+	d.Set("source_location_arn", canary.Code.SourceLocationArn)
+	d.Set(names.AttrStatus, canary.Status.State)
+	d.Set("success_retention_period", canary.SuccessRetentionPeriodInDays)
+
+	if err := d.Set(names.AttrVPCConfig, flattenCanaryVPCConfig(canary.VpcConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting vpc config: %s", err)
+	}
+
+	runConfig := &awstypes.CanaryRunConfigInput{}
+	if v, ok := d.GetOk("run_config"); ok {
+		runConfig = expandCanaryRunConfig(v.([]any))
+	}
+
+	if err := d.Set("run_config", flattenCanaryRunConfig(canary.RunConfig, runConfig.EnvironmentVariables)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting run config: %s", err)
+	}
+
+	if err := d.Set(names.AttrSchedule, flattenCanarySchedule(canary.Schedule)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting schedule: %s", err)
+	}
+
+	if err := d.Set("timeline", flattenCanaryTimeline(canary.Timeline)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting schedule: %s", err)
+	}
+
+	if err := d.Set("artifact_config", flattenCanaryArtifactConfig(canary.ArtifactConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting artifact_config: %s", err)
+	}
+
+	setTagsOut(ctx, canary.Tags)
+
+	return diags
+}

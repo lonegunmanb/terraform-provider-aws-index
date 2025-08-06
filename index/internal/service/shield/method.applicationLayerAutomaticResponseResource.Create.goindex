@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/shield
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/shield"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/shield/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *applicationLayerAutomaticResponseResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data applicationLayerAutomaticResponseResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().ShieldClient(ctx)
+
+	action := &awstypes.ResponseAction{}
+	switch data.Action.ValueEnum() {
+	case applicationLayerAutomaticResponseActionBlock:
+		action.Block = &awstypes.BlockAction{}
+	case applicationLayerAutomaticResponseActionCount:
+		action.Count = &awstypes.CountAction{}
+	}
+
+	resourceARN := data.ResourceARN.ValueString()
+	input := &shield.EnableApplicationLayerAutomaticResponseInput{
+		Action:      action,
+		ResourceArn: aws.String(resourceARN),
+	}
+
+	_, err := conn.EnableApplicationLayerAutomaticResponse(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("enabling Shield Application Layer Automatic Response (%s)", resourceARN), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.setID()
+
+	if _, err := waitApplicationLayerAutomaticResponseEnabled(ctx, conn, resourceARN, r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for Shield Application Layer Automatic Response (%s) create", resourceARN), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

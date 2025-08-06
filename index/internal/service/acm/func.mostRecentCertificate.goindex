@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acm
+import (
+	"context"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/acm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/acm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func mostRecentCertificate(i, j *awstypes.CertificateDetail) (*awstypes.CertificateDetail, error) {
+	if i.Status != j.Status {
+		return nil, fmt.Errorf("most_recent filtering on different ACM certificate statuses is not supported")
+	}
+	// Cover IMPORTED and ISSUED AMAZON_ISSUED certificates
+	if i.Status == awstypes.CertificateStatusIssued {
+		if aws.ToTime(i.NotBefore).After(aws.ToTime(j.NotBefore)) {
+			return i, nil
+		}
+		return j, nil
+	}
+	// Cover non-ISSUED AMAZON_ISSUED certificates
+	if aws.ToTime(i.CreatedAt).After(aws.ToTime(j.CreatedAt)) {
+		return i, nil
+	}
+	return j, nil
+}

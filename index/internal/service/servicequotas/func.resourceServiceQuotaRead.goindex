@@ -1,0 +1,95 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicequotas
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServiceQuotaRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceQuotasClient(ctx)
+
+	serviceCode, quotaCode, err := serviceQuotaParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	// A Service Quota will always have a default value, but will only have a current value if it has been set.
+	defaultQuota, err := findDefaultServiceQuotaByServiceCodeAndQuotaCode(ctx, conn, serviceCode, quotaCode)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Service Quotas default Service Quota (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Service Quotas default Service Quota (%s/%s): %s", serviceCode, quotaCode, err)
+	}
+
+	d.Set("adjustable", defaultQuota.Adjustable)
+	d.Set(names.AttrARN, defaultQuota.QuotaArn)
+	d.Set(names.AttrDefaultValue, defaultQuota.Value)
+	d.Set("quota_code", defaultQuota.QuotaCode)
+	d.Set("quota_name", defaultQuota.QuotaName)
+	d.Set("service_code", defaultQuota.ServiceCode)
+	d.Set(names.AttrServiceName, defaultQuota.ServiceName)
+	if err := d.Set("usage_metric", flattenMetricInfo(defaultQuota.UsageMetric)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting usage_metric: %s", err)
+	}
+	d.Set(names.AttrValue, defaultQuota.Value)
+
+	serviceQuota, err := findServiceQuotaByServiceCodeAndQuotaCode(ctx, conn, serviceCode, quotaCode)
+
+	switch {
+	case tfresource.NotFound(err):
+		tflog.Debug(ctx, "No quota value set", map[string]any{
+			"service_code": serviceCode,
+			"quota_code":   quotaCode,
+		})
+	case err != nil:
+		return sdkdiag.AppendErrorf(diags, "reading Service Quotas Service Quota (%s/%s): %s", serviceCode, quotaCode, err)
+	default:
+		d.Set(names.AttrARN, serviceQuota.QuotaArn)
+		d.Set(names.AttrValue, serviceQuota.Value)
+	}
+
+	if requestID := d.Get("request_id").(string); requestID != "" {
+		output, err := findRequestedServiceQuotaChangeByID(ctx, conn, requestID)
+
+		switch {
+		case tfresource.NotFound(err):
+			d.Set("request_id", "")
+			d.Set("request_status", "")
+
+			return diags
+		case err != nil:
+			return sdkdiag.AppendErrorf(diags, "reading Service Quotas Requested Service Quota Change (%s): %s", requestID, err)
+		default:
+			d.Set("request_status", output.Status)
+			switch output.Status {
+			case awstypes.RequestStatusApproved, awstypes.RequestStatusCaseClosed, awstypes.RequestStatusDenied:
+				d.Set("request_id", "")
+			case awstypes.RequestStatusCaseOpened, awstypes.RequestStatusPending:
+				d.Set(names.AttrValue, output.DesiredValue)
+			}
+		}
+	}
+
+	return diags
+}

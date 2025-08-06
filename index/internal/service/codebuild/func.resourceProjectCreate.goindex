@@ -1,0 +1,153 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codebuild
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProjectCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeBuildClient(ctx)
+
+	var projectSource *types.ProjectSource
+	if v, ok := d.GetOk(names.AttrSource); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		projectSource = expandProjectSource(v.([]any)[0].(map[string]any))
+	}
+
+	if projectSource != nil && projectSource.Type == types.SourceTypeNoSource {
+		if aws.ToString(projectSource.Buildspec) == "" {
+			return sdkdiag.AppendErrorf(diags, "`buildspec` must be set when source's `type` is `NO_SOURCE`")
+		}
+
+		if aws.ToString(projectSource.Location) != "" {
+			return sdkdiag.AppendErrorf(diags, "`location` must be empty when source's `type` is `NO_SOURCE`")
+		}
+	}
+
+	name := d.Get(names.AttrName).(string)
+	input := &codebuild.CreateProjectInput{
+		LogsConfig: expandProjectLogsConfig(d.Get("logs_config")),
+		Name:       aws.String(name),
+		Source:     projectSource,
+		Tags:       getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("artifacts"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Artifacts = expandProjectArtifacts(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("badge_enabled"); ok {
+		input.BadgeEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("build_batch_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.BuildBatchConfig = expandProjectBuildBatchConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("cache"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Cache = expandProjectCache(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("concurrent_build_limit"); ok {
+		input.ConcurrentBuildLimit = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("encryption_key"); ok {
+		input.EncryptionKey = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrEnvironment); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Environment = expandProjectEnvironment(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("file_system_locations"); ok && v.(*schema.Set).Len() > 0 {
+		input.FileSystemLocations = expandProjectFileSystemLocations(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("queued_timeout"); ok {
+		input.QueuedTimeoutInMinutes = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("secondary_artifacts"); ok && v.(*schema.Set).Len() > 0 {
+		input.SecondaryArtifacts = expandProjectSecondaryArtifacts(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("secondary_sources"); ok && v.(*schema.Set).Len() > 0 {
+		input.SecondarySources = expandProjectSecondarySources(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("secondary_source_version"); ok && v.(*schema.Set).Len() > 0 {
+		input.SecondarySourceVersions = expandProjectSecondarySourceVersions(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk(names.AttrServiceRole); ok {
+		input.ServiceRole = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("source_version"); ok {
+		input.SourceVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("build_timeout"); ok {
+		input.TimeoutInMinutes = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk(names.AttrVPCConfig); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.VpcConfig = expandVPCConfig(v.([]any)[0].(map[string]any))
+	}
+
+	// InvalidInputException: CodeBuild is not authorized to perform
+	// InvalidInputException: Not authorized to perform DescribeSecurityGroups
+	outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[*types.InvalidInputException](ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateProject(ctx, input)
+	}, "ot authorized to perform")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CodeBuild Project (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*codebuild.CreateProjectOutput).Project.Arn))
+
+	if v, ok := d.GetOk("project_visibility"); ok {
+		if v := types.ProjectVisibilityType(v.(string)); v != types.ProjectVisibilityTypePrivate {
+			input := &codebuild.UpdateProjectVisibilityInput{
+				ProjectArn:        aws.String(d.Id()),
+				ProjectVisibility: v,
+			}
+
+			if v, ok := d.GetOk("resource_access_role"); ok {
+				input.ResourceAccessRole = aws.String(v.(string))
+			}
+
+			_, err = conn.UpdateProjectVisibility(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating CodeBuild Project (%s) visibility: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceProjectRead(ctx, d, meta)...)
+}

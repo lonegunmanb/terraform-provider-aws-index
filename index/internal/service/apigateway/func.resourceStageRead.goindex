@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStageRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	apiID := d.Get("rest_api_id").(string)
+	stageName := d.Get("stage_name").(string)
+	stage, err := findStageByTwoPartKey(ctx, conn, apiID, stageName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] API Gateway Stage (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading API Gateway Stage (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("access_log_settings", flattenAccessLogSettings(stage.AccessLogSettings)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting access_log_settings: %s", err)
+	}
+	d.Set(names.AttrARN, stageARN(ctx, meta.(*conns.AWSClient), apiID, stageName))
+	if stage.CacheClusterStatus == types.CacheClusterStatusDeleteInProgress {
+		d.Set("cache_cluster_enabled", false)
+		d.Set("cache_cluster_size", d.Get("cache_cluster_size"))
+	} else {
+		enabled := stage.CacheClusterEnabled
+		d.Set("cache_cluster_enabled", enabled)
+		if enabled {
+			d.Set("cache_cluster_size", stage.CacheClusterSize)
+		} else {
+			d.Set("cache_cluster_size", d.Get("cache_cluster_size"))
+		}
+	}
+	if err := d.Set("canary_settings", flattenCanarySettings(stage.CanarySettings)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting canary_settings: %s", err)
+	}
+	d.Set("client_certificate_id", stage.ClientCertificateId)
+	d.Set("deployment_id", stage.DeploymentId)
+	d.Set(names.AttrDescription, stage.Description)
+	d.Set("documentation_version", stage.DocumentationVersion)
+	d.Set("execution_arn", stageInvokeARN(ctx, meta.(*conns.AWSClient), apiID, stageName))
+	d.Set("invoke_url", meta.(*conns.AWSClient).APIGatewayInvokeURL(ctx, apiID, stageName))
+	if err := d.Set("variables", stage.Variables); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting variables: %s", err)
+	}
+	d.Set("web_acl_arn", stage.WebAclArn)
+	d.Set("xray_tracing_enabled", stage.TracingEnabled)
+
+	setTagsOut(ctx, stage.Tags)
+
+	return diags
+}

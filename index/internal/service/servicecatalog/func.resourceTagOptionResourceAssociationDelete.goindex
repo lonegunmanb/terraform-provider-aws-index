@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTagOptionResourceAssociationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	tagOptionID, resourceID, err := tagOptionResourceAssociationParseID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "could not parse ID (%s): %s", d.Id(), err)
+	}
+
+	input := &servicecatalog.DisassociateTagOptionFromResourceInput{
+		ResourceId:  aws.String(resourceID),
+		TagOptionId: aws.String(tagOptionID),
+	}
+
+	_, err = conn.DisassociateTagOptionFromResource(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "disassociating Service Catalog Tag Option from Resource (%s): %s", d.Id(), err)
+	}
+
+	err = waitTagOptionResourceAssociationDeleted(ctx, conn, tagOptionID, resourceID, d.Timeout(schema.TimeoutDelete))
+
+	if err != nil && !tfresource.NotFound(err) {
+		return sdkdiag.AppendErrorf(diags, "waiting for Service Catalog Tag Option Resource Disassociation (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

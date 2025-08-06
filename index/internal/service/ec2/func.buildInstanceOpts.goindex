@@ -1,0 +1,273 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func buildInstanceOpts(ctx context.Context, d *schema.ResourceData, meta any) (*instanceOpts, error) {
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	opts := &instanceOpts{
+		DisableAPITermination: aws.Bool(d.Get("disable_api_termination").(bool)),
+		EBSOptimized:          aws.Bool(d.Get("ebs_optimized").(bool)),
+		EnclaveOptions:        expandEnclaveOptions(d.Get("enclave_options").([]any)),
+		MetadataOptions:       expandInstanceMetadataOptions(d.Get("metadata_options").([]any)),
+	}
+
+	if v, ok := d.GetOk("disable_api_stop"); ok {
+		opts.DisableAPIStop = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("ami"); ok {
+		opts.ImageID = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrInstanceType); ok {
+		opts.InstanceType = awstypes.InstanceType(v.(string))
+	}
+
+	var instanceInterruptionBehavior string
+
+	if v, ok := d.GetOk(names.AttrLaunchTemplate); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		launchTemplateSpecification := expandLaunchTemplateSpecification(v.([]any)[0].(map[string]any))
+		launchTemplateData, err := findLaunchTemplateData(ctx, conn, launchTemplateSpecification)
+
+		if err != nil {
+			return nil, err
+		}
+
+		opts.LaunchTemplate = launchTemplateSpecification
+
+		if launchTemplateData.InstanceMarketOptions != nil && launchTemplateData.InstanceMarketOptions.SpotOptions != nil {
+			instanceInterruptionBehavior = string(launchTemplateData.InstanceMarketOptions.SpotOptions.InstanceInterruptionBehavior)
+		}
+	}
+
+	instanceType := d.Get(names.AttrInstanceType).(string)
+
+	// Set default cpu_credits as Unlimited for T3/T3a instance type
+	if strings.HasPrefix(instanceType, "t3") {
+		opts.CreditSpecification = &awstypes.CreditSpecificationRequest{
+			CpuCredits: aws.String(cpuCreditsUnlimited),
+		}
+	}
+
+	if v, ok := d.GetOk("credit_specification"); ok && len(v.([]any)) > 0 {
+		if instanceType != "" {
+			instanceTypeInfo, err := findInstanceTypeByName(ctx, conn, instanceType)
+
+			if err != nil {
+				return nil, fmt.Errorf("reading EC2 Instance Type (%s): %w", instanceType, err)
+			}
+
+			if aws.ToBool(instanceTypeInfo.BurstablePerformanceSupported) {
+				if v, ok := v.([]any)[0].(map[string]any); ok {
+					opts.CreditSpecification = expandCreditSpecificationRequest(v)
+				} else {
+					log.Print("[WARN] credit_specification is defined but the value of cpu_credits is missing, default value will be used.")
+				}
+			} else {
+				log.Print("[WARN] credit_specification is defined but instance type does not support burstable performance. Ignoring...")
+			}
+		}
+	}
+
+	if v := d.Get("instance_initiated_shutdown_behavior").(string); v != "" {
+		opts.InstanceInitiatedShutdownBehavior = awstypes.ShutdownBehavior(v)
+	}
+
+	opts.Monitoring = &awstypes.RunInstancesMonitoringEnabled{
+		Enabled: aws.Bool(d.Get("monitoring").(bool)),
+	}
+
+	if v, ok := d.GetOk("iam_instance_profile"); ok {
+		opts.IAMInstanceProfile = &awstypes.IamInstanceProfileSpecification{
+			Name: aws.String(v.(string)),
+		}
+	}
+
+	userData := d.Get("user_data").(string)
+	userDataBase64 := d.Get("user_data_base64").(string)
+
+	if userData != "" {
+		opts.UserData64 = flex.StringValueToBase64String(userData)
+	} else if userDataBase64 != "" {
+		opts.UserData64 = aws.String(userDataBase64)
+	}
+
+	// check for non-default Subnet, and cast it to a String
+	subnet, hasSubnet := d.GetOk(names.AttrSubnetID)
+	subnetID := subnet.(string)
+
+	// Placement is used for aws_instance; SpotPlacement is used for
+	// aws_spot_instance_request. They represent the same data. :-|
+	opts.Placement = &awstypes.Placement{
+		AvailabilityZone: aws.String(d.Get(names.AttrAvailabilityZone).(string)),
+	}
+
+	if v, ok := d.GetOk("placement_partition_number"); ok {
+		opts.Placement.PartitionNumber = aws.Int32(int32(v.(int)))
+	}
+
+	opts.SpotPlacement = &awstypes.SpotPlacement{
+		AvailabilityZone: aws.String(d.Get(names.AttrAvailabilityZone).(string)),
+	}
+
+	if v, ok := d.GetOk("placement_group"); ok && (instanceInterruptionBehavior == "" || instanceInterruptionBehavior == string(awstypes.InstanceInterruptionBehaviorTerminate)) {
+		opts.Placement.GroupName = aws.String(v.(string))
+		opts.SpotPlacement.GroupName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("tenancy"); ok {
+		opts.Placement.Tenancy = awstypes.Tenancy(v.(string))
+	}
+	if v, ok := d.GetOk("host_id"); ok {
+		opts.Placement.HostId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("host_resource_group_arn"); ok {
+		opts.Placement.HostResourceGroupArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("cpu_options"); ok {
+		opts.CpuOptions = expandCPUOptions(v.([]any))
+	}
+
+	if v := d.Get("hibernation"); v != "" {
+		opts.HibernationOptions = &awstypes.HibernationOptionsRequest{
+			Configured: aws.Bool(v.(bool)),
+		}
+	}
+
+	var groups []string
+	if v := d.Get(names.AttrSecurityGroups); v != nil {
+		// Security group names.
+		// For a nondefault VPC, you must use security group IDs instead.
+		// See http://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_RunInstances.html
+		sgs := v.(*schema.Set).List()
+		if len(sgs) > 0 && hasSubnet {
+			log.Print("[WARN] Deprecated. Attempting to use 'security_groups' within a VPC instance. Use 'vpc_security_group_ids' instead.")
+		}
+		for _, v := range sgs {
+			str := v.(string)
+			groups = append(groups, str)
+		}
+	}
+
+	_, assocPubIPA := d.GetOkExists("associate_public_ip_address")
+	_, privIP := d.GetOk("private_ip")
+	_, secPrivIP := d.GetOk("secondary_private_ips")
+	networkInterfaces, interfacesOk := d.GetOk("network_interface")
+
+	// If setting subnet and public address, OR manual network interfaces, populate those now.
+	if (hasSubnet && (assocPubIPA || privIP || secPrivIP)) || interfacesOk {
+		// Otherwise we're attaching (a) network interface(s)
+		opts.NetworkInterfaces = buildNetworkInterfaceOpts(d, groups, networkInterfaces)
+	} else {
+		// If simply specifying a subnetID, privateIP, Security Groups, or VPC Security Groups, build these now
+		if subnetID != "" {
+			opts.SubnetID = aws.String(subnetID)
+		}
+
+		if v, ok := d.GetOk("private_ip"); ok {
+			opts.PrivateIPAddress = aws.String(v.(string))
+		}
+		if opts.SubnetID != nil &&
+			aws.ToString(opts.SubnetID) != "" {
+			opts.SecurityGroupIDs = groups
+		} else {
+			opts.SecurityGroups = groups
+		}
+
+		if v, ok := d.GetOk("enable_primary_ipv6"); ok {
+			opts.EnablePrimaryIpv6 = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk("ipv6_address_count"); ok {
+			opts.Ipv6AddressCount = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("ipv6_addresses"); ok {
+			ipv6Addresses := make([]awstypes.InstanceIpv6Address, len(v.([]any)))
+			for i, address := range v.([]any) {
+				ipv6Addresses[i] = awstypes.InstanceIpv6Address{
+					Ipv6Address: aws.String(address.(string)),
+				}
+			}
+
+			opts.Ipv6Addresses = ipv6Addresses
+		}
+
+		if v := d.Get(names.AttrVPCSecurityGroupIDs).(*schema.Set); v.Len() > 0 {
+			for _, v := range v.List() {
+				opts.SecurityGroupIDs = append(opts.SecurityGroupIDs, v.(string))
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("key_name"); ok {
+		opts.KeyName = aws.String(v.(string))
+	}
+
+	blockDevices, err := readBlockDeviceMappingsFromConfig(ctx, d, conn)
+	if err != nil {
+		return nil, err
+	}
+	if len(blockDevices) > 0 {
+		opts.BlockDeviceMappings = blockDevices
+	}
+
+	if v, ok := d.GetOk("capacity_reservation_specification"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		opts.CapacityReservationSpecification = expandCapacityReservationSpecification(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("maintenance_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		opts.MaintenanceOptions = expandInstanceMaintenanceOptionsRequest(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("private_dns_name_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		opts.PrivateDNSNameOptions = expandPrivateDNSNameOptionsRequest(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("instance_market_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		opts.InstanceMarketOptions = expandInstanceMarketOptionsRequest(v.([]any)[0].(map[string]any))
+	}
+
+	return opts, nil
+}

@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func FindBucketResourceAccessById(ctx context.Context, conn *lightsail.Client, id string) (*types.ResourceReceivingAccess, error) {
+	parts, err := flex.ExpandResourceId(id, BucketAccessKeyIdPartsCount, false)
+
+	if err != nil {
+		return nil, err
+	}
+
+	in := &lightsail.GetBucketsInput{
+		BucketName:                aws.String(parts[0]),
+		IncludeConnectedResources: aws.Bool(true),
+	}
+
+	out, err := conn.GetBuckets(ctx, in)
+
+	if IsANotFoundError(err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: in,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if out == nil || len(out.Buckets) == 0 {
+		return nil, tfresource.NewEmptyResultError(in)
+	}
+
+	bucket := out.Buckets[0]
+	var entry types.ResourceReceivingAccess
+	entryExists := false
+
+	for _, n := range bucket.ResourcesReceivingAccess {
+		if parts[1] == aws.ToString(n.Name) {
+			entry = n
+			entryExists = true
+			break
+		}
+	}
+
+	if !entryExists {
+		return nil, tfresource.NewEmptyResultError(in)
+	}
+
+	return &entry, nil
+}

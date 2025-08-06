@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *templateAliasResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	conn := r.Meta().QuickSightClient(ctx)
+
+	var state templateAliasResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	awsAccountID, templateID, aliasName, err := templateAliasParseResourceID(state.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.QuickSight, create.ErrActionDeleting, resNameTemplateAlias, state.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	_, err = conn.DeleteTemplateAlias(ctx, &quicksight.DeleteTemplateAliasInput{
+		AliasName:    aws.String(aliasName),
+		AwsAccountId: aws.String(awsAccountID),
+		TemplateId:   aws.String(templateID),
+	})
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return
+	}
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.QuickSight, create.ErrActionDeleting, resNameTemplateAlias, state.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+}

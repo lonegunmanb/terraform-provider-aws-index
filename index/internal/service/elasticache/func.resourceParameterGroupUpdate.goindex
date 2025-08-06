@@ -1,0 +1,142 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceParameterGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElastiCacheClient(ctx)
+
+	if d.HasChange(names.AttrParameter) {
+		o, n := d.GetChange(names.AttrParameter)
+		toRemove, toAdd := parameterChanges(o, n)
+
+		// We can only modify 20 parameters at a time, so walk them until
+		// we've got them all.
+		const maxParams = 20
+
+		for len(toRemove) > 0 {
+			var paramsToModify []*awstypes.ParameterNameValue
+			if len(toRemove) <= maxParams {
+				paramsToModify, toRemove = toRemove[:], nil
+			} else {
+				paramsToModify, toRemove = toRemove[:maxParams], toRemove[maxParams:]
+			}
+
+			err := resourceResetParameterGroup(ctx, conn, d.Get(names.AttrName).(string), paramsToModify)
+
+			// When attempting to reset the reserved-memory parameter, the API
+			// can return two types of error.
+			//
+			// In the commercial partition, it will return a 400 error with:
+			//   InvalidParameterValue: Parameter reserved-memory doesn't exist
+			//
+			// In the GovCloud partition it will return the below 500 error,
+			// which causes the AWS Go SDK to automatically retry and timeout:
+			//   InternalFailure: An internal error has occurred. Please try your query again at a later time.
+			//
+			// Instead of hardcoding the reserved-memory parameter removal
+			// above, which may become out of date, here we add logic to
+			// workaround this API behavior
+
+			if tfresource.TimedOut(err) || errs.IsAErrorMessageContains[*awstypes.InvalidParameterValueException](err, "Parameter reserved-memory doesn't exist") {
+				for i, paramToModify := range paramsToModify {
+					if aws.ToString(paramToModify.ParameterName) != "reserved-memory" {
+						continue
+					}
+
+					// Always reset the top level error and remove the reset for reserved-memory
+					err = nil
+					paramsToModify = slices.Delete(paramsToModify, i, i+1)
+
+					// If we are only trying to remove reserved-memory and not perform
+					// an update to reserved-memory or reserved-memory-percent, we
+					// can attempt to workaround the API issue by switching it to
+					// reserved-memory-percent first then reset that temporary parameter.
+
+					tryReservedMemoryPercentageWorkaround := true
+					for _, configuredParameter := range toAdd {
+						if aws.ToString(configuredParameter.ParameterName) == "reserved-memory-percent" {
+							tryReservedMemoryPercentageWorkaround = false
+							break
+						}
+					}
+
+					if !tryReservedMemoryPercentageWorkaround {
+						break
+					}
+
+					// The reserved-memory-percent parameter does not exist in redis2.6 and redis2.8
+					family := d.Get(names.AttrFamily).(string)
+					if family == "redis2.6" || family == "redis2.8" {
+						log.Printf("[WARN] Cannot reset ElastiCache Parameter Group (%s) reserved-memory parameter with %s family", d.Id(), family)
+						break
+					}
+
+					workaroundParams := []*awstypes.ParameterNameValue{
+						{
+							ParameterName:  aws.String("reserved-memory-percent"),
+							ParameterValue: aws.String("0"),
+						},
+					}
+					err = resourceModifyParameterGroup(ctx, conn, d.Get(names.AttrName).(string), paramsToModify)
+					if err != nil {
+						log.Printf("[WARN] Error attempting reserved-memory workaround to switch to reserved-memory-percent: %s", err)
+						break
+					}
+
+					err = resourceResetParameterGroup(ctx, conn, d.Get(names.AttrName).(string), workaroundParams)
+					if err != nil {
+						log.Printf("[WARN] Error attempting reserved-memory workaround to reset reserved-memory-percent: %s", err)
+					}
+
+					break
+				}
+
+				// Retry any remaining parameter resets with reserved-memory potentially removed
+				if len(paramsToModify) > 0 {
+					err = resourceResetParameterGroup(ctx, conn, d.Get(names.AttrName).(string), paramsToModify)
+				}
+			}
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "resetting ElastiCache Parameter Group: %s", err)
+			}
+		}
+
+		for len(toAdd) > 0 {
+			var paramsToModify []*awstypes.ParameterNameValue
+			if len(toAdd) <= maxParams {
+				paramsToModify, toAdd = toAdd[:], nil
+			} else {
+				paramsToModify, toAdd = toAdd[:maxParams], toAdd[maxParams:]
+			}
+
+			err := resourceModifyParameterGroup(ctx, conn, d.Get(names.AttrName).(string), paramsToModify)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "modifying ElastiCache Parameter Group: %s", err)
+			}
+		}
+	}
+
+	return append(diags, resourceParameterGroupRead(ctx, d, meta)...)
+}

@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/neptune
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/neptune"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/neptune/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterInstanceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NeptuneClient(ctx)
+
+	instanceID := create.NewNameGenerator(
+		create.WithConfiguredName(d.Get(names.AttrIdentifier).(string)),
+		create.WithConfiguredPrefix(d.Get("identifier_prefix").(string)),
+		create.WithDefaultPrefix("tf-"),
+	).Generate()
+	input := &neptune.CreateDBInstanceInput{
+		AutoMinorVersionUpgrade: aws.Bool(d.Get(names.AttrAutoMinorVersionUpgrade).(bool)),
+		DBClusterIdentifier:     aws.String(d.Get(names.AttrClusterIdentifier).(string)),
+		DBInstanceClass:         aws.String(d.Get("instance_class").(string)),
+		DBInstanceIdentifier:    aws.String(instanceID),
+		Engine:                  aws.String(d.Get(names.AttrEngine).(string)),
+		PromotionTier:           aws.Int32(int32(d.Get("promotion_tier").(int))),
+		PubliclyAccessible:      aws.Bool(d.Get(names.AttrPubliclyAccessible).(bool)),
+		Tags:                    getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrAvailabilityZone); ok {
+		input.AvailabilityZone = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrEngineVersion); ok {
+		input.EngineVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("neptune_parameter_group_name"); ok {
+		input.DBParameterGroupName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("neptune_subnet_group_name"); ok {
+		input.DBSubnetGroupName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("preferred_backup_window"); ok {
+		input.PreferredBackupWindow = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrPreferredMaintenanceWindow); ok {
+		input.PreferredMaintenanceWindow = aws.String(v.(string))
+	}
+
+	outputRaw, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateDBInstance(ctx, input)
+	}, errCodeInvalidParameterValue, "IAM role ARN value is invalid or does not include the required permissions")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Neptune Cluster Instance (%s): %s", instanceID, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*neptune.CreateDBInstanceOutput).DBInstance.DBInstanceIdentifier))
+
+	if _, err := waitDBInstanceAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Neptune Cluster Instance (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceClusterInstanceRead(ctx, d, meta)...)
+}

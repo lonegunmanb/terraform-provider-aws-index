@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/shield
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/shield"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/shield/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *drtAccessRoleARNAssociationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data drtAccessRoleARNAssociationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().ShieldClient(ctx)
+
+	roleARN := data.RoleARN.ValueString()
+	input := &shield.AssociateDRTRoleInput{
+		RoleArn: aws.String(roleARN),
+	}
+
+	_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidParameterException](ctx, propagationTimeout, func() (any, error) {
+		return conn.AssociateDRTRole(ctx, input)
+	}, "role does not have a valid DRT managed policy")
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating Shield DRT Role ARN Association (%s)", roleARN), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.ID = types.StringValue(r.Meta().AccountID(ctx))
+
+	_, err = tfresource.RetryWhenNotFound(ctx, r.CreateTimeout(ctx, data.Timeouts), func() (any, error) {
+		return findDRTRoleARNAssociation(ctx, conn, roleARN)
+	})
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for Shield DRT Role ARN Association (%s) create", roleARN), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceZoneAssociationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	zoneID, vpcID, vpcRegion, err := zoneAssociationParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	// Continue supporting older resources without VPC Region in ID.
+	if vpcRegion == "" {
+		vpcRegion = d.Get("vpc_region").(string)
+	}
+	if vpcRegion == "" {
+		vpcRegion = meta.(*conns.AWSClient).Region(ctx)
+	}
+
+	log.Printf("[INFO] Deleting Route53 Zone Association: %s", d.Id())
+	output, err := conn.DisassociateVPCFromHostedZone(ctx, &route53.DisassociateVPCFromHostedZoneInput{
+		Comment:      aws.String("Managed by Terraform"),
+		HostedZoneId: aws.String(zoneID),
+		VPC: &awstypes.VPC{
+			VPCId:     aws.String(vpcID),
+			VPCRegion: awstypes.VPCRegion(vpcRegion),
+		},
+	})
+
+	if errs.IsA[*awstypes.NoSuchHostedZone](err) || errs.IsA[*awstypes.VPCAssociationNotFound](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Route 53 Zone Association (%s): %s", d.Id(), err)
+	}
+
+	if output.ChangeInfo != nil {
+		if _, err := waitChangeInsync(ctx, conn, aws.ToString(output.ChangeInfo.Id), d.Timeout(schema.TimeoutDelete)); err != nil {
+			// AccessDenied errors likely due to cross-account issue.
+			if !tfawserr.ErrCodeEquals(err, errCodeAccessDenied) {
+				return sdkdiag.AppendErrorf(diags, "waiting for Route 53 Zone Association (%s) synchronize: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return diags
+}

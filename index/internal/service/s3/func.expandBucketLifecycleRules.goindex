@@ -1,0 +1,116 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandBucketLifecycleRules(ctx context.Context, tfList []any) []types.LifecycleRule {
+	if len(tfList) == 0 || tfList[0] == nil {
+		return nil
+	}
+
+	var apiObjects []types.LifecycleRule
+
+	for _, tfMapRaw := range tfList {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		apiObject := types.LifecycleRule{}
+
+		if v, ok := tfMap["abort_incomplete_multipart_upload_days"].(int); ok && v > 0 {
+			apiObject.AbortIncompleteMultipartUpload = &types.AbortIncompleteMultipartUpload{
+				DaysAfterInitiation: aws.Int32(int32(v)),
+			}
+		}
+
+		if v, ok := tfMap["expiration"].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.Expiration = expandBucketLifecycleExpiration(v)
+		}
+
+		var filter *types.LifecycleRuleFilter
+		prefix := tfMap[names.AttrPrefix].(string)
+		if tags := Tags(tftags.New(ctx, tfMap[names.AttrTags]).IgnoreAWS()); len(tags) > 0 {
+			filter = &types.LifecycleRuleFilter{
+				And: &types.LifecycleRuleAndOperator{
+					Prefix: aws.String(prefix),
+					Tags:   tags,
+				},
+			}
+		} else {
+			filter = &types.LifecycleRuleFilter{
+				Prefix: aws.String(prefix),
+			}
+		}
+		apiObject.Filter = filter
+
+		if v, ok := tfMap[names.AttrID].(string); ok {
+			apiObject.ID = aws.String(v)
+		} else {
+			apiObject.ID = aws.String(id.PrefixedUniqueId("tf-s3-lifecycle-"))
+		}
+
+		if v, ok := tfMap["noncurrent_version_expiration"].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.NoncurrentVersionExpiration = expandBucketNoncurrentVersionExpiration(v[0].(map[string]any))
+		}
+
+		if v, ok := tfMap["noncurrent_version_transition"].(*schema.Set); ok && v.Len() > 0 {
+			apiObject.NoncurrentVersionTransitions = expandBucketNoncurrentVersionTransition(v.List())
+		}
+
+		if v, ok := tfMap[names.AttrEnabled].(bool); ok && v {
+			apiObject.Status = types.ExpirationStatusEnabled
+		} else {
+			apiObject.Status = types.ExpirationStatusDisabled
+		}
+
+		if v, ok := tfMap["transition"].(*schema.Set); ok && v.Len() > 0 {
+			apiObject.Transitions = expandBucketTransitions(v.List())
+		}
+
+		// As a lifecycle rule requires 1 or more transition/expiration actions,
+		// we explicitly pass a default ExpiredObjectDeleteMarker value to be able to create
+		// the rule while keeping the policy unaffected if the conditions are not met.
+		if apiObject.AbortIncompleteMultipartUpload == nil && apiObject.Expiration == nil && apiObject.NoncurrentVersionExpiration == nil && apiObject.NoncurrentVersionTransitions == nil && apiObject.Transitions == nil {
+			apiObject.Expiration = &types.LifecycleExpiration{ExpiredObjectDeleteMarker: aws.Bool(false)}
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects
+}

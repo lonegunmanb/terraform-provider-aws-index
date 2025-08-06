@@ -1,0 +1,142 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMethodUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	operations := make([]types.PatchOperation, 0)
+
+	if d.HasChange(names.AttrResourceID) {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/resourceId"),
+			Value: aws.String(d.Get(names.AttrResourceID).(string)),
+		})
+	}
+
+	if d.HasChange("request_models") {
+		operations = append(operations, expandRequestResponseModelOperations(d, "request_models", "requestModels")...)
+	}
+
+	if d.HasChange("request_parameters") {
+		ops := expandMethodParametersOperations(d, "request_parameters", "requestParameters")
+		operations = append(operations, ops...)
+	}
+
+	if d.HasChange("authorization") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/authorizationType"),
+			Value: aws.String(d.Get("authorization").(string)),
+		})
+	}
+
+	if d.HasChange("authorizer_id") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/authorizerId"),
+			Value: aws.String(d.Get("authorizer_id").(string)),
+		})
+	}
+
+	if d.HasChange("authorization_scopes") {
+		old, new := d.GetChange("authorization_scopes")
+		path := "/authorizationScopes"
+
+		os := old.(*schema.Set)
+		ns := new.(*schema.Set)
+
+		additionList := ns.Difference(os)
+		for _, v := range additionList.List() {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpAdd,
+				Path:  aws.String(path),
+				Value: aws.String(v.(string)),
+			})
+		}
+
+		removalList := os.Difference(ns)
+		for _, v := range removalList.List() {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpRemove,
+				Path:  aws.String(path),
+				Value: aws.String(v.(string)),
+			})
+		}
+	}
+
+	if d.HasChange("api_key_required") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/apiKeyRequired"),
+			Value: aws.String(strconv.FormatBool(d.Get("api_key_required").(bool))),
+		})
+	}
+
+	if d.HasChange("request_validator_id") {
+		var request_validator_id *string
+		if v, ok := d.GetOk("request_validator_id"); ok {
+			// requestValidatorId cannot be an empty string; it must either be nil
+			// or it must have some value. Otherwise, updating fails.
+			if s := v.(string); len(s) > 0 {
+				request_validator_id = &s
+			}
+		}
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/requestValidatorId"),
+			Value: request_validator_id,
+		})
+	}
+
+	if d.HasChange("operation_name") {
+		var operation_name *string
+		if v, ok := d.GetOk("operation_name"); ok {
+			if s := v.(string); len(s) > 0 {
+				operation_name = &s
+			}
+		}
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/operationName"),
+			Value: operation_name,
+		})
+	}
+
+	input := apigateway.UpdateMethodInput{
+		HttpMethod:      aws.String(d.Get("http_method").(string)),
+		PatchOperations: operations,
+		ResourceId:      aws.String(d.Get(names.AttrResourceID).(string)),
+		RestApiId:       aws.String(d.Get("rest_api_id").(string)),
+	}
+
+	_, err := conn.UpdateMethod(ctx, &input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating API Gateway Method (%s): %s", d.Id(), err)
+	}
+
+	if err := updateIntegration(ctx, d, conn, operations); err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating API Gateway Integration (from Method): %s", err)
+	}
+
+	return append(diags, resourceMethodRead(ctx, d, meta)...)
+}

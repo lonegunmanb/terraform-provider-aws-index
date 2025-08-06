@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	smithyjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	"github.com/shopspring/decimal"
+)
+func (flattener autoFlattener) bool(ctx context.Context, vFrom reflect.Value, isNullFrom bool, tTo attr.Type, vTo reflect.Value, fieldOpts fieldOpts) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	switch tTo := tTo.(type) {
+	case basetypes.BoolTypable:
+		//
+		// bool -> types.Bool.
+		//
+		var boolValue types.Bool
+		if fieldOpts.legacy {
+			tflog.SubsystemDebug(ctx, subsystemName, "Using legacy flattener")
+			if isNullFrom {
+				boolValue = types.BoolValue(false)
+			} else {
+				boolValue = types.BoolValue(vFrom.Bool())
+			}
+		} else {
+			if isNullFrom {
+				boolValue = types.BoolNull()
+			} else {
+				boolValue = types.BoolValue(vFrom.Bool())
+			}
+		}
+		v, d := tTo.ValueFromBool(ctx, boolValue)
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+		vTo.Set(reflect.ValueOf(v))
+		return diags
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "AutoFlex Flatten; incompatible types", map[string]any{
+		"from": vFrom.Kind(),
+		"to":   tTo,
+	})
+
+	return diags
+}

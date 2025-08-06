@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/verify
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	basevalidation "github.com/hashicorp/aws-sdk-go-base/v2/validation"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/timestamp"
+)
+func ValidARNCheck(f ...ARNCheckFunc) schema.SchemaValidateFunc {
+	return func(v any, k string) (ws []string, errors []error) {
+		value, ok := v.(string)
+		if !ok {
+			errors = append(errors, fmt.Errorf("expected type of %s to be string", k))
+			return ws, errors
+		}
+
+		if value == "" {
+			return ws, errors
+		}
+
+		parsedARN, err := arn.Parse(value)
+
+		if err != nil {
+			errors = append(errors, fmt.Errorf("%q (%s) is an invalid ARN: %s", k, value, err))
+			return ws, errors
+		}
+
+		if parsedARN.Partition == "" {
+			errors = append(errors, fmt.Errorf("%q (%s) is an invalid ARN: missing partition value", k, value))
+		} else if !partitionRegexp.MatchString(parsedARN.Partition) {
+			errors = append(errors, fmt.Errorf("%q (%s) is an invalid ARN: invalid partition value (expecting to match regular expression: %s)", k, value, partitionRegexp))
+		}
+
+		if parsedARN.Region != "" && !inttypes.IsAWSRegion(parsedARN.Region) {
+			errors = append(errors, fmt.Errorf("%q (%s) is an invalid ARN: invalid region value", k, value))
+		}
+
+		if parsedARN.AccountID != "" && !accountIDRegexp.MatchString(parsedARN.AccountID) {
+			errors = append(errors, fmt.Errorf("%q (%s) is an invalid ARN: invalid account ID value (expecting to match regular expression: %s)", k, value, accountIDRegexp))
+		}
+
+		if parsedARN.Resource == "" {
+			errors = append(errors, fmt.Errorf("%q (%s) is an invalid ARN: missing resource value", k, value))
+		}
+
+		for _, f := range f {
+			w, e := f(v, k, parsedARN)
+			ws = append(ws, w...)
+			errors = append(errors, e...)
+		}
+
+		return ws, errors
+	}
+}

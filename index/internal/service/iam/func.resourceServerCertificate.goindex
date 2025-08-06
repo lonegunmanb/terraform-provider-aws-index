@@ -1,0 +1,99 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServerCertificate() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceServerCertificateCreate,
+		ReadWithoutTimeout:   resourceServerCertificateRead,
+		UpdateWithoutTimeout: resourceServerCertificateUpdate,
+		DeleteWithoutTimeout: resourceServerCertificateDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: resourceServerCertificateImport,
+		},
+
+		Timeouts: &schema.ResourceTimeout{
+			Delete: schema.DefaultTimeout(15 * time.Minute),
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"certificate_body": {
+				Type:             schema.TypeString,
+				Required:         true,
+				ForceNew:         true,
+				DiffSuppressFunc: suppressNormalizeCertRemoval,
+				StateFunc:        StateTrimSpace,
+			},
+			names.AttrCertificateChain: {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ForceNew:         true,
+				DiffSuppressFunc: suppressNormalizeCertRemoval,
+				StateFunc:        StateTrimSpace,
+			},
+			"expiration": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrName: {
+				Type:          schema.TypeString,
+				Optional:      true,
+				Computed:      true,
+				ConflictsWith: []string{names.AttrNamePrefix},
+				ValidateFunc:  validation.StringLenBetween(0, 128),
+			},
+			names.AttrNamePrefix: {
+				Type:          schema.TypeString,
+				Optional:      true,
+				Computed:      true,
+				ConflictsWith: []string{names.AttrName},
+				ValidateFunc:  validation.StringLenBetween(0, 128-id.UniqueIDSuffixLength),
+			},
+			names.AttrPath: {
+				Type:     schema.TypeString,
+				Optional: true,
+				Default:  "/",
+			},
+			names.AttrPrivateKey: {
+				Type:             schema.TypeString,
+				Required:         true,
+				ForceNew:         true,
+				Sensitive:        true,
+				DiffSuppressFunc: suppressNormalizeCertRemoval,
+				StateFunc:        StateTrimSpace,
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+			"upload_date": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+		},
+	}
+}

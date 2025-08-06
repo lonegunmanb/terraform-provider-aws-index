@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketVersioningCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+	expectedBucketOwner := d.Get(names.AttrExpectedBucketOwner).(string)
+
+	versioningConfiguration := expandBucketVersioningConfiguration(d.Get("versioning_configuration").([]any))
+
+	// To support migration from v3 to v4 of the provider, we need to support
+	// versioning resources that represent unversioned S3 buckets as was previously
+	// supported within the aws_s3_bucket resource of the 3.x version of the provider.
+	// Thus, we essentially bring existing bucket versioning into adoption.
+	if string(versioningConfiguration.Status) != bucketVersioningStatusDisabled {
+		input := &s3.PutBucketVersioningInput{
+			Bucket:                  aws.String(bucket),
+			VersioningConfiguration: versioningConfiguration,
+		}
+		if expectedBucketOwner != "" {
+			input.ExpectedBucketOwner = aws.String(expectedBucketOwner)
+		}
+
+		if v, ok := d.GetOk("mfa"); ok {
+			input.MFA = aws.String(v.(string))
+		}
+
+		_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, bucketPropagationTimeout, func() (any, error) {
+			return conn.PutBucketVersioning(ctx, input)
+		}, errCodeNoSuchBucket)
+
+		if tfawserr.ErrMessageContains(err, errCodeInvalidArgument, "VersioningConfiguration is not valid, expected CreateBucketConfiguration") {
+			err = errDirectoryBucket(err)
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating S3 Bucket (%s) Versioning: %s", bucket, err)
+		}
+	} else {
+		log.Printf("[DEBUG] Creating S3 bucket versioning for unversioned bucket: %s", bucket)
+	}
+
+	d.SetId(createResourceID(bucket, expectedBucketOwner))
+
+	// Waiting for the versioning configuration to appear is done in resource Read.
+
+	return append(diags, resourceBucketVersioningRead(ctx, d, meta)...)
+}

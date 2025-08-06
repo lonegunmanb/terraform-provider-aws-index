@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicediscovery
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicediscovery"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicediscovery/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstancePut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceDiscoveryClient(ctx)
+
+	instanceID := d.Get(names.AttrInstanceID).(string)
+	input := &servicediscovery.RegisterInstanceInput{
+		Attributes:       flex.ExpandStringValueMap(d.Get(names.AttrAttributes).(map[string]any)),
+		CreatorRequestId: aws.String(id.UniqueId()),
+		InstanceId:       aws.String(instanceID),
+		ServiceId:        aws.String(d.Get("service_id").(string)),
+	}
+
+	output, err := conn.RegisterInstance(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "registering Service Discovery Instance (%s): %s", instanceID, err)
+	}
+
+	d.SetId(instanceID)
+
+	if output != nil && output.OperationId != nil {
+		if _, err := waitOperationSucceeded(ctx, conn, aws.ToString(output.OperationId)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Service Discovery Instance (%s) create: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceInstanceRead(ctx, d, meta)...)
+}

@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	smithyjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	"github.com/shopspring/decimal"
+)
+func (flattener autoFlattener) interface_(ctx context.Context, vFrom reflect.Value, tTo attr.Type, vTo reflect.Value) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	switch tTo := tTo.(type) {
+	case basetypes.StringTypable:
+		//
+		// JSONStringer -> types.String-ish.
+		//
+		if vFrom.Type().Implements(reflect.TypeFor[smithyjson.JSONStringer]()) {
+			tflog.SubsystemInfo(ctx, subsystemName, "Source implements json.JSONStringer")
+
+			stringValue := types.StringNull()
+
+			if vFrom.IsNil() {
+				tflog.SubsystemTrace(ctx, subsystemName, "Flattening null value")
+			} else {
+				doc := vFrom.Interface().(smithyjson.JSONStringer)
+				b, err := doc.MarshalSmithyDocument()
+				if err != nil {
+					// An error here would be an upstream error in the AWS SDK, because errors in json.Marshal
+					// are caused by conditions such as cyclic structures
+					// See https://pkg.go.dev/encoding/json#Marshal
+					tflog.SubsystemError(ctx, subsystemName, "Marshalling JSON document", map[string]any{
+						logAttrKeyError: err.Error(),
+					})
+					diags.Append(diagFlatteningMarshalSmithyDocument(reflect.TypeOf(doc), err))
+					return diags
+				}
+				stringValue = types.StringValue(string(b))
+			}
+			v, d := tTo.ValueFromString(ctx, stringValue)
+			diags.Append(d...)
+			if diags.HasError() {
+				return diags
+			}
+
+			vTo.Set(reflect.ValueOf(v))
+			return diags
+		}
+
+	case fwtypes.NestedObjectType:
+		//
+		// interface -> types.List(OfObject) or types.Object.
+		//
+		diags.Append(flattener.interfaceToNestedObject(ctx, vFrom, vFrom.IsNil(), tTo, vTo)...)
+		return diags
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "Flattening incompatible types")
+
+	return diags
+}

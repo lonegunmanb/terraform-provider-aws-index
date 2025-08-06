@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandTargetTrackingConfiguration(tfList []any) *awstypes.TargetTrackingConfiguration {
+	if len(tfList) < 1 {
+		return nil
+	}
+
+	tfMap := tfList[0].(map[string]any)
+	apiObject := &awstypes.TargetTrackingConfiguration{}
+
+	apiObject.TargetValue = aws.Float64(tfMap["target_value"].(float64))
+	if v, ok := tfMap["disable_scale_in"]; ok {
+		apiObject.DisableScaleIn = aws.Bool(v.(bool))
+	}
+	if v, ok := tfMap["predefined_metric_specification"]; ok && len(v.([]any)) > 0 {
+		tfMap := v.([]any)[0].(map[string]any)
+		predefinedMetricSpecification := &awstypes.PredefinedMetricSpecification{
+			PredefinedMetricType: awstypes.MetricType(tfMap["predefined_metric_type"].(string)),
+		}
+		if v, ok := tfMap["resource_label"]; ok && v.(string) != "" {
+			predefinedMetricSpecification.ResourceLabel = aws.String(v.(string))
+		}
+		apiObject.PredefinedMetricSpecification = predefinedMetricSpecification
+	}
+	if v, ok := tfMap["customized_metric_specification"]; ok && len(v.([]any)) > 0 {
+		tfMap := v.([]any)[0].(map[string]any)
+		customizedMetricSpecification := &awstypes.CustomizedMetricSpecification{}
+		if v, ok := tfMap["metrics"].(*schema.Set); ok && v.Len() > 0 {
+			customizedMetricSpecification.Metrics = expandTargetTrackingMetricDataQueries(v.List())
+		} else {
+			if v, ok := tfMap["metric_dimension"]; ok {
+				tfList := v.([]any)
+				metricDimensions := make([]awstypes.MetricDimension, len(tfList))
+				for i := range metricDimensions {
+					tfMap := tfList[i].(map[string]any)
+					metricDimensions[i] = awstypes.MetricDimension{
+						Name:  aws.String(tfMap[names.AttrName].(string)),
+						Value: aws.String(tfMap[names.AttrValue].(string)),
+					}
+				}
+				customizedMetricSpecification.Dimensions = metricDimensions
+			}
+			customizedMetricSpecification.MetricName = aws.String(tfMap[names.AttrMetricName].(string))
+			customizedMetricSpecification.Namespace = aws.String(tfMap[names.AttrNamespace].(string))
+			if v, ok := tfMap["period"].(int); ok && v != 0 {
+				customizedMetricSpecification.Period = aws.Int32(int32(v))
+			}
+			customizedMetricSpecification.Statistic = awstypes.MetricStatistic(tfMap["statistic"].(string))
+			if v, ok := tfMap[names.AttrUnit]; ok && len(v.(string)) > 0 {
+				customizedMetricSpecification.Unit = aws.String(v.(string))
+			}
+		}
+		apiObject.CustomizedMetricSpecification = customizedMetricSpecification
+	}
+
+	return apiObject
+}

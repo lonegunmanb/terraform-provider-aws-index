@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAuthorizerCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayV2Client(ctx)
+
+	apiID := d.Get("api_id").(string)
+	outputGA, err := findAPIByID(ctx, conn, apiID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading API Gateway v2 API (%s): %s", apiID, err)
+	}
+
+	authorizerType := awstypes.AuthorizerType(d.Get("authorizer_type").(string))
+	name := d.Get(names.AttrName).(string)
+	protocolType := outputGA.ProtocolType
+	input := &apigatewayv2.CreateAuthorizerInput{
+		ApiId:          aws.String(apiID),
+		AuthorizerType: authorizerType,
+		IdentitySource: flex.ExpandStringValueSet(d.Get("identity_sources").(*schema.Set)),
+		Name:           aws.String(name),
+	}
+
+	if v, ok := d.GetOk("authorizer_credentials_arn"); ok {
+		input.AuthorizerCredentialsArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("authorizer_payload_format_version"); ok {
+		input.AuthorizerPayloadFormatVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOkExists("authorizer_result_ttl_in_seconds"); ok {
+		input.AuthorizerResultTtlInSeconds = aws.Int32(int32(v.(int)))
+	} else if protocolType == awstypes.ProtocolTypeHttp && authorizerType == awstypes.AuthorizerTypeRequest && len(input.IdentitySource) > 0 {
+		// Default in the AWS Console is 300 seconds.
+		// Explicitly set on creation so that we can correctly detect changes to the 0 value.
+		// This value should only be set when IdentitySources have been defined
+		input.AuthorizerResultTtlInSeconds = aws.Int32(300)
+	}
+
+	if v, ok := d.GetOk("authorizer_uri"); ok {
+		input.AuthorizerUri = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("enable_simple_responses"); ok {
+		input.EnableSimpleResponses = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("jwt_configuration"); ok {
+		input.JwtConfiguration = expandJWTConfiguration(v.([]any))
+	}
+
+	outputCA, err := conn.CreateAuthorizer(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway v2 Authorizer (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputCA.AuthorizerId))
+
+	return append(diags, resourceAuthorizerRead(ctx, d, meta)...)
+}

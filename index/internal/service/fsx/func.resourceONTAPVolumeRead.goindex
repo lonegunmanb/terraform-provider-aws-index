@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceONTAPVolumeRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	volume, err := findONTAPVolumeByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] FSx for NetApp ONTAP Volume (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading FSx for NetApp ONTAP Volume (%s): %s", d.Id(), err)
+	}
+
+	ontapConfig := volume.OntapConfiguration
+
+	if ontapConfig.AggregateConfiguration != nil {
+		if err := d.Set("aggregate_configuration", []any{flattenAggregateConfiguration(ontapConfig.AggregateConfiguration)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting aggregate_configuration: %s", err)
+		}
+	} else {
+		d.Set("aggregate_configuration", nil)
+	}
+	d.Set(names.AttrARN, volume.ResourceARN)
+	d.Set("copy_tags_to_backups", ontapConfig.CopyTagsToBackups)
+	d.Set(names.AttrFileSystemID, volume.FileSystemId)
+	d.Set("junction_path", ontapConfig.JunctionPath)
+	d.Set(names.AttrName, volume.Name)
+	d.Set("ontap_volume_type", ontapConfig.OntapVolumeType)
+	d.Set("security_style", ontapConfig.SecurityStyle)
+	d.Set("size_in_bytes", flex.Int64ToStringValue(ontapConfig.SizeInBytes))
+	d.Set("size_in_megabytes", ontapConfig.SizeInMegabytes)
+	if ontapConfig.SnaplockConfiguration != nil {
+		if err := d.Set("snaplock_configuration", []any{flattenSnaplockConfiguration(ontapConfig.SnaplockConfiguration)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting snaplock_configuration: %s", err)
+		}
+	} else {
+		d.Set("snaplock_configuration", nil)
+	}
+	d.Set("snapshot_policy", ontapConfig.SnapshotPolicy)
+	d.Set("storage_efficiency_enabled", ontapConfig.StorageEfficiencyEnabled)
+	d.Set("storage_virtual_machine_id", ontapConfig.StorageVirtualMachineId)
+	if ontapConfig.TieringPolicy != nil {
+		if err := d.Set("tiering_policy", []any{flattenTieringPolicy(ontapConfig.TieringPolicy)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting tiering_policy: %s", err)
+		}
+	} else {
+		d.Set("tiering_policy", nil)
+	}
+	d.Set("uuid", ontapConfig.UUID)
+	d.Set("volume_style", ontapConfig.VolumeStyle)
+	d.Set(names.AttrVolumeType, volume.VolumeType)
+
+	// Volume tags aren't set in the Describe response.
+	// setTagsOut(ctx, volume.Tags)
+
+	return diags
+}

@@ -1,0 +1,104 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/chimesdkmediapipelines
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/chimesdkmediapipelines"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/chimesdkmediapipelines/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenElement(apiElement awstypes.MediaInsightsPipelineConfigurationElement) map[string]any {
+	if apiElement == (awstypes.MediaInsightsPipelineConfigurationElement{}) {
+		return nil
+	}
+	tfMap := map[string]any{}
+	tfMap[names.AttrType] = string(apiElement.Type)
+
+	configuration := map[string]any{}
+
+	switch apiElement.Type {
+	case awstypes.MediaInsightsPipelineConfigurationElementTypeAmazonTranscribeCallAnalyticsProcessor:
+		processorConfiguration := apiElement.AmazonTranscribeCallAnalyticsProcessorConfiguration
+		configuration["call_analytics_stream_categories"] = processorConfiguration.CallAnalyticsStreamCategories
+		configuration["content_identification_type"] = processorConfiguration.ContentIdentificationType
+		configuration["content_redaction_type"] = processorConfiguration.ContentRedactionType
+		configuration["enable_partial_results_stabilization"] = processorConfiguration.EnablePartialResultsStabilization
+		configuration["filter_partial_results"] = processorConfiguration.FilterPartialResults
+		configuration[names.AttrLanguageCode] = processorConfiguration.LanguageCode
+		configuration["language_model_name"] = processorConfiguration.LanguageModelName
+		configuration["partial_results_stability"] = processorConfiguration.PartialResultsStability
+		configuration["pii_entity_types"] = processorConfiguration.PiiEntityTypes
+
+		if processorConfiguration.PostCallAnalyticsSettings != nil {
+			postCallSettings := map[string]any{}
+			postCallSettings["content_redaction_output"] = processorConfiguration.PostCallAnalyticsSettings.ContentRedactionOutput
+			postCallSettings["data_access_role_arn"] = processorConfiguration.PostCallAnalyticsSettings.DataAccessRoleArn
+			postCallSettings["output_encryption_kms_key_id"] = processorConfiguration.PostCallAnalyticsSettings.OutputEncryptionKMSKeyId
+			postCallSettings["output_location"] = processorConfiguration.PostCallAnalyticsSettings.OutputLocation
+			configuration["post_call_analytics_settings"] = []any{postCallSettings}
+		}
+
+		configuration["vocabulary_filter_method"] = processorConfiguration.VocabularyFilterMethod
+		configuration["vocabulary_filter_name"] = processorConfiguration.VocabularyFilterName
+		configuration["vocabulary_name"] = processorConfiguration.VocabularyName
+		tfMap["amazon_transcribe_call_analytics_processor_configuration"] = []any{configuration}
+	case awstypes.MediaInsightsPipelineConfigurationElementTypeAmazonTranscribeProcessor:
+		processorConfiguration := apiElement.AmazonTranscribeProcessorConfiguration
+		configuration["content_identification_type"] = processorConfiguration.ContentIdentificationType
+		configuration["content_redaction_type"] = processorConfiguration.ContentRedactionType
+		configuration["enable_partial_results_stabilization"] = processorConfiguration.EnablePartialResultsStabilization
+		configuration["filter_partial_results"] = processorConfiguration.FilterPartialResults
+		configuration[names.AttrLanguageCode] = processorConfiguration.LanguageCode
+		configuration["language_model_name"] = processorConfiguration.LanguageModelName
+		configuration["partial_results_stability"] = processorConfiguration.PartialResultsStability
+		configuration["pii_entity_types"] = processorConfiguration.PiiEntityTypes
+		configuration["show_speaker_label"] = processorConfiguration.ShowSpeakerLabel
+		configuration["vocabulary_filter_method"] = processorConfiguration.VocabularyFilterMethod
+		configuration["vocabulary_filter_name"] = processorConfiguration.VocabularyFilterName
+		configuration["vocabulary_name"] = processorConfiguration.VocabularyName
+		tfMap["amazon_transcribe_processor_configuration"] = []any{configuration}
+	case awstypes.MediaInsightsPipelineConfigurationElementTypeKinesisDataStreamSink:
+		processorConfiguration := apiElement.KinesisDataStreamSinkConfiguration
+		configuration["insights_target"] = processorConfiguration.InsightsTarget
+		tfMap["kinesis_data_stream_sink_configuration"] = []any{configuration}
+	case awstypes.MediaInsightsPipelineConfigurationElementTypeLambdaFunctionSink:
+		processorConfiguration := apiElement.LambdaFunctionSinkConfiguration
+		configuration["insights_target"] = processorConfiguration.InsightsTarget
+		tfMap["lambda_function_sink_configuration"] = []any{configuration}
+	case awstypes.MediaInsightsPipelineConfigurationElementTypeSnsTopicSink:
+		processorConfiguration := apiElement.SnsTopicSinkConfiguration
+		configuration["insights_target"] = processorConfiguration.InsightsTarget
+		tfMap["sns_topic_sink_configuration"] = []any{configuration}
+	case awstypes.MediaInsightsPipelineConfigurationElementTypeSqsQueueSink:
+		processorConfiguration := apiElement.SqsQueueSinkConfiguration
+		configuration["insights_target"] = processorConfiguration.InsightsTarget
+		tfMap["sqs_queue_sink_configuration"] = []any{configuration}
+	case awstypes.MediaInsightsPipelineConfigurationElementTypeS3RecordingSink:
+		processorConfiguration := apiElement.S3RecordingSinkConfiguration
+		configuration[names.AttrDestination] = processorConfiguration.Destination
+		tfMap["s3_recording_sink_configuration"] = []any{configuration}
+	case awstypes.MediaInsightsPipelineConfigurationElementTypeVoiceAnalyticsProcessor:
+		processorConfiguration := apiElement.VoiceAnalyticsProcessorConfiguration
+		configuration["speaker_search_status"] = processorConfiguration.SpeakerSearchStatus
+		configuration["voice_tone_analysis_status"] = processorConfiguration.VoiceToneAnalysisStatus
+		tfMap["voice_analytics_processor_configuration"] = []any{configuration}
+	}
+	return tfMap
+}

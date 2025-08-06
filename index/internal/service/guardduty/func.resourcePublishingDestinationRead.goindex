@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePublishingDestinationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GuardDutyClient(ctx)
+
+	destinationId, detectorId, err := DecodePublishDestinationID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading GuardDuty Publishing Destination (%s): %s", d.Id(), err)
+	}
+
+	input := &guardduty.DescribePublishingDestinationInput{
+		DetectorId:    aws.String(detectorId),
+		DestinationId: aws.String(destinationId),
+	}
+
+	gdo, err := conn.DescribePublishingDestination(ctx, input)
+	if err != nil {
+		if errs.IsAErrorMessageContains[*awstypes.BadRequestException](err, "The request is rejected because the one or more input parameters have invalid values.") {
+			log.Printf("[WARN] GuardDuty Publishing Destination: %q not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+		return sdkdiag.AppendErrorf(diags, "reading GuardDuty Publishing Destination (%s): %s", d.Id(), err)
+	}
+
+	d.Set("detector_id", detectorId)
+	d.Set("destination_type", gdo.DestinationType)
+	d.Set(names.AttrKMSKeyARN, gdo.DestinationProperties.KmsKeyArn)
+	d.Set(names.AttrDestinationARN, gdo.DestinationProperties.DestinationArn)
+	return diags
+}

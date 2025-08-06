@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sfn
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceAliasRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SFNClient(ctx)
+
+	aliasArn := ""
+	in := &sfn.ListStateMachineAliasesInput{
+		StateMachineArn: aws.String(d.Get("statemachine_arn").(string)),
+	}
+
+	out, err := conn.ListStateMachineAliases(ctx, in)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "listing Step Functions State Machines: %s", err)
+	}
+
+	if n := len(out.StateMachineAliases); n == 0 {
+		return sdkdiag.AppendErrorf(diags, "no Step Functions State Machine Aliases matched")
+	}
+
+	for _, in := range out.StateMachineAliases {
+		if v := aws.ToString(in.StateMachineAliasArn); strings.HasSuffix(v, d.Get(names.AttrName).(string)) {
+			aliasArn = v
+		}
+	}
+
+	if aliasArn == "" {
+		return sdkdiag.AppendErrorf(diags, "no Step Functions State Machine Aliases matched")
+	}
+
+	output, err := findAliasByARN(ctx, conn, aliasArn)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Step Functions State Machine Alias (%s): %s", aliasArn, err)
+	}
+
+	d.SetId(aliasArn)
+	d.Set(names.AttrARN, output.StateMachineAliasArn)
+	d.Set(names.AttrName, output.Name)
+	d.Set(names.AttrDescription, output.Description)
+	d.Set(names.AttrCreationDate, aws.ToTime(output.CreationDate).Format(time.RFC3339))
+
+	if err := d.Set("routing_configuration", flattenAliasRoutingConfiguration(output.RoutingConfiguration)); err != nil {
+		return create.AppendDiagError(diags, names.SFN, create.ErrActionSetting, ResNameAlias, d.Id(), err)
+	}
+
+	return diags
+}

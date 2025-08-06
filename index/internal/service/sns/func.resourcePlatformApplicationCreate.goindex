@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sns
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/attrmap"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePlatformApplicationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SNSClient(ctx)
+
+	attributes, err := platformApplicationAttributeMap.ResourceDataToAPIAttributesCreate(d)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	name := d.Get(names.AttrName).(string)
+	input := &sns.CreatePlatformApplicationInput{
+		Attributes: attributes,
+		Name:       aws.String(name),
+		Platform:   aws.String(d.Get("platform").(string)),
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[*types.InvalidParameterException](ctx, propagationTimeout, func() (any, error) {
+		return conn.CreatePlatformApplication(ctx, input)
+	}, "is not a valid role to allow SNS to write to Cloudwatch Logs")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SNS Platform Application (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*sns.CreatePlatformApplicationOutput).PlatformApplicationArn))
+
+	return append(diags, resourcePlatformApplicationRead(ctx, d, meta)...)
+}

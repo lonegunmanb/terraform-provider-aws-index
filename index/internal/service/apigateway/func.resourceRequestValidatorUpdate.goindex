@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRequestValidatorUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	operations := make([]types.PatchOperation, 0)
+
+	if d.HasChange(names.AttrName) {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/name"),
+			Value: aws.String(d.Get(names.AttrName).(string)),
+		})
+	}
+
+	if d.HasChange("validate_request_body") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/validateRequestBody"),
+			Value: aws.String(strconv.FormatBool(d.Get("validate_request_body").(bool))),
+		})
+	}
+
+	if d.HasChange("validate_request_parameters") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/validateRequestParameters"),
+			Value: aws.String(strconv.FormatBool(d.Get("validate_request_parameters").(bool))),
+		})
+	}
+
+	input := apigateway.UpdateRequestValidatorInput{
+		RequestValidatorId: aws.String(d.Id()),
+		RestApiId:          aws.String(d.Get("rest_api_id").(string)),
+		PatchOperations:    operations,
+	}
+
+	_, err := conn.UpdateRequestValidator(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating API Gateway Request Validator (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceRequestValidatorRead(ctx, d, meta)...)
+}

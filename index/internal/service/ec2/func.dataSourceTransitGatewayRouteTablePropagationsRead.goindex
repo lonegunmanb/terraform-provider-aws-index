@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceTransitGatewayRouteTablePropagationsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	input := &ec2.GetTransitGatewayRouteTablePropagationsInput{}
+
+	if v, ok := d.GetOk("transit_gateway_route_table_id"); ok {
+		input.TransitGatewayRouteTableId = aws.String(v.(string))
+	}
+
+	input.Filters = append(input.Filters, newCustomFilterList(
+		d.Get(names.AttrFilter).(*schema.Set),
+	)...)
+
+	if len(input.Filters) == 0 {
+		input.Filters = nil
+	}
+
+	output, err := findTransitGatewayRouteTablePropagations(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Transit Gateway Route Table Propagations: %s", err)
+	}
+
+	var routeTablePropagationIDs []string
+
+	for _, v := range output {
+		routeTablePropagationIDs = append(routeTablePropagationIDs, aws.ToString(v.TransitGatewayAttachmentId))
+	}
+
+	d.SetId(meta.(*conns.AWSClient).Region(ctx))
+	d.Set(names.AttrIDs, routeTablePropagationIDs)
+
+	return diags
+}

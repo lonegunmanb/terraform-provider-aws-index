@@ -1,0 +1,185 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecs
+import (
+	"context"
+	"fmt"
+	"log"
+	"math"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServiceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ECSClient(ctx)
+	partition := meta.(*conns.AWSClient).Partition(ctx)
+
+	deploymentController := expandDeploymentController(d.Get("deployment_controller").([]any))
+	deploymentMinimumHealthyPercent := d.Get("deployment_minimum_healthy_percent").(int)
+	name := d.Get(names.AttrName).(string)
+	schedulingStrategy := awstypes.SchedulingStrategy(d.Get("scheduling_strategy").(string))
+	input := ecs.CreateServiceInput{
+		CapacityProviderStrategy: expandCapacityProviderStrategyItems(d.Get(names.AttrCapacityProviderStrategy).(*schema.Set)),
+		ClientToken:              aws.String(id.UniqueId()),
+		DeploymentConfiguration:  &awstypes.DeploymentConfiguration{},
+		DeploymentController:     deploymentController,
+		EnableECSManagedTags:     d.Get("enable_ecs_managed_tags").(bool),
+		EnableExecuteCommand:     d.Get("enable_execute_command").(bool),
+		NetworkConfiguration:     expandNetworkConfiguration(d.Get(names.AttrNetworkConfiguration).([]any)),
+		SchedulingStrategy:       schedulingStrategy,
+		ServiceName:              aws.String(name),
+		Tags:                     getTagsIn(ctx),
+		VpcLatticeConfigurations: expandVPCLatticeConfiguration(d.Get("vpc_lattice_configurations").(*schema.Set)),
+	}
+
+	if v, ok := d.GetOk("alarms"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.DeploymentConfiguration.Alarms = expandAlarms(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("availability_zone_rebalancing"); ok {
+		input.AvailabilityZoneRebalancing = awstypes.AvailabilityZoneRebalancing(v.(string))
+	}
+
+	if v, ok := d.GetOk("cluster"); ok {
+		input.Cluster = aws.String(v.(string))
+	}
+
+	if schedulingStrategy == awstypes.SchedulingStrategyDaemon && deploymentMinimumHealthyPercent != 100 {
+		input.DeploymentConfiguration.MinimumHealthyPercent = aws.Int32(int32(deploymentMinimumHealthyPercent))
+	} else if schedulingStrategy == awstypes.SchedulingStrategyReplica {
+		input.DeploymentConfiguration.MaximumPercent = aws.Int32(int32(d.Get("deployment_maximum_percent").(int)))
+		input.DeploymentConfiguration.MinimumHealthyPercent = aws.Int32(int32(deploymentMinimumHealthyPercent))
+		input.DesiredCount = aws.Int32(int32(d.Get("desired_count").(int)))
+	}
+
+	if v, ok := d.GetOk("deployment_circuit_breaker"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.DeploymentConfiguration.DeploymentCircuitBreaker = expandDeploymentCircuitBreaker(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("health_check_grace_period_seconds"); ok {
+		input.HealthCheckGracePeriodSeconds = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("iam_role"); ok {
+		input.Role = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("launch_type"); ok {
+		input.LaunchType = awstypes.LaunchType(v.(string))
+		// When creating a service that uses the EXTERNAL deployment controller,
+		// you can specify only parameters that aren't controlled at the task set level
+		// hence you cannot set LaunchType, not changing the default launch_type from EC2 to empty
+		// string to have backward compatibility
+		if deploymentController != nil && deploymentController.Type == awstypes.DeploymentControllerTypeExternal {
+			input.LaunchType = awstypes.LaunchType("")
+		}
+	}
+
+	if v := expandLoadBalancers(d.Get("load_balancer").(*schema.Set).List()); len(v) > 0 {
+		input.LoadBalancers = v
+	}
+
+	if v, ok := d.GetOk("ordered_placement_strategy"); ok {
+		apiObject, err := expandPlacementStrategy(v.([]any))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.PlacementStrategy = apiObject
+	}
+
+	if v, ok := d.Get("placement_constraints").(*schema.Set); ok {
+		apiObject, err := expandPlacementConstraints(v.List())
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.PlacementConstraints = apiObject
+	}
+
+	if v, ok := d.GetOk("platform_version"); ok {
+		input.PlatformVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrPropagateTags); ok {
+		input.PropagateTags = awstypes.PropagateTags(v.(string))
+	}
+
+	if v, ok := d.GetOk("service_connect_configuration"); ok && len(v.([]any)) > 0 {
+		input.ServiceConnectConfiguration = expandServiceConnectConfiguration(v.([]any))
+	}
+
+	if v := d.Get("service_registries").([]any); len(v) > 0 {
+		input.ServiceRegistries = expandServiceRegistries(v)
+	}
+
+	if v, ok := d.GetOk("task_definition"); ok {
+		input.TaskDefinition = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("volume_configuration"); ok && len(v.([]any)) > 0 {
+		input.VolumeConfigurations = expandServiceVolumeConfigurations(ctx, v.([]any))
+	}
+
+	output, err := retryServiceCreate(ctx, conn, &input)
+
+	// Some partitions (e.g. ISO) may not support tag-on-create.
+	if input.Tags != nil && errs.IsUnsupportedOperationInPartitionError(partition, err) {
+		input.Tags = nil
+
+		output, err = retryServiceCreate(ctx, conn, &input)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating ECS Service (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Service.ServiceArn))
+	d.Set(names.AttrARN, output.Service.ServiceArn)
+
+	fn := waitServiceActive
+	if d.Get("wait_for_steady_state").(bool) {
+		fn = waitServiceStable
+	}
+	if _, err := fn(ctx, conn, d.Id(), d.Get("cluster").(string), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ECS Service (%s) create: %s", d.Id(), err)
+	}
+
+	// For partitions not supporting tag-on-create, attempt tag after create.
+	if tags := getTagsIn(ctx); input.Tags == nil && len(tags) > 0 {
+		err := createTags(ctx, conn, d.Id(), tags)
+
+		// If default tags only, continue. Otherwise, error.
+		if v, ok := d.GetOk(names.AttrTags); (!ok || len(v.(map[string]any)) == 0) && errs.IsUnsupportedOperationInPartitionError(partition, err) {
+			return append(diags, resourceServiceRead(ctx, d, meta)...)
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ECS Service (%s) tags: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceServiceRead(ctx, d, meta)...)
+}

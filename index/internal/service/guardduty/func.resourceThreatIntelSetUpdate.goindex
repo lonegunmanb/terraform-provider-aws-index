@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceThreatIntelSetUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GuardDutyClient(ctx)
+
+	threatIntelSetID, detectorId, err := DecodeThreatIntelSetID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating GuardDuty Threat Intel Set (%s): %s", d.Id(), err)
+	}
+
+	if d.HasChanges("activate", names.AttrLocation, names.AttrName) {
+		input := &guardduty.UpdateThreatIntelSetInput{
+			DetectorId:       aws.String(detectorId),
+			ThreatIntelSetId: aws.String(threatIntelSetID),
+		}
+
+		if d.HasChange(names.AttrName) {
+			input.Name = aws.String(d.Get(names.AttrName).(string))
+		}
+		if d.HasChange(names.AttrLocation) {
+			input.Location = aws.String(d.Get(names.AttrLocation).(string))
+		}
+		if d.HasChange("activate") {
+			input.Activate = aws.Bool(d.Get("activate").(bool))
+		}
+
+		if _, err = conn.UpdateThreatIntelSet(ctx, input); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating GuardDuty Threat Intel Set (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceThreatIntelSetRead(ctx, d, meta)...)
+}

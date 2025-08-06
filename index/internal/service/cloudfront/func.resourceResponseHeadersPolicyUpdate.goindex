@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResponseHeadersPolicyUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	//
+	// https://docs.aws.amazon.com/cloudfront/latest/APIReference/API_UpdateResponseHeadersPolicy.html:
+	// "When you update a response headers policy, the entire policy is replaced. You cannot update some policy fields independent of others."
+	//
+	apiObject := &awstypes.ResponseHeadersPolicyConfig{
+		Name: aws.String(d.Get(names.AttrName).(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrComment); ok {
+		apiObject.Comment = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("cors_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.CorsConfig = expandResponseHeadersPolicyCorsConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("custom_headers_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.CustomHeadersConfig = expandResponseHeadersPolicyCustomHeadersConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("remove_headers_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.RemoveHeadersConfig = expandResponseHeadersPolicyRemoveHeadersConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("security_headers_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.SecurityHeadersConfig = expandResponseHeadersPolicySecurityHeadersConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("server_timing_headers_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.ServerTimingHeadersConfig = expandResponseHeadersPolicyServerTimingHeadersConfig(v.([]any)[0].(map[string]any))
+	}
+
+	input := &cloudfront.UpdateResponseHeadersPolicyInput{
+		Id:                          aws.String(d.Id()),
+		IfMatch:                     aws.String(d.Get("etag").(string)),
+		ResponseHeadersPolicyConfig: apiObject,
+	}
+
+	_, err := conn.UpdateResponseHeadersPolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating CloudFront Response Headers Policy (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceResponseHeadersPolicyRead(ctx, d, meta)...)
+}

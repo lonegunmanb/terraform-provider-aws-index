@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOrganizationCustomPolicyRuleRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConfigServiceClient(ctx)
+
+	configRule, err := findOrganizationCustomPolicyRuleByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] ConfigService Organization Custom Policy Rule (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ConfigService Organization Custom Policy Rule (%s): %s", d.Id(), err)
+	}
+
+	policy, err := findOrganizationCustomRulePolicyByName(ctx, conn, d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ConfigService Organization Custom Policy Rule (%s) policy: %s", d.Id(), err)
+	}
+
+	customPolicyRule := configRule.OrganizationCustomPolicyRuleMetadata
+	d.Set(names.AttrARN, configRule.OrganizationConfigRuleArn)
+	d.Set("debug_log_delivery_accounts", customPolicyRule.DebugLogDeliveryAccounts)
+	d.Set(names.AttrDescription, customPolicyRule.Description)
+	d.Set("excluded_accounts", configRule.ExcludedAccounts)
+	d.Set("input_parameters", customPolicyRule.InputParameters)
+	d.Set("policy_runtime", customPolicyRule.PolicyRuntime)
+	d.Set("policy_text", policy)
+	d.Set("maximum_execution_frequency", customPolicyRule.MaximumExecutionFrequency)
+	d.Set(names.AttrName, configRule.OrganizationConfigRuleName)
+	d.Set("resource_id_scope", customPolicyRule.ResourceIdScope)
+	d.Set("resource_types_scope", customPolicyRule.ResourceTypesScope)
+	d.Set("tag_key_scope", customPolicyRule.TagKeyScope)
+	d.Set("tag_value_scope", customPolicyRule.TagValueScope)
+	d.Set("trigger_types", customPolicyRule.OrganizationConfigRuleTriggerTypes)
+
+	return diags
+}

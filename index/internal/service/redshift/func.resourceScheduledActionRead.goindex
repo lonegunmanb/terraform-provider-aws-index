@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceScheduledActionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	scheduledAction, err := findScheduledActionByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Redshift Scheduled Action (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Redshift Scheduled Action (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrDescription, scheduledAction.ScheduledActionDescription)
+	if scheduledAction.State == awstypes.ScheduledActionStateActive {
+		d.Set("enable", true)
+	} else {
+		d.Set("enable", false)
+	}
+	if scheduledAction.EndTime != nil {
+		d.Set("end_time", aws.ToTime(scheduledAction.EndTime).Format(time.RFC3339))
+	} else {
+		d.Set("end_time", nil)
+	}
+	d.Set("iam_role", scheduledAction.IamRole)
+	d.Set(names.AttrName, scheduledAction.ScheduledActionName)
+	d.Set(names.AttrSchedule, scheduledAction.Schedule)
+	if scheduledAction.StartTime != nil {
+		d.Set(names.AttrStartTime, aws.ToTime(scheduledAction.StartTime).Format(time.RFC3339))
+	} else {
+		d.Set(names.AttrStartTime, nil)
+	}
+
+	if scheduledAction.TargetAction != nil {
+		if err := d.Set("target_action", []any{flattenScheduledActionType(scheduledAction.TargetAction)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting target_action: %s", err)
+		}
+	} else {
+		d.Set("target_action", nil)
+	}
+
+	return diags
+}

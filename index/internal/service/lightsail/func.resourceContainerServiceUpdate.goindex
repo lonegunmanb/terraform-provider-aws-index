@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"log"
+	"reflect"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceContainerServiceUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		publicDomainNames, _ := containerServicePublicDomainNamesChanged(d)
+
+		input := &lightsail.UpdateContainerServiceInput{
+			ServiceName:       aws.String(d.Id()),
+			IsDisabled:        aws.Bool(d.Get("is_disabled").(bool)),
+			Power:             types.ContainerServicePowerName(d.Get("power").(string)),
+			PublicDomainNames: publicDomainNames,
+			Scale:             aws.Int32(int32(d.Get("scale").(int))),
+		}
+
+		_, err := conn.UpdateContainerService(ctx, input)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Lightsail Container Service (%s): %s", d.Id(), err)
+		}
+
+		if d.HasChange("is_disabled") && d.Get("is_disabled").(bool) {
+			if err := waitContainerServiceDisabled(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Lightsail Container Service (%s) update: %s", d.Id(), err)
+			}
+		} else {
+			if err := waitContainerServiceUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Lightsail Container Service (%s) update: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceContainerServiceRead(ctx, d, meta)...)
+}

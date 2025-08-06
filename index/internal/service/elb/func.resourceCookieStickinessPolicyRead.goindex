@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCookieStickinessPolicyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBClient(ctx)
+
+	lbName, lbPort, policyName, err := lbCookieStickinessPolicyParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	policy, err := findLoadBalancerListenerPolicyByThreePartKey(ctx, conn, lbName, lbPort, policyName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] ELB Classic LB Cookie Stickiness Policy (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ELB Classic LB Cookie Stickiness Policy (%s): %s", d.Id(), err)
+	}
+
+	if len(policy.PolicyAttributeDescriptions) != 1 || aws.ToString(policy.PolicyAttributeDescriptions[0].AttributeName) != "CookieExpirationPeriod" {
+		return sdkdiag.AppendErrorf(diags, "cookie expiration period not found")
+	}
+
+	d.Set("cookie_expiration_period", flex.StringToIntValue(policy.PolicyAttributeDescriptions[0].AttributeValue))
+	d.Set("lb_port", lbPort)
+	d.Set("load_balancer", lbName)
+	d.Set(names.AttrName, policyName)
+
+	return diags
+}

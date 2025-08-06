@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/storagegateway
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/storagegateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStorediSCSIVolumeRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).StorageGatewayClient(ctx)
+
+	volume, err := findStorediSCSIVolumeByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Storage Gateway Stored iSCSI Volume (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Storage Gateway Stored iSCSI Volume (%s): %s", d.Id(), err)
+	}
+
+	arn := aws.ToString(volume.VolumeARN)
+	d.Set(names.AttrARN, arn)
+	d.Set("disk_id", volume.VolumeDiskId)
+	d.Set("kms_encrypted", volume.KMSKey != nil)
+	d.Set(names.AttrKMSKey, volume.KMSKey)
+	d.Set("preserve_existing_data", volume.PreservedExistingData)
+	d.Set(names.AttrSnapshotID, volume.SourceSnapshotId)
+	d.Set("volume_attachment_status", volume.VolumeAttachmentStatus)
+	d.Set("volume_id", volume.VolumeId)
+	d.Set("volume_size_in_bytes", volume.VolumeSizeInBytes)
+	d.Set("volume_status", volume.VolumeStatus)
+	d.Set(names.AttrVolumeType, volume.VolumeType)
+
+	if attr := volume.VolumeiSCSIAttributes; attr != nil {
+		d.Set("chap_enabled", attr.ChapEnabled)
+		d.Set("lun_number", attr.LunNumber)
+		d.Set(names.AttrNetworkInterfaceID, attr.NetworkInterfaceId)
+		d.Set("network_interface_port", attr.NetworkInterfacePort)
+
+		targetARN := aws.ToString(attr.TargetARN)
+		d.Set(names.AttrTargetARN, targetARN)
+
+		gatewayARN, targetName, err := parseVolumeGatewayARNAndTargetNameFromARN(targetARN)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		d.Set("gateway_arn", gatewayARN)
+		d.Set("target_name", targetName)
+	}
+
+	return diags
+}

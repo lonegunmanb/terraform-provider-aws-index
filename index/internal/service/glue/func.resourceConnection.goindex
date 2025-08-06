@@ -1,0 +1,114 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConnection() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceConnectionCreate,
+		ReadWithoutTimeout:   resourceConnectionRead,
+		UpdateWithoutTimeout: resourceConnectionUpdate,
+		DeleteWithoutTimeout: resourceConnectionDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"athena_properties": {
+				Type:      schema.TypeMap,
+				Optional:  true,
+				Sensitive: true,
+				Elem:      &schema.Schema{Type: schema.TypeString},
+			},
+			names.AttrCatalogID: {
+				Type:     schema.TypeString,
+				ForceNew: true,
+				Optional: true,
+				Computed: true,
+			},
+			"connection_properties": {
+				Type:             schema.TypeMap,
+				Optional:         true,
+				Sensitive:        true,
+				ValidateDiagFunc: verify.MapKeysAre(validation.ToDiagFunc(validation.StringInSlice(connectionPropertyKey_Values(), false))),
+				Elem:             &schema.Schema{Type: schema.TypeString},
+			},
+			"connection_type": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      awstypes.ConnectionTypeJdbc,
+				ValidateFunc: validation.StringInSlice(connectionType_Values(), false),
+			},
+			names.AttrDescription: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: validation.StringLenBetween(0, 2048),
+			},
+			"match_criteria": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 10,
+				Elem: &schema.Schema{
+					Type:         schema.TypeString,
+					ValidateFunc: validation.StringLenBetween(1, 255),
+				},
+			},
+			names.AttrName: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringLenBetween(1, 255),
+			},
+			"physical_connection_requirements": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrAvailabilityZone: {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"security_group_id_list": {
+							Type:     schema.TypeSet,
+							Optional: true,
+							MaxItems: 50,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						names.AttrSubnetID: {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+					},
+				},
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+		},
+	}
+}

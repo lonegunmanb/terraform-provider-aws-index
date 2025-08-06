@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/waf
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/waf"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/waf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceXSSMatchSetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	output, err := newRetryer(conn).RetryWithToken(ctx, func(token *string) (any, error) {
+		input := &waf.CreateXssMatchSetInput{
+			ChangeToken: token,
+			Name:        aws.String(name),
+		}
+
+		return conn.CreateXssMatchSet(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating WAF XSS Match Set (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.(*waf.CreateXssMatchSetOutput).XssMatchSet.XssMatchSetId))
+
+	if v, ok := d.GetOk("xss_match_tuples"); ok && v.(*schema.Set).Len() > 0 {
+		if err := updateXSSMatchSet(ctx, conn, d.Id(), nil, v.(*schema.Set).List()); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceXSSMatchSetRead(ctx, d, meta)...)
+}

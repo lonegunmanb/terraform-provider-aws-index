@@ -1,0 +1,138 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mwaa
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mwaa"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/mwaa/types"
+	gversion "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEnvironmentUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).MWAAClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &mwaa.UpdateEnvironmentInput{
+			Name: aws.String(d.Get(names.AttrName).(string)),
+		}
+
+		if d.HasChange("airflow_configuration_options") {
+			options, ok := d.GetOk("airflow_configuration_options")
+			if !ok {
+				options = map[string]any{}
+			}
+
+			input.AirflowConfigurationOptions = flex.ExpandStringValueMap(options.(map[string]any))
+		}
+
+		if d.HasChange("airflow_version") {
+			input.AirflowVersion = aws.String(d.Get("airflow_version").(string))
+		}
+
+		if d.HasChange("dag_s3_path") {
+			input.DagS3Path = aws.String(d.Get("dag_s3_path").(string))
+		}
+
+		if d.HasChange("environment_class") {
+			input.EnvironmentClass = aws.String(d.Get("environment_class").(string))
+		}
+
+		if d.HasChange(names.AttrExecutionRoleARN) {
+			input.ExecutionRoleArn = aws.String(d.Get(names.AttrExecutionRoleARN).(string))
+		}
+
+		if d.HasChange(names.AttrLoggingConfiguration) {
+			input.LoggingConfiguration = expandEnvironmentLoggingConfiguration(d.Get(names.AttrLoggingConfiguration).([]any))
+		}
+
+		if d.HasChange("max_workers") {
+			input.MaxWorkers = aws.Int32(int32(d.Get("max_workers").(int)))
+		}
+
+		if d.HasChange("min_workers") {
+			input.MinWorkers = aws.Int32(int32(d.Get("min_workers").(int)))
+		}
+
+		if d.HasChange("max_webservers") {
+			input.MaxWebservers = aws.Int32(int32(d.Get("max_webservers").(int)))
+		}
+
+		if d.HasChange("min_webservers") {
+			input.MinWebservers = aws.Int32(int32(d.Get("min_webservers").(int)))
+		}
+
+		if d.HasChange(names.AttrNetworkConfiguration) {
+			input.NetworkConfiguration = expandEnvironmentNetworkConfigurationUpdate(d.Get(names.AttrNetworkConfiguration).([]any))
+		}
+
+		if d.HasChange("plugins_s3_object_version") {
+			input.PluginsS3ObjectVersion = aws.String(d.Get("plugins_s3_object_version").(string))
+		}
+
+		if d.HasChange("plugins_s3_path") {
+			input.PluginsS3Path = aws.String(d.Get("plugins_s3_path").(string))
+		}
+
+		if d.HasChange("requirements_s3_object_version") {
+			input.RequirementsS3ObjectVersion = aws.String(d.Get("requirements_s3_object_version").(string))
+		}
+
+		if d.HasChange("requirements_s3_path") {
+			input.RequirementsS3Path = aws.String(d.Get("requirements_s3_path").(string))
+		}
+
+		if d.HasChange("schedulers") {
+			input.Schedulers = aws.Int32(int32(d.Get("schedulers").(int)))
+		}
+
+		if d.HasChange("source_bucket_arn") {
+			input.SourceBucketArn = aws.String(d.Get("source_bucket_arn").(string))
+		}
+
+		if d.HasChange("startup_script_s3_object_version") {
+			input.StartupScriptS3ObjectVersion = aws.String(d.Get("startup_script_s3_object_version").(string))
+		}
+
+		if d.HasChange("startup_script_s3_path") {
+			input.StartupScriptS3Path = aws.String(d.Get("startup_script_s3_path").(string))
+		}
+
+		if d.HasChange("webserver_access_mode") {
+			input.WebserverAccessMode = awstypes.WebserverAccessMode(d.Get("webserver_access_mode").(string))
+		}
+
+		if d.HasChange("weekly_maintenance_window_start") {
+			input.WeeklyMaintenanceWindowStart = aws.String(d.Get("weekly_maintenance_window_start").(string))
+		}
+
+		_, err := conn.UpdateEnvironment(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating MWAA Environment (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitEnvironmentUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for MWAA Environment (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceEnvironmentRead(ctx, d, meta)...)
+}

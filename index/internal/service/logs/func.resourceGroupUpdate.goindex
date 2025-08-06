@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/logs
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LogsClient(ctx)
+
+	if d.HasChange("retention_in_days") {
+		if v, ok := d.GetOk("retention_in_days"); ok {
+			input := &cloudwatchlogs.PutRetentionPolicyInput{
+				LogGroupName:    aws.String(d.Id()),
+				RetentionInDays: aws.Int32(int32(v.(int))),
+			}
+
+			_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func() (any, error) {
+				return conn.PutRetentionPolicy(ctx, input)
+			}, "AccessDeniedException", "no identity-based policy allows the logs:PutRetentionPolicy action")
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "setting CloudWatch Logs Log Group (%s) retention policy: %s", d.Id(), err)
+			}
+		} else {
+			input := &cloudwatchlogs.DeleteRetentionPolicyInput{
+				LogGroupName: aws.String(d.Id()),
+			}
+
+			_, err := conn.DeleteRetentionPolicy(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "deleting CloudWatch Logs Log Group (%s) retention policy: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange(names.AttrKMSKeyID) {
+		if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+			input := &cloudwatchlogs.AssociateKmsKeyInput{
+				KmsKeyId:     aws.String(v.(string)),
+				LogGroupName: aws.String(d.Id()),
+			}
+
+			_, err := conn.AssociateKmsKey(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "associating CloudWatch Logs Log Group (%s) KMS key: %s", d.Id(), err)
+			}
+		} else {
+			input := &cloudwatchlogs.DisassociateKmsKeyInput{
+				LogGroupName: aws.String(d.Id()),
+			}
+
+			_, err := conn.DisassociateKmsKey(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "disassociating CloudWatch Logs Log Group (%s) KMS key: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceGroupRead(ctx, d, meta)...)
+}

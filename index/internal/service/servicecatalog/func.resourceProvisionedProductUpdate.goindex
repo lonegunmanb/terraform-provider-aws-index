@@ -1,0 +1,100 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProvisionedProductUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	input := &servicecatalog.UpdateProvisionedProductInput{
+		UpdateToken:          aws.String(id.UniqueId()),
+		ProvisionedProductId: aws.String(d.Id()),
+	}
+
+	if v, ok := d.GetOk("accept_language"); ok {
+		input.AcceptLanguage = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("path_id"); ok {
+		input.PathId = aws.String(v.(string))
+	} else if v, ok := d.GetOk("path_name"); ok {
+		input.PathName = aws.String(v.(string))
+	}
+
+	// check product_name first. product_id is optional/computed and will always be
+	// set by the time update is called
+	if v, ok := d.GetOk("product_name"); ok {
+		input.ProductName = aws.String(v.(string))
+	} else if v, ok := d.GetOk("product_id"); ok {
+		input.ProductId = aws.String(v.(string))
+	}
+
+	// check provisioning_artifact_name first. provisioning_artrifact_id is optional/computed
+	// and will always be set by the time update is called
+	// Reference: https://github.com/hashicorp/terraform-provider-aws/issues/26271
+	if v, ok := d.GetOk("provisioning_artifact_name"); ok {
+		input.ProvisioningArtifactName = aws.String(v.(string))
+	} else if v, ok := d.GetOk("provisioning_artifact_id"); ok {
+		input.ProvisioningArtifactId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("provisioning_parameters"); ok && len(v.([]any)) > 0 {
+		input.ProvisioningParameters = expandUpdateProvisioningParameters(v.([]any))
+	}
+
+	if v, ok := d.GetOk("stack_set_provisioning_preferences"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.ProvisioningPreferences = expandUpdateProvisioningPreferences(v.([]any)[0].(map[string]any))
+	}
+
+	// Send tags each time the resource is updated. This is necessary to automatically apply tags
+	// to provisioned AWS objects during update if the tags don't change.
+	input.Tags = getTagsIn(ctx)
+
+	err := retry.RetryContext(ctx, d.Timeout(schema.TimeoutUpdate), func() *retry.RetryError {
+		_, err := conn.UpdateProvisionedProduct(ctx, input)
+
+		if errs.IsAErrorMessageContains[*awstypes.InvalidParametersException](err, "profile does not exist") {
+			return retry.RetryableError(err)
+		}
+
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		_, err = conn.UpdateProvisionedProduct(ctx, input)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Service Catalog Provisioned Product (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitProvisionedProductReady(ctx, conn, d.Get("accept_language").(string), d.Id(), "", d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Service Catalog Provisioned Product (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceProvisionedProductRead(ctx, d, meta)...)
+}

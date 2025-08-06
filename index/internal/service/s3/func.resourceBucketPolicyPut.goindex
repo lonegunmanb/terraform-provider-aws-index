@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketPolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	policy, err := structure.NormalizeJsonString(d.Get(names.AttrPolicy).(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+	input := &s3.PutBucketPolicyInput{
+		Bucket: aws.String(bucket),
+		Policy: aws.String(policy),
+	}
+
+	_, err = tfresource.RetryWhenAWSErrCodeEquals(ctx, bucketPropagationTimeout, func() (any, error) {
+		return conn.PutBucketPolicy(ctx, input)
+	}, errCodeMalformedPolicy, errCodeNoSuchBucket)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting S3 Bucket (%s) Policy: %s", bucket, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(bucket)
+
+		_, err = tfresource.RetryWhenNotFound(ctx, bucketPropagationTimeout, func() (any, error) {
+			return findBucketPolicy(ctx, conn, bucket)
+		})
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for S3 Bucket Policy (%s) create: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceBucketPolicyRead(ctx, d, meta)...)
+}

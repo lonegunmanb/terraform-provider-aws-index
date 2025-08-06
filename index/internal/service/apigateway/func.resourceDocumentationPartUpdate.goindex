@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDocumentationPartUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	apiID, documentationPartID, err := documentationPartParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := apigateway.UpdateDocumentationPartInput{
+		DocumentationPartId: aws.String(documentationPartID),
+		RestApiId:           aws.String(apiID),
+	}
+	operations := make([]types.PatchOperation, 0)
+
+	if d.HasChange(names.AttrProperties) {
+		properties := d.Get(names.AttrProperties).(string)
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/properties"),
+			Value: aws.String(properties),
+		})
+	}
+
+	input.PatchOperations = operations
+
+	_, err = conn.UpdateDocumentationPart(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating API Gateway Documentation Part (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDocumentationPartRead(ctx, d, meta)...)
+}

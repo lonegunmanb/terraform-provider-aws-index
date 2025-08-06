@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepVirtualMFADevice(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.IAMClient(ctx)
+	var sweepResources []sweep.Sweepable
+
+	input := &iam.ListVirtualMFADevicesInput{}
+
+	pages := iam.NewListVirtualMFADevicesPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, device := range page.VirtualMFADevices {
+			serialNum := aws.ToString(device.SerialNumber)
+
+			if strings.Contains(serialNum, "root-account-mfa-device") {
+				log.Printf("[INFO] Skipping IAM Root Virtual MFA Device: %s", serialNum)
+				continue
+			}
+
+			r := resourceVirtualMFADevice()
+			d := r.Data(nil)
+			d.SetId(serialNum)
+
+			if user := device.User; user != nil {
+				if userName := aws.ToString(user.UserName); userName != "" {
+					d.Set(names.AttrUserName, userName)
+				}
+			}
+
+			sweepResources = append(sweepResources, sdk.NewSweepResource(r, d, client))
+		}
+	}
+
+	return sweepResources, nil
+}

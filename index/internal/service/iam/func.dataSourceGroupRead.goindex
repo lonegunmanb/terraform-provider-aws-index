@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	groupName := d.Get(names.AttrGroupName).(string)
+
+	req := &iam.GetGroupInput{
+		GroupName: aws.String(groupName),
+	}
+
+	var users []awstypes.User
+	var group *awstypes.Group
+
+	pages := iam.NewGetGroupPaginator(conn, req)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "getting group: %s", err)
+		}
+		if group == nil {
+			group = page.Group
+		}
+
+		users = append(users, page.Users...)
+	}
+
+	if group == nil {
+		return sdkdiag.AppendErrorf(diags, "no IAM group found")
+	}
+
+	d.SetId(aws.ToString(group.GroupId))
+	d.Set(names.AttrARN, group.Arn)
+	d.Set(names.AttrPath, group.Path)
+	d.Set("group_id", group.GroupId)
+	if err := d.Set("users", dataSourceGroupUsersRead(users)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting users: %s", err)
+	}
+
+	return diags
+}

@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMLTransformCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	input := &glue.CreateMLTransformInput{
+		Name:              aws.String(d.Get(names.AttrName).(string)),
+		Role:              aws.String(d.Get(names.AttrRoleARN).(string)),
+		Tags:              getTagsIn(ctx),
+		Timeout:           aws.Int32(int32(d.Get(names.AttrTimeout).(int))),
+		InputRecordTables: expandMLTransformInputRecordTables(d.Get("input_record_tables").([]any)),
+		Parameters:        expandMLTransformParameters(d.Get(names.AttrParameters).([]any)),
+	}
+
+	if v, ok := d.GetOk(names.AttrMaxCapacity); ok {
+		input.MaxCapacity = aws.Float64(v.(float64))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("glue_version"); ok {
+		input.GlueVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("max_retries"); ok {
+		input.MaxRetries = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("worker_type"); ok {
+		input.WorkerType = awstypes.WorkerType(v.(string))
+	}
+
+	if v, ok := d.GetOk("number_of_workers"); ok {
+		input.NumberOfWorkers = aws.Int32(int32(v.(int)))
+	}
+
+	log.Printf("[DEBUG] Creating Glue ML Transform: %+v", input)
+
+	outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidInputException](ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateMLTransform(ctx, input)
+	}, "Unable to assume role")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Glue ML Transform: %s", err)
+	}
+
+	output := outputRaw.(*glue.CreateMLTransformOutput)
+
+	d.SetId(aws.ToString(output.TransformId))
+
+	return append(diags, resourceMLTransformRead(ctx, d, meta)...)
+}

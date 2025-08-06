@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceKinesisStreamingDestinationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), kinesisStreamingDestinationResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	tableName, streamARN := parts[0], parts[1]
+	_, err = findKinesisDataStreamDestinationByTwoPartKey(ctx, conn, streamARN, tableName)
+
+	if tfresource.NotFound(err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DynamoDB Kinesis Streaming Destination (%s): %s", d.Id(), err)
+	}
+
+	log.Printf("[DEBUG] Deleting DynamoDB Kinesis Streaming Destination: %s", d.Id())
+	input := dynamodb.DisableKinesisStreamingDestinationInput{
+		TableName: aws.String(tableName),
+		StreamArn: aws.String(streamARN),
+	}
+	_, err = conn.DisableKinesisStreamingDestination(ctx, &input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "disabling DynamoDB Kinesis Streaming Destination (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitKinesisStreamingDestinationDisabled(ctx, conn, streamARN, tableName); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DynamoDB Kinesis Streaming Destination (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

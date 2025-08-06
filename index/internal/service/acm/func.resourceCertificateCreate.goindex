@@ -1,0 +1,112 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acm
+import (
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/acm"
+	"github.com/aws/aws-sdk-go-v2/service/acm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	sdktypes "github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/duration"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCertificateCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ACMClient(ctx)
+
+	if _, ok := d.GetOk(names.AttrDomainName); ok {
+		_, v1 := d.GetOk("certificate_authority_arn")
+		_, v2 := d.GetOk("validation_method")
+
+		if !v1 && !v2 {
+			return sdkdiag.AppendErrorf(diags, "`certificate_authority_arn` or `validation_method` must be set when creating an ACM certificate")
+		}
+
+		domainName := d.Get(names.AttrDomainName).(string)
+		input := acm.RequestCertificateInput{
+			DomainName:       aws.String(domainName),
+			IdempotencyToken: aws.String(id.PrefixedUniqueId("tf")), // 32 character limit
+			Tags:             getTagsIn(ctx),
+		}
+
+		if v, ok := d.GetOk("certificate_authority_arn"); ok {
+			input.CertificateAuthorityArn = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("key_algorithm"); ok {
+			input.KeyAlgorithm = types.KeyAlgorithm(v.(string))
+		}
+
+		if v, ok := d.GetOk("options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.Options = expandCertificateOptions(v.([]any)[0].(map[string]any))
+		}
+
+		if v, ok := d.GetOk("subject_alternative_names"); ok && v.(*schema.Set).Len() > 0 {
+			input.SubjectAlternativeNames = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("validation_method"); ok {
+			input.ValidationMethod = types.ValidationMethod(v.(string))
+		}
+
+		if v, ok := d.GetOk("validation_option"); ok && v.(*schema.Set).Len() > 0 {
+			input.DomainValidationOptions = expandDomainValidationOptions(v.(*schema.Set).List())
+		}
+
+		output, err := conn.RequestCertificate(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "requesting ACM Certificate (%s): %s", domainName, err)
+		}
+
+		d.SetId(aws.ToString(output.CertificateArn))
+	} else {
+		input := acm.ImportCertificateInput{
+			Certificate: []byte(d.Get("certificate_body").(string)),
+			PrivateKey:  []byte(d.Get(names.AttrPrivateKey).(string)),
+			Tags:        getTagsIn(ctx),
+		}
+
+		if v, ok := d.GetOk(names.AttrCertificateChain); ok {
+			input.CertificateChain = []byte(v.(string))
+		}
+
+		output, err := conn.ImportCertificate(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "importing ACM Certificate: %s", err)
+		}
+
+		d.SetId(aws.ToString(output.CertificateArn))
+	}
+
+	if _, err := waitCertificateDomainValidationsAvailable(ctx, conn, d.Id(), certificateDNSValidationAssignmentTimeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ACM Certificate (%s) to be issued: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceCertificateRead(ctx, d, meta)...)
+}

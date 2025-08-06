@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMemberCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GuardDutyClient(ctx)
+	accountID := d.Get(names.AttrAccountID).(string)
+	detectorID := d.Get("detector_id").(string)
+
+	input := guardduty.CreateMembersInput{
+		AccountDetails: []awstypes.AccountDetail{{
+			AccountId: aws.String(accountID),
+			Email:     aws.String(d.Get(names.AttrEmail).(string)),
+		}},
+		DetectorId: aws.String(detectorID),
+	}
+
+	log.Printf("[DEBUG] Creating GuardDuty Member: %+v", input)
+	_, err := conn.CreateMembers(ctx, &input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "Creating GuardDuty Member failed: %s", err)
+	}
+
+	d.SetId(fmt.Sprintf("%s:%s", detectorID, accountID))
+
+	if !d.Get("invite").(bool) {
+		return append(diags, resourceMemberRead(ctx, d, meta)...)
+	}
+
+	imi := &guardduty.InviteMembersInput{
+		DetectorId:               aws.String(detectorID),
+		AccountIds:               []string{accountID},
+		DisableEmailNotification: aws.Bool(d.Get("disable_email_notification").(bool)),
+		Message:                  aws.String(d.Get("invitation_message").(string)),
+	}
+
+	log.Printf("[INFO] Inviting GuardDuty Member: %+v", input)
+	_, err = conn.InviteMembers(ctx, imi)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "inviting GuardDuty Member %q: %s", d.Id(), err)
+	}
+
+	err = inviteMemberWaiter(ctx, accountID, detectorID, d.Timeout(schema.TimeoutUpdate), conn)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for GuardDuty Member %q invite: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceMemberRead(ctx, d, meta)...)
+}

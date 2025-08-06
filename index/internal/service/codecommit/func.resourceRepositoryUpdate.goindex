@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codecommit
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codecommit"
+	"github.com/aws/aws-sdk-go-v2/service/codecommit/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRepositoryUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeCommitClient(ctx)
+
+	if d.HasChange(names.AttrRepositoryName) {
+		newName := d.Get(names.AttrRepositoryName).(string)
+		input := &codecommit.UpdateRepositoryNameInput{
+			NewName: aws.String(newName),
+			OldName: aws.String(d.Id()),
+		}
+
+		_, err := conn.UpdateRepositoryName(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CodeCommit Repository (%s) name: %s", d.Id(), err)
+		}
+
+		d.SetId(newName)
+	}
+
+	if d.HasChange("default_branch") {
+		if err := updateRepositoryDefaultBranch(ctx, conn, d.Id(), d.Get("default_branch").(string)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange(names.AttrDescription) {
+		input := &codecommit.UpdateRepositoryDescriptionInput{
+			RepositoryDescription: aws.String(d.Get(names.AttrDescription).(string)),
+			RepositoryName:        aws.String(d.Id()),
+		}
+
+		_, err := conn.UpdateRepositoryDescription(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CodeCommit Repository (%s) description: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange(names.AttrKMSKeyID) {
+		input := &codecommit.UpdateRepositoryEncryptionKeyInput{
+			KmsKeyId:       aws.String((d.Get(names.AttrKMSKeyID).(string))),
+			RepositoryName: aws.String(d.Id()),
+		}
+
+		_, err := conn.UpdateRepositoryEncryptionKey(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CodeCommit Repository (%s) encryption key: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceRepositoryRead(ctx, d, meta)...)
+}

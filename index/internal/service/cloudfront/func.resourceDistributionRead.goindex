@@ -1,0 +1,116 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDistributionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	output, err := findDistributionByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudFront Distribution (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudFront Distribution (%s): %s", d.Id(), err)
+	}
+
+	distributionConfig := output.Distribution.DistributionConfig
+	if distributionConfig.Aliases != nil {
+		if err := d.Set("aliases", flattenAliases(distributionConfig.Aliases)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting aliases: %s", err)
+		}
+	}
+	d.Set(names.AttrARN, output.Distribution.ARN)
+	d.Set("caller_reference", distributionConfig.CallerReference)
+	if aws.ToString(distributionConfig.Comment) != "" {
+		d.Set(names.AttrComment, distributionConfig.Comment)
+	}
+	// Not having this set for staging distributions causes IllegalUpdate errors when making updates of any kind.
+	// If this absolutely must not be optional/computed, the policy ID will need to be retrieved and set for each
+	// API call for staging distributions.
+	d.Set("continuous_deployment_policy_id", distributionConfig.ContinuousDeploymentPolicyId)
+	if distributionConfig.CustomErrorResponses != nil {
+		if err := d.Set("custom_error_response", flattenCustomErrorResponses(distributionConfig.CustomErrorResponses)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting custom_error_response: %s", err)
+		}
+	}
+	if err := d.Set("default_cache_behavior", []any{flattenDefaultCacheBehavior(distributionConfig.DefaultCacheBehavior)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting default_cache_behavior: %s", err)
+	}
+	d.Set("default_root_object", distributionConfig.DefaultRootObject)
+	d.Set(names.AttrDomainName, output.Distribution.DomainName)
+	d.Set(names.AttrEnabled, distributionConfig.Enabled)
+	d.Set("etag", output.ETag)
+	d.Set("http_version", distributionConfig.HttpVersion)
+	d.Set(names.AttrHostedZoneID, meta.(*conns.AWSClient).CloudFrontDistributionHostedZoneID(ctx))
+	d.Set("in_progress_validation_batches", output.Distribution.InProgressInvalidationBatches)
+	d.Set("is_ipv6_enabled", distributionConfig.IsIPV6Enabled)
+	d.Set("last_modified_time", aws.String(output.Distribution.LastModifiedTime.String()))
+	if distributionConfig.Logging != nil && aws.ToBool(distributionConfig.Logging.Enabled) {
+		if err := d.Set("logging_config", flattenLoggingConfig(distributionConfig.Logging)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting logging_config: %s", err)
+		}
+	} else {
+		d.Set("logging_config", []any{})
+	}
+	if distributionConfig.CacheBehaviors != nil {
+		if err := d.Set("ordered_cache_behavior", flattenCacheBehaviors(distributionConfig.CacheBehaviors)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ordered_cache_behavior: %s", err)
+		}
+	}
+	if aws.ToInt32(distributionConfig.Origins.Quantity) > 0 {
+		if err := d.Set("origin", flattenOrigins(distributionConfig.Origins)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting origin: %s", err)
+		}
+	}
+	if aws.ToInt32(distributionConfig.OriginGroups.Quantity) > 0 {
+		if err := d.Set("origin_group", flattenOriginGroups(distributionConfig.OriginGroups)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting origin_group: %s", err)
+		}
+	}
+	d.Set("price_class", distributionConfig.PriceClass)
+	if distributionConfig.Restrictions != nil {
+		if err := d.Set("restrictions", flattenRestrictions(distributionConfig.Restrictions)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting restrictions: %s", err)
+		}
+	}
+	d.Set("staging", distributionConfig.Staging)
+	d.Set(names.AttrStatus, output.Distribution.Status)
+	if err := d.Set("trusted_key_groups", flattenActiveTrustedKeyGroups(output.Distribution.ActiveTrustedKeyGroups)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting trusted_key_groups: %s", err)
+	}
+	if err := d.Set("trusted_signers", flattenActiveTrustedSigners(output.Distribution.ActiveTrustedSigners)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting trusted_signers: %s", err)
+	}
+	if err := d.Set("viewer_certificate", flattenViewerCertificate(distributionConfig.ViewerCertificate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting viewer_certificate: %s", err)
+	}
+	d.Set("web_acl_id", distributionConfig.WebACLId)
+
+	return diags
+}

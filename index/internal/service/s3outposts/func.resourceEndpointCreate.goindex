@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3outposts
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/s3outposts"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3outposts/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3OutpostsClient(ctx)
+
+	input := &s3outposts.CreateEndpointInput{
+		OutpostId:       aws.String(d.Get("outpost_id").(string)),
+		SecurityGroupId: aws.String(d.Get("security_group_id").(string)),
+		SubnetId:        aws.String(d.Get(names.AttrSubnetID).(string)),
+	}
+
+	if v, ok := d.GetOk("access_type"); ok {
+		input.AccessType = awstypes.EndpointAccessType(v.(string))
+	}
+
+	if v, ok := d.GetOk("customer_owned_ipv4_pool"); ok {
+		input.CustomerOwnedIpv4Pool = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateEndpoint(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating S3 Outposts Endpoint: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.EndpointArn))
+
+	if _, err := waitEndpointStatusCreated(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for S3 Outposts Endpoint (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceEndpointRead(ctx, d, meta)...)
+}

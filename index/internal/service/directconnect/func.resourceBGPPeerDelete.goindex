@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceBGPPeerDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+	vifID := d.Get("virtual_interface_id").(string)
+	addrFamily := awstypes.AddressFamily(d.Get("address_family").(string))
+	asn := int32(d.Get("bgp_asn").(int))
+
+	log.Printf("[DEBUG] Deleting Direct Connect BGP peer: %s", d.Id())
+	input := directconnect.DeleteBGPPeerInput{
+		Asn:                asn,
+		CustomerAddress:    aws.String(d.Get("customer_address").(string)),
+		VirtualInterfaceId: aws.String(vifID),
+	}
+	_, err := conn.DeleteBGPPeer(ctx, &input)
+
+	if errs.IsAErrorMessageContains[*awstypes.DirectConnectClientException](err, "The last BGP Peer on a Virtual Interface cannot be deleted") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Direct Connect BGP Peer (%s): %s", d.Id(), err)
+	}
+
+	if _, err = waitBGPPeerDeleted(ctx, conn, vifID, addrFamily, asn, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Direct Connect BGP Peer (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

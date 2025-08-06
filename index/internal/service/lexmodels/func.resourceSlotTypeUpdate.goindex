@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexmodels
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSlotTypeUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LexModelsClient(ctx)
+
+	input := &lexmodelbuildingservice.PutSlotTypeInput{
+		Checksum:               aws.String(d.Get("checksum").(string)),
+		CreateVersion:          aws.Bool(d.Get("create_version").(bool)),
+		Description:            aws.String(d.Get(names.AttrDescription).(string)),
+		Name:                   aws.String(d.Id()),
+		ValueSelectionStrategy: awstypes.SlotValueSelectionStrategy(d.Get("value_selection_strategy").(string)),
+	}
+
+	if v, ok := d.GetOk("enumeration_value"); ok {
+		input.EnumerationValues = expandEnumerationValues(v.(*schema.Set).List())
+	}
+
+	_, err := tfresource.RetryWhenIsA[*awstypes.ConflictException](ctx, d.Timeout(schema.TimeoutUpdate), func() (any, error) {
+		return conn.PutSlotType(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Lex Slot Type (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceSlotTypeRead(ctx, d, meta)...)
+}

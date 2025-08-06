@@ -1,0 +1,160 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kinesis
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStream() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceStreamCreate,
+		ReadWithoutTimeout:   resourceStreamRead,
+		UpdateWithoutTimeout: resourceStreamUpdate,
+		DeleteWithoutTimeout: resourceStreamDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: resourceStreamImport,
+		},
+
+		CustomizeDiff: customdiff.Sequence(
+			func(_ context.Context, diff *schema.ResourceDiff, meta any) error {
+				switch streamMode, shardCount := getStreamMode(diff), diff.Get("shard_count").(int); streamMode {
+				case types.StreamModeOnDemand:
+					if shardCount > 0 {
+						return fmt.Errorf("shard_count must not be set when stream_mode is %s", streamMode)
+					}
+				case types.StreamModeProvisioned:
+					if shardCount < 1 {
+						return fmt.Errorf("shard_count must be at least 1 when stream_mode is %s", streamMode)
+					}
+				}
+
+				return nil
+			},
+			func(ctx context.Context, diff *schema.ResourceDiff, meta any) error {
+				conn := meta.(*conns.AWSClient).KinesisClient(ctx)
+
+				output, err := findLimits(ctx, conn)
+
+				if err != nil {
+					return nil //nolint:nilerr // Explicitly OK if IAM permissions not set (or any other error)
+				}
+
+				switch streamMode := getStreamMode(diff); streamMode {
+				case types.StreamModeOnDemand:
+					if diff.Id() == "" {
+						if streamCount, streamLimit := aws.ToInt32(output.OnDemandStreamCount)+1, aws.ToInt32(output.OnDemandStreamCountLimit); streamCount > streamLimit {
+							return fmt.Errorf("on-demand stream count (%d) would exceed the Kinesis account limit (%d)", streamCount, streamLimit)
+						}
+					}
+				case types.StreamModeProvisioned:
+					o, n := diff.GetChange("shard_count")
+					if shardCount, shardLimit := aws.ToInt32(output.OpenShardCount)+int32(n.(int)-o.(int)), aws.ToInt32(output.ShardLimit); shardCount > shardLimit {
+						return fmt.Errorf("open shard count (%d) would exceed the Kinesis account limit (%d)", shardCount, shardLimit)
+					}
+				}
+
+				return nil
+			},
+		),
+
+		SchemaVersion: 1,
+		StateUpgraders: []schema.StateUpgrader{
+			{
+				Type:    resourceStreamResourceV0().CoreConfigSchema().ImpliedType(),
+				Upgrade: StreamStateUpgradeV0,
+				Version: 0,
+			},
+		},
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(5 * time.Minute),
+			Update: schema.DefaultTimeout(120 * time.Minute),
+			Delete: schema.DefaultTimeout(120 * time.Minute),
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+			},
+			"encryption_type": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          types.EncryptionTypeNone,
+				ValidateDiagFunc: enum.Validate[types.EncryptionType](),
+				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+					return strings.EqualFold(old, new)
+				},
+			},
+			"enforce_consumer_deletion": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+			},
+			names.AttrKMSKeyID: {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			names.AttrName: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			names.AttrRetentionPeriod: {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				Default:      24,
+				ValidateFunc: validation.IntBetween(24, 8760),
+			},
+			"shard_count": {
+				Type:     schema.TypeInt,
+				Optional: true,
+			},
+			"shard_level_metrics": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"stream_mode_details": {
+				Type:     schema.TypeList,
+				Optional: true,
+				Computed: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"stream_mode": {
+							Type:             schema.TypeString,
+							Required:         true,
+							ValidateDiagFunc: enum.Validate[types.StreamMode](),
+						},
+					},
+				},
+				DiffSuppressFunc: verify.SuppressMissingOptionalConfigurationBlock,
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+		},
+	}
+}

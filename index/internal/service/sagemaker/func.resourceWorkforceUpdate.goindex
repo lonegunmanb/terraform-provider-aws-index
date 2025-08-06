@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkforceUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	input := &sagemaker.UpdateWorkforceInput{
+		WorkforceName: aws.String(d.Id()),
+	}
+
+	if d.HasChange("source_ip_config") {
+		input.SourceIpConfig = expandWorkforceSourceIPConfig(d.Get("source_ip_config").([]any))
+	}
+
+	if d.HasChange("oidc_config") {
+		input.OidcConfig = expandWorkforceOIDCConfig(d.Get("oidc_config").([]any))
+	}
+
+	if d.HasChange("workforce_vpc_config") {
+		input.WorkforceVpcConfig = expandWorkforceVPCConfig(d.Get("workforce_vpc_config").([]any))
+	}
+
+	_, err := conn.UpdateWorkforce(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating SageMaker AI Workforce (%s): %s", d.Id(), err)
+	}
+
+	if err := waitWorkforceActive(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for SageMaker AI Workforce (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceWorkforceRead(ctx, d, meta)...)
+}

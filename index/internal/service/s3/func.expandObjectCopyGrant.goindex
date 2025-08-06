@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"net/url"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandObjectCopyGrant(tfMap map[string]any) string {
+	if tfMap == nil {
+		return ""
+	}
+
+	apiObject := &types.Grantee{}
+
+	if v, ok := tfMap[names.AttrEmail].(string); ok && v != "" {
+		apiObject.EmailAddress = aws.String(v)
+	}
+
+	if v, ok := tfMap[names.AttrID].(string); ok && v != "" {
+		apiObject.ID = aws.String(v)
+	}
+
+	if v, ok := tfMap[names.AttrType].(string); ok && v != "" {
+		apiObject.Type = types.Type(v)
+	}
+
+	if v, ok := tfMap[names.AttrURI].(string); ok && v != "" {
+		apiObject.URI = aws.String(v)
+	}
+
+	// Examples:
+	//"GrantFullControl": "emailaddress=user1@example.com,emailaddress=user2@example.com",
+	//"GrantRead": "uri=http://acs.amazonaws.com/groups/global/AllUsers",
+	//"GrantFullControl": "id=examplee7a2f25102679df27bb0ae12b3f85be6f290b936c4393484",
+	//"GrantWrite": "uri=http://acs.amazonaws.com/groups/s3/LogDelivery"
+
+	switch apiObject.Type {
+	case types.TypeAmazonCustomerByEmail:
+		return fmt.Sprintf("emailaddress=%s", aws.ToString(apiObject.EmailAddress))
+	case types.TypeCanonicalUser:
+		return fmt.Sprintf("id=%s", aws.ToString(apiObject.ID))
+	}
+
+	return fmt.Sprintf("uri=%s", aws.ToString(apiObject.URI))
+}

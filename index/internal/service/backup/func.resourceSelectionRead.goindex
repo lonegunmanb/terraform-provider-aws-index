@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/backup
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/backup"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/backup/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSelectionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).BackupClient(ctx)
+
+	planID := d.Get("plan_id").(string)
+	output, err := findSelectionByTwoPartKey(ctx, conn, planID, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Backup Selection (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Backup Selection (%s): %s", d.Id(), err)
+	}
+
+	if v := output.Conditions; v != nil {
+		if err := d.Set(names.AttrCondition, flattenConditions(v)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting condition: %s", err)
+		}
+	}
+	d.Set(names.AttrIAMRoleARN, output.IamRoleArn)
+	d.Set(names.AttrName, output.SelectionName)
+	if err := d.Set("not_resources", output.NotResources); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting not resources: %s", err)
+	}
+	d.Set("plan_id", planID)
+	if err := d.Set(names.AttrResources, output.Resources); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting resources: %s", err)
+	}
+	if v := output.ListOfTags; v != nil {
+		tfList := make([]any, 0)
+
+		for _, v := range v {
+			tfMap := make(map[string]any)
+
+			tfMap[names.AttrKey] = aws.ToString(v.ConditionKey)
+			tfMap[names.AttrType] = v.ConditionType
+			tfMap[names.AttrValue] = aws.ToString(v.ConditionValue)
+
+			tfList = append(tfList, tfMap)
+		}
+
+		if err := d.Set("selection_tag", tfList); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting selection tag: %s", err)
+		}
+	}
+
+	return diags
+}

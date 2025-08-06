@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *vpcRouteServerVPCAssociationResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data vpcRouteServerVPCAssociationResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EC2Client(ctx)
+
+	routeServerID, vpcID := fwflex.StringValueFromFramework(ctx, data.RouteServerID), fwflex.StringValueFromFramework(ctx, data.VpcID)
+	input := ec2.DisassociateRouteServerInput{
+		RouteServerId: aws.String(routeServerID),
+		VpcId:         aws.String(vpcID),
+	}
+	_, err := conn.DisassociateRouteServer(ctx, &input)
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidRouteServerIdNotAssociated, errCodeInvalidRouteServerIdNotFound, errCodeInvalidVPCIDNotFound) {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("deleting VPC Route Server (%s) VPC (%s) Association", routeServerID, vpcID), err.Error())
+
+		return
+	}
+
+	if _, err := waitRouteServerAssociationDeleted(ctx, conn, routeServerID, vpcID, r.DeleteTimeout(ctx, data.Timeouts)); err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for VPC Route Server (%s) VPC (%s) Association delete", routeServerID, vpcID), err.Error())
+
+		return
+	}
+}

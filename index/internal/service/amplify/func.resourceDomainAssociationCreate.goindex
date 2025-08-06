@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amplify
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amplify"
+	"github.com/aws/aws-sdk-go-v2/service/amplify/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AmplifyClient(ctx)
+
+	appID := d.Get("app_id").(string)
+	domainName := d.Get(names.AttrDomainName).(string)
+	id := domainAssociationCreateResourceID(appID, domainName)
+	input := amplify.CreateDomainAssociationInput{
+		AppId:               aws.String(appID),
+		DomainName:          aws.String(domainName),
+		EnableAutoSubDomain: aws.Bool(d.Get("enable_auto_sub_domain").(bool)),
+		SubDomainSettings:   expandSubDomainSettings(d.Get("sub_domain").(*schema.Set).List()),
+	}
+
+	if v, ok := d.GetOk("certificate_settings"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.CertificateSettings = expandCertificateSettings(v.([]any)[0].(map[string]any))
+	}
+
+	_, err := conn.CreateDomainAssociation(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Amplify Domain Association (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitDomainAssociationCreated(ctx, conn, appID, domainName); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Amplify Domain Association (%s) create: %s", d.Id(), err)
+	}
+
+	if d.Get("wait_for_verification").(bool) {
+		if _, err := waitDomainAssociationVerified(ctx, conn, appID, domainName); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Amplify Domain Association (%s) verification: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceDomainAssociationRead(ctx, d, meta)...)
+}

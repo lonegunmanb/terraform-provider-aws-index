@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceTransitGatewayConnectPeerAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	globalNetworkID := d.Get("global_network_id").(string)
+	connectPeerARN := d.Get("transit_gateway_connect_peer_arn").(string)
+	id := transitGatewayConnectPeerAssociationCreateResourceID(globalNetworkID, connectPeerARN)
+	input := &networkmanager.AssociateTransitGatewayConnectPeerInput{
+		DeviceId:                     aws.String(d.Get("device_id").(string)),
+		GlobalNetworkId:              aws.String(globalNetworkID),
+		TransitGatewayConnectPeerArn: aws.String(connectPeerARN),
+	}
+
+	if v, ok := d.GetOk("link_id"); ok {
+		input.LinkId = aws.String(v.(string))
+	}
+
+	log.Printf("[DEBUG] Creating Network Manager Transit Gateway Connect Peer Association: %#v", input)
+	_, err := conn.AssociateTransitGatewayConnectPeer(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Network Manager Transit Gateway Connect Peer Association (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitTransitGatewayConnectPeerAssociationCreated(ctx, conn, globalNetworkID, connectPeerARN, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Transit Gateway Connect Peer Association (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceTransitGatewayConnectPeerAssociationRead(ctx, d, meta)...)
+}

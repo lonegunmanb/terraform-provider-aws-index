@@ -1,0 +1,142 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIntegrationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayV2Client(ctx)
+
+	input := &apigatewayv2.UpdateIntegrationInput{
+		ApiId:         aws.String(d.Get("api_id").(string)),
+		IntegrationId: aws.String(d.Id()),
+		// Always specify the integration type.
+		IntegrationType: awstypes.IntegrationType(d.Get("integration_type").(string)),
+	}
+
+	if d.HasChange(names.AttrConnectionID) {
+		input.ConnectionId = aws.String(d.Get(names.AttrConnectionID).(string))
+	}
+
+	if d.HasChange("connection_type") {
+		input.ConnectionType = awstypes.ConnectionType(d.Get("connection_type").(string))
+	}
+
+	if d.HasChange("content_handling_strategy") {
+		input.ContentHandlingStrategy = awstypes.ContentHandlingStrategy(d.Get("content_handling_strategy").(string))
+	}
+
+	if d.HasChange("credentials_arn") {
+		input.CredentialsArn = aws.String(d.Get("credentials_arn").(string))
+	}
+
+	if d.HasChange(names.AttrDescription) {
+		input.Description = aws.String(d.Get(names.AttrDescription).(string))
+	}
+
+	if d.HasChange("integration_method") {
+		input.IntegrationMethod = aws.String(d.Get("integration_method").(string))
+	}
+
+	// Always specify any integration subtype.
+	if v, ok := d.GetOk("integration_subtype"); ok {
+		input.IntegrationSubtype = aws.String(v.(string))
+	}
+
+	if d.HasChange("integration_uri") {
+		input.IntegrationUri = aws.String(d.Get("integration_uri").(string))
+	}
+
+	if d.HasChange("passthrough_behavior") {
+		input.PassthroughBehavior = awstypes.PassthroughBehavior(d.Get("passthrough_behavior").(string))
+	}
+
+	if d.HasChange("payload_format_version") {
+		input.PayloadFormatVersion = aws.String(d.Get("payload_format_version").(string))
+	}
+
+	if d.HasChange("request_parameters") {
+		o, n := d.GetChange("request_parameters")
+		add, del, nop := flex.DiffStringValueMaps(o.(map[string]any), n.(map[string]any))
+
+		// Parameters are removed by setting the associated value to "".
+		for k := range del {
+			del[k] = ""
+		}
+		variables := del
+		maps.Copy(variables, add)
+		// Also specify any request parameters that are unchanged as for AWS service integrations some parameters are always required:
+		// https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html
+		maps.Copy(variables, nop)
+
+		input.RequestParameters = variables
+	}
+
+	if d.HasChange("request_templates") {
+		input.RequestTemplates = flex.ExpandStringValueMap(d.Get("request_templates").(map[string]any))
+	}
+
+	if d.HasChange("response_parameters") {
+		o, n := d.GetChange("response_parameters")
+		os := o.(*schema.Set)
+		ns := n.(*schema.Set)
+		del := os.Difference(ns).List()
+
+		input.ResponseParameters = expandIntegrationResponseParameters(ns.List())
+
+		// Parameters are removed by setting the associated value to {}.
+		for _, tfMapRaw := range del {
+			tfMap, ok := tfMapRaw.(map[string]any)
+
+			if !ok {
+				continue
+			}
+
+			if v, ok := tfMap[names.AttrStatusCode].(string); ok && v != "" {
+				if input.ResponseParameters == nil {
+					input.ResponseParameters = map[string]map[string]string{}
+				}
+				input.ResponseParameters[v] = map[string]string{}
+			}
+		}
+	}
+
+	if d.HasChange("template_selection_expression") {
+		input.TemplateSelectionExpression = aws.String(d.Get("template_selection_expression").(string))
+	}
+
+	if d.HasChange("timeout_milliseconds") {
+		input.TimeoutInMillis = aws.Int32(int32(d.Get("timeout_milliseconds").(int)))
+	}
+
+	if d.HasChange("tls_config") {
+		input.TlsConfig = expandTLSConfig(d.Get("tls_config").([]any))
+	}
+
+	_, err := conn.UpdateIntegration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating API Gateway v2 Integration (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceIntegrationRead(ctx, d, meta)...)
+}

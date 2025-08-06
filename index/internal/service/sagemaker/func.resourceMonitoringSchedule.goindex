@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMonitoringSchedule() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceMonitoringScheduleCreate,
+		ReadWithoutTimeout:   resourceMonitoringScheduleRead,
+		UpdateWithoutTimeout: resourceMonitoringScheduleUpdate,
+		DeleteWithoutTimeout: resourceMonitoringScheduleDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrName: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Computed:     true,
+				ForceNew:     true,
+				ValidateFunc: validName,
+			},
+			"monitoring_schedule_config": {
+				Type:     schema.TypeList,
+				MaxItems: 1,
+				Required: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"monitoring_job_definition_name": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validName,
+						},
+						"monitoring_type": {
+							Type:             schema.TypeString,
+							Required:         true,
+							ValidateDiagFunc: enum.Validate[awstypes.MonitoringType](),
+						},
+						"schedule_config": {
+							Type:     schema.TypeList,
+							MaxItems: 1,
+							Computed: true,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									names.AttrScheduleExpression: {
+										Type:     schema.TypeString,
+										Required: true,
+										ValidateFunc: validation.All(
+											validation.StringMatch(regexache.MustCompile(`^cron`), ""),
+											validation.StringLenBetween(1, 512),
+										),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+		},
+	}
+}

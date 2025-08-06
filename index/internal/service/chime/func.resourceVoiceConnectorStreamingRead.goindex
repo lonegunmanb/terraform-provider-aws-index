@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/chime
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/chimesdkvoice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/chimesdkvoice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceVoiceConnectorStreamingRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ChimeSDKVoiceClient(ctx)
+
+	input := &chimesdkvoice.GetVoiceConnectorStreamingConfigurationInput{
+		VoiceConnectorId: aws.String(d.Id()),
+	}
+
+	resp, err := conn.GetVoiceConnectorStreamingConfiguration(ctx, input)
+	if !d.IsNewResource() && errs.IsA[*awstypes.NotFoundException](err) {
+		log.Printf("[WARN] Chime Voice Connector (%s) streaming not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "getting Chime Voice Connector (%s) streaming: %s", d.Id(), err)
+	}
+
+	if resp == nil || resp.StreamingConfiguration == nil {
+		return sdkdiag.AppendErrorf(diags, "getting Chime Voice Connector (%s) streaming: empty response", d.Id())
+	}
+
+	d.Set("disabled", resp.StreamingConfiguration.Disabled)
+	d.Set("data_retention", resp.StreamingConfiguration.DataRetentionInHours)
+	d.Set("voice_connector_id", d.Id())
+
+	if err := d.Set("streaming_notification_targets", flattenStreamingNotificationTargets(resp.StreamingConfiguration.StreamingNotificationTargets)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting Chime Voice Connector streaming configuration targets (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("media_insights_configuration", flattenMediaInsightsConfiguration(resp.StreamingConfiguration.MediaInsightsConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting Chime Voice Connector streaming configuration media insights configuration (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

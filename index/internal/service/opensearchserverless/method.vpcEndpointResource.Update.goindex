@@ -1,0 +1,117 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearchserverless
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *vpcEndpointResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var new, old vpcEndpointResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &new)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().OpenSearchServerlessClient(ctx)
+
+	input := &opensearchserverless.UpdateVpcEndpointInput{
+		ClientToken: aws.String(sdkid.UniqueId()),
+		Id:          fwflex.StringFromFramework(ctx, new.ID),
+	}
+
+	if !new.SecurityGroupIDs.Equal(old.SecurityGroupIDs) {
+		newSGs := fwflex.ExpandFrameworkStringValueSet(ctx, new.SecurityGroupIDs)
+		oldSGs := fwflex.ExpandFrameworkStringValueSet(ctx, old.SecurityGroupIDs)
+
+		if add := newSGs.Difference(oldSGs); len(add) > 0 {
+			input.AddSecurityGroupIds = add
+		}
+
+		if del := oldSGs.Difference(newSGs); len(del) > 0 {
+			input.RemoveSecurityGroupIds = del
+		}
+	}
+
+	if !new.SubnetIDs.Equal(old.SubnetIDs) {
+		oldSubnets := fwflex.ExpandFrameworkStringValueSet(ctx, old.SubnetIDs)
+		newSubnets := fwflex.ExpandFrameworkStringValueSet(ctx, new.SubnetIDs)
+
+		if add := newSubnets.Difference(oldSubnets); len(add) > 0 {
+			input.AddSubnetIds = add
+		}
+
+		if del := oldSubnets.Difference(newSubnets); len(del) > 0 {
+			input.RemoveSubnetIds = del
+		}
+	}
+
+	_, err := conn.UpdateVpcEndpoint(ctx, input)
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionDeleting, resNameVPCEndpoint, new.Name.String(), nil),
+			err.Error(),
+		)
+		return
+	}
+
+	if _, err := waitVPCEndpointUpdated(ctx, conn, new.ID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionWaitingForUpdate, resNameVPCEndpoint, new.Name.String(), nil),
+			err.Error(),
+		)
+		return
+	}
+
+	// Security Group IDs are not returned and must be retrieved from the EC2 API.
+	vpce, err := tfec2.FindVPCEndpointByID(ctx, r.Meta().EC2Client(ctx), new.ID.ValueString())
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionReading, resNameVPCEndpoint, new.ID.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	var securityGroupIDs []*string
+	for _, group := range vpce.Groups {
+		securityGroupIDs = append(securityGroupIDs, group.GroupId)
+	}
+
+	resp.Diagnostics.Append(fwflex.Flatten(ctx, securityGroupIDs, &new.SecurityGroupIDs)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &new)...)
+}

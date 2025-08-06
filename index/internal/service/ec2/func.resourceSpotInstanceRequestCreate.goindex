@@ -1,0 +1,110 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"log"
+	"math/big"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSpotInstanceRequestCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	instanceOpts, err := buildInstanceOpts(ctx, d, meta)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := ec2.RequestSpotInstancesInput{
+		ClientToken: aws.String(id.UniqueId()),
+		// Though the AWS API supports creating spot instance requests for multiple
+		// instances, for TF purposes we fix this to one instance per request.
+		// Users can get equivalent behavior out of TF's "count" meta-parameter.
+		InstanceCount:                aws.Int32(1),
+		InstanceInterruptionBehavior: awstypes.InstanceInterruptionBehavior(d.Get("instance_interruption_behavior").(string)),
+		LaunchSpecification: &awstypes.RequestSpotLaunchSpecification{
+			BlockDeviceMappings: instanceOpts.BlockDeviceMappings,
+			EbsOptimized:        instanceOpts.EBSOptimized,
+			Monitoring:          instanceOpts.Monitoring,
+			IamInstanceProfile:  instanceOpts.IAMInstanceProfile,
+			ImageId:             instanceOpts.ImageID,
+			InstanceType:        instanceOpts.InstanceType,
+			KeyName:             instanceOpts.KeyName,
+			SecurityGroupIds:    instanceOpts.SecurityGroupIDs,
+			SecurityGroups:      instanceOpts.SecurityGroups,
+			SubnetId:            instanceOpts.SubnetID,
+			UserData:            instanceOpts.UserData64,
+			NetworkInterfaces:   instanceOpts.NetworkInterfaces,
+		},
+		SpotPrice:         aws.String(d.Get("spot_price").(string)),
+		TagSpecifications: getTagSpecificationsIn(ctx, awstypes.ResourceTypeSpotInstancesRequest),
+		Type:              awstypes.SpotInstanceType(d.Get("spot_type").(string)),
+	}
+
+	if v, ok := d.GetOk("launch_group"); ok {
+		input.LaunchGroup = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("valid_from"); ok {
+		v, _ := time.Parse(time.RFC3339, v.(string))
+		input.ValidFrom = aws.Time(v)
+	}
+
+	if v, ok := d.GetOk("valid_until"); ok {
+		v, _ := time.Parse(time.RFC3339, v.(string))
+		input.ValidUntil = aws.Time(v)
+	}
+
+	// Placement GroupName can only be specified when instanceInterruptionBehavior is not set or set to 'terminate'
+	if v, exists := d.GetOkExists("instance_interruption_behavior"); v.(string) == string(awstypes.InstanceInterruptionBehaviorTerminate) || !exists {
+		input.LaunchSpecification.Placement = instanceOpts.SpotPlacement
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, iamPropagationTimeout,
+		func() (any, error) {
+			return conn.RequestSpotInstances(ctx, &input)
+		},
+		func(err error) (bool, error) {
+			// IAM instance profiles can take ~10 seconds to propagate in AWS:
+			// http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#launch-instance-with-role-console
+			if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "Invalid IAM Instance Profile") {
+				return true, err
+			}
+
+			// IAM roles can also take time to propagate in AWS:
+			if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, " has no associated IAM Roles") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "requesting EC2 Spot Instance: %s", err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*ec2.RequestSpotInstancesOutput).SpotInstanceRequests[0].SpotInstanceRequestId))
+
+	if d.Get("wait_for_fulfillment").(bool) {
+		if _, err := waitSpotInstanceRequestFulfilled(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EC2 Spot Instance Request (%s) to be fulfilled: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceSpotInstanceRequestRead(ctx, d, meta)...)
+}

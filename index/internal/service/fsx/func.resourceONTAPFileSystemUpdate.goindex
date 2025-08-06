@@ -1,0 +1,106 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceONTAPFileSystemUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &fsx.UpdateFileSystemInput{
+			ClientRequestToken: aws.String(id.UniqueId()),
+			FileSystemId:       aws.String(d.Id()),
+			OntapConfiguration: &awstypes.UpdateFileSystemOntapConfiguration{},
+		}
+
+		if d.HasChange("automatic_backup_retention_days") {
+			input.OntapConfiguration.AutomaticBackupRetentionDays = aws.Int32(int32(d.Get("automatic_backup_retention_days").(int)))
+		}
+
+		if d.HasChange("daily_automatic_backup_start_time") {
+			input.OntapConfiguration.DailyAutomaticBackupStartTime = aws.String(d.Get("daily_automatic_backup_start_time").(string))
+		}
+
+		if d.HasChange("disk_iops_configuration") {
+			input.OntapConfiguration.DiskIopsConfiguration = expandOntapFileDiskIopsConfiguration(d.Get("disk_iops_configuration").([]any))
+		}
+
+		if d.HasChange("fsx_admin_password") {
+			input.OntapConfiguration.FsxAdminPassword = aws.String(d.Get("fsx_admin_password").(string))
+		}
+
+		if d.HasChange("ha_pairs") {
+			input.OntapConfiguration.HAPairs = aws.Int32(int32(d.Get("ha_pairs").(int)))
+			//for the ONTAP update API the ThroughputCapacityPerHAPair must explicitly be passed when adding ha_pairs even if it hasn't changed.
+			input.OntapConfiguration.ThroughputCapacityPerHAPair = aws.Int32(int32(d.Get("throughput_capacity_per_ha_pair").(int)))
+		}
+
+		if d.HasChange("route_table_ids") {
+			o, n := d.GetChange("route_table_ids")
+			os, ns := o.(*schema.Set), n.(*schema.Set)
+			add, del := flex.ExpandStringValueSet(ns.Difference(os)), flex.ExpandStringValueSet(os.Difference(ns))
+
+			if len(add) > 0 {
+				input.OntapConfiguration.AddRouteTableIds = add
+			}
+
+			if len(del) > 0 {
+				input.OntapConfiguration.RemoveRouteTableIds = del
+			}
+		}
+
+		if d.HasChange("storage_capacity") {
+			input.StorageCapacity = aws.Int32(int32(d.Get("storage_capacity").(int)))
+		}
+
+		if d.HasChange("throughput_capacity") {
+			input.OntapConfiguration.ThroughputCapacity = aws.Int32(int32(d.Get("throughput_capacity").(int)))
+		}
+
+		if d.HasChange("throughput_capacity_per_ha_pair") {
+			input.OntapConfiguration.ThroughputCapacityPerHAPair = aws.Int32(int32(d.Get("throughput_capacity_per_ha_pair").(int)))
+		}
+
+		if d.HasChange("weekly_maintenance_start_time") {
+			input.OntapConfiguration.WeeklyMaintenanceStartTime = aws.String(d.Get("weekly_maintenance_start_time").(string))
+		}
+
+		startTime := time.Now()
+		_, err := conn.UpdateFileSystem(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating FSx for NetApp ONTAP File System (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitFileSystemUpdated(ctx, conn, d.Id(), startTime, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for FSx for NetApp ONTAP File System (%s) update: %s", d.Id(), err)
+		}
+
+		if _, err := waitFileSystemAdministrativeActionCompleted(ctx, conn, d.Id(), awstypes.AdministrativeActionTypeFileSystemUpdate, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for FSx for NetApp ONTAP File System (%s) administrative action (%s) complete: %s", d.Id(), awstypes.AdministrativeActionTypeFileSystemUpdate, err)
+		}
+	}
+
+	return append(diags, resourceONTAPFileSystemRead(ctx, d, meta)...)
+}

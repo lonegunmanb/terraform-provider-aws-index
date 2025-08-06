@@ -1,0 +1,93 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshiftserverless
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkgroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftServerlessClient(ctx)
+
+	name := d.Get("workgroup_name").(string)
+	input := redshiftserverless.CreateWorkgroupInput{
+		NamespaceName: aws.String(d.Get("namespace_name").(string)),
+		Tags:          getTagsIn(ctx),
+		WorkgroupName: aws.String(name),
+	}
+
+	if v, ok := d.GetOk("base_capacity"); ok {
+		input.BaseCapacity = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("config_parameter"); ok && v.(*schema.Set).Len() > 0 {
+		input.ConfigParameters = expandConfigParameters(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("enhanced_vpc_routing"); ok {
+		input.EnhancedVpcRouting = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk(names.AttrMaxCapacity); ok {
+		input.MaxCapacity = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk(names.AttrPort); ok {
+		input.Port = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("price_performance_target"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.PricePerformanceTarget = expandPerformanceTarget(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrPubliclyAccessible); ok {
+		input.PubliclyAccessible = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk(names.AttrSecurityGroupIDs); ok && v.(*schema.Set).Len() > 0 {
+		input.SecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk(names.AttrSubnetIDs); ok && v.(*schema.Set).Len() > 0 {
+		input.SubnetIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("track_name"); ok {
+		input.TrackName = aws.String(v.(string))
+	}
+
+	if input.BaseCapacity != nil && input.PricePerformanceTarget != nil && input.PricePerformanceTarget.Status == awstypes.PerformanceTargetStatusEnabled {
+		return sdkdiag.AppendErrorf(diags, "base_capacity cannot be set when price_performance_target.enabled is true")
+	}
+
+	output, err := conn.CreateWorkgroup(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Redshift Serverless Workgroup (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Workgroup.WorkgroupName))
+
+	if _, err := waitWorkgroupAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Redshift Serverless Workgroup (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceWorkgroupRead(ctx, d, meta)...)
+}

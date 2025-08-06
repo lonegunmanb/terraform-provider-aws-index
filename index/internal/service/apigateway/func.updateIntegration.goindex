@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func updateIntegration(ctx context.Context, d *schema.ResourceData, conn *apigateway.Client, operations []types.PatchOperation) error {
+	replacedRequestParameters := []string{}
+	var currentCacheKeyParameters []string
+	if integration, err := findIntegrationByThreePartKey(ctx, conn, d.Get("http_method").(string), d.Get(names.AttrResourceID).(string), d.Get("rest_api_id").(string)); err == nil {
+		currentCacheKeyParameters = integration.CacheKeyParameters
+
+		for _, operation := range operations {
+			if operation.Op == types.OpReplace && strings.HasPrefix(aws.ToString(operation.Path), "/requestParameters") {
+				parts := strings.Split(aws.ToString(operation.Path), "/")
+				replacedRequestParameters = append(replacedRequestParameters, parts[2])
+			}
+		}
+
+		// Update integration with cacheKeyParameters for replaced request parameters.
+		integrationOperations := make([]types.PatchOperation, 0)
+
+		for _, replacedRequestParameter := range replacedRequestParameters {
+			for _, cacheKeyParameter := range currentCacheKeyParameters {
+				if cacheKeyParameter == replacedRequestParameter {
+					integrationOperations = append(integrationOperations, types.PatchOperation{
+						Op:    types.OpAdd,
+						Path:  aws.String(fmt.Sprintf("/cacheKeyParameters/%s", replacedRequestParameter)),
+						Value: aws.String(""),
+					})
+				}
+			}
+		}
+
+		if len(integrationOperations) == 0 {
+			return nil
+		}
+
+		input := apigateway.UpdateIntegrationInput{
+			HttpMethod:      aws.String(d.Get("http_method").(string)),
+			PatchOperations: integrationOperations,
+			ResourceId:      aws.String(d.Get(names.AttrResourceID).(string)),
+			RestApiId:       aws.String(d.Get("rest_api_id").(string)),
+		}
+
+		_, err = conn.UpdateIntegration(ctx, &input)
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

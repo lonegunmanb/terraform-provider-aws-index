@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *vpcOriginResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data vpcOriginResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudFrontClient(ctx)
+
+	input := &cloudfront.CreateVpcOriginInput{}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+
+	if tags := getTagsIn(ctx); len(tags) > 0 {
+		input.Tags = &awstypes.Tags{
+			Items: tags,
+		}
+	}
+
+	output, err := conn.CreateVpcOrigin(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError("creating CloudFront VPC Origin", err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.ID = fwflex.StringToFramework(ctx, output.VpcOrigin.Id)
+	data.ARN = fwflex.StringToFramework(ctx, output.VpcOrigin.Arn)
+	data.ETag = fwflex.StringToFramework(ctx, output.ETag)
+
+	if _, err := waitVPCOriginDeployed(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+		response.State.SetAttribute(ctx, path.Root(names.AttrID), data.ID) // Set 'id' so as to taint the resource.
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for CloudFront VPC Origin (%s) create", data.ID.ValueString()), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

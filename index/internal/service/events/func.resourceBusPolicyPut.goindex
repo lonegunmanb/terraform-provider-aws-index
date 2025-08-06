@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBusPolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EventsClient(ctx)
+
+	policy, err := structure.NormalizeJsonString(d.Get(names.AttrPolicy).(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	var eventBusName string
+	if d.IsNewResource() {
+		eventBusName = d.Get("event_bus_name").(string)
+	} else {
+		eventBusName = d.Id()
+	}
+	input := &eventbridge.PutPermissionInput{
+		EventBusName: aws.String(eventBusName),
+		Policy:       aws.String(policy),
+	}
+
+	_, err = conn.PutPermission(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EventBridge Event Bus (%s) Policy: %s", eventBusName, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(eventBusName)
+	}
+
+	_, err = tfresource.RetryWhenNotFound(ctx, propagationTimeout, func() (any, error) {
+		return findEventBusPolicyByName(ctx, conn, d.Id())
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EventBridge Event Bus (%s) Policy create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceBusPolicyRead(ctx, d, meta)...)
+}

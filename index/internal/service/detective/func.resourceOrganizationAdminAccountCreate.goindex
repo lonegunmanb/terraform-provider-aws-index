@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/detective
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/detective"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/detective/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOrganizationAdminAccountCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).DetectiveClient(ctx)
+
+	accountID := d.Get(names.AttrAccountID).(string)
+	input := &detective.EnableOrganizationAdminAccountInput{
+		AccountId: aws.String(accountID),
+	}
+
+	_, err := conn.EnableOrganizationAdminAccount(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "enabling Detective Organization Admin Account (%s): %s", accountID, err)
+	}
+
+	d.SetId(accountID)
+
+	_, err = tfresource.RetryWhenNotFound(ctx, 5*time.Minute, func() (any, error) {
+		return findOrganizationAdminAccountByAccountID(ctx, conn, d.Id())
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Detective Organization Admin Account (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceOrganizationAdminAccountRead(ctx, d, meta)...)
+}

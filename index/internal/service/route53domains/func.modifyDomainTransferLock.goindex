@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53domains
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53domains"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53domains/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func modifyDomainTransferLock(ctx context.Context, conn *route53domains.Client, domainName string, transferLock bool, timeout time.Duration) error {
+	if transferLock {
+		input := &route53domains.EnableDomainTransferLockInput{
+			DomainName: aws.String(domainName),
+		}
+
+		output, err := conn.EnableDomainTransferLock(ctx, input)
+
+		if err != nil {
+			return fmt.Errorf("enabling Route 53 Domains Domain (%s) transfer lock: %w", domainName, err)
+		}
+
+		if _, err := waitOperationSucceeded(ctx, conn, aws.ToString(output.OperationId), timeout); err != nil {
+			return fmt.Errorf("waiting for Route 53 Domains Domain (%s) transfer lock enable: %w", domainName, err)
+		}
+	} else {
+		input := &route53domains.DisableDomainTransferLockInput{
+			DomainName: aws.String(domainName),
+		}
+
+		output, err := conn.DisableDomainTransferLock(ctx, input)
+
+		if err != nil {
+			return fmt.Errorf("disabling Route 53 Domains Domain (%s) transfer lock: %w", domainName, err)
+		}
+
+		if _, err := waitOperationSucceeded(ctx, conn, aws.ToString(output.OperationId), timeout); err != nil {
+			return fmt.Errorf("waiting for Route 53 Domains Domain (%s) transfer lock disable: %w", domainName, err)
+		}
+	}
+
+	return nil
+}

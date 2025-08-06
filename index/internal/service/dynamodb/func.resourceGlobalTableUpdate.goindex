@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGlobalTableUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	o, n := d.GetChange("replica")
+	if o == nil {
+		o = new(schema.Set)
+	}
+	if n == nil {
+		n = new(schema.Set)
+	}
+
+	os, ns := o.(*schema.Set), n.(*schema.Set)
+	replicaUpdateCreateReplicas := expandReplicaUpdateCreateReplicas(ns.Difference(os).List())
+	replicaUpdateDeleteReplicas := expandReplicaUpdateDeleteReplicas(os.Difference(ns).List())
+
+	replicaUpdates := make([]awstypes.ReplicaUpdate, 0, (len(replicaUpdateCreateReplicas) + len(replicaUpdateDeleteReplicas)))
+	replicaUpdates = append(replicaUpdates, replicaUpdateCreateReplicas...)
+	replicaUpdates = append(replicaUpdates, replicaUpdateDeleteReplicas...)
+
+	input := &dynamodb.UpdateGlobalTableInput{
+		GlobalTableName: aws.String(d.Id()),
+		ReplicaUpdates:  replicaUpdates,
+	}
+
+	_, err := conn.UpdateGlobalTable(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating DynamoDB Global Table (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitGlobalTableUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DynamoDB Global Table (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceGlobalTableRead(ctx, d, meta)...)
+}

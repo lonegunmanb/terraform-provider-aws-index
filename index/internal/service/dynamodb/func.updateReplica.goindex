@@ -1,0 +1,135 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func updateReplica(ctx context.Context, conn *dynamodb.Client, d *schema.ResourceData) error {
+	oRaw, nRaw := d.GetChange("replica")
+	o := oRaw.(*schema.Set)
+	n := nRaw.(*schema.Set)
+
+	removeRaw := o.Difference(n).List()
+	addRaw := n.Difference(o).List()
+
+	var removeFirst []any // replicas to delete before recreating (like ForceNew without recreating table)
+	var toAdd []any
+	var toRemove []any
+
+	// first pass - add replicas that don't have corresponding remove entry
+	for _, a := range addRaw {
+		add := true
+		ma := a.(map[string]any)
+		for _, r := range removeRaw {
+			mr := r.(map[string]any)
+
+			if ma["region_name"].(string) == mr["region_name"].(string) {
+				add = false
+				break
+			}
+		}
+
+		if add {
+			toAdd = append(toAdd, ma)
+		}
+	}
+
+	// second pass - remove replicas that don't have corresponding add entry
+	for _, r := range removeRaw {
+		remove := true
+		mr := r.(map[string]any)
+		for _, a := range addRaw {
+			ma := a.(map[string]any)
+
+			if ma["region_name"].(string) == mr["region_name"].(string) {
+				remove = false
+				break
+			}
+		}
+
+		if remove {
+			toRemove = append(toRemove, mr)
+		}
+	}
+
+	// third pass - for replicas that exist in both add and remove
+	// For true updates, don't remove and add, just update
+	for _, a := range addRaw {
+		ma := a.(map[string]any)
+		for _, r := range removeRaw {
+			mr := r.(map[string]any)
+
+			if ma["region_name"].(string) != mr["region_name"].(string) {
+				continue
+			}
+
+			// like "ForceNew" for the replica - KMS change
+			if ma[names.AttrKMSKeyARN].(string) != mr[names.AttrKMSKeyARN].(string) {
+				toRemove = append(toRemove, mr)
+				toAdd = append(toAdd, ma)
+				break
+			}
+
+			// just update PITR
+			if ma["point_in_time_recovery"].(bool) != mr["point_in_time_recovery"].(bool) {
+				if err := updatePITR(ctx, conn, d.Id(), ma["point_in_time_recovery"].(bool), nil, ma["region_name"].(string), d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return fmt.Errorf("updating replica (%s) point in time recovery: %w", ma["region_name"].(string), err)
+				}
+				break
+			}
+
+			// nothing changed, assuming propagate_tags changed so do nothing here
+			break
+		}
+	}
+
+	if len(removeFirst) > 0 { // mini ForceNew, recreates replica but doesn't recreate the table
+		if err := deleteReplicas(ctx, conn, d.Id(), removeFirst, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return fmt.Errorf("updating replicas, while deleting: %w", err)
+		}
+	}
+
+	if len(toRemove) > 0 {
+		if err := deleteReplicas(ctx, conn, d.Id(), toRemove, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return fmt.Errorf("updating replicas, while deleting: %w", err)
+		}
+	}
+
+	if len(toAdd) > 0 {
+		if err := createReplicas(ctx, conn, d.Id(), toAdd, true, d.Timeout(schema.TimeoutCreate)); err != nil {
+			return fmt.Errorf("updating replicas, while creating: %w", err)
+		}
+	}
+
+	return nil
+}

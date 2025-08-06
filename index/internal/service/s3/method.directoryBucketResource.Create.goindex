@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *directoryBucketResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data directoryBucketResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	locationInfoData, diags := data.Location.ToPtr(ctx)
+	response.Diagnostics.Append(diags...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().S3ExpressClient(ctx)
+
+	input := &s3.CreateBucketInput{
+		Bucket: fwflex.StringFromFramework(ctx, data.Bucket),
+		CreateBucketConfiguration: &awstypes.CreateBucketConfiguration{
+			Bucket: &awstypes.BucketInfo{
+				DataRedundancy: data.DataRedundancy.ValueEnum(),
+				Type:           awstypes.BucketType(data.Type.ValueString()),
+			},
+			Location: &awstypes.LocationInfo{
+				Name: fwflex.StringFromFramework(ctx, locationInfoData.Name),
+				Type: locationInfoData.Type.ValueEnum(),
+			},
+		},
+	}
+
+	_, err := conn.CreateBucket(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating S3 Directory Bucket (%s)", data.Bucket.ValueString()), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.ARN = types.StringValue(r.arn(ctx, data.Bucket.ValueString()))
+	data.ID = data.Bucket
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

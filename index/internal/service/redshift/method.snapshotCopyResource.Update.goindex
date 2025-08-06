@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *snapshotCopyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().RedshiftClient(ctx)
+
+	var plan, state snapshotCopyResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.RetentionPeriod.Equal(state.RetentionPeriod) {
+		in := &redshift.ModifySnapshotCopyRetentionPeriodInput{
+			ClusterIdentifier: plan.ClusterIdentifier.ValueStringPointer(),
+			RetentionPeriod:   aws.Int32(int32(plan.RetentionPeriod.ValueInt64())),
+		}
+
+		out, err := conn.ModifySnapshotCopyRetentionPeriod(ctx, in)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.Redshift, create.ErrActionUpdating, ResNameSnapshotCopy, plan.ID.String(), err),
+				err.Error(),
+			)
+			return
+		}
+		if out == nil || out.Cluster == nil || out.Cluster.ClusterSnapshotCopyStatus == nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.Redshift, create.ErrActionUpdating, ResNameSnapshotCopy, plan.ID.String(), nil),
+				errors.New("empty output").Error(),
+			)
+			return
+		}
+
+		resp.Diagnostics.Append(flex.Flatten(ctx, out.Cluster.ClusterSnapshotCopyStatus, &plan)...)
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

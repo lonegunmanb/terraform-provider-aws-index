@@ -1,0 +1,36 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/identity"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (w *wrappedResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	ctx, diags := w.opts.bootstrapContext(ctx, request.Config.GetAttribute, w.meta)
+	response.Diagnostics.Append(diags...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// We run ModifyPlan interceptors even if the resource has not defined a ModifyPlan method.
+	f := func(ctx context.Context, request *resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) diag.Diagnostics {
+		return response.Diagnostics
+	}
+	if v, ok := w.inner.(resource.ResourceWithModifyPlan); ok {
+		f = func(ctx context.Context, request *resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) diag.Diagnostics {
+			v.ModifyPlan(ctx, *request, response)
+			return response.Diagnostics
+		}
+	}
+	response.Diagnostics.Append(interceptedHandler(w.opts.interceptors.resourceModifyPlan(), f, w.meta)(ctx, &request, response)...)
+}

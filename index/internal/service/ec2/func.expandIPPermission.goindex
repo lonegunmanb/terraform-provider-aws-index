@@ -1,0 +1,110 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandIPPermission(d *schema.ResourceData, sg *awstypes.SecurityGroup) awstypes.IpPermission { // nosemgrep:ci.caps5-in-func-name
+	apiObject := awstypes.IpPermission{
+		IpProtocol: aws.String(protocolForValue(d.Get(names.AttrProtocol).(string))),
+	}
+
+	// InvalidParameterValue: When protocol is ALL, you cannot specify from-port.
+	if v := aws.ToString(apiObject.IpProtocol); v != "-1" {
+		apiObject.FromPort = aws.Int32(int32(d.Get("from_port").(int)))
+		apiObject.ToPort = aws.Int32(int32(d.Get("to_port").(int)))
+	}
+
+	if v, ok := d.GetOk("cidr_blocks"); ok && len(v.([]any)) > 0 {
+		for _, v := range v.([]any) {
+			apiObject.IpRanges = append(apiObject.IpRanges, awstypes.IpRange{
+				CidrIp: aws.String(v.(string)),
+			})
+		}
+	}
+
+	if v, ok := d.GetOk("ipv6_cidr_blocks"); ok && len(v.([]any)) > 0 {
+		for _, v := range v.([]any) {
+			apiObject.Ipv6Ranges = append(apiObject.Ipv6Ranges, awstypes.Ipv6Range{
+				CidrIpv6: aws.String(v.(string)),
+			})
+		}
+	}
+
+	if v, ok := d.GetOk("prefix_list_ids"); ok && len(v.([]any)) > 0 {
+		for _, v := range v.([]any) {
+			apiObject.PrefixListIds = append(apiObject.PrefixListIds, awstypes.PrefixListId{
+				PrefixListId: aws.String(v.(string)),
+			})
+		}
+	}
+
+	var self string
+
+	if _, ok := d.GetOk("self"); ok {
+		self = aws.ToString(sg.GroupId)
+		apiObject.UserIdGroupPairs = append(apiObject.UserIdGroupPairs, awstypes.UserIdGroupPair{
+			GroupId: aws.String(self),
+		})
+	}
+
+	if v, ok := d.GetOk("source_security_group_id"); ok {
+		if v := v.(string); v != self {
+			// [OwnerID/]SecurityGroupID.
+			if parts := strings.Split(v, "/"); len(parts) == 1 {
+				apiObject.UserIdGroupPairs = append(apiObject.UserIdGroupPairs, awstypes.UserIdGroupPair{
+					GroupId: aws.String(v),
+				})
+			} else {
+				apiObject.UserIdGroupPairs = append(apiObject.UserIdGroupPairs, awstypes.UserIdGroupPair{
+					GroupId: aws.String(parts[1]),
+					UserId:  aws.String(parts[0]),
+				})
+			}
+		}
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		description := v.(string)
+		for i := range apiObject.IpRanges {
+			apiObject.IpRanges[i].Description = aws.String(description)
+		}
+
+		for i := range apiObject.Ipv6Ranges {
+			apiObject.Ipv6Ranges[i].Description = aws.String(description)
+		}
+
+		for i := range apiObject.PrefixListIds {
+			apiObject.PrefixListIds[i].Description = aws.String(description)
+		}
+
+		for i := range apiObject.UserIdGroupPairs {
+			apiObject.UserIdGroupPairs[i].Description = aws.String(description)
+		}
+	}
+
+	return apiObject
+}

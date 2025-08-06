@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/backup
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/backup"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/backup/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandFrameworkControls(ctx context.Context, tfList []any) []awstypes.FrameworkControl {
+	if len(tfList) == 0 {
+		return nil
+	}
+
+	apiObjects := []awstypes.FrameworkControl{}
+
+	for _, tfMapRaw := range tfList {
+		tfMap := tfMapRaw.(map[string]any)
+
+		// on some updates, there is an { ControlName: "" } element in Framework Controls.
+		// this element must be skipped to avoid the "A control name is required." error
+		// this happens for Step 7/7 for TestAccBackupFramework_updateControlScope
+		if v, ok := tfMap[names.AttrName].(string); ok && v == "" {
+			continue
+		}
+
+		apiObject := awstypes.FrameworkControl{
+			ControlName:  aws.String(tfMap[names.AttrName].(string)),
+			ControlScope: expandControlScope(ctx, tfMap[names.AttrScope].([]any)),
+		}
+
+		if v, ok := tfMap["input_parameter"]; ok && v.(*schema.Set).Len() > 0 {
+			apiObject.ControlInputParameters = expandControlInputParameters(tfMap["input_parameter"].(*schema.Set).List())
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects
+}

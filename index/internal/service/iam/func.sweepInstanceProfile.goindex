@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepInstanceProfile(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.IAMClient(ctx)
+
+	var sweepResources []sweep.Sweepable
+	var sweeperErrs *multierror.Error
+
+	pages := iam.NewListInstanceProfilesPaginator(conn, &iam.ListInstanceProfilesInput{})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, instanceProfile := range page.InstanceProfiles {
+			name := aws.ToString(instanceProfile.InstanceProfileName)
+
+			if !roleNameFilter(name) {
+				tflog.Warn(ctx, "Skipping resource", map[string]any{
+					"skip_reason":           "no match on allow-list",
+					"instance_profile_name": name,
+				})
+				continue
+			}
+
+			r := resourceInstanceProfile()
+			d := r.Data(nil)
+			d.SetId(name)
+
+			roles := instanceProfile.Roles
+			if r := len(roles); r > 1 {
+				sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("unexpected number of roles for IAM Instance Profile (%s): %d", name, r))
+			} else if r == 1 {
+				d.Set(names.AttrRole, roles[0].RoleName)
+			}
+
+			sweepResources = append(sweepResources, sdk.NewSweepResource(r, d, client))
+		}
+	}
+
+	return sweepResources, nil
+}

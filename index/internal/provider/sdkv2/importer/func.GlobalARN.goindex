@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func GlobalARN(_ context.Context, rd *schema.ResourceData, attrName string, duplicateAttrs []string) error {
+	if rd.Id() != "" {
+		_, err := arn.Parse(rd.Id())
+		if err != nil {
+			return fmt.Errorf("could not parse import ID %q as ARN: %s", rd.Id(), err)
+		}
+		rd.Set(attrName, rd.Id())
+		for _, attr := range duplicateAttrs {
+			setAttribute(rd, attr, rd.Id())
+		}
+
+		return nil
+	}
+
+	identity, err := rd.Identity()
+	if err != nil {
+		return err
+	}
+
+	arnRaw, ok := identity.GetOk(attrName)
+	if !ok {
+		return fmt.Errorf("identity attribute %q is required", attrName)
+	}
+
+	arnVal, ok := arnRaw.(string)
+	if !ok {
+		return fmt.Errorf("identity attribute %q: expected string, got %T", attrName, arnRaw)
+	}
+
+	_, err = arn.Parse(arnVal)
+	if err != nil {
+		return fmt.Errorf("identity attribute %q: could not parse %q as ARN: %s", attrName, arnVal, err)
+	}
+
+	rd.Set(attrName, arnVal)
+	for _, attr := range duplicateAttrs {
+		setAttribute(rd, attr, arnVal)
+	}
+
+	return nil
+}

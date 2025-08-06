@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appconfig
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appconfig"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appconfig/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHostedConfigurationVersionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppConfigClient(ctx)
+
+	applicationID, configurationProfileID, versionNumber, err := hostedConfigurationVersionParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	output, err := findHostedConfigurationVersionByThreePartKey(ctx, conn, applicationID, configurationProfileID, versionNumber)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] AppConfig Hosted Configuration Version (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading AppConfig Hosted Configuration Version (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrApplicationID, output.ApplicationId)
+	d.Set(names.AttrARN, hostedConfigurationVersionARN(ctx, meta.(*conns.AWSClient), applicationID, configurationProfileID, versionNumber))
+	d.Set("configuration_profile_id", output.ConfigurationProfileId)
+	d.Set(names.AttrContent, string(output.Content))
+	d.Set(names.AttrContentType, output.ContentType)
+	d.Set(names.AttrDescription, output.Description)
+	d.Set("version_number", output.VersionNumber)
+
+	return diags
+}

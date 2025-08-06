@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticsearch
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticsearchservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVPCEndpointRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElasticsearchClient(ctx)
+
+	endpoint, err := findVPCEndpointByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Elasticsearch VPC Endpoint (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Elasticsearch VPC Endpoint (%s): %s", d.Id(), err)
+	}
+
+	d.Set("domain_arn", endpoint.DomainArn)
+	d.Set(names.AttrEndpoint, endpoint.Endpoint)
+	if endpoint.VpcOptions != nil {
+		if err := d.Set("vpc_options", []any{flattenVPCDerivedInfo(endpoint.VpcOptions)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting vpc_options: %s", err)
+		}
+	} else {
+		d.Set("vpc_options", nil)
+	}
+
+	return diags
+}

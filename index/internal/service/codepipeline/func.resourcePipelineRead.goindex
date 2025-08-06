@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codepipeline
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codepipeline"
+	"github.com/aws/aws-sdk-go-v2/service/codepipeline/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePipelineRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).CodePipelineClient(ctx)
+
+	output, err := findPipelineByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CodePipeline Pipeline %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CodePipeline Pipeline (%s): %s", d.Id(), err)
+	}
+
+	metadata := output.Metadata
+	pipeline := output.Pipeline
+	arn := aws.ToString(metadata.PipelineArn)
+	d.Set(names.AttrARN, arn)
+	if pipeline.ArtifactStore != nil {
+		if err := d.Set("artifact_store", []any{flattenArtifactStore(pipeline.ArtifactStore)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting artifact_store: %s", err)
+		}
+	} else if pipeline.ArtifactStores != nil {
+		if err := d.Set("artifact_store", flattenArtifactStores(pipeline.ArtifactStores)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting artifact_store: %s", err)
+		}
+	}
+	d.Set("execution_mode", pipeline.ExecutionMode)
+	d.Set(names.AttrName, pipeline.Name)
+	d.Set("pipeline_type", pipeline.PipelineType)
+	d.Set(names.AttrRoleARN, pipeline.RoleArn)
+	if err := d.Set(names.AttrStage, flattenStageDeclarations(d, pipeline.Stages)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting stage: %s", err)
+	}
+	d.Set("trigger", d.Get("trigger"))
+	if err := d.Set("trigger_all", flattenTriggerDeclarations(pipeline.Triggers)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting trigger_all: %s", err)
+	}
+	if err := d.Set("variable", flattenVariableDeclarations(pipeline.Variables)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting variable: %s", err)
+	}
+
+	return diags
+}

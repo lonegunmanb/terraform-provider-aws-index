@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kms
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func grantParseResourceID(id string) (string, string, error) {
+	if arn.IsARN(id) {
+		arnParts := strings.Split(id, "/")
+		if len(arnParts) != 2 {
+			return "", "", fmt.Errorf("unexpected format of ARN (%[1]s), expected KeyID%[2]sGrantID", id, grantResourceIDSeparator)
+		}
+		arnPrefix := arnParts[0]
+		parts := strings.Split(arnParts[1], grantResourceIDSeparator)
+		if len(parts) != 2 {
+			return "", "", fmt.Errorf("unexpected format of ID (%[1]s), expected KeyID%[2]sGrantID", id, grantResourceIDSeparator)
+		}
+		return fmt.Sprintf("%s/%s", arnPrefix, parts[0]), parts[1], nil
+	} else {
+		parts := strings.Split(id, grantResourceIDSeparator)
+		if len(parts) != 2 {
+			return "", "", fmt.Errorf("unexpected format of ID (%[1]s), expected KeyID%[2]sGrantID", id, grantResourceIDSeparator)
+		}
+		return parts[0], parts[1], nil
+	}
+}

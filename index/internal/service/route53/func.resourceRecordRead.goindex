@@ -1,0 +1,132 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRecordRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	record, fqdn, err := findResourceRecordSetByFourPartKey(ctx, conn, cleanZoneID(d.Get("zone_id").(string)), d.Get(names.AttrName).(string), d.Get(names.AttrType).(string), d.Get("set_identifier").(string))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Route 53 Record (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Route 53 Record (%s): %s", d.Id(), err)
+	}
+
+	if alias := record.AliasTarget; alias != nil {
+		tfList := []any{map[string]any{
+			"evaluate_target_health": alias.EvaluateTargetHealth,
+			names.AttrName:           normalizeAliasDomainName(aws.ToString(alias.DNSName)),
+			"zone_id":                aws.ToString(alias.HostedZoneId),
+		}}
+
+		if err := d.Set(names.AttrAlias, tfList); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting alias: %s", err)
+		}
+	}
+	if cidrRoutingConfig := record.CidrRoutingConfig; cidrRoutingConfig != nil {
+		tfList := []any{map[string]any{
+			"collection_id": aws.ToString(cidrRoutingConfig.CollectionId),
+			"location_name": aws.ToString(cidrRoutingConfig.LocationName),
+		}}
+
+		if err := d.Set("cidr_routing_policy", tfList); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting cidr_routing_policy: %s", err)
+		}
+	}
+	if failover := record.Failover; failover != "" {
+		tfList := []any{map[string]any{
+			names.AttrType: failover,
+		}}
+
+		if err := d.Set("failover_routing_policy", tfList); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting failover_routing_policy: %s", err)
+		}
+	}
+	// findResourceRecordSetByFourPartKey returns the FQDN in API-normalized form.
+	// For backwards compatibility, restore any '*' as the leftmost label in the domain name.
+	// \052 is the octal representation of '*'.
+	if v := aws.ToString(fqdn); strings.HasPrefix(v, `\052.`) {
+		fqdn = aws.String(`*.` + strings.TrimPrefix(v, `\052.`))
+	}
+	d.Set("fqdn", fqdn)
+	if geoLocation := record.GeoLocation; geoLocation != nil {
+		tfList := []any{map[string]any{
+			"continent":   aws.ToString(geoLocation.ContinentCode),
+			"country":     aws.ToString(geoLocation.CountryCode),
+			"subdivision": aws.ToString(geoLocation.SubdivisionCode),
+		}}
+
+		if err := d.Set("geolocation_routing_policy", tfList); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting geolocation_routing_policy: %s", err)
+		}
+	}
+	if geoProximityLocation := record.GeoProximityLocation; geoProximityLocation != nil {
+		tfList := []any{map[string]any{
+			"aws_region":       aws.ToString(record.GeoProximityLocation.AWSRegion),
+			"bias":             aws.ToInt32((record.GeoProximityLocation.Bias)),
+			"coordinates":      flattenCoordinate(record.GeoProximityLocation.Coordinates),
+			"local_zone_group": aws.ToString(record.GeoProximityLocation.LocalZoneGroup),
+		}}
+
+		if err := d.Set("geoproximity_routing_policy", tfList); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting geoproximity_routing_policy: %s", err)
+		}
+	}
+	d.Set("health_check_id", record.HealthCheckId)
+	if region := record.Region; region != "" {
+		tfList := []any{map[string]any{
+			names.AttrRegion: region,
+		}}
+
+		if err := d.Set("latency_routing_policy", tfList); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting latency_routing_policy: %s", err)
+		}
+	}
+	d.Set("multivalue_answer_routing_policy", record.MultiValueAnswer)
+	if err := d.Set("records", flattenResourceRecords(record.ResourceRecords, record.Type)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting records: %s", err)
+	}
+
+	d.Set("set_identifier", record.SetIdentifier)
+	d.Set("ttl", record.TTL)
+	if weight := record.Weight; weight != nil {
+		tfList := []any{map[string]any{
+			names.AttrWeight: aws.ToInt64((record.Weight)),
+		}}
+
+		if err := d.Set("weighted_routing_policy", tfList); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting weighted_routing_policy: %s", err)
+		}
+	}
+
+	return diags
+}

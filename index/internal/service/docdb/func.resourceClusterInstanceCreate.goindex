@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/docdb
+import (
+	"context"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/docdb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/docdb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterInstanceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DocDBClient(ctx)
+
+	identifier := create.NewNameGenerator(
+		create.WithConfiguredName(d.Get(names.AttrIdentifier).(string)),
+		create.WithConfiguredPrefix(d.Get("identifier_prefix").(string)),
+		create.WithDefaultPrefix("tf-"),
+	).Generate()
+	input := &docdb.CreateDBInstanceInput{
+		AutoMinorVersionUpgrade: aws.Bool(d.Get(names.AttrAutoMinorVersionUpgrade).(bool)),
+		DBClusterIdentifier:     aws.String(d.Get(names.AttrClusterIdentifier).(string)),
+		DBInstanceClass:         aws.String(d.Get("instance_class").(string)),
+		DBInstanceIdentifier:    aws.String(identifier),
+		Engine:                  aws.String(d.Get(names.AttrEngine).(string)),
+		PromotionTier:           aws.Int32(int32(d.Get("promotion_tier").(int))),
+		Tags:                    getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrAvailabilityZone); ok {
+		input.AvailabilityZone = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("copy_tags_to_snapshot"); ok {
+		input.CopyTagsToSnapshot = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("enable_performance_insights"); ok {
+		input.EnablePerformanceInsights = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("performance_insights_kms_key_id"); ok {
+		input.PerformanceInsightsKMSKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrPreferredMaintenanceWindow); ok {
+		input.PreferredMaintenanceWindow = aws.String(v.(string))
+	}
+
+	_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateDBInstance(ctx, input)
+	}, errCodeInvalidParameterValue, "IAM role ARN value is invalid or does not include the required permissions")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DocumentDB Cluster Instance (%s): %s", identifier, err)
+	}
+
+	d.SetId(identifier)
+
+	if _, err := waitDBInstanceAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DocumentDB Cluster Instance (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceClusterInstanceRead(ctx, d, meta)...)
+}

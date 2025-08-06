@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func buildCoreNetworkBasePolicyDocument(regions []any) (string, error) {
+	edgeLocations := make([]*coreNetworkPolicyCoreNetworkEdgeLocation, len(regions))
+	for i, location := range regions {
+		edgeLocations[i] = &coreNetworkPolicyCoreNetworkEdgeLocation{Location: location.(string)}
+	}
+
+	basePolicy := &coreNetworkPolicyDocument{
+		Version: "2021.12",
+		CoreNetworkConfiguration: &coreNetworkPolicyCoreNetworkConfiguration{
+			AsnRanges:     coreNetworkPolicyExpandStringList([]any{"64512-65534"}),
+			EdgeLocations: edgeLocations,
+		},
+		Segments: []*coreNetworkPolicySegment{
+			{
+				Name:        "segment",
+				Description: "base-policy",
+			},
+		},
+	}
+
+	b, err := json.MarshalIndent(basePolicy, "", "  ")
+	if err != nil {
+		// should never happen if the above code is correct
+		return "", fmt.Errorf("building base policy document: %s", err)
+	}
+
+	return string(b), nil
+}

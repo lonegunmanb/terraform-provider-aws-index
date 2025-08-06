@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketOwnershipControlsCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+	input := &s3.PutBucketOwnershipControlsInput{
+		Bucket: aws.String(bucket),
+		OwnershipControls: &types.OwnershipControls{
+			Rules: expandOwnershipControlsRules(d.Get(names.AttrRule).([]any)),
+		},
+	}
+
+	_, err := conn.PutBucketOwnershipControls(ctx, input)
+
+	if tfawserr.ErrMessageContains(err, errCodeInvalidArgument, "OwnershipControls is not valid, expected CreateBucketConfiguration") {
+		err = errDirectoryBucket(err)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating S3 Bucket (%s) Ownership Controls: %s", bucket, err)
+	}
+
+	d.SetId(bucket)
+
+	_, err = tfresource.RetryWhenNotFound(ctx, bucketPropagationTimeout, func() (any, error) {
+		return findOwnershipControls(ctx, conn, bucket)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for S3 Bucket Ownership Controls (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceBucketOwnershipControlsRead(ctx, d, meta)...)
+}

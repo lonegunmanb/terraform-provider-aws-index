@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kms
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func updateKeyRotationEnabled(ctx context.Context, conn *kms.Client, resourceTypeName, keyID string, enabled bool, rotationPeriod int) error {
+	var action string
+
+	updateFunc := func() (any, error) {
+		var err error
+
+		if enabled {
+			action = "enabling"
+			input := kms.EnableKeyRotationInput{
+				KeyId: aws.String(keyID),
+			}
+			if rotationPeriod > 0 {
+				input.RotationPeriodInDays = aws.Int32(int32(rotationPeriod))
+			}
+			_, err = conn.EnableKeyRotation(ctx, &input)
+		} else {
+			action = "disabling"
+			_, err = conn.DisableKeyRotation(ctx, &kms.DisableKeyRotationInput{
+				KeyId: aws.String(keyID),
+			})
+		}
+
+		return nil, err
+	}
+
+	if _, err := tfresource.RetryWhenIsOneOf2[*awstypes.NotFoundException, *awstypes.DisabledException](ctx, keyRotationUpdatedTimeout, updateFunc); err != nil {
+		return fmt.Errorf("%s %s (%s) rotation: %w", action, resourceTypeName, keyID, err)
+	}
+
+	// Wait for propagation since KMS is eventually consistent.
+	if err := waitKeyRotationEnabledPropagated(ctx, conn, keyID, enabled, rotationPeriod); err != nil {
+		return fmt.Errorf("waiting for %s (%s) rotation update: %w", resourceTypeName, keyID, err)
+	}
+
+	return nil
+}

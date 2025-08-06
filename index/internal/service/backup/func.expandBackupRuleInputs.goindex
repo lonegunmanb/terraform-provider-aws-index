@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/backup
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/backup"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/backup/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandBackupRuleInputs(ctx context.Context, tfList []any) []awstypes.BackupRuleInput { // nosemgrep:ci.backup-in-func-name
+	apiObjects := []awstypes.BackupRuleInput{}
+
+	for _, tfMapRaw := range tfList {
+		tfMap := tfMapRaw.(map[string]any)
+		apiObject := awstypes.BackupRuleInput{}
+
+		if v, ok := tfMap["completion_window"].(int); ok {
+			apiObject.CompletionWindowMinutes = aws.Int64(int64(v))
+		}
+		if v := expandCopyActions(tfMap["copy_action"].(*schema.Set).List()); len(v) > 0 {
+			apiObject.CopyActions = v
+		}
+		if v, ok := tfMap["enable_continuous_backup"].(bool); ok {
+			apiObject.EnableContinuousBackup = aws.Bool(v)
+		}
+		if v, ok := tfMap["lifecycle"].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.Lifecycle = expandLifecycle(v[0].(map[string]any))
+		}
+		if v, ok := tfMap["recovery_point_tags"].(map[string]any); ok && len(v) > 0 {
+			apiObject.RecoveryPointTags = svcTags(tftags.New(ctx, v).IgnoreAWS())
+		}
+		if v, ok := tfMap["rule_name"].(string); ok && v != "" {
+			apiObject.RuleName = aws.String(v)
+		} else {
+			continue
+		}
+		if v, ok := tfMap[names.AttrSchedule].(string); ok && v != "" {
+			apiObject.ScheduleExpression = aws.String(v)
+		}
+		if v, ok := tfMap["schedule_expression_timezone"].(string); ok && v != "" {
+			apiObject.ScheduleExpressionTimezone = aws.String(v)
+		}
+		if v, ok := tfMap["start_window"].(int); ok {
+			apiObject.StartWindowMinutes = aws.Int64(int64(v))
+		}
+		if v, ok := tfMap["target_vault_name"].(string); ok && v != "" {
+			apiObject.TargetBackupVaultName = aws.String(v)
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects
+}

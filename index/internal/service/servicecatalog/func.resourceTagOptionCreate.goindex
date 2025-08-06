@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTagOptionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	input := &servicecatalog.CreateTagOptionInput{
+		Key:   aws.String(d.Get(names.AttrKey).(string)),
+		Value: aws.String(d.Get(names.AttrValue).(string)),
+	}
+
+	var output *servicecatalog.CreateTagOptionOutput
+	err := retry.RetryContext(ctx, d.Timeout(schema.TimeoutCreate), func() *retry.RetryError {
+		var err error
+
+		output, err = conn.CreateTagOption(ctx, input)
+
+		if errs.IsAErrorMessageContains[*awstypes.InvalidParametersException](err, "profile does not exist") {
+			return retry.RetryableError(err)
+		}
+
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		output, err = conn.CreateTagOption(ctx, input)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Service Catalog Tag Option: %s", err)
+	}
+
+	if output == nil || output.TagOptionDetail == nil {
+		return sdkdiag.AppendErrorf(diags, "creating Service Catalog Tag Option: empty response")
+	}
+
+	d.SetId(aws.ToString(output.TagOptionDetail.Id))
+
+	// Active is not a field of CreateTagOption but is a field of UpdateTagOption. In order to create an
+	// inactive Tag Option, you must create an active one and then update it (but calling this resource's
+	// Update will error with ErrCodeDuplicateResourceException because Value is unchanged).
+	if v, ok := d.GetOk("active"); !ok {
+		_, err = conn.UpdateTagOption(ctx, &servicecatalog.UpdateTagOptionInput{
+			Id:     aws.String(d.Id()),
+			Active: aws.Bool(v.(bool)),
+		})
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating Service Catalog Tag Option, updating active (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceTagOptionRead(ctx, d, meta)...)
+}

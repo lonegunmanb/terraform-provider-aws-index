@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/verifiedpermissions
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/verifiedpermissions"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/verifiedpermissions/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenConfiguration(ctx context.Context, apiObject awstypes.ConfigurationDetail) (fwtypes.ListNestedObjectValueOf[configuration], diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if apiObject == nil {
+		return fwtypes.NewListNestedObjectValueOfNull[configuration](ctx), diags
+	}
+
+	obj := &configuration{}
+
+	switch v := apiObject.(type) {
+	case *awstypes.ConfigurationDetailMemberCognitoUserPoolConfiguration:
+		var cognitoUserPoolConfigurationData cognitoUserPoolConfiguration
+		d := flex.Flatten(ctx, v.Value, &cognitoUserPoolConfigurationData)
+		diags.Append(d...)
+
+		obj.CognitoUserPoolConfiguration = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &cognitoUserPoolConfigurationData)
+		obj.OpenIDConnectConfiguration = fwtypes.NewListNestedObjectValueOfNull[openIDConnectConfiguration](ctx)
+	case *awstypes.ConfigurationDetailMemberOpenIdConnectConfiguration:
+		var openIDConnectConfigurationData openIDConnectConfiguration
+		d := flex.Flatten(ctx, v.Value, &openIDConnectConfigurationData)
+		diags.Append(d...)
+
+		// Manually set as Union types are not supported by AutoFlex yet.
+		tokenSelectionData, d := flattenTokenSelection(ctx, v.Value.TokenSelection)
+		diags.Append(d...)
+		openIDConnectConfigurationData.TokenSelection = tokenSelectionData
+
+		obj.CognitoUserPoolConfiguration = fwtypes.NewListNestedObjectValueOfNull[cognitoUserPoolConfiguration](ctx)
+		obj.OpenIDConnectConfiguration = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &openIDConnectConfigurationData)
+	default:
+		log.Println("union is nil or unknown type")
+	}
+
+	return fwtypes.NewListNestedObjectValueOfPtrMust(ctx, obj), diags
+}

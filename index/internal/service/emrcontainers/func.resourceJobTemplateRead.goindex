@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emrcontainers
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emrcontainers"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emrcontainers/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceJobTemplateRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRContainersClient(ctx)
+
+	vc, err := findJobTemplateByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EMR Containers Job Template %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EMR Containers Job Template (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, vc.Arn)
+	if vc.JobTemplateData != nil {
+		if err := d.Set("job_template_data", []any{flattenJobTemplateData(vc.JobTemplateData)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting job_template_data: %s", err)
+		}
+	} else {
+		d.Set("job_template_data", nil)
+	}
+	d.Set(names.AttrKMSKeyARN, vc.KmsKeyArn)
+	d.Set(names.AttrName, vc.Name)
+
+	setTagsOut(ctx, vc.Tags)
+
+	return diags
+}

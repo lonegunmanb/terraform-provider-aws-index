@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/auditmanager
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/auditmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/auditmanager/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *accountRegistrationResource) registerAccount(ctx context.Context, data accountRegistrationResourceModel) (*auditmanager.GetAccountStatusOutput, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	var input auditmanager.RegisterAccountInput
+	diags.Append(fwflex.Expand(ctx, data, &input)...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	conn := r.Meta().AuditManagerClient(ctx)
+	id := r.Meta().Region(ctx)
+
+	_, err := conn.RegisterAccount(ctx, &input)
+
+	if err != nil {
+		diags.AddError(fmt.Sprintf("registering Audit Manager Account (%s)", id), err.Error())
+
+		return nil, diags
+	}
+
+	output, err := waitAccountRegistered(ctx, conn)
+
+	if err != nil {
+		diags.AddError(fmt.Sprintf("waiting for Audit Manager Account (%s) registered", id), err.Error())
+
+		return nil, diags
+	}
+
+	return output, diags
+}

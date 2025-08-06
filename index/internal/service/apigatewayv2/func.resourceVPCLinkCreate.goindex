@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVPCLinkCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayV2Client(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &apigatewayv2.CreateVpcLinkInput{
+		Name:             aws.String(name),
+		SecurityGroupIds: flex.ExpandStringValueSet(d.Get(names.AttrSecurityGroupIDs).(*schema.Set)),
+		SubnetIds:        flex.ExpandStringValueSet(d.Get(names.AttrSubnetIDs).(*schema.Set)),
+		Tags:             getTagsIn(ctx),
+	}
+
+	output, err := conn.CreateVpcLink(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway v2 VPC Link (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.VpcLinkId))
+
+	if _, err := waitVPCLinkAvailable(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for API Gateway v2 VPC Link (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceVPCLinkRead(ctx, d, meta)...)
+}

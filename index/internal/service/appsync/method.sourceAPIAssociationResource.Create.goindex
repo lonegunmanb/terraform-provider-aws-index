@@ -1,0 +1,108 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appsync
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appsync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	autoflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *sourceAPIAssociationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	conn := r.Meta().AppSyncClient(ctx)
+
+	var plan sourceAPIAssociationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	in := &appsync.AssociateSourceGraphqlApiInput{}
+
+	response.Diagnostics.Append(flex.Expand(ctx, plan, in)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.SourceAPIID.IsNull() && !plan.SourceAPIID.IsUnknown() {
+		in.SourceApiIdentifier = flex.StringFromFramework(ctx, plan.SourceAPIID)
+	}
+
+	if !plan.SourceAPIARN.IsNull() && !plan.SourceAPIARN.IsUnknown() {
+		in.SourceApiIdentifier = flex.StringFromFramework(ctx, plan.SourceAPIARN)
+	}
+
+	if !plan.MergedAPIID.IsNull() && !plan.MergedAPIID.IsUnknown() {
+		in.MergedApiIdentifier = flex.StringFromFramework(ctx, plan.MergedAPIID)
+	}
+
+	if !plan.MergedAPIARN.IsNull() && !plan.MergedAPIARN.IsUnknown() {
+		in.MergedApiIdentifier = flex.StringFromFramework(ctx, plan.MergedAPIARN)
+	}
+
+	out, err := conn.AssociateSourceGraphqlApi(ctx, in)
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.AppSync, create.ErrActionCreating, resNameSourceAPIAssociation, plan.MergedAPIID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+	if out == nil || out.SourceApiAssociation == nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.AppSync, create.ErrActionCreating, resNameSourceAPIAssociation, plan.MergedAPIID.String(), nil),
+			errors.New("empty output").Error(),
+		)
+		return
+	}
+
+	plan.AssociationID = flex.StringToFramework(ctx, out.SourceApiAssociation.AssociationId)
+	plan.MergedAPIID = flex.StringToFramework(ctx, out.SourceApiAssociation.MergedApiId)
+	id, err := plan.setID()
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.AppSync, create.ErrActionFlatteningResourceId, resNameSourceAPIAssociation, plan.MergedAPIID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+	plan.ID = types.StringValue(id)
+
+	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
+	_, err = waitSourceAPIAssociationCreated(ctx, conn, plan.AssociationID.ValueString(), aws.ToString(out.SourceApiAssociation.MergedApiArn), createTimeout)
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.AppSync, create.ErrActionWaitingForCreation, resNameSourceAPIAssociation, plan.MergedAPIID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	response.Diagnostics.Append(flex.Flatten(ctx, out.SourceApiAssociation, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, plan)...)
+}

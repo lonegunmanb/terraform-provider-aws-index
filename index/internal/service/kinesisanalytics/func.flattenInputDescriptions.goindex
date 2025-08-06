@@ -1,0 +1,95 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kinesisanalytics
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kinesisanalytics"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kinesisanalytics/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenInputDescriptions(inputDescriptions []awstypes.InputDescription) []any {
+	if len(inputDescriptions) == 0 {
+		return []any{}
+	}
+
+	inputDescription := inputDescriptions[0]
+
+	mInput := map[string]any{
+		names.AttrID:         aws.ToString(inputDescription.InputId),
+		names.AttrNamePrefix: aws.ToString(inputDescription.NamePrefix),
+		"stream_names":       flex.FlattenStringValueList(inputDescription.InAppStreamNames),
+	}
+
+	if inputParallelism := inputDescription.InputParallelism; inputParallelism != nil {
+		mInputParallelism := map[string]any{
+			"count": int(aws.ToInt32(inputParallelism.Count)),
+		}
+
+		mInput["parallelism"] = []any{mInputParallelism}
+	}
+
+	if inputSchema := inputDescription.InputSchema; inputSchema != nil {
+		mInput[names.AttrSchema] = flattenSourceSchema(inputSchema)
+	}
+
+	if inputProcessingConfigurationDescription := inputDescription.InputProcessingConfigurationDescription; inputProcessingConfigurationDescription != nil {
+		mInputProcessingConfiguration := map[string]any{}
+
+		if inputLambdaProcessorDescription := inputProcessingConfigurationDescription.InputLambdaProcessorDescription; inputLambdaProcessorDescription != nil {
+			mInputLambdaProcessor := map[string]any{
+				names.AttrResourceARN: aws.ToString(inputLambdaProcessorDescription.ResourceARN),
+				names.AttrRoleARN:     aws.ToString(inputLambdaProcessorDescription.RoleARN),
+			}
+
+			mInputProcessingConfiguration["lambda"] = []any{mInputLambdaProcessor}
+		}
+
+		mInput["processing_configuration"] = []any{mInputProcessingConfiguration}
+	}
+
+	if inputStartingPositionConfiguration := inputDescription.InputStartingPositionConfiguration; inputStartingPositionConfiguration != nil {
+		mInputStartingPositionConfiguration := map[string]any{
+			"starting_position": string(inputStartingPositionConfiguration.InputStartingPosition),
+		}
+
+		mInput["starting_position_configuration"] = []any{mInputStartingPositionConfiguration}
+	}
+
+	if kinesisFirehoseInputDescription := inputDescription.KinesisFirehoseInputDescription; kinesisFirehoseInputDescription != nil {
+		mKinesisFirehoseInput := map[string]any{
+			names.AttrResourceARN: aws.ToString(kinesisFirehoseInputDescription.ResourceARN),
+			names.AttrRoleARN:     aws.ToString(kinesisFirehoseInputDescription.RoleARN),
+		}
+
+		mInput["kinesis_firehose"] = []any{mKinesisFirehoseInput}
+	}
+
+	if kinesisStreamsInputDescription := inputDescription.KinesisStreamsInputDescription; kinesisStreamsInputDescription != nil {
+		mKinesisStreamsInput := map[string]any{
+			names.AttrResourceARN: aws.ToString(kinesisStreamsInputDescription.ResourceARN),
+			names.AttrRoleARN:     aws.ToString(kinesisStreamsInputDescription.RoleARN),
+		}
+
+		mInput["kinesis_stream"] = []any{mKinesisStreamsInput}
+	}
+
+	return []any{mInput}
+}

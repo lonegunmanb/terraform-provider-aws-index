@@ -1,0 +1,108 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mq
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mq"
+	"github.com/aws/aws-sdk-go-v2/service/mq/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mitchellh/copystructure"
+)
+func resourceBrokerRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).MQClient(ctx)
+
+	output, err := findBrokerByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && (tfresource.NotFound(err) || errs.IsA[*types.ForbiddenException](err)) {
+		log.Printf("[WARN] MQ Broker (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading MQ Broker (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, output.BrokerArn)
+	d.Set("authentication_strategy", output.AuthenticationStrategy)
+	d.Set(names.AttrAutoMinorVersionUpgrade, output.AutoMinorVersionUpgrade)
+	d.Set("broker_name", output.BrokerName)
+	d.Set("data_replication_mode", output.DataReplicationMode)
+	d.Set("deployment_mode", output.DeploymentMode)
+	d.Set("engine_type", output.EngineType)
+	d.Set(names.AttrEngineVersion, normalizeEngineVersion(string(output.EngineType), aws.ToString(output.EngineVersion), aws.ToBool(output.AutoMinorVersionUpgrade)))
+	d.Set("host_instance_type", output.HostInstanceType)
+	d.Set("instances", flattenBrokerInstances(output.BrokerInstances))
+	d.Set("pending_data_replication_mode", output.PendingDataReplicationMode)
+	d.Set(names.AttrPubliclyAccessible, output.PubliclyAccessible)
+	d.Set(names.AttrSecurityGroups, output.SecurityGroups)
+	d.Set(names.AttrStorageType, output.StorageType)
+	d.Set(names.AttrSubnetIDs, output.SubnetIds)
+
+	if err := d.Set(names.AttrConfiguration, flattenConfiguration(output.Configurations)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting configuration: %s", err)
+	}
+
+	if err := d.Set("encryption_options", flattenEncryptionOptions(output.EncryptionOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting encryption_options: %s", err)
+	}
+
+	var password string
+	if v, ok := d.GetOk("ldap_server_metadata.0.service_account_password"); ok {
+		password = v.(string)
+	}
+
+	if err := d.Set("ldap_server_metadata", flattenLDAPServerMetadata(output.LdapServerMetadata, password)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ldap_server_metadata: %s", err)
+	}
+
+	if err := d.Set("logs", flattenLogs(output.Logs)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting logs: %s", err)
+	}
+
+	if err := d.Set("maintenance_window_start_time", flattenWeeklyStartTime(output.MaintenanceWindowStartTime)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting maintenance_window_start_time: %s", err)
+	}
+
+	rawUsers, err := expandUsersForBroker(ctx, conn, d.Id(), output.Users)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading MQ Broker (%s) users: %s", d.Id(), err)
+	}
+
+	if err := d.Set("user", flattenUsers(rawUsers, d.Get("user").(*schema.Set).List())); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting user: %s", err)
+	}
+
+	setTagsOut(ctx, output.Tags)
+
+	return diags
+}

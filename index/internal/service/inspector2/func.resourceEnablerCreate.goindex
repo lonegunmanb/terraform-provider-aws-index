@@ -1,0 +1,128 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mitchellh/mapstructure"
+)
+func resourceEnablerCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Inspector2Client(ctx)
+
+	accountIDs := getAccountIDs(d)
+
+	typeEnable := flex.ExpandStringyValueSet[types.ResourceScanType](d.Get("resource_types").(*schema.Set))
+
+	in := &inspector2.EnableInput{
+		AccountIds:    accountIDs,
+		ResourceTypes: typeEnable,
+		ClientToken:   aws.String(sdkid.UniqueId()),
+	}
+
+	id := enablerID(accountIDs, typeEnable)
+
+	var out *inspector2.EnableOutput
+	err := tfresource.Retry(ctx, d.Timeout(schema.TimeoutCreate), func() *retry.RetryError {
+		var err error
+		out, err = conn.Enable(ctx, in)
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+		if out == nil {
+			return retry.RetryableError(tfresource.NewEmptyResultError(nil))
+		}
+
+		if len(out.FailedAccounts) == 0 {
+			return nil
+		}
+
+		err = errors.Join(tfslices.ApplyToAll(out.FailedAccounts, newFailedAccountError)...)
+
+		if tfslices.All(out.FailedAccounts, func(acct types.FailedAccount) bool {
+			switch acct.ErrorCode {
+			case types.ErrorCodeAccessDenied, // Account membership not propagated
+				types.ErrorCodeSsmThrottled,
+				types.ErrorCodeEventbridgeThrottled,
+				types.ErrorCodeEnableInProgress,
+				types.ErrorCodeDisableInProgress,
+				types.ErrorCodeSuspendInProgress:
+				return true
+			}
+			return false
+		}) {
+			return retry.RetryableError(err)
+		}
+
+		return retry.NonRetryableError(err)
+	})
+	if tfresource.TimedOut(err) {
+		out, err = conn.Enable(ctx, in)
+	}
+	if err != nil {
+		return create.AppendDiagError(diags, names.Inspector2, create.ErrActionCreating, ResNameEnabler, id, err)
+	}
+
+	d.SetId(id)
+
+	st, err := waitEnabled(ctx, conn, accountIDs, d.Timeout(schema.TimeoutCreate))
+	if err != nil {
+		return create.AppendDiagError(diags, names.Inspector2, create.ErrActionWaitingForCreation, ResNameEnabler, d.Id(), err)
+	}
+
+	var disableAccountIDs []string
+	for acctID, acctStatus := range st {
+		resourceStatuses := acctStatus.ResourceStatuses
+		for _, resourceType := range typeEnable {
+			delete(resourceStatuses, resourceType)
+		}
+		for resourceType, typeStatus := range resourceStatuses {
+			if typeStatus == types.StatusDisabled {
+				delete(resourceStatuses, resourceType)
+			}
+		}
+		if len(resourceStatuses) > 0 {
+			disableAccountIDs = append(disableAccountIDs, acctID)
+			in := &inspector2.DisableInput{
+				AccountIds:    []string{acctID},
+				ResourceTypes: tfmaps.Keys(resourceStatuses),
+			}
+
+			_, err := conn.Disable(ctx, in)
+			if err != nil {
+				return create.AppendDiagError(diags, names.Inspector2, create.ErrActionUpdating, ResNameEnabler, id, err)
+			}
+		}
+	}
+
+	if len(disableAccountIDs) > 0 {
+		if err := waitDisabled(ctx, conn, disableAccountIDs, d.Timeout(schema.TimeoutCreate)); err != nil {
+			return create.AppendDiagError(diags, names.Inspector2, create.ErrActionWaitingForUpdate, ResNameEnabler, id, err)
+		}
+	}
+
+	return append(diags, resourceEnablerRead(ctx, d, meta)...)
+}

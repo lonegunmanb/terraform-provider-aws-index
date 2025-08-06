@@ -1,0 +1,99 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func validateTableAttributes(d *schema.ResourceDiff) error {
+	// Collect all indexed attributes
+	indexedAttributes := map[string]bool{}
+
+	if v, ok := d.GetOk("hash_key"); ok {
+		indexedAttributes[v.(string)] = true
+	}
+	if v, ok := d.GetOk("range_key"); ok {
+		indexedAttributes[v.(string)] = true
+	}
+	if v, ok := d.GetOk("local_secondary_index"); ok {
+		indexes := v.(*schema.Set).List()
+		for _, idx := range indexes {
+			index := idx.(map[string]any)
+			rangeKey := index["range_key"].(string)
+			indexedAttributes[rangeKey] = true
+		}
+	}
+	if v, ok := d.GetOk("global_secondary_index"); ok {
+		indexes := v.(*schema.Set).List()
+		for _, idx := range indexes {
+			index := idx.(map[string]any)
+
+			hashKey := index["hash_key"].(string)
+			indexedAttributes[hashKey] = true
+
+			if rk, ok := index["range_key"].(string); ok && rk != "" {
+				indexedAttributes[rk] = true
+			}
+		}
+	}
+
+	// Check if all indexed attributes have an attribute definition
+	attributes := d.Get("attribute").(*schema.Set).List()
+	unindexedAttributes := []string{}
+	for _, attr := range attributes {
+		attribute := attr.(map[string]any)
+		attrName := attribute[names.AttrName].(string)
+
+		if _, ok := indexedAttributes[attrName]; !ok {
+			unindexedAttributes = append(unindexedAttributes, attrName)
+		} else {
+			delete(indexedAttributes, attrName)
+		}
+	}
+
+	var errs []error
+
+	if len(unindexedAttributes) > 0 {
+		slices.Sort(unindexedAttributes)
+
+		errs = append(errs, fmt.Errorf("all attributes must be indexed. Unused attributes: %q", unindexedAttributes))
+	}
+
+	if len(indexedAttributes) > 0 {
+		missingIndexes := tfmaps.Keys(indexedAttributes)
+		slices.Sort(missingIndexes)
+
+		errs = append(errs, fmt.Errorf("all indexes must match a defined attribute. Unmatched indexes: %q", missingIndexes))
+	}
+
+	return errors.Join(errs...)
+}

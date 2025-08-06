@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kms
+import (
+	"context"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicaKeyUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KMSClient(ctx)
+
+	ctx = tflog.SetField(ctx, logging.KeyResourceId, d.Id())
+
+	if hasChange, enabled := d.HasChange(names.AttrEnabled), d.Get(names.AttrEnabled).(bool); hasChange && enabled {
+		// Enable before any attributes are modified.
+		if err := updateKeyEnabled(ctx, conn, "KMS Replica Key", d.Id(), enabled); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange(names.AttrDescription) {
+		if err := updateKeyDescription(ctx, conn, "KMS Replica Key", d.Id(), d.Get(names.AttrDescription).(string)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange(names.AttrPolicy) {
+		if err := updateKeyPolicy(ctx, conn, "KMS Replica Key", d.Id(), d.Get(names.AttrPolicy).(string), d.Get("bypass_policy_lockout_safety_check").(bool)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if hasChange, enabled := d.HasChange(names.AttrEnabled), d.Get(names.AttrEnabled).(bool); hasChange && !enabled {
+		// Only disable after all attributes have been modified because we cannot modify disabled keys.
+		if err := updateKeyEnabled(ctx, conn, "KMS Replica Key", d.Id(), enabled); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceReplicaKeyRead(ctx, d, meta)...)
+}

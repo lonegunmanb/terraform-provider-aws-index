@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/gamelift
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/gamelift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/gamelift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGameSessionQueueRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GameLiftClient(ctx)
+
+	sessionQueue, err := findGameSessionQueueByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] GameLift Game Session Queue %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading GameLift Game Session Queue (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, sessionQueue.GameSessionQueueArn)
+	d.Set("custom_event_data", sessionQueue.CustomEventData)
+	if err := d.Set("destinations", flattenGameSessionQueueDestinations(sessionQueue.Destinations)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting destinations: %s", err)
+	}
+	d.Set(names.AttrName, sessionQueue.Name)
+	d.Set("notification_target", sessionQueue.NotificationTarget)
+	if err := d.Set("player_latency_policy", flattenPlayerLatencyPolicies(sessionQueue.PlayerLatencyPolicies)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting player_latency_policy: %s", err)
+	}
+	d.Set("timeout_in_seconds", sessionQueue.TimeoutInSeconds)
+
+	return diags
+}

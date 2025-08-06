@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func instanceStateUpgradeV1(_ context.Context, rawState map[string]any, meta any) (map[string]any, error) {
+	if rawState == nil {
+		rawState = map[string]any{}
+	}
+
+	// Initialize cpu_options if it doesn't exist
+	cpuOptions, cpuOptionsExisted := rawState["cpu_options"].([]any)
+	if !cpuOptionsExisted || len(cpuOptions) == 0 || cpuOptions[0] == nil {
+		cpuOptions = []any{map[string]any{}}
+	}
+
+	// Get the cpu_options map
+	cpuOptionsMap := cpuOptions[0].(map[string]any)
+
+	// Move cpu_core_count to cpu_options if not already set
+	if _, exists := cpuOptionsMap["core_count"]; !exists {
+		if v, ok := rawState["cpu_core_count"]; ok {
+			cpuOptionsMap["core_count"] = v
+		}
+	}
+
+	// Move cpu_threads_per_core to cpu_options if not already set
+	if _, exists := cpuOptionsMap["threads_per_core"]; !exists {
+		if v, ok := rawState["cpu_threads_per_core"]; ok {
+			cpuOptionsMap["threads_per_core"] = v
+		}
+	}
+
+	delete(rawState, "cpu_core_count")
+	delete(rawState, "cpu_threads_per_core")
+
+	// If cpu_options didn't exist initially and remains empty, don't add it to rawState
+	if !cpuOptionsExisted && len(cpuOptionsMap) == 0 {
+		return rawState, nil
+	}
+
+	// Assign the updated cpu_options map back to rawState
+	rawState["cpu_options"] = []any{cpuOptionsMap}
+
+	return rawState, nil
+}

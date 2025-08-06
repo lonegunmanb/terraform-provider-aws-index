@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenAggregateConfiguration(apiObject *awstypes.AggregateConfiguration) map[string]any {
+	if apiObject == nil {
+		return nil
+	}
+
+	tfMap := map[string]any{}
+
+	var aggregates int32
+
+	if v := apiObject.Aggregates; v != nil {
+		tfMap["aggregates"] = v
+		//Need to get the count of aggregates for calculating constituents_per_aggregate
+		aggregates = int32(len(v))
+	}
+
+	if v := apiObject.TotalConstituents; v != nil {
+		tfMap["total_constituents"] = aws.ToInt32(v)
+		//Since the api only returns totalConstituents, need to calculate the value of ConstituentsPerAggregate so state will be consistent with config
+		if aggregates != 0 {
+			tfMap["constituents_per_aggregate"] = aws.ToInt32(v) / aggregates
+		} else {
+			tfMap["constituents_per_aggregate"] = aws.ToInt32(v)
+		}
+	}
+
+	return tfMap
+}

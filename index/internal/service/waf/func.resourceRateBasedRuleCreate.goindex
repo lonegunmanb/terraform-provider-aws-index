@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/waf
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/waf"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/waf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRateBasedRuleCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &waf.CreateRateBasedRuleInput{
+		MetricName: aws.String(d.Get(names.AttrMetricName).(string)),
+		Name:       aws.String(name),
+		RateKey:    awstypes.RateKey(d.Get("rate_key").(string)),
+		RateLimit:  aws.Int64(int64(d.Get("rate_limit").(int))),
+		Tags:       getTagsIn(ctx),
+	}
+
+	output, err := newRetryer(conn).RetryWithToken(ctx, func(token *string) (any, error) {
+		input.ChangeToken = token
+
+		return conn.CreateRateBasedRule(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating WAF Rate Based Rule (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.(*waf.CreateRateBasedRuleOutput).Rule.RuleId))
+
+	if newPredicates := d.Get("predicates").(*schema.Set).List(); len(newPredicates) > 0 {
+		if err := updateRateBasedRule(ctx, conn, d.Id(), []any{}, newPredicates, d.Get("rate_limit")); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceRateBasedRuleRead(ctx, d, meta)...)
+}

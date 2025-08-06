@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfigurationAggregatorPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConfigServiceClient(ctx)
+
+	if d.IsNewResource() || d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		name := d.Get(names.AttrName).(string)
+		input := &configservice.PutConfigurationAggregatorInput{
+			ConfigurationAggregatorName: aws.String(name),
+			Tags:                        getTagsIn(ctx),
+		}
+
+		if v, ok := d.GetOk("account_aggregation_source"); ok && len(v.([]any)) > 0 {
+			input.AccountAggregationSources = expandAccountAggregationSources(v.([]any))
+		}
+
+		if v, ok := d.GetOk("organization_aggregation_source"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.OrganizationAggregationSource = expandOrganizationAggregationSource(v.([]any)[0].(map[string]any))
+		}
+
+		output, err := conn.PutConfigurationAggregator(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "putting ConfigService Configuration Aggregator (%s): %s", name, err)
+		}
+
+		if d.IsNewResource() {
+			d.SetId(aws.ToString(output.ConfigurationAggregator.ConfigurationAggregatorName))
+		}
+	}
+
+	return append(diags, resourceConfigurationAggregatorRead(ctx, d, meta)...)
+}

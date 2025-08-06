@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTableExportCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	s3Bucket := d.Get(names.AttrS3Bucket).(string)
+	tableARN := d.Get("table_arn").(string)
+	input := &dynamodb.ExportTableToPointInTimeInput{
+		S3Bucket: aws.String(s3Bucket),
+		TableArn: aws.String(tableARN),
+	}
+
+	if v, ok := d.GetOk("export_format"); ok {
+		input.ExportFormat = awstypes.ExportFormat(v.(string))
+	}
+
+	if v, ok := d.GetOk("export_time"); ok {
+		v, _ := time.Parse(time.RFC3339, v.(string))
+		input.ExportTime = aws.Time(v)
+	}
+
+	if v, ok := d.GetOk("export_type"); ok {
+		input.ExportType = awstypes.ExportType(v.(string))
+	}
+
+	if v, ok := d.GetOk("incremental_export_specification"); ok {
+		input.IncrementalExportSpecification = expandIncrementalExportSpecification(v.([]any))
+	}
+
+	if v, ok := d.GetOk("s3_bucket_owner"); ok {
+		input.S3BucketOwner = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("s3_prefix"); ok {
+		input.S3Prefix = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("s3_sse_algorithm"); ok {
+		input.S3SseAlgorithm = awstypes.S3SseAlgorithm(v.(string))
+	}
+
+	if v, ok := d.GetOk("s3_sse_kms_key_id"); ok {
+		input.S3SseKmsKeyId = aws.String(v.(string))
+	}
+
+	output, err := conn.ExportTableToPointInTime(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "exporting DynamoDB Table (%s): %s", tableARN, err)
+	}
+
+	d.SetId(aws.ToString(output.ExportDescription.ExportArn))
+
+	if _, err := waitTableExportCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DynamoDB Table Export (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceTableExportRead(ctx, d, meta)...)
+}

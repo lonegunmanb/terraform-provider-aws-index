@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOpenZFSVolumeRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	volume, err := findOpenZFSVolumeByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] FSx for OpenZFS Volume (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading FSx for OpenZFS Volume (%s): %s", d.Id(), err)
+	}
+
+	openzfsConfig := volume.OpenZFSConfiguration
+
+	d.Set(names.AttrARN, volume.ResourceARN)
+	d.Set("copy_tags_to_snapshots", openzfsConfig.CopyTagsToSnapshots)
+	d.Set("data_compression_type", openzfsConfig.DataCompressionType)
+	d.Set(names.AttrName, volume.Name)
+	if err := d.Set("nfs_exports", flattenOpenZFSNfsExports(openzfsConfig.NfsExports)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting nfs_exports: %s", err)
+	}
+	if err := d.Set("origin_snapshot", flattenOpenZFSOriginSnapshotConfiguration(openzfsConfig.OriginSnapshot)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting nfs_exports: %s", err)
+	}
+	d.Set("parent_volume_id", openzfsConfig.ParentVolumeId)
+	d.Set("read_only", openzfsConfig.ReadOnly)
+	d.Set("record_size_kib", openzfsConfig.RecordSizeKiB)
+	d.Set("storage_capacity_quota_gib", openzfsConfig.StorageCapacityQuotaGiB)
+	d.Set("storage_capacity_reservation_gib", openzfsConfig.StorageCapacityReservationGiB)
+	if err := d.Set("user_and_group_quotas", flattenOpenZFSUserOrGroupQuotas(openzfsConfig.UserAndGroupQuotas)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting user_and_group_quotas: %s", err)
+	}
+	d.Set(names.AttrVolumeType, volume.VolumeType)
+
+	// Volume tags aren't set in the Describe response.
+	// setTagsOut(ctx, volume.Tags)
+
+	return diags
+}

@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amplify
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amplify"
+	"github.com/aws/aws-sdk-go-v2/service/amplify/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBranchRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AmplifyClient(ctx)
+
+	appID, branchName, err := branchParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	branch, err := findBranchByTwoPartKey(ctx, conn, appID, branchName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Amplify Branch (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Amplify Branch (%s): %s", d.Id(), err)
+	}
+
+	d.Set("app_id", appID)
+	d.Set(names.AttrARN, branch.BranchArn)
+	d.Set("associated_resources", branch.AssociatedResources)
+	d.Set("backend_environment_arn", branch.BackendEnvironmentArn)
+	d.Set("basic_auth_credentials", branch.BasicAuthCredentials)
+	d.Set("branch_name", branch.BranchName)
+	d.Set("custom_domains", branch.CustomDomains)
+	d.Set(names.AttrDescription, branch.Description)
+	d.Set("destination_branch", branch.DestinationBranch)
+	d.Set(names.AttrDisplayName, branch.DisplayName)
+	d.Set("enable_auto_build", branch.EnableAutoBuild)
+	d.Set("enable_basic_auth", branch.EnableBasicAuth)
+	d.Set("enable_notification", branch.EnableNotification)
+	d.Set("enable_performance_mode", branch.EnablePerformanceMode)
+	d.Set("enable_pull_request_preview", branch.EnablePullRequestPreview)
+	d.Set("environment_variables", branch.EnvironmentVariables)
+	d.Set("framework", branch.Framework)
+	d.Set("pull_request_environment_name", branch.PullRequestEnvironmentName)
+	d.Set("source_branch", branch.SourceBranch)
+	d.Set(names.AttrStage, branch.Stage)
+	d.Set("ttl", branch.Ttl)
+
+	setTagsOut(ctx, branch.Tags)
+
+	return diags
+}

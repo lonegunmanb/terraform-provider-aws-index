@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceStudioSessionMappingCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	var idOrName string
+	studioId := d.Get("studio_id").(string)
+	identityType := d.Get("identity_type").(string)
+	input := &emr.CreateStudioSessionMappingInput{
+		IdentityType:     awstypes.IdentityType(identityType),
+		SessionPolicyArn: aws.String(d.Get("session_policy_arn").(string)),
+		StudioId:         aws.String(studioId),
+	}
+
+	if v, ok := d.GetOk("identity_id"); ok {
+		input.IdentityId = aws.String(v.(string))
+		idOrName = v.(string)
+	}
+
+	if v, ok := d.GetOk("identity_name"); ok {
+		input.IdentityName = aws.String(v.(string))
+		idOrName = v.(string)
+	}
+
+	_, err := conn.CreateStudioSessionMapping(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EMR Studio Session Mapping: %s", err)
+	}
+
+	d.SetId(studioSessionMappingCreateResourceID(studioId, identityType, idOrName))
+
+	return append(diags, resourceStudioSessionMappingRead(ctx, d, meta)...)
+}

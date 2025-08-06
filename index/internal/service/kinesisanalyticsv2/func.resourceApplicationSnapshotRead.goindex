@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kinesisanalyticsv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesisanalyticsv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kinesisanalyticsv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceApplicationSnapshotRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KinesisAnalyticsV2Client(ctx)
+
+	applicationName, snapshotName, err := applicationSnapshotParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	snapshot, err := findSnapshotDetailsByTwoPartKey(ctx, conn, applicationName, snapshotName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Kinesis Analytics v2 Application Snapshot (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Kinesis Analytics v2 Application Snapshot (%s): %s", d.Id(), err)
+	}
+
+	d.Set("application_name", applicationName)
+	d.Set("application_version_id", snapshot.ApplicationVersionId)
+	d.Set("snapshot_creation_timestamp", aws.ToTime(snapshot.SnapshotCreationTimestamp).Format(time.RFC3339))
+	d.Set("snapshot_name", snapshotName)
+
+	return diags
+}

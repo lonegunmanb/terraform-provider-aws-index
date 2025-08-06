@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/chimesdkmediapipelines
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/chimesdkmediapipelines"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/chimesdkmediapipelines/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandRealTimeAlertRule(inputRule any) (awstypes.RealTimeAlertRule, error) {
+	inputRuleRaw, ok := inputRule.(map[string]any)
+	if !ok {
+		return awstypes.RealTimeAlertRule{}, nil
+	}
+	ruleType := awstypes.RealTimeAlertRuleType(inputRuleRaw[names.AttrType].(string))
+	apiRule := awstypes.RealTimeAlertRule{
+		Type: ruleType,
+	}
+
+	switch ruleType {
+	case awstypes.RealTimeAlertRuleTypeIssueDetection:
+		var configuration []any
+		if configuration, ok = inputRuleRaw["issue_detection_configuration"].([]any); !ok || len(configuration) != 1 {
+			return awstypes.RealTimeAlertRule{}, errConvertingRuleConfiguration
+		}
+
+		rawConfiguration := configuration[0].(map[string]any)
+		apiConfiguration := &awstypes.IssueDetectionConfiguration{
+			RuleName: aws.String(rawConfiguration["rule_name"].(string)),
+		}
+
+		apiRule.IssueDetectionConfiguration = apiConfiguration
+	case awstypes.RealTimeAlertRuleTypeKeywordMatch:
+		var configuration []any
+		if configuration, ok = inputRuleRaw["keyword_match_configuration"].([]any); !ok || len(configuration) != 1 {
+			return awstypes.RealTimeAlertRule{}, errConvertingRuleConfiguration
+		}
+
+		rawConfiguration := configuration[0].(map[string]any)
+		apiConfiguration := &awstypes.KeywordMatchConfiguration{
+			Keywords: flex.ExpandStringValueList((rawConfiguration["keywords"].([]any))),
+			RuleName: aws.String(rawConfiguration["rule_name"].(string)),
+		}
+
+		if negate, ok := rawConfiguration["negate"]; ok {
+			apiConfiguration.Negate = negate.(bool)
+		}
+
+		apiRule.KeywordMatchConfiguration = apiConfiguration
+	case awstypes.RealTimeAlertRuleTypeSentiment:
+		var configuration []any
+		if configuration, ok = inputRuleRaw["sentiment_configuration"].([]any); !ok || len(configuration) != 1 {
+			return awstypes.RealTimeAlertRule{}, errConvertingRuleConfiguration
+		}
+
+		rawConfiguration := configuration[0].(map[string]any)
+		apiConfiguration := &awstypes.SentimentConfiguration{
+			RuleName:      aws.String(rawConfiguration["rule_name"].(string)),
+			SentimentType: awstypes.SentimentType(rawConfiguration["sentiment_type"].(string)),
+			TimePeriod:    aws.Int32(int32(rawConfiguration["time_period"].(int))),
+		}
+
+		apiRule.SentimentConfiguration = apiConfiguration
+	}
+	return apiRule, nil
+}

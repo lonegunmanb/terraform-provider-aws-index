@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amp
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amp"
+	"github.com/aws/aws-sdk-go-v2/service/amp/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitAlertManagerDefinitionCreated(ctx context.Context, conn *amp.Client, id string) (*types.AlertManagerDefinitionDescription, error) {
+	const (
+		timeout = 5 * time.Minute
+	)
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(types.AlertManagerDefinitionStatusCodeCreating),
+		Target:  enum.Slice(types.AlertManagerDefinitionStatusCodeActive),
+		Refresh: statusAlertManagerDefinition(ctx, conn, id),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*types.AlertManagerDefinitionDescription); ok {
+		if statusCode := output.Status.StatusCode; statusCode == types.AlertManagerDefinitionStatusCodeCreationFailed {
+			tfresource.SetLastError(err, errors.New(aws.ToString(output.Status.StatusReason)))
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}

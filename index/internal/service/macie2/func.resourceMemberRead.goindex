@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/macie2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/macie2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/macie2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMemberRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Macie2Client(ctx)
+
+	output, err := findMemberByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Macie Member (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Macie Member (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrAccountID, output.AccountId)
+	d.Set("administrator_account_id", output.AdministratorAccountId)
+	d.Set(names.AttrARN, output.Arn)
+	d.Set(names.AttrEmail, output.Email)
+	relationshipStatus := output.RelationshipStatus
+	switch relationshipStatus {
+	case awstypes.RelationshipStatusEnabled, awstypes.RelationshipStatusInvited, awstypes.RelationshipStatusEmailVerificationInProgress, awstypes.RelationshipStatusPaused:
+		d.Set("invite", true)
+	case awstypes.RelationshipStatusRemoved:
+		d.Set("invite", false)
+	}
+	d.Set("invited_at", aws.ToTime(output.InvitedAt).Format(time.RFC3339))
+	d.Set("master_account_id", output.MasterAccountId)
+	d.Set("relationship_status", relationshipStatus)
+	// To fake a result for status in order to avoid an error related to difference for ImportVerifyState.
+	// It sets to MacieStatusPaused because it can only be changed to PAUSED, normally when it's accepted its status is ENABLED.
+	macieStatus := awstypes.MacieStatusEnabled
+	if relationshipStatus == awstypes.RelationshipStatusPaused {
+		macieStatus = awstypes.MacieStatusPaused
+	}
+	d.Set(names.AttrStatus, macieStatus)
+	d.Set("updated_at", aws.ToTime(output.UpdatedAt).Format(time.RFC3339))
+
+	setTagsOut(ctx, output.Tags)
+
+	return diags
+}

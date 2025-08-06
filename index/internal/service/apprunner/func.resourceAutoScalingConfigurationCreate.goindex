@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apprunner
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apprunner"
+	"github.com/aws/aws-sdk-go-v2/service/apprunner/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAutoScalingConfigurationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).AppRunnerClient(ctx)
+
+	name := d.Get("auto_scaling_configuration_name").(string)
+	input := &apprunner.CreateAutoScalingConfigurationInput{
+		AutoScalingConfigurationName: aws.String(name),
+		Tags:                         getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("max_concurrency"); ok {
+		input.MaxConcurrency = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("max_size"); ok {
+		input.MaxSize = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("min_size"); ok {
+		input.MinSize = aws.Int32(int32(v.(int)))
+	}
+
+	output, err := conn.CreateAutoScalingConfiguration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating App Runner AutoScaling Configuration Version (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.AutoScalingConfiguration.AutoScalingConfigurationArn))
+
+	if _, err := waitAutoScalingConfigurationCreated(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for AutoScaling Configuration Version (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceAutoScalingConfigurationRead(ctx, d, meta)...)
+}

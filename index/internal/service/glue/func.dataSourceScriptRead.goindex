@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceScriptRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	dagEdge := d.Get("dag_edge").([]any)
+	dagNode := d.Get("dag_node").([]any)
+
+	input := &glue.CreateScriptInput{
+		DagEdges: expandCodeGenEdges(dagEdge),
+		DagNodes: expandCodeGenNodes(dagNode),
+	}
+
+	if v, ok := d.GetOk("language"); ok {
+		input.Language = awstypes.Language(v.(string))
+	}
+
+	log.Printf("[DEBUG] Creating Glue Script: %+v", input)
+	output, err := conn.CreateScript(ctx, input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Glue script: %s", err)
+	}
+
+	if output == nil {
+		return sdkdiag.AppendErrorf(diags, "script not created")
+	}
+
+	d.SetId(meta.(*conns.AWSClient).Region(ctx))
+	d.Set("python_script", output.PythonScript)
+	d.Set("scala_code", output.ScalaCode)
+
+	return diags
+}

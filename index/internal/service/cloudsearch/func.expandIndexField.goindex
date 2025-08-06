@@ -1,0 +1,288 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudsearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudsearch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudsearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandIndexField(tfMap map[string]any) (*types.IndexField, bool, error) {
+	if tfMap == nil {
+		return nil, false, nil
+	}
+
+	apiObject := &types.IndexField{}
+
+	if v, ok := tfMap[names.AttrName].(string); ok && v != "" {
+		apiObject.IndexFieldName = aws.String(v)
+	}
+
+	if v, ok := tfMap[names.AttrType].(string); ok && v != "" {
+		apiObject.IndexFieldType = types.IndexFieldType(v)
+	}
+
+	analysisScheme, _ := tfMap["analysis_scheme"].(string)
+	facetEnabled, _ := tfMap["facet"].(bool)
+	highlightEnabled, _ := tfMap["highlight"].(bool)
+	returnEnabled, _ := tfMap["return"].(bool)
+	searchEnabled, _ := tfMap["search"].(bool)
+	sortEnabled, _ := tfMap["sort"].(bool)
+	var sourceFieldsConfigured bool
+
+	switch fieldType := apiObject.IndexFieldType; fieldType {
+	case types.IndexFieldTypeDate:
+		options := &types.DateOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+			SortEnabled:   aws.Bool(sortEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			options.DefaultValue = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceField = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.DateOptions = options
+
+	case types.IndexFieldTypeDateArray:
+		options := &types.DateArrayOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			options.DefaultValue = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceFields = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.DateArrayOptions = options
+
+	case types.IndexFieldTypeDouble:
+		options := &types.DoubleOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+			SortEnabled:   aws.Bool(sortEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			v, err := strconv.ParseFloat(v, 64)
+
+			if err != nil {
+				return nil, false, err
+			}
+
+			options.DefaultValue = aws.Float64(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceField = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.DoubleOptions = options
+
+	case types.IndexFieldTypeDoubleArray:
+		options := &types.DoubleArrayOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			v, err := strconv.ParseFloat(v, 64)
+
+			if err != nil {
+				return nil, false, err
+			}
+
+			options.DefaultValue = aws.Float64(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceFields = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.DoubleArrayOptions = options
+
+	case types.IndexFieldTypeInt:
+		options := &types.IntOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+			SortEnabled:   aws.Bool(sortEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			v, err := strconv.Atoi(v)
+
+			if err != nil {
+				return nil, false, err
+			}
+
+			options.DefaultValue = aws.Int64(int64(v))
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceField = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.IntOptions = options
+
+	case types.IndexFieldTypeIntArray:
+		options := &types.IntArrayOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			v, err := strconv.Atoi(v)
+
+			if err != nil {
+				return nil, false, err
+			}
+
+			options.DefaultValue = aws.Int64(int64(v))
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceFields = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.IntArrayOptions = options
+
+	case types.IndexFieldTypeLatlon:
+		options := &types.LatLonOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+			SortEnabled:   aws.Bool(sortEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			options.DefaultValue = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceField = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.LatLonOptions = options
+
+	case types.IndexFieldTypeLiteral:
+		options := &types.LiteralOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+			SortEnabled:   aws.Bool(sortEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			options.DefaultValue = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceField = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.LiteralOptions = options
+
+	case types.IndexFieldTypeLiteralArray:
+		options := &types.LiteralArrayOptions{
+			FacetEnabled:  aws.Bool(facetEnabled),
+			ReturnEnabled: aws.Bool(returnEnabled),
+			SearchEnabled: aws.Bool(searchEnabled),
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			options.DefaultValue = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceFields = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.LiteralArrayOptions = options
+
+	case types.IndexFieldTypeText:
+		options := &types.TextOptions{
+			HighlightEnabled: aws.Bool(highlightEnabled),
+			ReturnEnabled:    aws.Bool(returnEnabled),
+			SortEnabled:      aws.Bool(sortEnabled),
+		}
+
+		if analysisScheme != "" {
+			options.AnalysisScheme = aws.String(analysisScheme)
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			options.DefaultValue = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceField = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.TextOptions = options
+
+	case types.IndexFieldTypeTextArray:
+		options := &types.TextArrayOptions{
+			HighlightEnabled: aws.Bool(highlightEnabled),
+			ReturnEnabled:    aws.Bool(returnEnabled),
+		}
+
+		if analysisScheme != "" {
+			options.AnalysisScheme = aws.String(analysisScheme)
+		}
+
+		if v, ok := tfMap[names.AttrDefaultValue].(string); ok && v != "" {
+			options.DefaultValue = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_fields"].(string); ok && v != "" {
+			options.SourceFields = aws.String(v)
+			sourceFieldsConfigured = true
+		}
+
+		apiObject.TextArrayOptions = options
+
+	default:
+		return nil, false, fmt.Errorf("unsupported index_field type: %s", fieldType)
+	}
+
+	return apiObject, sourceFieldsConfigured, nil
+}

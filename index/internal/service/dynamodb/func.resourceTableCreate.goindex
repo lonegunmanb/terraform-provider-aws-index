@@ -1,0 +1,334 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTableCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	tableName := d.Get(names.AttrName).(string)
+	keySchemaMap := map[string]any{
+		"hash_key": d.Get("hash_key").(string),
+	}
+	if v, ok := d.GetOk("range_key"); ok {
+		keySchemaMap["range_key"] = v.(string)
+	}
+
+	sourceName, nameOk := d.GetOk("restore_source_name")
+	sourceArn, arnOk := d.GetOk("restore_source_table_arn")
+
+	if nameOk || arnOk {
+		input := &dynamodb.RestoreTableToPointInTimeInput{
+			TargetTableName: aws.String(tableName),
+		}
+
+		if nameOk {
+			input.SourceTableName = aws.String(sourceName.(string))
+		}
+
+		if arnOk {
+			input.SourceTableArn = aws.String(sourceArn.(string))
+		}
+
+		if v, ok := d.GetOk("restore_date_time"); ok {
+			t, _ := time.Parse(time.RFC3339, v.(string))
+			input.RestoreDateTime = aws.Time(t)
+		}
+
+		if attr, ok := d.GetOk("restore_to_latest_time"); ok {
+			input.UseLatestRestorableTime = aws.Bool(attr.(bool))
+		}
+
+		billingModeOverride := awstypes.BillingMode(d.Get("billing_mode").(string))
+
+		if _, ok := d.GetOk("write_capacity"); ok {
+			if _, ok := d.GetOk("read_capacity"); ok {
+				capacityMap := map[string]any{
+					"write_capacity": d.Get("write_capacity"),
+					"read_capacity":  d.Get("read_capacity"),
+				}
+				input.ProvisionedThroughputOverride = expandProvisionedThroughput(capacityMap, billingModeOverride)
+			}
+		}
+
+		if v, ok := d.GetOk("local_secondary_index"); ok {
+			lsiSet := v.(*schema.Set)
+			input.LocalSecondaryIndexOverride = expandLocalSecondaryIndexes(lsiSet.List(), keySchemaMap)
+		}
+
+		if v, ok := d.GetOk("global_secondary_index"); ok {
+			globalSecondaryIndexes := []awstypes.GlobalSecondaryIndex{}
+			gsiSet := v.(*schema.Set)
+
+			for _, gsiObject := range gsiSet.List() {
+				gsi := gsiObject.(map[string]any)
+				if err := validateGSIProvisionedThroughput(gsi, billingModeOverride); err != nil {
+					return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, d.Get(names.AttrName).(string), err)
+				}
+
+				gsiObject := expandGlobalSecondaryIndex(gsi, billingModeOverride)
+				globalSecondaryIndexes = append(globalSecondaryIndexes, *gsiObject)
+			}
+			input.GlobalSecondaryIndexOverride = globalSecondaryIndexes
+		}
+
+		if v, ok := d.GetOk("server_side_encryption"); ok {
+			input.SSESpecificationOverride = expandEncryptAtRestOptions(v.([]any))
+		}
+
+		_, err := tfresource.RetryWhen(ctx, createTableTimeout, func() (any, error) {
+			return conn.RestoreTableToPointInTime(ctx, input)
+		}, func(err error) (bool, error) {
+			if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
+				return true, err
+			}
+			if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
+				return true, err
+			}
+			if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "indexed tables that can be created simultaneously") {
+				return true, err
+			}
+
+			return false, err
+		})
+
+		if err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, tableName, err)
+		}
+	} else if vit, ok := d.GetOk("import_table"); ok && len(vit.([]any)) > 0 && vit.([]any)[0] != nil {
+		input := expandImportTable(vit.([]any)[0].(map[string]any))
+
+		tcp := &awstypes.TableCreationParameters{
+			TableName:   aws.String(tableName),
+			BillingMode: awstypes.BillingMode(d.Get("billing_mode").(string)),
+			KeySchema:   expandKeySchema(keySchemaMap),
+		}
+
+		capacityMap := map[string]any{
+			"write_capacity": d.Get("write_capacity"),
+			"read_capacity":  d.Get("read_capacity"),
+		}
+
+		billingMode := awstypes.BillingMode(d.Get("billing_mode").(string))
+
+		tcp.ProvisionedThroughput = expandProvisionedThroughput(capacityMap, billingMode)
+
+		if v, ok := d.GetOk("attribute"); ok {
+			aSet := v.(*schema.Set)
+			tcp.AttributeDefinitions = expandAttributes(aSet.List())
+		}
+
+		if v, ok := d.GetOk("server_side_encryption"); ok {
+			tcp.SSESpecification = expandEncryptAtRestOptions(v.([]any))
+		}
+
+		if v, ok := d.GetOk("global_secondary_index"); ok {
+			globalSecondaryIndexes := []awstypes.GlobalSecondaryIndex{}
+			gsiSet := v.(*schema.Set)
+
+			for _, gsiObject := range gsiSet.List() {
+				gsi := gsiObject.(map[string]any)
+				if err := validateGSIProvisionedThroughput(gsi, billingMode); err != nil {
+					return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, d.Get(names.AttrName).(string), err)
+				}
+
+				gsiObject := expandGlobalSecondaryIndex(gsi, billingMode)
+				globalSecondaryIndexes = append(globalSecondaryIndexes, *gsiObject)
+			}
+			tcp.GlobalSecondaryIndexes = globalSecondaryIndexes
+		}
+
+		if v, ok := d.GetOk("on_demand_throughput"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			tcp.OnDemandThroughput = expandOnDemandThroughput(v.([]any)[0].(map[string]any))
+		}
+
+		input.TableCreationParameters = tcp
+
+		importTableOutput, err := tfresource.RetryWhen(ctx, createTableTimeout, func() (any, error) {
+			return conn.ImportTable(ctx, input)
+		}, func(err error) (bool, error) {
+			if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
+				return true, err
+			}
+			if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
+				return true, err
+			}
+			if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "indexed tables that can be created simultaneously") {
+				return true, err
+			}
+
+			return false, err
+		})
+
+		if err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, tableName, err)
+		}
+
+		importARN := importTableOutput.(*dynamodb.ImportTableOutput).ImportTableDescription.ImportArn
+		if _, err := waitImportComplete(ctx, conn, aws.ToString(importARN), d.Timeout(schema.TimeoutCreate)); err != nil {
+			d.SetId(tableName)
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, tableName, err)
+		}
+	} else {
+		input := &dynamodb.CreateTableInput{
+			BillingMode: awstypes.BillingMode(d.Get("billing_mode").(string)),
+			KeySchema:   expandKeySchema(keySchemaMap),
+			TableName:   aws.String(tableName),
+			Tags:        getTagsIn(ctx),
+		}
+
+		billingMode := awstypes.BillingMode(d.Get("billing_mode").(string))
+
+		capacityMap := map[string]any{
+			"write_capacity": d.Get("write_capacity"),
+			"read_capacity":  d.Get("read_capacity"),
+		}
+
+		input.ProvisionedThroughput = expandProvisionedThroughput(capacityMap, billingMode)
+
+		if v, ok := d.GetOk("attribute"); ok {
+			aSet := v.(*schema.Set)
+			input.AttributeDefinitions = expandAttributes(aSet.List())
+		}
+
+		if v, ok := d.GetOk("deletion_protection_enabled"); ok {
+			input.DeletionProtectionEnabled = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk("local_secondary_index"); ok {
+			lsiSet := v.(*schema.Set)
+			input.LocalSecondaryIndexes = expandLocalSecondaryIndexes(lsiSet.List(), keySchemaMap)
+		}
+
+		if v, ok := d.GetOk("global_secondary_index"); ok {
+			globalSecondaryIndexes := []awstypes.GlobalSecondaryIndex{}
+			gsiSet := v.(*schema.Set)
+
+			for _, gsiObject := range gsiSet.List() {
+				gsi := gsiObject.(map[string]any)
+				if err := validateGSIProvisionedThroughput(gsi, billingMode); err != nil {
+					return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, tableName, err)
+				}
+
+				gsiObject := expandGlobalSecondaryIndex(gsi, billingMode)
+				globalSecondaryIndexes = append(globalSecondaryIndexes, *gsiObject)
+			}
+			input.GlobalSecondaryIndexes = globalSecondaryIndexes
+		}
+
+		if v, ok := d.GetOk("on_demand_throughput"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.OnDemandThroughput = expandOnDemandThroughput(v.([]any)[0].(map[string]any))
+		}
+
+		if v, ok := d.GetOk("stream_enabled"); ok {
+			input.StreamSpecification = &awstypes.StreamSpecification{
+				StreamEnabled:  aws.Bool(v.(bool)),
+				StreamViewType: awstypes.StreamViewType(d.Get("stream_view_type").(string)),
+			}
+		}
+
+		if v, ok := d.GetOk("server_side_encryption"); ok {
+			input.SSESpecification = expandEncryptAtRestOptions(v.([]any))
+		}
+
+		if v, ok := d.GetOk("table_class"); ok {
+			input.TableClass = awstypes.TableClass(v.(string))
+		}
+
+		_, err := tfresource.RetryWhen(ctx, createTableTimeout, func() (any, error) {
+			return conn.CreateTable(ctx, input)
+		}, func(err error) (bool, error) {
+			if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
+				return true, err
+			}
+			if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
+				return true, err
+			}
+			if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "indexed tables that can be created simultaneously") {
+				return true, err
+			}
+
+			return false, err
+		})
+
+		if err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, tableName, err)
+		}
+	}
+
+	d.SetId(tableName)
+
+	var output *awstypes.TableDescription
+	var err error
+	if output, err = waitTableActive(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionWaitingForCreation, resNameTable, d.Id(), err)
+	}
+
+	if v, ok := d.GetOk("global_secondary_index"); ok {
+		gsiSet := v.(*schema.Set)
+
+		for _, gsiObject := range gsiSet.List() {
+			gsi := gsiObject.(map[string]any)
+
+			if _, err := waitGSIActive(ctx, conn, d.Id(), gsi[names.AttrName].(string), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionWaitingForCreation, resNameTable, d.Id(), fmt.Errorf("GSI (%s): %w", gsi[names.AttrName].(string), err))
+			}
+		}
+	}
+
+	if d.Get("ttl.0.enabled").(bool) {
+		if err := updateTimeToLive(ctx, conn, d.Id(), d.Get("ttl").([]any), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, d.Id(), fmt.Errorf("enabling TTL: %w", err))
+		}
+	}
+
+	if d.Get("point_in_time_recovery.0.enabled").(bool) {
+		if err := updatePITR(ctx, conn, d.Id(), true, aws.Int32(int32(d.Get("point_in_time_recovery.0.recovery_period_in_days").(int))), meta.(*conns.AWSClient).Region(ctx), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, d.Id(), fmt.Errorf("enabling point in time recovery: %w", err))
+		}
+	}
+
+	if v := d.Get("replica").(*schema.Set); v.Len() > 0 {
+		if err := createReplicas(ctx, conn, d.Id(), v.List(), true, d.Timeout(schema.TimeoutCreate)); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, d.Id(), fmt.Errorf("replicas: %w", err))
+		}
+
+		if err := updateReplicaTags(ctx, conn, aws.ToString(output.TableArn), v.List(), keyValueTags(ctx, getTagsIn(ctx))); err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, d.Id(), fmt.Errorf("replica tags: %w", err))
+		}
+	}
+
+	return append(diags, resourceTableRead(ctx, d, meta)...)
+}

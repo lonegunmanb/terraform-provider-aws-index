@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenStepScalingPolicyConfiguration(cfg *awstypes.StepScalingPolicyConfiguration) []any {
+	if cfg == nil {
+		return []any{}
+	}
+
+	m := make(map[string]any)
+
+	m["adjustment_type"] = string(cfg.AdjustmentType)
+
+	if cfg.Cooldown != nil {
+		m["cooldown"] = aws.ToInt32(cfg.Cooldown)
+	}
+
+	m["metric_aggregation_type"] = string(cfg.MetricAggregationType)
+
+	if cfg.MinAdjustmentMagnitude != nil {
+		m["min_adjustment_magnitude"] = aws.ToInt32(cfg.MinAdjustmentMagnitude)
+	}
+	if cfg.StepAdjustments != nil {
+		stepAdjustmentsResource := &schema.Resource{
+			Schema: map[string]*schema.Schema{
+				"metric_interval_lower_bound": {
+					Type:     schema.TypeString,
+					Optional: true,
+				},
+				"metric_interval_upper_bound": {
+					Type:     schema.TypeString,
+					Optional: true,
+				},
+				"scaling_adjustment": {
+					Type:     schema.TypeInt,
+					Required: true,
+				},
+			},
+		}
+		m["step_adjustment"] = schema.NewSet(schema.HashResource(stepAdjustmentsResource), flattenStepAdjustments(cfg.StepAdjustments))
+	}
+
+	return []any{m}
+}

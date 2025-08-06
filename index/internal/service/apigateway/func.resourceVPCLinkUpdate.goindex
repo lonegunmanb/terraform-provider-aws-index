@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVPCLinkUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		operations := make([]types.PatchOperation, 0)
+
+		if d.HasChange(names.AttrDescription) {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.Op("replace"),
+				Path:  aws.String("/description"),
+				Value: aws.String(d.Get(names.AttrDescription).(string)),
+			})
+		}
+
+		if d.HasChange(names.AttrName) {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.Op("replace"),
+				Path:  aws.String("/name"),
+				Value: aws.String(d.Get(names.AttrName).(string)),
+			})
+		}
+
+		input := apigateway.UpdateVpcLinkInput{
+			PatchOperations: operations,
+			VpcLinkId:       aws.String(d.Id()),
+		}
+
+		_, err := conn.UpdateVpcLink(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating API Gateway VPC Link (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitVPCLinkAvailable(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for API Gateway VPC Link (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceVPCLinkRead(ctx, d, meta)...)
+}

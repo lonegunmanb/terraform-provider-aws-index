@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/batch
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/batch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceComputeEnvironmentRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).BatchClient(ctx)
+
+	computeEnvironment, err := findComputeEnvironmentDetailByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Batch Compute Environment (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Batch Compute Environment (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, computeEnvironment.ComputeEnvironmentArn)
+	d.Set(names.AttrName, computeEnvironment.ComputeEnvironmentName)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(computeEnvironment.ComputeEnvironmentName)))
+	if computeEnvironment.ComputeResources != nil {
+		if err := d.Set("compute_resources", []any{flattenComputeResource(ctx, computeEnvironment.ComputeResources)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting compute_resources: %s", err)
+		}
+	} else {
+		d.Set("compute_resources", nil)
+	}
+	d.Set("ecs_cluster_arn", computeEnvironment.EcsClusterArn)
+	if computeEnvironment.EksConfiguration != nil {
+		if err := d.Set("eks_configuration", []any{flattenEKSConfiguration(computeEnvironment.EksConfiguration)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting eks_configuration: %s", err)
+		}
+	} else {
+		d.Set("eks_configuration", nil)
+	}
+	d.Set(names.AttrServiceRole, computeEnvironment.ServiceRole)
+	d.Set(names.AttrState, computeEnvironment.State)
+	d.Set(names.AttrStatus, computeEnvironment.Status)
+	d.Set(names.AttrStatusReason, computeEnvironment.StatusReason)
+	d.Set(names.AttrType, computeEnvironment.Type)
+	if err := d.Set("update_policy", flattenComputeEnvironmentUpdatePolicy(computeEnvironment.UpdatePolicy)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting update_policy: %s", err)
+	}
+
+	setTagsOut(ctx, computeEnvironment.Tags)
+
+	return diags
+}

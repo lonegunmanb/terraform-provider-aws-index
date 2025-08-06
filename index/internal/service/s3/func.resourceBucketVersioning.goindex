@@ -1,0 +1,95 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketVersioning() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceBucketVersioningCreate,
+		ReadWithoutTimeout:   resourceBucketVersioningRead,
+		UpdateWithoutTimeout: resourceBucketVersioningUpdate,
+		DeleteWithoutTimeout: resourceBucketVersioningDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrBucket: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringLenBetween(1, 63),
+			},
+			names.AttrExpectedBucketOwner: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: verify.ValidAccountID,
+			},
+			"mfa": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"versioning_configuration": {
+				Type:     schema.TypeList,
+				Required: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"mfa_delete": {
+							Type:             schema.TypeString,
+							Optional:         true,
+							Computed:         true,
+							ValidateDiagFunc: enum.Validate[types.MFADelete](),
+						},
+						names.AttrStatus: {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.StringInSlice(bucketVersioningStatus_Values(), false),
+						},
+					},
+				},
+			},
+		},
+
+		CustomizeDiff: customdiff.Sequence(
+			func(_ context.Context, diff *schema.ResourceDiff, v any) error {
+				// This CustomizeDiff acts as a plan-time validation to prevent MalformedXML errors
+				// when updating bucket versioning to "Disabled" on existing resources
+				// as it's not supported by the AWS S3 API.
+				if diff.Id() == "" || !diff.HasChange("versioning_configuration.0.status") {
+					return nil
+				}
+
+				oldStatusRaw, newStatusRaw := diff.GetChange("versioning_configuration.0.status")
+				oldStatus, newStatus := oldStatusRaw.(string), newStatusRaw.(string)
+
+				if newStatus == bucketVersioningStatusDisabled && (oldStatus == string(types.BucketVersioningStatusEnabled) || oldStatus == string(types.BucketVersioningStatusSuspended)) {
+					return fmt.Errorf("versioning_configuration.status cannot be updated from '%s' to '%s'", oldStatus, newStatus)
+				}
+
+				return nil
+			},
+		),
+	}
+}

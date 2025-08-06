@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTrafficPolicy() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceTrafficPolicyCreate,
+		ReadWithoutTimeout:   resourceTrafficPolicyRead,
+		UpdateWithoutTimeout: resourceTrafficPolicyUpdate,
+		DeleteWithoutTimeout: resourceTrafficPolicyDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: func(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+				const idSeparator = "/"
+				parts := strings.Split(d.Id(), idSeparator)
+				if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+					return nil, fmt.Errorf("unexpected format for ID (%[1]s), expected TRAFFIC-POLICY-ID%[2]sTRAFFIC-POLICY-VERSION", d.Id(), idSeparator)
+				}
+
+				version, err := strconv.Atoi(parts[1])
+
+				if err != nil {
+					return nil, err
+				}
+
+				d.SetId(parts[0])
+				d.Set(names.AttrVersion, version)
+
+				return []*schema.ResourceData{d}, nil
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrComment: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: validation.StringLenBetween(0, 1024),
+			},
+			"document": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringLenBetween(0, 102400),
+			},
+			names.AttrName: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringLenBetween(0, 512),
+			},
+			names.AttrType: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrVersion: {
+				Type:     schema.TypeInt,
+				Computed: true,
+			},
+		},
+	}
+}

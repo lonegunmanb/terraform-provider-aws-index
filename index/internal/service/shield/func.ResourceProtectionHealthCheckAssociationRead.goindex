@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/shield
+import (
+	"context"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/shield"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/shield/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+)
+func ResourceProtectionHealthCheckAssociationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ShieldClient(ctx)
+
+	protectionId, healthCheckArn, err := ProtectionHealthCheckAssociationParseResourceID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "parsing Shield Protection and Route53 Health Check Association ID: %s", err)
+	}
+
+	input := &shield.DescribeProtectionInput{
+		ProtectionId: aws.String(protectionId),
+	}
+
+	resp, err := conn.DescribeProtection(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		log.Printf("[WARN] Shield Protection itself (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Shield Protection Health Check Association (%s): %s", d.Id(), err)
+	}
+
+	isHealthCheck := stringInSlice(strings.Split(healthCheckArn, "/")[1], resp.Protection.HealthCheckIds)
+	if !isHealthCheck {
+		log.Printf("[WARN] Shield Protection Health Check Association (%s) not found, removing from state", d.Id())
+		d.SetId("")
+	}
+
+	d.Set("health_check_arn", healthCheckArn)
+	d.Set("shield_protection_id", resp.Protection.Id)
+
+	return diags
+}

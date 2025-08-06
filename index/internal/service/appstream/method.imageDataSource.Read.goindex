@@ -1,0 +1,94 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appstream
+import (
+	"context"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appstream"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appstream/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *imageDataSource) Read(ctx context.Context, request datasource.ReadRequest, response *datasource.ReadResponse) {
+	var data imageDataSourceModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := d.Meta().AppStreamClient(ctx)
+
+	var input appstream.DescribeImagesInput
+	if !data.ARN.IsNull() {
+		input.Arns = []string{data.ARN.ValueString()}
+	}
+	if !data.Name.IsNull() {
+		input.Names = []string{data.Name.ValueString()}
+	}
+
+	images, err := findImages(ctx, conn, &input)
+
+	if err != nil {
+		response.Diagnostics.AddError("reading AppStream Images", err.Error())
+
+		return
+	}
+
+	if !data.NameRegex.IsNull() {
+		r := data.NameRegex.ValueRegexp()
+		images = tfslices.Filter(images, func(v awstypes.Image) bool {
+			name := aws.ToString(v.Name)
+			// Check for a very rare case where the response would include no
+			// image name. No name means nothing to attempt a match against,
+			// therefore we are skipping such image.
+			return name != "" && r.MatchString(name)
+		})
+	}
+
+	switch l := len(images); l {
+	case 0:
+		err = tfresource.NewEmptyResultError(input)
+	case 1:
+		// OK
+	default:
+		if data.MostRecent.ValueBool() {
+			slices.SortFunc(images, func(a, b awstypes.Image) int {
+				if aws.ToTime(a.CreatedTime).After(aws.ToTime(b.CreatedTime)) {
+					return -1
+				}
+				if aws.ToTime(a.CreatedTime).Before(aws.ToTime(b.CreatedTime)) {
+					return 1
+				}
+				return 0
+			})
+		} else {
+			err = tfresource.NewTooManyResultsError(l, input)
+		}
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError("reading AppStream Images", tfresource.SingularDataSourceFindError("AppStream Image", err).Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, &images[0], &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

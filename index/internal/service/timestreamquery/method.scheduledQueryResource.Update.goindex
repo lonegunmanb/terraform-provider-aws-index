@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/timestreamquery
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/timestreamquery"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/timestreamquery/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *scheduledQueryResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().TimestreamQueryClient(ctx)
+
+	var state, plan scheduledQueryResourceModel
+
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	diff, d := flex.Diff(ctx, plan, state)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		var input timestreamquery.UpdateScheduledQueryInput
+		resp.Diagnostics.Append(flex.Expand(ctx, plan, &input, flex.WithFieldNamePrefix(ScheduledQueryFieldNamePrefix))...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		output, err := conn.UpdateScheduledQuery(ctx, &input)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.MediaPackageV2, create.ErrActionUpdating, ResNameScheduledQuery, state.Name.String(), err),
+				err.Error(),
+			)
+			return
+		}
+
+		resp.Diagnostics.Append(flex.Flatten(ctx, output, &plan, flex.WithFieldNamePrefix(ScheduledQueryFieldNamePrefix))...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		_, err = waitScheduledQueryUpdated(ctx, conn, plan.ARN.ValueString(), r.UpdateTimeout(ctx, plan.Timeouts))
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.TimestreamQuery, create.ErrActionWaitingForUpdate, ResNameScheduledQuery, plan.ARN.String(), err),
+				err.Error(),
+			)
+			return
+		}
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

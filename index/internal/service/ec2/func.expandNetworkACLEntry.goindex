@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandNetworkACLEntry(tfMap map[string]any, egress bool) *awstypes.NetworkAclEntry {
+	if tfMap == nil {
+		return nil
+	}
+
+	apiObject := &awstypes.NetworkAclEntry{
+		Egress:    aws.Bool(egress),
+		PortRange: &awstypes.PortRange{},
+	}
+
+	if v, ok := tfMap["rule_no"].(int); ok {
+		apiObject.RuleNumber = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap[names.AttrAction].(string); ok && v != "" {
+		apiObject.RuleAction = awstypes.RuleAction(v)
+	}
+
+	if v, ok := tfMap[names.AttrCIDRBlock].(string); ok && v != "" {
+		apiObject.CidrBlock = aws.String(v)
+	}
+
+	if v, ok := tfMap["ipv6_cidr_block"].(string); ok && v != "" {
+		apiObject.Ipv6CidrBlock = aws.String(v)
+	}
+
+	if v, ok := tfMap["from_port"].(int); ok {
+		apiObject.PortRange.From = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["to_port"].(int); ok {
+		apiObject.PortRange.To = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap[names.AttrProtocol].(string); ok && v != "" {
+		protocolNumber, err := networkACLProtocolNumber(v)
+
+		if err != nil {
+			log.Printf("[WARN] %s", err)
+			return nil
+		}
+
+		apiObject.Protocol = aws.String(strconv.Itoa(protocolNumber))
+
+		// Specify additional required fields for ICMP.
+		if protocolNumber == 1 || protocolNumber == 58 {
+			apiObject.IcmpTypeCode = &awstypes.IcmpTypeCode{}
+
+			if v, ok := tfMap["icmp_code"].(int); ok {
+				apiObject.IcmpTypeCode.Code = aws.Int32(int32(v))
+			}
+
+			if v, ok := tfMap["icmp_type"].(int); ok {
+				apiObject.IcmpTypeCode.Type = aws.Int32(int32(v))
+			}
+		}
+	}
+
+	return apiObject
+}

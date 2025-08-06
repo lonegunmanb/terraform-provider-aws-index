@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cur
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	cur "github.com/aws/aws-sdk-go-v2/service/costandusagereportservice"
+	"github.com/aws/aws-sdk-go-v2/service/costandusagereportservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func checkReportDefinitionPropertyCombination(additionalArtifacts []types.AdditionalArtifact, compression types.CompressionFormat, format types.ReportFormat, prefix string, reportVersioning types.ReportVersioning) error {
+	// perform various combination checks, AWS API unhelpfully just returns an empty ValidationException
+	// these combinations have been determined from the Create Report AWS Console Web Form
+
+	if slices.Contains(additionalArtifacts, types.AdditionalArtifactAthena) {
+		if len(additionalArtifacts) > 1 {
+			return fmt.Errorf(
+				"When %s exists within additional_artifacts, no other artifact type can be declared",
+				types.AdditionalArtifactAthena,
+			)
+		}
+
+		if len(prefix) == 0 {
+			return fmt.Errorf(
+				"When %s exists within additional_artifacts, prefix cannot be empty",
+				types.AdditionalArtifactAthena,
+			)
+		}
+
+		if reportVersioning != types.ReportVersioningOverwriteReport {
+			return fmt.Errorf(
+				"When %s exists within additional_artifacts, report_versioning must be %s",
+				types.AdditionalArtifactAthena,
+				types.ReportVersioningOverwriteReport,
+			)
+		}
+
+		if format != types.ReportFormatParquet {
+			return fmt.Errorf(
+				"When %s exists within additional_artifacts, both format and compression must be %s",
+				types.AdditionalArtifactAthena,
+				types.ReportFormatParquet,
+			)
+		}
+	} else if len(additionalArtifacts) > 0 && (format == types.ReportFormatParquet) {
+		return fmt.Errorf(
+			"When additional_artifacts includes %s and/or %s, format must not be %s",
+			types.AdditionalArtifactQuicksight,
+			types.AdditionalArtifactRedshift,
+			types.ReportFormatParquet,
+		)
+	}
+
+	if format == types.ReportFormatParquet {
+		if compression != types.CompressionFormatParquet {
+			return fmt.Errorf(
+				"When format is %s, compression must also be %s",
+				types.ReportFormatParquet,
+				types.CompressionFormatParquet,
+			)
+		}
+	} else {
+		if compression == types.CompressionFormatParquet {
+			return fmt.Errorf(
+				"When format is %s, compression must not be %s",
+				format,
+				types.CompressionFormatParquet,
+			)
+		}
+	}
+	// end checks
+
+	return nil
+}

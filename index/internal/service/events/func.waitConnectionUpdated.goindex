@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitConnectionUpdated(ctx context.Context, conn *eventbridge.Client, name string) (*eventbridge.DescribeConnectionOutput, error) {
+	const (
+		timeout = 2 * time.Minute
+	)
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(types.ConnectionStateUpdating, types.ConnectionStateAuthorizing, types.ConnectionStateDeauthorizing),
+		Target:  enum.Slice(types.ConnectionStateAuthorized, types.ConnectionStateDeauthorized),
+		Refresh: statusConnectionState(ctx, conn, name),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*eventbridge.DescribeConnectionOutput); ok {
+		tfresource.SetLastError(err, errors.New(aws.ToString(output.StateReason)))
+
+		return output, err
+	}
+
+	return nil, err
+}

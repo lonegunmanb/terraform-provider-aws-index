@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sns
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTopicDataProtectionPolicyUpsert(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SNSClient(ctx)
+
+	topicARN := d.Get(names.AttrARN).(string)
+	policy, err := structure.NormalizeJsonString(d.Get(names.AttrPolicy).(string))
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "policy (%s) is invalid JSON: %s", d.Get(names.AttrPolicy).(string), err)
+	}
+
+	input := &sns.PutDataProtectionPolicyInput{
+		DataProtectionPolicy: aws.String(policy),
+		ResourceArn:          aws.String(topicARN),
+	}
+
+	_, err = conn.PutDataProtectionPolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SNS Data Protection Policy (%s): %s", topicARN, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(topicARN)
+	}
+
+	return append(diags, resourceTopicDataProtectionPolicyRead(ctx, d, meta)...)
+}

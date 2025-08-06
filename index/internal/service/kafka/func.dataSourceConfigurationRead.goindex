@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kafka
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kafka"
+	"github.com/aws/aws-sdk-go-v2/service/kafka/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KafkaClient(ctx)
+
+	input := &kafka.ListConfigurationsInput{}
+	configuration, err := findConfiguration(ctx, conn, input, func(v *types.Configuration) bool {
+		return aws.ToString(v.Name) == d.Get(names.AttrName).(string)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, tfresource.SingularDataSourceFindError("MSK Configuration", err))
+	}
+
+	configurationARN := aws.ToString(configuration.Arn)
+	revision := aws.ToInt64(configuration.LatestRevision.Revision)
+
+	revisionOutput, err := findConfigurationRevisionByTwoPartKey(ctx, conn, configurationARN, revision)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading MSK Configuration (%s) revision (%d): %s", d.Id(), revision, err)
+	}
+
+	d.SetId(configurationARN)
+	d.Set(names.AttrARN, configurationARN)
+	d.Set(names.AttrDescription, configuration.Description)
+	d.Set("kafka_versions", configuration.KafkaVersions)
+	d.Set("latest_revision", revision)
+	d.Set(names.AttrName, configuration.Name)
+	d.Set("server_properties", string(revisionOutput.ServerProperties))
+
+	return diags
+}

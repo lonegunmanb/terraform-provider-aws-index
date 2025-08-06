@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+)
+func waitPITRUpdated(ctx context.Context, conn *dynamodb.Client, tableName string, toEnable bool, timeout time.Duration, optFns ...func(*dynamodb.Options)) (*awstypes.PointInTimeRecoveryDescription, error) {
+	var pending []string
+	target := enum.Slice(awstypes.PointInTimeRecoveryStatusDisabled)
+
+	if toEnable {
+		pending = enum.Slice(
+			awstypes.PointInTimeRecoveryStatus("ENABLING"), // "ENABLING" const not available for PITR
+			awstypes.PointInTimeRecoveryStatusDisabled,     // reports say it can get in fast enough to be in this state
+		)
+		target = enum.Slice(awstypes.PointInTimeRecoveryStatusEnabled)
+	}
+
+	stateConf := &retry.StateChangeConf{
+		Pending:    pending,
+		Target:     target,
+		Refresh:    statusPITR(ctx, conn, tableName, optFns...),
+		Timeout:    max(pitrUpdateTimeout, timeout),
+		MinTimeout: 15 * time.Second,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.PointInTimeRecoveryDescription); ok {
+		return output, err
+	}
+
+	return nil, err
+}

@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceModel() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceModelCreate,
+		ReadWithoutTimeout:   resourceModelRead,
+		UpdateWithoutTimeout: resourceModelUpdate,
+		DeleteWithoutTimeout: resourceModelDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: func(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+				idParts := strings.Split(d.Id(), "/")
+				if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+					return nil, fmt.Errorf("Unexpected format of ID (%q), expected REST-API-ID/NAME", d.Id())
+				}
+				apiID := idParts[0]
+				name := idParts[1]
+				d.Set(names.AttrName, name)
+				d.Set("rest_api_id", apiID)
+
+				conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+				model, err := findModelByTwoPartKey(ctx, conn, name, apiID)
+
+				if err != nil {
+					return nil, err
+				}
+
+				d.SetId(aws.ToString(model.Id))
+
+				return []*schema.ResourceData{d}, nil
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrContentType: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			names.AttrDescription: {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			names.AttrName: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"rest_api_id": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			names.AttrSchema: {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateFunc:     validation.StringIsJSON,
+				DiffSuppressFunc: verify.SuppressEquivalentJSONDiffs,
+				StateFunc: func(v any) string {
+					json, _ := structure.NormalizeJsonString(v)
+					return json
+				},
+			},
+		},
+	}
+}

@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findTransitGatewayMulticastGroupSourceByThreePartKey(ctx context.Context, conn *ec2.Client, multicastDomainID, groupIPAddress, eniID string) (*awstypes.TransitGatewayMulticastGroup, error) {
+	input := ec2.SearchTransitGatewayMulticastGroupsInput{
+		Filters: newAttributeFilterList(map[string]string{
+			"group-ip-address": groupIPAddress,
+			"is-group-member":  "false",
+			"is-group-source":  "true",
+		}),
+		TransitGatewayMulticastDomainId: aws.String(multicastDomainID),
+	}
+
+	output, err := findTransitGatewayMulticastGroups(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(output) == 0 {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	for _, v := range output {
+		if aws.ToString(v.NetworkInterfaceId) == eniID {
+			// Eventual consistency check.
+			if aws.ToString(v.GroupIpAddress) != groupIPAddress || !aws.ToBool(v.GroupSource) {
+				return nil, &retry.NotFoundError{
+					LastRequest: &input,
+				}
+			}
+
+			return &v, nil
+		}
+	}
+
+	return nil, tfresource.NewEmptyResultError(input)
+}

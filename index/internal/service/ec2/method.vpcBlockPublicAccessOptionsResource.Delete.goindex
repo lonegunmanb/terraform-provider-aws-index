@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *vpcBlockPublicAccessOptionsResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data vpcBlockPublicAccessOptionsResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EC2Client(ctx)
+
+	// On deletion of this resource set the VPC Block Public Access Options to off.
+	input := &ec2.ModifyVpcBlockPublicAccessOptionsInput{
+		InternetGatewayBlockMode: awstypes.InternetGatewayBlockModeOff,
+	}
+
+	_, err := conn.ModifyVpcBlockPublicAccessOptions(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("deleting VPC Block Public Access Options (%s)", data.ID.ValueString()), err.Error())
+
+		return
+	}
+
+	if _, err := waitVPCBlockPublicAccessOptionsUpdated(ctx, conn, r.DeleteTimeout(ctx, data.Timeouts)); err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for VPC Block Public Access Options (%s) delete", data.ID.ValueString()), err.Error())
+
+		return
+	}
+}

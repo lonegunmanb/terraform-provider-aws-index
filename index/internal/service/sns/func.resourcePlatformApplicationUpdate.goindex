@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sns
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/attrmap"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePlatformApplicationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SNSClient(ctx)
+
+	attributes, err := platformApplicationAttributeMap.ResourceDataToAPIAttributesUpdate(d)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChanges("apple_platform_bundle_id", "apple_platform_team_id", "platform_credential", "platform_principal") {
+		// If APNS platform was configured with token-based authentication then the only way to update them
+		// is to update all 4 attributes as they must be specified together in the request.
+		if d.HasChanges("apple_platform_team_id", "apple_platform_bundle_id") {
+			attributes[platformApplicationAttributeNameApplePlatformTeamID] = d.Get("apple_platform_team_id").(string)
+			attributes[platformApplicationAttributeNameApplePlatformBundleID] = d.Get("apple_platform_bundle_id").(string)
+		}
+
+		// Prior to version 3.0.0 of the Terraform AWS Provider, the platform_credential and platform_principal
+		// attributes were stored in state as SHA256 hashes. If the changes to these two attributes are the only
+		// changes and if both of their changes only match updating the state value, then skip the API call.
+		oPCRaw, nPCRaw := d.GetChange("platform_credential")
+		oPPRaw, nPPRaw := d.GetChange("platform_principal")
+
+		if len(attributes) == 0 && isChangeSha256Removal(oPCRaw, nPCRaw) && isChangeSha256Removal(oPPRaw, nPPRaw) {
+			return diags
+		}
+
+		attributes[platformApplicationAttributeNamePlatformCredential] = d.Get("platform_credential").(string)
+		// If the platform requires a principal it must also be specified, even if it didn't change
+		// since credential is stored as a hash, the only way to update principal is to update both
+		// as they must be specified together in the request.
+		if v, ok := d.GetOk("platform_principal"); ok {
+			attributes[platformApplicationAttributeNamePlatformPrincipal] = v.(string)
+		}
+	}
+
+	// Make API call to update attributes
+	input := &sns.SetPlatformApplicationAttributesInput{
+		Attributes:             attributes,
+		PlatformApplicationArn: aws.String(d.Id()),
+	}
+
+	_, err = tfresource.RetryWhenIsAErrorMessageContains[*types.InvalidParameterException](ctx, propagationTimeout, func() (any, error) {
+		return conn.SetPlatformApplicationAttributes(ctx, input)
+	}, "is not a valid role to allow SNS to write to Cloudwatch Logs")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating SNS Platform Application (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourcePlatformApplicationRead(ctx, d, meta)...)
+}

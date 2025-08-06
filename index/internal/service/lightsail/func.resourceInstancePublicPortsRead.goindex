@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstancePublicPortsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	input := &lightsail.GetInstancePortStatesInput{
+		InstanceName: aws.String(d.Get("instance_name").(string)),
+	}
+
+	output, err := conn.GetInstancePortStates(ctx, input)
+
+	if !d.IsNewResource() && IsANotFoundError(err) {
+		log.Printf("[WARN] Lightsail instance public ports (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Lightsail instance public ports (%s): %s", d.Id(), err)
+	}
+
+	if output == nil || len(output.PortStates) == 0 || output.PortStates == nil {
+		log.Printf("[WARN] Lightsail instance public ports (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err := d.Set("port_info", flattenInstancePortStates(output.PortStates)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting port_info: %s", err)
+	}
+
+	return diags
+}

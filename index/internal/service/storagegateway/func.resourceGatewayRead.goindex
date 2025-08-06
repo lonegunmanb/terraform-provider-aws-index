@@ -1,0 +1,155 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/storagegateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/storagegateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGatewayRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).StorageGatewayClient(ctx)
+
+	outputDGI, err := findGatewayByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Storage Gateway Gateway (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Storage Gateway Gateway (%s): %s", d.Id(), err)
+	}
+
+	outputDSS, err := findSMBSettingsByARN(ctx, conn, d.Id())
+
+	switch {
+	case errs.IsAErrorMessageContains[*awstypes.InvalidGatewayRequestException](err, "This operation is not valid for the specified gateway"):
+	case err != nil:
+		return sdkdiag.AppendErrorf(diags, "reading Storage Gateway Gateway (%s) SMB settings: %s", d.Id(), err)
+	}
+
+	d.Set("activation_key", d.Get("activation_key").(string))
+	d.Set(names.AttrARN, outputDGI.GatewayARN)
+	d.Set(names.AttrCloudWatchLogGroupARN, outputDGI.CloudWatchLogGroupARN)
+	d.Set("ec2_instance_id", outputDGI.Ec2InstanceId)
+	d.Set(names.AttrEndpointType, outputDGI.EndpointType)
+	d.Set("gateway_id", outputDGI.GatewayId)
+	d.Set("gateway_ip_address", d.Get("gateway_ip_address").(string))
+	d.Set("gateway_name", outputDGI.GatewayName)
+	if err := d.Set("gateway_network_interface", flattenNetworkInterfaces(outputDGI.GatewayNetworkInterfaces)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting gateway_network_interface: %s", err)
+	}
+	d.Set("gateway_timezone", outputDGI.GatewayTimezone)
+	d.Set("gateway_type", outputDGI.GatewayType)
+	d.Set("gateway_vpc_endpoint", outputDGI.VPCEndpoint)
+	d.Set("host_environment", outputDGI.HostEnvironment)
+	d.Set("medium_changer_type", d.Get("medium_changer_type").(string))
+	if outputDSS == nil || aws.ToString(outputDSS.DomainName) == "" {
+		if err := d.Set("smb_active_directory_settings", []any{}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting smb_active_directory_settings: %s", err)
+		}
+	} else {
+		tfMap := map[string]any{
+			"active_directory_status": outputDSS.ActiveDirectoryStatus,
+			names.AttrDomainName:      aws.ToString(outputDSS.DomainName),
+		}
+
+		if v, ok := d.GetOk("smb_active_directory_settings"); ok && len(v.([]any)) > 0 {
+			configM := v.([]any)[0].(map[string]any)
+			tfMap[names.AttrPassword] = configM[names.AttrPassword]
+			tfMap["timeout_in_seconds"] = configM["timeout_in_seconds"]
+			tfMap[names.AttrUsername] = configM[names.AttrUsername]
+
+			if v, ok := configM["domain_controllers"]; ok {
+				tfMap["domain_controllers"] = v
+			}
+
+			if v, ok := configM["organizational_unit"]; ok {
+				tfMap["organizational_unit"] = v
+			}
+		}
+
+		if err := d.Set("smb_active_directory_settings", []map[string]any{tfMap}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting smb_active_directory_settings: %s", err)
+		}
+	}
+	// The Storage Gateway API currently provides no way to read this value
+	// We allow Terraform to _automatically_ passthrough the configuration value into the state here
+	// as the API does clue us in whether or not its actually set at all,
+	// which can be used to tell Terraform to show a difference in this case
+	// as well as ensuring there is some sort of attribute value (unlike the others).
+	if outputDSS == nil || !aws.ToBool(outputDSS.SMBGuestPasswordSet) {
+		d.Set("smb_guest_password", "")
+	}
+	if outputDSS != nil {
+		d.Set("smb_file_share_visibility", outputDSS.FileSharesVisible)
+		d.Set("smb_security_strategy", outputDSS.SMBSecurityStrategy)
+	}
+	d.Set("tape_drive_type", d.Get("tape_drive_type").(string))
+
+	setTagsOut(ctx, outputDGI.Tags)
+
+	switch aws.ToString(outputDGI.GatewayType) {
+	case gatewayTypeCached, gatewayTypeStored, gatewayTypeVTL, gatewayTypeVTLSnow:
+		input := &storagegateway.DescribeBandwidthRateLimitInput{
+			GatewayARN: aws.String(d.Id()),
+		}
+
+		outputDBRL, err := conn.DescribeBandwidthRateLimit(ctx, input)
+
+		switch {
+		case errs.IsAErrorMessageContains[*awstypes.InvalidGatewayRequestException](err, "not supported"):
+		case errs.IsAErrorMessageContains[*awstypes.InvalidGatewayRequestException](err, "not valid"):
+		case err != nil:
+			return sdkdiag.AppendErrorf(diags, "reading Storage Gateway Gateway (%s) bandwidth rate limits: %s", d.Id(), err)
+		default:
+			d.Set("average_download_rate_limit_in_bits_per_sec", outputDBRL.AverageDownloadRateLimitInBitsPerSec)
+			d.Set("average_upload_rate_limit_in_bits_per_sec", outputDBRL.AverageUploadRateLimitInBitsPerSec)
+		}
+	}
+
+	input := &storagegateway.DescribeMaintenanceStartTimeInput{
+		GatewayARN: aws.String(d.Id()),
+	}
+
+	outputDMST, err := conn.DescribeMaintenanceStartTime(ctx, input)
+
+	switch {
+	case errs.IsAErrorMessageContains[*awstypes.InvalidGatewayRequestException](err, "The specified operation is not supported"):
+		fallthrough
+	case errs.IsAErrorMessageContains[*awstypes.InvalidGatewayRequestException](err, "This operation is not valid for the specified gateway"):
+		d.Set("maintenance_start_time", nil)
+	case err != nil:
+		return sdkdiag.AppendErrorf(diags, "reading Storage Gateway Gateway (%s) maintenance start time: %s", d.Id(), err)
+	default:
+		if err := d.Set("maintenance_start_time", []map[string]any{flattenDescribeMaintenanceStartTimeOutput(outputDMST)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting maintenance_start_time: %s", err)
+		}
+	}
+
+	return diags
+}

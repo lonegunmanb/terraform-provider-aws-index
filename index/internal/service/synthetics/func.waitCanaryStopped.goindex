@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/synthetics
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/synthetics"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/synthetics/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitCanaryStopped(ctx context.Context, conn *synthetics.Client, name string) (*awstypes.Canary, error) { //nolint:unparam
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(
+			awstypes.CanaryStateStopping,
+			awstypes.CanaryStateUpdating,
+			awstypes.CanaryStateRunning,
+			awstypes.CanaryStateReady,
+			awstypes.CanaryStateStarting),
+		Target:  enum.Slice(awstypes.CanaryStateStopped),
+		Refresh: statusCanaryState(ctx, conn, name),
+		Timeout: canaryStoppedTimeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.Canary); ok {
+		if status := output.Status; status.State == awstypes.CanaryStateError {
+			tfresource.SetLastError(err, fmt.Errorf("%s: %s", status.StateReasonCode, aws.ToString(status.StateReason)))
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}

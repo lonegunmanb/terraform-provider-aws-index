@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer
+import (
+	"context"
+	"fmt"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func RegionalSingleton(ctx context.Context, rd *schema.ResourceData, identitySpec *inttypes.Identity, client AWSClient) error {
+	var region string
+	if region = rd.Id(); region != "" {
+		if regionAttr, ok := rd.GetOk(names.AttrRegion); ok {
+			if region != regionAttr {
+				return fmt.Errorf("the region passed for import %q does not match the region %q in the ID", regionAttr, region)
+			}
+		}
+	} else {
+		identity, err := rd.Identity()
+		if err != nil {
+			return err
+		}
+
+		if err := validateAccountID(identity, client.AccountID(ctx)); err != nil {
+			return err
+		}
+
+		regionRaw, ok := identity.GetOk(names.AttrRegion)
+		if ok {
+			region, ok = regionRaw.(string)
+			if !ok {
+				return fmt.Errorf("identity attribute %q: expected string, got %T", names.AttrRegion, regionRaw)
+			}
+		} else {
+			region = client.Region(ctx)
+		}
+
+		rd.SetId(region)
+	}
+
+	rd.Set(names.AttrRegion, region)
+	for _, attr := range identitySpec.IdentityDuplicateAttrs {
+		setAttribute(rd, attr, region)
+	}
+
+	return nil
+}

@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findResourceRecordSetByFourPartKey(ctx context.Context, conn *route53.Client, zoneID, recordName, recordType, recordSetID string) (*awstypes.ResourceRecordSet, *string, error) {
+	zone, err := findHostedZoneByID(ctx, conn, zoneID)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	name := expandRecordName(recordName, aws.ToString(zone.HostedZone.Name))
+	recordName = fqdn(name)
+	rrType := awstypes.RRType(strings.ToUpper(recordType))
+	input := &route53.ListResourceRecordSetsInput{
+		HostedZoneId:    aws.String(zoneID),
+		StartRecordName: aws.String(recordName),
+		StartRecordType: rrType,
+	}
+	if recordSetID == "" {
+		input.MaxItems = aws.Int32(1)
+	} else {
+		input.MaxItems = aws.Int32(100)
+	}
+	output, err := findResourceRecordSet(ctx, conn, input, resourceRecordsFor(recordName, rrType), func(v *awstypes.ResourceRecordSet) bool {
+		if recordName != strings.ToLower(aws.ToString(v.Name)) {
+			return false
+		}
+		if recordType != strings.ToUpper(string(v.Type)) {
+			return false
+		}
+		if recordSetID != aws.ToString(v.SetIdentifier) {
+			return false
+		}
+
+		return true
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return output, &name, nil
+}

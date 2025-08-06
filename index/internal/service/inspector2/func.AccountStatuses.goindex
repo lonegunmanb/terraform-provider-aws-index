@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mitchellh/mapstructure"
+)
+func AccountStatuses(ctx context.Context, conn *inspector2.Client, accountIDs []string) (map[string]AccountResourceStatus, error) {
+	in := &inspector2.BatchGetAccountStatusInput{
+		AccountIds: accountIDs,
+	}
+	out, err := conn.BatchGetAccountStatus(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+
+	var errs []error
+	results := make(map[string]AccountResourceStatus, len(out.Accounts))
+	for _, a := range out.Accounts {
+		if a.AccountId == nil || a.State == nil {
+			continue
+		}
+		status := AccountResourceStatus{
+			Status:           a.State.Status,
+			ResourceStatuses: make(map[types.ResourceScanType]types.Status, len(enum.Values[types.ResourceScanType]())),
+		}
+		var m map[string]*types.State
+		e := mapstructure.Decode(a.ResourceState, &m)
+		if e != nil {
+			errs = append(errs, e)
+			continue
+		}
+		for k, v := range m {
+			if k == "LambdaCode" {
+				k = "LAMBDA_CODE"
+			}
+			status.ResourceStatuses[types.ResourceScanType(strings.ToUpper(k))] = v.Status
+		}
+		results[aws.ToString(a.AccountId)] = status
+	}
+	err = errors.Join(errs...)
+
+	if err != nil {
+		return results, err
+	}
+
+	if len(results) == 0 {
+		return results, &retry.NotFoundError{}
+	}
+
+	return results, err
+}

@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/evidently
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/evidently"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/evidently/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLaunchCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EvidentlyClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	project := d.Get("project").(string)
+	input := &evidently.CreateLaunchInput{
+		Name:    aws.String(name),
+		Project: aws.String(project),
+		Groups:  expandGroups(d.Get("groups").([]any)),
+		Tags:    getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("metric_monitors"); ok {
+		input.MetricMonitors = expandMetricMonitors(v.([]any))
+	}
+
+	if v, ok := d.GetOk("randomization_salt"); ok {
+		input.RandomizationSalt = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("scheduled_splits_config"); ok {
+		input.ScheduledSplitsConfig = expandScheduledSplitsConfig(v.([]any))
+	}
+
+	output, err := conn.CreateLaunch(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudWatch Evidently Launch (%s) for Project (%s): %s", name, project, err)
+	}
+
+	// the GetLaunch API call uses the Launch name and Project ARN
+	// concat Launch name and Project Name or ARN to be used in Read for imports
+	d.SetId(fmt.Sprintf("%s:%s", aws.ToString(output.Launch.Name), aws.ToString(output.Launch.Project)))
+
+	if _, err := waitLaunchCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for CloudWatch Evidently Launch (%s) for Project (%s) creation: %s", name, project, err)
+	}
+
+	return append(diags, resourceLaunchRead(ctx, d, meta)...)
+}

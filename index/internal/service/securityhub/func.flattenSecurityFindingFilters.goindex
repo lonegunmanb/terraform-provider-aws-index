@@ -1,0 +1,118 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/securityhub
+import (
+	"context"
+	"log"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenSecurityFindingFilters(filters *types.AwsSecurityFindingFilters) []any {
+	if filters == nil {
+		return nil
+	}
+
+	m := map[string]any{
+		names.AttrAWSAccountID:                        flattenStringFilters(filters.AwsAccountId),
+		"company_name":                                flattenStringFilters(filters.CompanyName),
+		"compliance_status":                           flattenStringFilters(filters.ComplianceStatus),
+		"confidence":                                  flattenNumberFilters(filters.Confidence),
+		names.AttrCreatedAt:                           flattenDateFilters(filters.CreatedAt),
+		"criticality":                                 flattenNumberFilters(filters.Criticality),
+		names.AttrDescription:                         flattenStringFilters(filters.Description),
+		"finding_provider_fields_confidence":          flattenNumberFilters(filters.FindingProviderFieldsConfidence),
+		"finding_provider_fields_criticality":         flattenNumberFilters(filters.FindingProviderFieldsCriticality),
+		"finding_provider_fields_related_findings_id": flattenStringFilters(filters.FindingProviderFieldsRelatedFindingsId),
+		"finding_provider_fields_related_findings_product_arn": flattenStringFilters(filters.FindingProviderFieldsRelatedFindingsProductArn),
+		"finding_provider_fields_severity_label":               flattenStringFilters(filters.FindingProviderFieldsSeverityLabel),
+		"finding_provider_fields_severity_original":            flattenStringFilters(filters.FindingProviderFieldsSeverityOriginal),
+		"finding_provider_fields_types":                        flattenStringFilters(filters.FindingProviderFieldsTypes),
+		"first_observed_at":                                    flattenDateFilters(filters.FirstObservedAt),
+		"generator_id":                                         flattenStringFilters(filters.GeneratorId),
+		names.AttrID:                                           flattenStringFilters(filters.Id),
+		"keyword":                                              flattenKeywordFilters(filters.Keyword),
+		"last_observed_at":                                     flattenDateFilters(filters.LastObservedAt),
+		"malware_name":                                         flattenStringFilters(filters.MalwareName),
+		"malware_path":                                         flattenStringFilters(filters.MalwarePath),
+		"malware_state":                                        flattenStringFilters(filters.MalwareState),
+		"malware_type":                                         flattenStringFilters(filters.MalwareType),
+		"network_destination_domain":                           flattenStringFilters(filters.NetworkDestinationDomain),
+		"network_destination_ipv4":                             flattenIPFilters(filters.NetworkDestinationIpV4),
+		"network_destination_ipv6":                             flattenIPFilters(filters.NetworkDestinationIpV6),
+		"network_destination_port":                             flattenNumberFilters(filters.NetworkDestinationPort),
+		"network_direction":                                    flattenStringFilters(filters.NetworkDirection),
+		"network_protocol":                                     flattenStringFilters(filters.NetworkProtocol),
+		"network_source_domain":                                flattenStringFilters(filters.NetworkSourceDomain),
+		"network_source_ipv4":                                  flattenIPFilters(filters.NetworkSourceIpV4),
+		"network_source_ipv6":                                  flattenIPFilters(filters.NetworkSourceIpV6),
+		"network_source_mac":                                   flattenStringFilters(filters.NetworkSourceMac),
+		"network_source_port":                                  flattenNumberFilters(filters.NetworkSourcePort),
+		"note_text":                                            flattenStringFilters(filters.NoteText),
+		"note_updated_at":                                      flattenDateFilters(filters.NoteUpdatedAt),
+		"note_updated_by":                                      flattenStringFilters(filters.NoteUpdatedBy),
+		"process_launched_at":                                  flattenDateFilters(filters.ProcessLaunchedAt),
+		"process_name":                                         flattenStringFilters(filters.ProcessName),
+		"process_parent_pid":                                   flattenNumberFilters(filters.ProcessParentPid),
+		"process_path":                                         flattenStringFilters(filters.ProcessPath),
+		"process_pid":                                          flattenNumberFilters(filters.ProcessPid),
+		"process_terminated_at":                                flattenDateFilters(filters.ProcessTerminatedAt),
+		"product_arn":                                          flattenStringFilters(filters.ProductArn),
+		"product_fields":                                       flattenMapFilters(filters.ProductFields),
+		"product_name":                                         flattenStringFilters(filters.ProductName),
+		"recommendation_text":                                  flattenStringFilters(filters.RecommendationText),
+		"record_state":                                         flattenStringFilters(filters.RecordState),
+		"related_findings_id":                                  flattenStringFilters(filters.RelatedFindingsId),
+		"related_findings_product_arn":                         flattenStringFilters(filters.RelatedFindingsProductArn),
+		"resource_aws_ec2_instance_iam_instance_profile_arn": flattenStringFilters(filters.ResourceAwsEc2InstanceIamInstanceProfileArn),
+		"resource_aws_ec2_instance_image_id":                 flattenStringFilters(filters.ResourceAwsEc2InstanceImageId),
+		"resource_aws_ec2_instance_ipv4_addresses":           flattenIPFilters(filters.ResourceAwsEc2InstanceIpV4Addresses),
+		"resource_aws_ec2_instance_ipv6_addresses":           flattenIPFilters(filters.ResourceAwsEc2InstanceIpV6Addresses),
+		"resource_aws_ec2_instance_key_name":                 flattenStringFilters(filters.ResourceAwsEc2InstanceKeyName),
+		"resource_aws_ec2_instance_launched_at":              flattenDateFilters(filters.ResourceAwsEc2InstanceLaunchedAt),
+		"resource_aws_ec2_instance_subnet_id":                flattenStringFilters(filters.ResourceAwsEc2InstanceSubnetId),
+		"resource_aws_ec2_instance_type":                     flattenStringFilters(filters.ResourceAwsEc2InstanceType),
+		"resource_aws_ec2_instance_vpc_id":                   flattenStringFilters(filters.ResourceAwsEc2InstanceVpcId),
+		"resource_aws_iam_access_key_created_at":             flattenDateFilters(filters.ResourceAwsIamAccessKeyCreatedAt),
+		"resource_aws_iam_access_key_status":                 flattenStringFilters(filters.ResourceAwsIamAccessKeyStatus),
+		"resource_aws_iam_access_key_user_name":              flattenStringFilters(filters.ResourceAwsIamAccessKeyUserName),
+		"resource_aws_s3_bucket_owner_id":                    flattenStringFilters(filters.ResourceAwsS3BucketOwnerId),
+		"resource_aws_s3_bucket_owner_name":                  flattenStringFilters(filters.ResourceAwsS3BucketOwnerName),
+		"resource_container_image_id":                        flattenStringFilters(filters.ResourceContainerImageId),
+		"resource_container_image_name":                      flattenStringFilters(filters.ResourceContainerImageName),
+		"resource_container_launched_at":                     flattenDateFilters(filters.ResourceContainerLaunchedAt),
+		"resource_container_name":                            flattenStringFilters(filters.ResourceContainerName),
+		"resource_details_other":                             flattenMapFilters(filters.ResourceDetailsOther),
+		names.AttrResourceID:                                 flattenStringFilters(filters.ResourceId),
+		"resource_partition":                                 flattenStringFilters(filters.ResourcePartition),
+		"resource_region":                                    flattenStringFilters(filters.ResourceRegion),
+		names.AttrResourceTags:                               flattenMapFilters(filters.ResourceTags),
+		names.AttrResourceType:                               flattenStringFilters(filters.ResourceType),
+		"severity_label":                                     flattenStringFilters(filters.SeverityLabel),
+		"source_url":                                         flattenStringFilters(filters.ThreatIntelIndicatorSourceUrl),
+		"threat_intel_indicator_category":                    flattenStringFilters(filters.ThreatIntelIndicatorCategory),
+		"threat_intel_indicator_last_observed_at":            flattenDateFilters(filters.ThreatIntelIndicatorLastObservedAt),
+		"threat_intel_indicator_source":                      flattenStringFilters(filters.ThreatIntelIndicatorSource),
+		"threat_intel_indicator_source_url":                  flattenStringFilters(filters.ThreatIntelIndicatorSourceUrl),
+		"threat_intel_indicator_type":                        flattenStringFilters(filters.ThreatIntelIndicatorType),
+		"threat_intel_indicator_value":                       flattenStringFilters(filters.ThreatIntelIndicatorValue),
+		"title":                                              flattenStringFilters(filters.Title),
+		names.AttrType:                                       flattenStringFilters(filters.Type),
+		"updated_at":                                         flattenDateFilters(filters.UpdatedAt),
+		"user_defined_values":                                flattenMapFilters(filters.UserDefinedFields),
+		"verification_state":                                 flattenStringFilters(filters.VerificationState),
+		"workflow_status":                                    flattenStringFilters(filters.WorkflowStatus),
+	}
+
+	return []any{m}
+}

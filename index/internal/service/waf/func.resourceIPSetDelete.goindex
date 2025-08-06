@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/waf
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/waf"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/waf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIPSetDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFClient(ctx)
+
+	if oldDescriptors := d.Get("ip_set_descriptors").(*schema.Set).List(); len(oldDescriptors) > 0 {
+		if err := updateIPSet(ctx, conn, d.Id(), oldDescriptors, nil); err != nil && !errs.IsA[*awstypes.WAFNonexistentItemException](err) && !errs.IsA[*awstypes.WAFNonexistentContainerException](err) {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	log.Printf("[INFO] Deleting WAF IPSet: %s", d.Id())
+	_, err := newRetryer(conn).RetryWithToken(ctx, func(token *string) (any, error) {
+		input := &waf.DeleteIPSetInput{
+			ChangeToken: token,
+			IPSetId:     aws.String(d.Id()),
+		}
+
+		return conn.DeleteIPSet(ctx, input)
+	})
+
+	if errs.IsA[*awstypes.WAFNonexistentItemException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting WAF IPSet (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

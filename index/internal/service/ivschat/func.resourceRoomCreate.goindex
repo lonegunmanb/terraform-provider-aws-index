@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ivschat
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ivschat"
+	"github.com/aws/aws-sdk-go-v2/service/ivschat/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRoomCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).IVSChatClient(ctx)
+
+	in := &ivschat.CreateRoomInput{
+		Tags: getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("logging_configuration_identifiers"); ok {
+		in.LoggingConfigurationIdentifiers = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("maximum_message_length"); ok {
+		in.MaximumMessageLength = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("maximum_message_rate_per_second"); ok {
+		in.MaximumMessageRatePerSecond = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("message_review_handler"); ok && len(v.([]any)) > 0 {
+		in.MessageReviewHandler = expandMessageReviewHandler(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrName); ok {
+		in.Name = aws.String(v.(string))
+	}
+
+	out, err := conn.CreateRoom(ctx, in)
+	if err != nil {
+		return create.AppendDiagError(diags, names.IVSChat, create.ErrActionCreating, ResNameRoom, d.Get(names.AttrName).(string), err)
+	}
+
+	if out == nil {
+		return create.AppendDiagError(diags, names.IVSChat, create.ErrActionCreating, ResNameRoom, d.Get(names.AttrName).(string), errors.New("empty output"))
+	}
+
+	d.SetId(aws.ToString(out.Arn))
+
+	if _, err := waitRoomCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return create.AppendDiagError(diags, names.IVSChat, create.ErrActionWaitingForCreation, ResNameRoom, d.Id(), err)
+	}
+
+	return append(diags, resourceRoomRead(ctx, d, meta)...)
+}

@@ -1,0 +1,39 @@
+package github.com/hashicorp/terraform-provider-aws/internal/retry
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (o operation[T]) UntilFoundN(continuousTargetOccurence int) operation[T] {
+	if continuousTargetOccurence < 1 {
+		continuousTargetOccurence = 1
+	}
+
+	targetOccurence := 0
+
+	predicate := func(_ T, err error) (bool, error) {
+		if err == nil {
+			targetOccurence++
+
+			if continuousTargetOccurence == targetOccurence {
+				return false, nil
+			}
+
+			return true, nil
+		}
+
+		if tfresource.NotFound(err) { // nosemgrep:ci.semgrep.errors.notfound-without-err-checks
+			targetOccurence = 0
+
+			return true, err
+		}
+
+		return false, err
+	}
+
+	return o.If(predicate)
+}

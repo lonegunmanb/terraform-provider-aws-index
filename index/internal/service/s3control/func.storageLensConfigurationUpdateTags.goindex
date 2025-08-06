@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3control
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3control"
+	"github.com/aws/aws-sdk-go-v2/service/s3control/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func storageLensConfigurationUpdateTags(ctx context.Context, conn *s3control.Client, accountID, configID string, oldTagsMap, newTagsMap any) error {
+	oldTags := tftags.New(ctx, oldTagsMap)
+	newTags := tftags.New(ctx, newTagsMap)
+
+	// We need to also consider any existing ignored tags.
+	allTags, err := storageLensConfigurationListTags(ctx, conn, accountID, configID)
+
+	if err != nil {
+		return fmt.Errorf("listing tags: %s", err)
+	}
+
+	ignoredTags := allTags.Ignore(oldTags).Ignore(newTags)
+
+	if len(newTags)+len(ignoredTags) > 0 {
+		input := &s3control.PutStorageLensConfigurationTaggingInput{
+			AccountId: aws.String(accountID),
+			ConfigId:  aws.String(configID),
+			Tags:      storageLensTags(newTags.Merge(ignoredTags)),
+		}
+
+		_, err := conn.PutStorageLensConfigurationTagging(ctx, input)
+
+		if err != nil {
+			return fmt.Errorf("setting tags: %s", err)
+		}
+	} else if len(oldTags) > 0 && len(ignoredTags) == 0 {
+		input := &s3control.DeleteStorageLensConfigurationTaggingInput{
+			AccountId: aws.String(accountID),
+			ConfigId:  aws.String(configID),
+		}
+
+		_, err := conn.DeleteStorageLensConfigurationTagging(ctx, input)
+
+		if err != nil {
+			return fmt.Errorf("deleting tags: %s", err)
+		}
+	}
+
+	return nil
+}

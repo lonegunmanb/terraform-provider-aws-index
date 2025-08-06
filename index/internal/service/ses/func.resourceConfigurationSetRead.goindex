@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ses
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfigurationSetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SESClient(ctx)
+
+	input := &ses.DescribeConfigurationSetInput{
+		ConfigurationSetAttributeNames: []awstypes.ConfigurationSetAttribute{
+			awstypes.ConfigurationSetAttributeDeliveryOptions,
+			awstypes.ConfigurationSetAttributeReputationOptions,
+			awstypes.ConfigurationSetAttributeTrackingOptions,
+		},
+		ConfigurationSetName: aws.String(d.Id()),
+	}
+
+	output, err := findConfigurationSet(ctx, conn, input)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SES Configuration Set (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SES Configuration Set (%s): %s", d.Id(), err)
+	}
+
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "ses",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("configuration-set/%s", d.Id()),
+	}.String()
+	d.Set(names.AttrARN, arn)
+	if err := d.Set("delivery_options", flattenDeliveryOptions(output.DeliveryOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting delivery_options: %s", err)
+	}
+	d.Set(names.AttrName, output.ConfigurationSet.Name)
+	if err := d.Set("tracking_options", flattenTrackingOptions(output.TrackingOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting tracking_options: %s", err)
+	}
+
+	if apiObject := output.ReputationOptions; apiObject != nil {
+		d.Set("last_fresh_start", aws.ToTime(apiObject.LastFreshStart).Format(time.RFC3339))
+		d.Set("reputation_metrics_enabled", apiObject.ReputationMetricsEnabled)
+		d.Set("sending_enabled", apiObject.SendingEnabled)
+	}
+
+	return diags
+}

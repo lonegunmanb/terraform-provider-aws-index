@@ -1,0 +1,110 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/verifiedpermissions
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/verifiedpermissions"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/verifiedpermissions/types"
+	cedar "github.com/cedar-policy/cedar-go/x/exp/parser"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	interflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *policyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	conn := r.Meta().VerifiedPermissionsClient(ctx)
+
+	var state policyResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	rID, err := interflex.ExpandResourceId(state.ID.ValueString(), ResourcePolicyIDPartsCount, false)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionSetting, ResNamePolicy, state.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	out, err := findPolicyByID(ctx, conn, rID[0], rID[1])
+	if tfresource.NotFound(err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionSetting, ResNamePolicy, state.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	state.PolicyID = fwflex.StringToFramework(ctx, out.PolicyId)
+	state.PolicyStoreID = fwflex.StringToFramework(ctx, out.PolicyStoreId)
+	state.CreatedDate = timetypes.NewRFC3339TimePointerValue(out.CreatedDate)
+
+	if val, ok := out.Definition.(*awstypes.PolicyDefinitionDetailMemberStatic); ok && val != nil {
+		static := fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &staticPolicyDefinition{
+			Statement:   fwflex.StringToFramework(ctx, val.Value.Statement),
+			Description: fwflex.StringToFramework(ctx, val.Value.Description),
+		})
+
+		state.Definition = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &policyDefinition{
+			Static:         static,
+			TemplateLinked: fwtypes.NewListNestedObjectValueOfNull[templateLinkedPolicyDefinition](ctx),
+		})
+	}
+
+	if val, ok := out.Definition.(*awstypes.PolicyDefinitionDetailMemberTemplateLinked); ok && val != nil {
+		tpl := templateLinkedPolicyDefinition{
+			PolicyTemplateID: fwflex.StringToFramework(ctx, val.Value.PolicyTemplateId),
+		}
+
+		if val.Value.Principal != nil {
+			tpl.Principal = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &templateLinkedPrincipal{
+				EntityID:   fwflex.StringToFramework(ctx, val.Value.Principal.EntityId),
+				EntityType: fwflex.StringToFramework(ctx, val.Value.Principal.EntityType),
+			})
+		} else {
+			tpl.Principal = fwtypes.NewListNestedObjectValueOfNull[templateLinkedPrincipal](ctx)
+		}
+
+		if val.Value.Resource != nil {
+			tpl.Resource = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &templateLinkedResource{
+				EntityID:   fwflex.StringToFramework(ctx, val.Value.Resource.EntityId),
+				EntityType: fwflex.StringToFramework(ctx, val.Value.Resource.EntityType),
+			})
+		} else {
+			tpl.Resource = fwtypes.NewListNestedObjectValueOfNull[templateLinkedResource](ctx)
+		}
+
+		templateLinked := fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &tpl)
+
+		state.Definition = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &policyDefinition{
+			Static:         fwtypes.NewListNestedObjectValueOfNull[staticPolicyDefinition](ctx),
+			TemplateLinked: templateLinked,
+		})
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}

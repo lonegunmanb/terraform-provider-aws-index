@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicediscovery
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicediscovery"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicediscovery/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHTTPNamespaceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceDiscoveryClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &servicediscovery.CreateHttpNamespaceInput{
+		CreatorRequestId: aws.String(id.UniqueId()),
+		Name:             aws.String(name),
+		Tags:             getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateHttpNamespace(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Service Discovery HTTP Namespace (%s): %s", name, err)
+	}
+
+	operation, err := waitOperationSucceeded(ctx, conn, aws.ToString(output.OperationId))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Service Discovery HTTP Namespace (%s) create: %s", name, err)
+	}
+
+	d.SetId(operation.Targets[string(awstypes.OperationTargetTypeNamespace)])
+
+	return append(diags, resourceHTTPNamespaceRead(ctx, d, meta)...)
+}

@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandListenerAction(actionPath cty.Path, i int, tfMap map[string]any, diags *diag.Diagnostics) awstypes.Action {
+	action := awstypes.Action{
+		Order: aws.Int32(int32(i + 1)),
+		Type:  awstypes.ActionTypeEnum(tfMap[names.AttrType].(string)),
+	}
+
+	if order, ok := tfMap["order"].(int); ok && order != 0 {
+		action.Order = aws.Int32(int32(order))
+	}
+
+	switch awstypes.ActionTypeEnum(tfMap[names.AttrType].(string)) {
+	case awstypes.ActionTypeEnumForward:
+		if v, ok := tfMap["forward"].([]any); ok && len(v) > 0 {
+			action.ForwardConfig = expandListenerActionForwardConfig(v)
+		}
+		if v, ok := tfMap["target_group_arn"].(string); ok && v != "" {
+			action.TargetGroupArn = aws.String(v)
+		}
+
+	case awstypes.ActionTypeEnumRedirect:
+		if v, ok := tfMap["redirect"].([]any); ok {
+			action.RedirectConfig = expandListenerRedirectActionConfig(v)
+		}
+
+	case awstypes.ActionTypeEnumFixedResponse:
+		if v, ok := tfMap["fixed_response"].([]any); ok {
+			action.FixedResponseConfig = expandListenerFixedResponseConfig(v)
+		}
+
+	case awstypes.ActionTypeEnumAuthenticateCognito:
+		if v, ok := tfMap["authenticate_cognito"].([]any); ok {
+			action.AuthenticateCognitoConfig = expandListenerAuthenticateCognitoConfig(v)
+		}
+
+	case awstypes.ActionTypeEnumAuthenticateOidc:
+		if v, ok := tfMap["authenticate_oidc"].([]any); ok {
+			action.AuthenticateOidcConfig = expandAuthenticateOIDCConfig(v)
+		}
+	}
+
+	listenerActionRuntimeValidate(actionPath, tfMap, diags)
+
+	return action
+}

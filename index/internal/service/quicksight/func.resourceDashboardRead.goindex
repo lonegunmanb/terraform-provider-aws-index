@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDashboardRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID, dashboardID, err := dashboardParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	dashboard, err := findDashboardByThreePartKey(ctx, conn, awsAccountID, dashboardID, dashboardLatestVersion)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] QuickSight Dashboard (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading QuickSight Dashboard (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, dashboard.Arn)
+	d.Set(names.AttrAWSAccountID, awsAccountID)
+	d.Set(names.AttrCreatedTime, dashboard.CreatedTime.Format(time.RFC3339))
+	d.Set("dashboard_id", dashboard.DashboardId)
+	d.Set(names.AttrLastUpdatedTime, dashboard.LastUpdatedTime.Format(time.RFC3339))
+	d.Set(names.AttrName, dashboard.Name)
+	d.Set("source_entity_arn", dashboard.Version.SourceEntityArn)
+	d.Set(names.AttrStatus, dashboard.Version.Status)
+	d.Set("version_description", dashboard.Version.Description)
+	version := aws.ToInt64(dashboard.Version.VersionNumber)
+	d.Set("version_number", version)
+
+	outputDDD, err := findDashboardDefinitionByThreePartKey(ctx, conn, awsAccountID, dashboardID, version)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading QuickSight Dashboard (%s) definition: %s", d.Id(), err)
+	}
+
+	if err := d.Set("definition", quicksightschema.FlattenDashboardDefinition(outputDDD.Definition)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting definition: %s", err)
+	}
+
+	if err := d.Set("dashboard_publish_options", quicksightschema.FlattenDashboardPublishOptions(outputDDD.DashboardPublishOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting dashboard_publish_options: %s", err)
+	}
+
+	permissions, err := findDashboardPermissionsByTwoPartKey(ctx, conn, awsAccountID, dashboardID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading QuickSight Dashboard (%s) permissions: %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrPermissions, quicksightschema.FlattenPermissions(permissions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting permissions: %s", err)
+	}
+
+	return diags
+}

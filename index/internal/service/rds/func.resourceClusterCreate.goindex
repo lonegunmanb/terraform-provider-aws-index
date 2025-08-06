@@ -1,0 +1,740 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	identifier := create.NewNameGenerator(
+		create.WithConfiguredName(d.Get(names.AttrClusterIdentifier).(string)),
+		create.WithConfiguredPrefix(d.Get("cluster_identifier_prefix").(string)),
+		create.WithDefaultPrefix("tf-"),
+	).Generate()
+
+	// get write-only value from configuration
+	masterPasswordWO, di := flex.GetWriteOnlyStringValue(d, cty.GetAttrPath("master_password_wo"))
+	diags = append(diags, di...)
+	if diags.HasError() {
+		return diags
+	}
+
+	// Some API calls (e.g. RestoreDBClusterFromSnapshot do not support all
+	// parameters to correctly apply all settings in one pass. For missing
+	// parameters or unsupported configurations, we may need to call
+	// ModifyDBInstance afterwards to prevent Terraform operators from API
+	// errors or needing to double apply.
+	var requiresModifyDbCluster bool
+	modifyDbClusterInput := &rds.ModifyDBClusterInput{
+		ApplyImmediately: aws.Bool(true),
+	}
+
+	if v, ok := d.GetOk("snapshot_identifier"); ok {
+		input := &rds.RestoreDBClusterFromSnapshotInput{
+			CopyTagsToSnapshot:  aws.Bool(d.Get("copy_tags_to_snapshot").(bool)),
+			DBClusterIdentifier: aws.String(identifier),
+			DeletionProtection:  aws.Bool(d.Get(names.AttrDeletionProtection).(bool)),
+			Engine:              aws.String(d.Get(names.AttrEngine).(string)),
+			SnapshotIdentifier:  aws.String(v.(string)),
+			Tags:                getTagsIn(ctx),
+		}
+
+		if v, ok := d.GetOk(names.AttrAvailabilityZones); ok && v.(*schema.Set).Len() > 0 {
+			input.AvailabilityZones = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("backtrack_window"); ok {
+			input.BacktrackWindow = aws.Int64(int64(v.(int)))
+		}
+
+		if v, ok := d.GetOk("backup_retention_period"); ok {
+			modifyDbClusterInput.BackupRetentionPeriod = aws.Int32(int32(v.(int)))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk(names.AttrDatabaseName); ok {
+			input.DatabaseName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_cluster_parameter_group_name"); ok {
+			input.DBClusterParameterGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_subnet_group_name"); ok {
+			input.DBSubnetGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrDomain); ok {
+			input.Domain = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("domain_iam_role_name"); ok {
+			input.DomainIAMRoleName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("enabled_cloudwatch_logs_exports"); ok && v.(*schema.Set).Len() > 0 {
+			input.EnableCloudwatchLogsExports = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("engine_lifecycle_support"); ok {
+			input.EngineLifecycleSupport = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("engine_mode"); ok {
+			input.EngineMode = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrEngineVersion); ok {
+			input.EngineVersion = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+			input.KmsKeyId = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("manage_master_user_password"); ok {
+			modifyDbClusterInput.ManageMasterUserPassword = aws.Bool(v.(bool))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("master_password"); ok {
+			modifyDbClusterInput.MasterUserPassword = aws.String(v.(string))
+			requiresModifyDbCluster = true
+		}
+
+		if masterPasswordWO != "" {
+			modifyDbClusterInput.MasterUserPassword = aws.String(masterPasswordWO)
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("master_user_secret_kms_key_id"); ok {
+			modifyDbClusterInput.MasterUserSecretKmsKeyId = aws.String(v.(string))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("monitoring_interval"); ok {
+			input.MonitoringInterval = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("monitoring_role_arn"); ok {
+			input.MonitoringRoleArn = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("network_type"); ok {
+			input.NetworkType = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("option_group_name"); ok {
+			input.OptionGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrPort); ok {
+			input.Port = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("preferred_backup_window"); ok {
+			modifyDbClusterInput.PreferredBackupWindow = aws.String(v.(string))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk(names.AttrPreferredMaintenanceWindow); ok {
+			modifyDbClusterInput.PreferredMaintenanceWindow = aws.String(v.(string))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("scaling_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.ScalingConfiguration = expandScalingConfiguration(v.([]any)[0].(map[string]any))
+		}
+
+		if v, ok := d.GetOk("serverlessv2_scaling_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			modifyDbClusterInput.ServerlessV2ScalingConfiguration = expandServerlessV2ScalingConfiguration(v.([]any)[0].(map[string]any))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk(names.AttrStorageType); ok {
+			input.StorageType = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrVPCSecurityGroupIDs); ok && v.(*schema.Set).Len() > 0 {
+			input.VpcSecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout,
+			func() (any, error) {
+				return conn.RestoreDBClusterFromSnapshot(ctx, input)
+			},
+			errCodeInvalidParameterValue, "IAM role ARN value is invalid or does not include the required permissions")
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating RDS Cluster (restore from snapshot) (%s): %s", identifier, err)
+		}
+	} else if v, ok := d.GetOk("s3_import"); ok {
+		if _, ok := d.GetOk("master_username"); !ok {
+			diags = sdkdiag.AppendErrorf(diags, `"master_username": required field is not set`)
+		}
+		if diags.HasError() {
+			return diags
+		}
+
+		tfMap := v.([]any)[0].(map[string]any)
+		input := &rds.RestoreDBClusterFromS3Input{
+			CopyTagsToSnapshot:  aws.Bool(d.Get("copy_tags_to_snapshot").(bool)),
+			DBClusterIdentifier: aws.String(identifier),
+			DeletionProtection:  aws.Bool(d.Get(names.AttrDeletionProtection).(bool)),
+			Engine:              aws.String(d.Get(names.AttrEngine).(string)),
+			MasterUsername:      aws.String(d.Get("master_username").(string)),
+			S3BucketName:        aws.String(tfMap[names.AttrBucketName].(string)),
+			S3IngestionRoleArn:  aws.String(tfMap["ingestion_role"].(string)),
+			S3Prefix:            aws.String(tfMap[names.AttrBucketPrefix].(string)),
+			SourceEngine:        aws.String(tfMap["source_engine"].(string)),
+			SourceEngineVersion: aws.String(tfMap["source_engine_version"].(string)),
+			Tags:                getTagsIn(ctx),
+		}
+
+		if v, ok := d.GetOk(names.AttrAvailabilityZones); ok && v.(*schema.Set).Len() > 0 {
+			input.AvailabilityZones = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("backtrack_window"); ok {
+			input.BacktrackWindow = aws.Int64(int64(v.(int)))
+		}
+
+		if v, ok := d.GetOk("backup_retention_period"); ok {
+			input.BackupRetentionPeriod = aws.Int32(int32(v.(int)))
+		}
+
+		if v := d.Get(names.AttrDatabaseName); v.(string) != "" {
+			input.DatabaseName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_cluster_parameter_group_name"); ok {
+			input.DBClusterParameterGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_subnet_group_name"); ok {
+			input.DBSubnetGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrDomain); ok {
+			input.Domain = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("domain_iam_role_name"); ok {
+			input.DomainIAMRoleName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("enabled_cloudwatch_logs_exports"); ok && v.(*schema.Set).Len() > 0 {
+			input.EnableCloudwatchLogsExports = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("engine_lifecycle_support"); ok {
+			input.EngineLifecycleSupport = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrEngineVersion); ok {
+			input.EngineVersion = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("iam_database_authentication_enabled"); ok {
+			input.EnableIAMDatabaseAuthentication = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+			input.KmsKeyId = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("manage_master_user_password"); ok {
+			input.ManageMasterUserPassword = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk("master_user_secret_kms_key_id"); ok {
+			input.MasterUserSecretKmsKeyId = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("master_password"); ok {
+			input.MasterUserPassword = aws.String(v.(string))
+		}
+
+		if masterPasswordWO != "" {
+			input.MasterUserPassword = aws.String(masterPasswordWO)
+		}
+
+		if v, ok := d.GetOk("network_type"); ok {
+			input.NetworkType = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrPort); ok {
+			input.Port = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("preferred_backup_window"); ok {
+			input.PreferredBackupWindow = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrPreferredMaintenanceWindow); ok {
+			input.PreferredMaintenanceWindow = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOkExists(names.AttrStorageEncrypted); ok {
+			input.StorageEncrypted = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk(names.AttrStorageType); ok {
+			input.StorageType = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrVPCSecurityGroupIDs); ok && v.(*schema.Set).Len() > 0 {
+			input.VpcSecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		_, err := tfresource.RetryWhen(ctx, propagationTimeout,
+			func() (any, error) {
+				return conn.RestoreDBClusterFromS3(ctx, input)
+			},
+			func(err error) (bool, error) {
+				// InvalidParameterValue: Files from the specified Amazon S3 bucket cannot be downloaded.
+				// Make sure that you have created an AWS Identity and Access Management (IAM) role that lets Amazon RDS access Amazon S3 for you.
+				if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "Files from the specified Amazon S3 bucket cannot be downloaded") {
+					return true, err
+				}
+
+				if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "S3_SNAPSHOT_INGESTION") {
+					return true, err
+				}
+
+				if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "S3 bucket cannot be found") {
+					return true, err
+				}
+
+				return false, err
+			},
+		)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating RDS Cluster (restore from S3) (%s): %s", identifier, err)
+		}
+	} else if v, ok := d.GetOk("restore_to_point_in_time"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		input := &rds.RestoreDBClusterToPointInTimeInput{
+			CopyTagsToSnapshot:  aws.Bool(d.Get("copy_tags_to_snapshot").(bool)),
+			DBClusterIdentifier: aws.String(identifier),
+			DeletionProtection:  aws.Bool(d.Get(names.AttrDeletionProtection).(bool)),
+			Tags:                getTagsIn(ctx),
+		}
+
+		if v, ok := d.GetOk("backtrack_window"); ok {
+			input.BacktrackWindow = aws.Int64(int64(v.(int)))
+		}
+
+		if v, ok := d.GetOk("backup_retention_period"); ok {
+			modifyDbClusterInput.BackupRetentionPeriod = aws.Int32(int32(v.(int)))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("db_cluster_parameter_group_name"); ok {
+			input.DBClusterParameterGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_subnet_group_name"); ok {
+			input.DBSubnetGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrDomain); ok {
+			input.Domain = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("domain_iam_role_name"); ok {
+			input.DomainIAMRoleName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("enabled_cloudwatch_logs_exports"); ok && v.(*schema.Set).Len() > 0 {
+			input.EnableCloudwatchLogsExports = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("iam_database_authentication_enabled"); ok {
+			input.EnableIAMDatabaseAuthentication = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+			input.KmsKeyId = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("manage_master_user_password"); ok {
+			modifyDbClusterInput.ManageMasterUserPassword = aws.Bool(v.(bool))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("master_password"); ok {
+			modifyDbClusterInput.MasterUserPassword = aws.String(v.(string))
+			requiresModifyDbCluster = true
+		}
+
+		if masterPasswordWO != "" {
+			modifyDbClusterInput.MasterUserPassword = aws.String(masterPasswordWO)
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("master_user_secret_kms_key_id"); ok {
+			modifyDbClusterInput.MasterUserSecretKmsKeyId = aws.String(v.(string))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("monitoring_interval"); ok {
+			input.MonitoringInterval = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("monitoring_role_arn"); ok {
+			input.MonitoringRoleArn = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("network_type"); ok {
+			input.NetworkType = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("option_group_name"); ok {
+			input.OptionGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrPort); ok {
+			input.Port = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("preferred_backup_window"); ok {
+			modifyDbClusterInput.PreferredBackupWindow = aws.String(v.(string))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk(names.AttrPreferredMaintenanceWindow); ok {
+			modifyDbClusterInput.PreferredMaintenanceWindow = aws.String(v.(string))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := tfMap["restore_to_time"].(string); ok && v != "" {
+			v, _ := time.Parse(time.RFC3339, v)
+			input.RestoreToTime = aws.Time(v)
+		}
+
+		if v, ok := tfMap["restore_type"].(string); ok {
+			input.RestoreType = aws.String(v)
+		}
+
+		if v, ok := d.GetOk("scaling_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			modifyDbClusterInput.ScalingConfiguration = expandScalingConfiguration(v.([]any)[0].(map[string]any))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := d.GetOk("serverlessv2_scaling_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			modifyDbClusterInput.ServerlessV2ScalingConfiguration = expandServerlessV2ScalingConfiguration(v.([]any)[0].(map[string]any))
+			requiresModifyDbCluster = true
+		}
+
+		if v, ok := tfMap["source_cluster_identifier"].(string); ok && v != "" {
+			input.SourceDBClusterIdentifier = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_cluster_resource_id"].(string); ok && v != "" {
+			input.SourceDbClusterResourceId = aws.String(v)
+		}
+
+		if v, ok := d.GetOk(names.AttrStorageType); ok {
+			input.StorageType = aws.String(v.(string))
+		}
+
+		if v, ok := tfMap["use_latest_restorable_time"].(bool); ok && v {
+			input.UseLatestRestorableTime = aws.Bool(v)
+		}
+
+		if v, ok := d.GetOk(names.AttrVPCSecurityGroupIDs); ok && v.(*schema.Set).Len() > 0 {
+			input.VpcSecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		_, err := conn.RestoreDBClusterToPointInTime(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating RDS Cluster (restore to point-in-time) (%s): %s", identifier, err)
+		}
+	} else {
+		input := &rds.CreateDBClusterInput{
+			CopyTagsToSnapshot:  aws.Bool(d.Get("copy_tags_to_snapshot").(bool)),
+			DBClusterIdentifier: aws.String(identifier),
+			DeletionProtection:  aws.Bool(d.Get(names.AttrDeletionProtection).(bool)),
+			Engine:              aws.String(d.Get(names.AttrEngine).(string)),
+			Tags:                getTagsIn(ctx),
+		}
+
+		if v, ok := d.GetOkExists(names.AttrAllocatedStorage); ok {
+			input.AllocatedStorage = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk(names.AttrAvailabilityZones); ok && v.(*schema.Set).Len() > 0 {
+			input.AvailabilityZones = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("backtrack_window"); ok {
+			input.BacktrackWindow = aws.Int64(int64(v.(int)))
+		}
+
+		if v, ok := d.GetOk("backup_retention_period"); ok {
+			input.BackupRetentionPeriod = aws.Int32(int32(v.(int)))
+		}
+
+		if v := d.Get("ca_certificate_identifier"); v.(string) != "" {
+			input.CACertificateIdentifier = aws.String(v.(string))
+		}
+
+		if v := d.Get("cluster_scalability_type"); v.(string) != "" {
+			input.ClusterScalabilityType = types.ClusterScalabilityType(v.(string))
+		}
+
+		if v := d.Get("database_insights_mode"); v.(string) != "" {
+			input.DatabaseInsightsMode = types.DatabaseInsightsMode(v.(string))
+		}
+
+		if v := d.Get(names.AttrDatabaseName); v.(string) != "" {
+			input.DatabaseName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_cluster_instance_class"); ok {
+			input.DBClusterInstanceClass = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_cluster_parameter_group_name"); ok {
+			input.DBClusterParameterGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_subnet_group_name"); ok {
+			input.DBSubnetGroupName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("db_system_id"); ok {
+			input.DBSystemId = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrDomain); ok {
+			input.Domain = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("domain_iam_role_name"); ok {
+			input.DomainIAMRoleName = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("enable_global_write_forwarding"); ok {
+			input.EnableGlobalWriteForwarding = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk("enable_http_endpoint"); ok {
+			input.EnableHttpEndpoint = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk("enable_local_write_forwarding"); ok {
+			input.EnableLocalWriteForwarding = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk("enabled_cloudwatch_logs_exports"); ok && v.(*schema.Set).Len() > 0 {
+			input.EnableCloudwatchLogsExports = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("engine_lifecycle_support"); ok {
+			input.EngineLifecycleSupport = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("engine_mode"); ok {
+			input.EngineMode = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrEngineVersion); ok {
+			input.EngineVersion = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("global_cluster_identifier"); ok {
+			input.GlobalClusterIdentifier = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("iam_database_authentication_enabled"); ok {
+			input.EnableIAMDatabaseAuthentication = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOkExists(names.AttrIOPS); ok {
+			input.Iops = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+			input.KmsKeyId = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("manage_master_user_password"); ok {
+			input.ManageMasterUserPassword = aws.Bool(v.(bool))
+		}
+
+		// Note: Username and password credentials are required and valid
+		// unless the cluster password is managed by RDS, or it is a read-replica.
+		// This also applies to clusters within a global cluster.
+		// Providing a password and/or username for a replica
+		// will result in an InvalidParameterValue error.
+		if v, ok := d.GetOk("master_password"); ok {
+			input.MasterUserPassword = aws.String(v.(string))
+		}
+
+		if masterPasswordWO != "" {
+			input.MasterUserPassword = aws.String(masterPasswordWO)
+		}
+
+		if v, ok := d.GetOk("master_user_secret_kms_key_id"); ok {
+			input.MasterUserSecretKmsKeyId = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("master_username"); ok {
+			input.MasterUsername = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("monitoring_interval"); ok {
+			input.MonitoringInterval = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("monitoring_role_arn"); ok {
+			input.MonitoringRoleArn = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("network_type"); ok {
+			input.NetworkType = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("performance_insights_enabled"); ok {
+			// If the cluster is part of a global cluster, defer Performance Insights settings
+			// to the modifyDbClusterInput to prevent them from being reset.
+			if _, ok := d.GetOk("global_cluster_identifier"); ok {
+				modifyDbClusterInput.EnablePerformanceInsights = aws.Bool(v.(bool))
+				requiresModifyDbCluster = true
+			} else {
+				input.EnablePerformanceInsights = aws.Bool(v.(bool))
+			}
+		}
+
+		if v, ok := d.GetOk("performance_insights_kms_key_id"); ok {
+			if _, ok := d.GetOk("global_cluster_identifier"); ok {
+				modifyDbClusterInput.PerformanceInsightsKMSKeyId = aws.String(v.(string))
+				requiresModifyDbCluster = true
+			} else {
+				input.PerformanceInsightsKMSKeyId = aws.String(v.(string))
+			}
+		}
+
+		if v, ok := d.GetOk("performance_insights_retention_period"); ok {
+			if _, ok := d.GetOk("global_cluster_identifier"); ok {
+				modifyDbClusterInput.PerformanceInsightsRetentionPeriod = aws.Int32(int32(v.(int)))
+				requiresModifyDbCluster = true
+			} else {
+				input.PerformanceInsightsRetentionPeriod = aws.Int32(int32(v.(int)))
+			}
+		}
+
+		if v, ok := d.GetOk(names.AttrPort); ok {
+			input.Port = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("preferred_backup_window"); ok {
+			input.PreferredBackupWindow = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrPreferredMaintenanceWindow); ok {
+			input.PreferredMaintenanceWindow = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("replication_source_identifier"); ok && input.GlobalClusterIdentifier == nil {
+			input.ReplicationSourceIdentifier = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("scaling_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.ScalingConfiguration = expandScalingConfiguration(v.([]any)[0].(map[string]any))
+		}
+
+		if v, ok := d.GetOk("serverlessv2_scaling_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.ServerlessV2ScalingConfiguration = expandServerlessV2ScalingConfiguration(v.([]any)[0].(map[string]any))
+		}
+
+		if v, ok := d.GetOk("source_region"); ok {
+			input.SourceRegion = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOkExists(names.AttrStorageEncrypted); ok {
+			input.StorageEncrypted = aws.Bool(v.(bool))
+		}
+
+		if v, ok := d.GetOk(names.AttrStorageType); ok {
+			input.StorageType = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrVPCSecurityGroupIDs); ok && v.(*schema.Set).Len() > 0 {
+			input.VpcSecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout,
+			func() (any, error) {
+				return conn.CreateDBCluster(ctx, input)
+			},
+			errCodeInvalidParameterValue, "IAM role ARN value is invalid or does not include the required permissions")
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating RDS Cluster (%s): %s", identifier, err)
+		}
+	}
+
+	d.SetId(identifier)
+
+	if _, err := waitDBClusterCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RDS Cluster (%s) create: %s", d.Id(), err)
+	}
+
+	if v, ok := d.GetOk("iam_roles"); ok && v.(*schema.Set).Len() > 0 {
+		for _, v := range v.(*schema.Set).List() {
+			if err := addIAMRoleToCluster(ctx, conn, d.Id(), v.(string)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	if requiresModifyDbCluster {
+		modifyDbClusterInput.DBClusterIdentifier = aws.String(d.Id())
+
+		_, err := conn.ModifyDBCluster(ctx, modifyDbClusterInput)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating RDS Cluster (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitDBClusterUpdated(ctx, conn, d.Id(), true, d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for RDS Cluster (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceClusterRead(ctx, d, meta)...)
+}

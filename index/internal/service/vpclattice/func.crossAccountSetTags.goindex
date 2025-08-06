@@ -1,0 +1,40 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/vpclattice
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/vpclattice"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func crossAccountSetTags(ctx context.Context, conn *vpclattice.Client, diags diag.Diagnostics, resARN, accountID, resName string) diag.Diagnostics {
+	// https://docs.aws.amazon.com/vpc-lattice/latest/ug/sharing.html#sharing-perms
+	// Owners and consumers can list tags and can tag/untag resources in a service network that the account created.
+	// They can't list tags and tag/untag resources in a service network that aren't created by the account.
+	parsedARN, err := arn.Parse(resARN)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if parsedARN.AccountID == accountID {
+		tags, err := listTags(ctx, conn, resARN)
+
+		if errs.Contains(err, ErrCodeAccessDeniedException) {
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "listing tags for VPC Lattice %s (%s): %s", resName, resARN, err)
+		}
+
+		setTagsOut(ctx, svcTags(tags))
+	}
+
+	return diags
+}

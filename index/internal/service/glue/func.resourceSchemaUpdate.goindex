@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSchemaUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	input := &glue.UpdateSchemaInput{
+		SchemaId: createSchemaID(d.Id()),
+		SchemaVersionNumber: &awstypes.SchemaVersionNumber{
+			LatestVersion: true,
+		},
+	}
+	update := false
+
+	if d.HasChange(names.AttrDescription) {
+		input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		update = true
+	}
+
+	if d.HasChange("compatibility") {
+		input.Compatibility = awstypes.Compatibility(d.Get("compatibility").(string))
+		update = true
+	}
+
+	if update {
+		log.Printf("[DEBUG] Updating Glue Schema: %#v", input)
+		_, err := conn.UpdateSchema(ctx, input)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Glue Schema (%s): %s", d.Id(), err)
+		}
+
+		_, err = waitSchemaAvailable(ctx, conn, d.Id())
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Glue Schema (%s) to be Available: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("schema_definition") {
+		defInput := &glue.RegisterSchemaVersionInput{
+			SchemaId:         createSchemaID(d.Id()),
+			SchemaDefinition: aws.String(d.Get("schema_definition").(string)),
+		}
+
+		_, err := conn.RegisterSchemaVersion(ctx, defInput)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Glue Schema Definition (%s): %s", d.Id(), err)
+		}
+
+		_, err = waitSchemaVersionAvailable(ctx, conn, d.Id())
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Glue Schema Version (%s) to be Available: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceSchemaRead(ctx, d, meta)...)
+}

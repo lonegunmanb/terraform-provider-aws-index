@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePublishingDestinationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GuardDutyClient(ctx)
+
+	detectorID := d.Get("detector_id").(string)
+	input := guardduty.CreatePublishingDestinationInput{
+		DetectorId: aws.String(detectorID),
+		DestinationProperties: &awstypes.DestinationProperties{
+			DestinationArn: aws.String(d.Get(names.AttrDestinationARN).(string)),
+			KmsKeyArn:      aws.String(d.Get(names.AttrKMSKeyARN).(string)),
+		},
+		DestinationType: awstypes.DestinationType(d.Get("destination_type").(string)),
+	}
+
+	output, err := conn.CreatePublishingDestination(ctx, &input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating GuardDuty Publishing Destination: %s", err)
+	}
+
+	d.SetId(fmt.Sprintf("%s:%s", d.Get("detector_id"), aws.ToString(output.DestinationId)))
+
+	_, err = waitPublishingDestinationCreated(ctx, conn, aws.ToString(output.DestinationId), detectorID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for GuardDuty PublishingDestination status to be \"%s\": %s",
+			string(awstypes.PublishingStatusPublishing), err)
+	}
+
+	return append(diags, resourcePublishingDestinationRead(ctx, d, meta)...)
+}

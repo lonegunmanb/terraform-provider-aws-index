@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshiftserverless
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointAccessRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftServerlessClient(ctx)
+
+	endpointAccess, err := findEndpointAccessByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Redshift Serverless Endpoint Access (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Redshift Serverless Endpoint Access (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrAddress, endpointAccess.Address)
+	d.Set(names.AttrARN, endpointAccess.EndpointArn)
+	d.Set("endpoint_name", endpointAccess.EndpointName)
+	d.Set("owner_account", d.Get("owner_account"))
+	d.Set(names.AttrPort, endpointAccess.Port)
+	d.Set(names.AttrSubnetIDs, endpointAccess.SubnetIds)
+	if err := d.Set("vpc_endpoint", []any{flattenVPCEndpoint(endpointAccess.VpcEndpoint)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting vpc_endpoint: %s", err)
+	}
+	d.Set(names.AttrVPCSecurityGroupIDs, tfslices.ApplyToAll(endpointAccess.VpcSecurityGroups, func(v awstypes.VpcSecurityGroupMembership) string {
+		return aws.ToString(v.VpcSecurityGroupId)
+	}))
+	d.Set("workgroup_name", endpointAccess.WorkgroupName)
+
+	return diags
+}

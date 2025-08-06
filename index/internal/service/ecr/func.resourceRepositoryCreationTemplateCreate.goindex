@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecr
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
+	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRepositoryCreationTemplateCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ECRClient(ctx)
+
+	prefix := d.Get(names.AttrPrefix).(string)
+	input := &ecr.CreateRepositoryCreationTemplateInput{
+		EncryptionConfiguration: expandRepositoryEncryptionConfigurationForRepositoryCreationTemplate(d.Get(names.AttrEncryptionConfiguration).([]any)),
+		ImageTagMutability:      types.ImageTagMutability((d.Get("image_tag_mutability").(string))),
+		Prefix:                  aws.String(prefix),
+	}
+
+	if v, ok := d.GetOk("applied_for"); ok && v.(*schema.Set).Len() > 0 {
+		input.AppliedFor = flex.ExpandStringyValueSet[types.RCTAppliedFor](v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("custom_role_arn"); ok {
+		input.CustomRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("lifecycle_policy"); ok {
+		policy, err := structure.NormalizeJsonString(v.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.LifecyclePolicy = aws.String(policy)
+	}
+
+	if v, ok := d.GetOk("repository_policy"); ok {
+		policy, err := structure.NormalizeJsonString(v.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.RepositoryPolicy = aws.String(policy)
+	}
+
+	if v, ok := d.GetOk(names.AttrResourceTags); ok && len(v.(map[string]any)) > 0 {
+		input.ResourceTags = svcTags(tftags.New(ctx, v.(map[string]any)))
+	}
+
+	output, err := conn.CreateRepositoryCreationTemplate(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating ECR Repository Creation Template (%s): %s", prefix, err)
+	}
+
+	d.SetId(aws.ToString(output.RepositoryCreationTemplate.Prefix))
+
+	return append(diags, resourceRepositoryCreationTemplateRead(ctx, d, meta)...)
+}

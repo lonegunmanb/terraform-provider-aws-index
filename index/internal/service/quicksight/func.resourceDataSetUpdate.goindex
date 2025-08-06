@@ -1,0 +1,113 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataSetUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID, dataSetID, err := dataSetParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChangesExcept(names.AttrPermissions, names.AttrTags, names.AttrTagsAll, "refresh_properties") {
+		input := &quicksight.UpdateDataSetInput{
+			AwsAccountId:                       aws.String(awsAccountID),
+			ColumnGroups:                       quicksightschema.ExpandColumnGroups(d.Get("column_groups").([]any)),
+			ColumnLevelPermissionRules:         quicksightschema.ExpandColumnLevelPermissionRules(d.Get("column_level_permission_rules").([]any)),
+			DataSetId:                          aws.String(dataSetID),
+			DataSetUsageConfiguration:          quicksightschema.ExpandDataSetUsageConfiguration(d.Get("data_set_usage_configuration").([]any)),
+			FieldFolders:                       quicksightschema.ExpandFieldFolders(d.Get("field_folders").(*schema.Set).List()),
+			ImportMode:                         awstypes.DataSetImportMode(d.Get("import_mode").(string)),
+			LogicalTableMap:                    quicksightschema.ExpandLogicalTableMap(d.Get("logical_table_map").(*schema.Set).List()),
+			Name:                               aws.String(d.Get(names.AttrName).(string)),
+			PhysicalTableMap:                   quicksightschema.ExpandPhysicalTableMap(d.Get("physical_table_map").(*schema.Set).List()),
+			RowLevelPermissionDataSet:          quicksightschema.ExpandRowLevelPermissionDataSet(d.Get("row_level_permission_data_set").([]any)),
+			RowLevelPermissionTagConfiguration: quicksightschema.ExpandRowLevelPermissionTagConfiguration(d.Get("row_level_permission_tag_configuration").([]any)),
+		}
+
+		_, err = conn.UpdateDataSet(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QuickSight Data Set (%s): %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange(names.AttrPermissions) {
+		o, n := d.GetChange(names.AttrPermissions)
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+		toGrant, toRevoke := quicksightschema.DiffPermissions(os.List(), ns.List())
+
+		input := &quicksight.UpdateDataSetPermissionsInput{
+			AwsAccountId: aws.String(awsAccountID),
+			DataSetId:    aws.String(dataSetID),
+		}
+
+		if len(toGrant) > 0 {
+			input.GrantPermissions = toGrant
+		}
+
+		if len(toRevoke) > 0 {
+			input.RevokePermissions = toRevoke
+		}
+
+		_, err = conn.UpdateDataSetPermissions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QuickSight Data Set (%s) permissions: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("refresh_properties") {
+		o, n := d.GetChange("refresh_properties")
+
+		if old, new := o.([]any), n.([]any); len(old) == 1 && len(new) == 0 {
+			input := &quicksight.DeleteDataSetRefreshPropertiesInput{
+				AwsAccountId: aws.String(awsAccountID),
+				DataSetId:    aws.String(dataSetID),
+			}
+
+			_, err := conn.DeleteDataSetRefreshProperties(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "deleting QuickSight Data Set (%s) refresh properties: %s", d.Id(), err)
+			}
+		} else {
+			input := &quicksight.PutDataSetRefreshPropertiesInput{
+				AwsAccountId:             aws.String(awsAccountID),
+				DataSetId:                aws.String(dataSetID),
+				DataSetRefreshProperties: quicksightschema.ExpandDataSetRefreshProperties(new),
+			}
+
+			_, err = conn.PutDataSetRefreshProperties(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "putting QuickSight Data Set (%s) refresh properties: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceDataSetRead(ctx, d, meta)...)
+}

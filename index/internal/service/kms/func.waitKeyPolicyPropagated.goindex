@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kms
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitKeyPolicyPropagated(ctx context.Context, conn *kms.Client, keyID, policy string) error {
+	checkFunc := func() (bool, error) {
+		output, err := findKeyPolicyByTwoPartKey(ctx, conn, keyID, policyNameDefault)
+
+		if tfresource.NotFound(err) {
+			return false, nil
+		}
+
+		if err != nil {
+			return false, err
+		}
+
+		equivalent, err := awspolicy.PoliciesAreEquivalent(aws.ToString(output), policy)
+
+		if err != nil {
+			return false, err
+		}
+
+		return equivalent, nil
+	}
+	opts := tfresource.WaitOpts{
+		ContinuousTargetOccurence: 5,
+		MinTimeout:                1 * time.Second,
+	}
+	const (
+		timeout = 10 * time.Minute
+	)
+
+	return tfresource.WaitUntil(ctx, timeout, checkFunc, opts)
+}

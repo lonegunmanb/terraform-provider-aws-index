@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kinesisanalyticsv2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kinesisanalyticsv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kinesisanalyticsv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenSourceSchema(sourceSchema *awstypes.SourceSchema) []any {
+	if sourceSchema == nil {
+		return []any{}
+	}
+
+	mSourceSchema := map[string]any{
+		"record_encoding": aws.ToString(sourceSchema.RecordEncoding),
+	}
+
+	if len(sourceSchema.RecordColumns) > 0 {
+		vRecordColumns := []any{}
+
+		for _, recordColumn := range sourceSchema.RecordColumns {
+			mRecordColumn := map[string]any{
+				"mapping":      aws.ToString(recordColumn.Mapping),
+				names.AttrName: aws.ToString(recordColumn.Name),
+				"sql_type":     aws.ToString(recordColumn.SqlType),
+			}
+
+			vRecordColumns = append(vRecordColumns, mRecordColumn)
+		}
+
+		mSourceSchema["record_column"] = vRecordColumns
+	}
+
+	if recordFormat := sourceSchema.RecordFormat; recordFormat != nil {
+		mRecordFormat := map[string]any{
+			"record_format_type": recordFormat.RecordFormatType,
+		}
+
+		if mappingParameters := recordFormat.MappingParameters; mappingParameters != nil {
+			mMappingParameters := map[string]any{}
+
+			if csvMappingParameters := mappingParameters.CSVMappingParameters; csvMappingParameters != nil {
+				mCsvMappingParameters := map[string]any{
+					"record_column_delimiter": aws.ToString(csvMappingParameters.RecordColumnDelimiter),
+					"record_row_delimiter":    aws.ToString(csvMappingParameters.RecordRowDelimiter),
+				}
+
+				mMappingParameters["csv_mapping_parameters"] = []any{mCsvMappingParameters}
+			}
+
+			if jsonMappingParameters := mappingParameters.JSONMappingParameters; jsonMappingParameters != nil {
+				mJsonMappingParameters := map[string]any{
+					"record_row_path": aws.ToString(jsonMappingParameters.RecordRowPath),
+				}
+
+				mMappingParameters["json_mapping_parameters"] = []any{mJsonMappingParameters}
+			}
+
+			mRecordFormat["mapping_parameters"] = []any{mMappingParameters}
+		}
+
+		mSourceSchema["record_format"] = []any{mRecordFormat}
+	}
+
+	return []any{mSourceSchema}
+}

@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceThingGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	output, err := findThingGroupByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] IoT Thing Group (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading IoT Thing Group (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, output.ThingGroupArn)
+	d.Set(names.AttrName, output.ThingGroupName)
+
+	if output.ThingGroupMetadata != nil {
+		if err := d.Set("metadata", []any{flattenThingGroupMetadata(output.ThingGroupMetadata)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting metadata: %s", err)
+		}
+	} else {
+		d.Set("metadata", nil)
+	}
+	if v := flattenThingGroupProperties(output.ThingGroupProperties); len(v) > 0 {
+		if err := d.Set(names.AttrProperties, []any{v}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting properties: %s", err)
+		}
+	} else {
+		d.Set(names.AttrProperties, nil)
+	}
+
+	if output.ThingGroupMetadata != nil {
+		d.Set("parent_group_name", output.ThingGroupMetadata.ParentGroupName)
+	} else {
+		d.Set("parent_group_name", nil)
+	}
+	d.Set(names.AttrVersion, output.Version)
+
+	return diags
+}

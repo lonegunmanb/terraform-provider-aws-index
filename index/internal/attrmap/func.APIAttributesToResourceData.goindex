@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/attrmap
+import (
+	"fmt"
+	"log"
+	"strconv"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func (m AttributeMap[T]) APIAttributesToResourceData(apiAttributes map[T]string, d *schema.ResourceData) error {
+	for tfAttributeName, attributeInfo := range m {
+		if v, ok := apiAttributes[attributeInfo.apiAttributeName]; ok {
+			var err error
+			var tfAttributeValue any
+
+			switch t := attributeInfo.tfType; t {
+			case schema.TypeBool:
+				tfAttributeValue, err = strconv.ParseBool(v)
+
+				if err != nil {
+					return fmt.Errorf("parsing %s value (%s) into boolean: %w", tfAttributeName, v, err)
+				}
+			case schema.TypeInt:
+				tfAttributeValue, err = strconv.Atoi(v)
+
+				if err != nil {
+					return fmt.Errorf("parsing %s value (%s) into integer: %w", tfAttributeName, v, err)
+				}
+			case schema.TypeString:
+				tfAttributeValue = v
+
+				if attributeInfo.isIAMPolicy {
+					policy, err := verify.PolicyToSet(d.Get(tfAttributeName).(string), tfAttributeValue.(string))
+
+					if err != nil {
+						return err
+					}
+
+					tfAttributeValue = policy
+				}
+			default:
+				return fmt.Errorf("attribute %s is of unsupported type: %d", tfAttributeName, t)
+			}
+
+			if err := d.Set(tfAttributeName, tfAttributeValue); err != nil {
+				return fmt.Errorf("setting %s: %w", tfAttributeName, err)
+			}
+		} else if attributeInfo.missingSetToNil {
+			d.Set(tfAttributeName, nil)
+		}
+	}
+
+	return nil
+}

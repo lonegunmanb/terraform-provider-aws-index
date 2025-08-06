@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDiskAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	in := lightsail.AttachDiskInput{
+		DiskName:     aws.String(d.Get("disk_name").(string)),
+		DiskPath:     aws.String(d.Get("disk_path").(string)),
+		InstanceName: aws.String(d.Get("instance_name").(string)),
+	}
+
+	out, err := conn.AttachDisk(ctx, &in)
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.Lightsail, string(types.OperationTypeAttachDisk), ResDiskAttachment, d.Get("disk_name").(string), err)
+	}
+
+	diag := expandOperations(ctx, conn, out.Operations, types.OperationTypeAttachDisk, ResDiskAttachment, d.Get("disk_name").(string))
+
+	if diag != nil {
+		return diag
+	}
+
+	// Generate an ID
+	vars := []string{
+		d.Get("disk_name").(string),
+		d.Get("instance_name").(string),
+	}
+
+	d.SetId(strings.Join(vars, ","))
+
+	return append(diags, resourceDiskAttachmentRead(ctx, d, meta)...)
+}

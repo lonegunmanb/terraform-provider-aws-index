@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/memorydb
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/memorydb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/memorydb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceParameterGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).MemoryDBClient(ctx)
+
+	if d.HasChange(names.AttrParameter) {
+		o, n := d.GetChange(names.AttrParameter)
+		toRemove, toAdd := parameterChanges(o, n)
+
+		// The API is limited to updating no more than 20 parameters at a time.
+		const maxParams = 20
+
+		// Removing a parameter from state is equivalent to resetting it
+		// to its default state.
+		for chunk := range slices.Chunk(toRemove, maxParams) {
+			input := &memorydb.ResetParameterGroupInput{
+				ParameterGroupName: aws.String(d.Id()),
+				ParameterNames: tfslices.ApplyToAll(chunk, func(v awstypes.ParameterNameValue) string {
+					return aws.ToString(v.ParameterName)
+				}),
+			}
+
+			const (
+				timeout = 30 * time.Second
+			)
+			_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidParameterGroupStateFault](ctx, timeout, func() (any, error) {
+				return conn.ResetParameterGroup(ctx, input)
+			}, " has pending changes")
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "resetting MemoryDB Parameter Group (%s) parameters to defaults: %s", d.Id(), err)
+			}
+		}
+
+		for chunk := range slices.Chunk(toAdd, maxParams) {
+			input := &memorydb.UpdateParameterGroupInput{
+				ParameterGroupName:  aws.String(d.Id()),
+				ParameterNameValues: chunk,
+			}
+
+			_, err := conn.UpdateParameterGroup(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "modifying MemoryDB Parameter Group (%s) parameters: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceParameterGroupRead(ctx, d, meta)...)
+}

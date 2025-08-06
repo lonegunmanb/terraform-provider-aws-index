@@ -1,0 +1,105 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenSchemaAttributeTypes(configuredAttributes, apiObjects []awstypes.SchemaAttributeType) []any {
+	tfList := make([]any, 0)
+
+	for _, apiObject := range apiObjects {
+		// The API returns all standard attributes
+		// https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-attributes.html#cognito-user-pools-standard-attributes
+		// Ignore setting them in state if they are unconfigured to prevent a huge and unexpected diff
+		configured := false
+
+		for _, configuredAttribute := range configuredAttributes {
+			if reflect.DeepEqual(apiObject, configuredAttribute) {
+				configured = true
+			}
+		}
+
+		if !configured {
+			if userPoolSchemaAttributeMatchesStandardAttribute(&apiObject) {
+				continue
+			}
+
+			// When adding a Cognito Identity Provider, the API will automatically add an "identities" attribute
+			identitiesAttribute := awstypes.SchemaAttributeType{
+				AttributeDataType:          awstypes.AttributeDataTypeString,
+				DeveloperOnlyAttribute:     aws.Bool(false),
+				Mutable:                    aws.Bool(true),
+				Name:                       aws.String("identities"),
+				Required:                   aws.Bool(false),
+				StringAttributeConstraints: &awstypes.StringAttributeConstraintsType{},
+			}
+
+			if reflect.DeepEqual(apiObject, identitiesAttribute) {
+				continue
+			}
+		}
+
+		var tfMap = map[string]any{
+			"attribute_data_type":      apiObject.AttributeDataType,
+			"developer_only_attribute": aws.ToBool(apiObject.DeveloperOnlyAttribute),
+			"mutable":                  aws.ToBool(apiObject.Mutable),
+			names.AttrName:             strings.TrimPrefix(strings.TrimPrefix(aws.ToString(apiObject.Name), attributeDevPrefix), attributeCustomPrefix),
+			"required":                 aws.ToBool(apiObject.Required),
+		}
+
+		if apiObject.NumberAttributeConstraints != nil {
+			nact := make(map[string]any)
+
+			if apiObject.NumberAttributeConstraints.MaxValue != nil {
+				nact["max_value"] = aws.ToString(apiObject.NumberAttributeConstraints.MaxValue)
+			}
+
+			if apiObject.NumberAttributeConstraints.MinValue != nil {
+				nact["min_value"] = aws.ToString(apiObject.NumberAttributeConstraints.MinValue)
+			}
+
+			tfMap["number_attribute_constraints"] = []any{nact}
+		}
+
+		if apiObject.StringAttributeConstraints != nil && !skipFlatteningStringAttributeContraints(configuredAttributes, &apiObject) {
+			sact := make(map[string]any)
+
+			if apiObject.StringAttributeConstraints.MaxLength != nil {
+				sact["max_length"] = aws.ToString(apiObject.StringAttributeConstraints.MaxLength)
+			}
+
+			if apiObject.StringAttributeConstraints.MinLength != nil {
+				sact["min_length"] = aws.ToString(apiObject.StringAttributeConstraints.MinLength)
+			}
+
+			tfMap["string_attribute_constraints"] = []any{sact}
+		}
+
+		tfList = append(tfList, tfMap)
+	}
+
+	return tfList
+}

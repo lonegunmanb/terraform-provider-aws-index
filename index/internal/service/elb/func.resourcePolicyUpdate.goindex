@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elb
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePolicyUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBClient(ctx)
+
+	lbName, policyName, err := policyParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	reassignments := &policyReassignments{}
+
+	err = findPolicyAttachmentByTwoPartKey(ctx, conn, lbName, policyName)
+	switch {
+	case tfresource.NotFound(err):
+		// Policy not attached.
+	case err != nil:
+		return sdkdiag.AppendErrorf(diags, "reading ELB Classic Load Balancer Policy Attachment (%s/%s): %s", lbName, policyName, err)
+	default:
+		reassignments, err = unassignPolicy(ctx, conn, lbName, policyName)
+
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	input := &elasticloadbalancing.DeleteLoadBalancerPolicyInput{
+		LoadBalancerName: aws.String(lbName),
+		PolicyName:       aws.String(policyName),
+	}
+
+	_, err = conn.DeleteLoadBalancerPolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting ELB Classic Load Balancer Policy (%s): %s", d.Id(), err)
+	}
+
+	diags = append(diags, sdkdiag.WrapDiagsf(resourcePolicyCreate(ctx, d, meta), "updating ELB Classic Policy (%s)", d.Id())...)
+
+	if diags.HasError() {
+		return diags
+	}
+
+	for _, input := range reassignments.listenerPolicies {
+		_, err := conn.SetLoadBalancerPoliciesOfListener(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ELB Classic Listener Policy (%s): %s", lbName, err)
+		}
+	}
+
+	for _, input := range reassignments.backendServerPolicies {
+		_, err := conn.SetLoadBalancerPoliciesForBackendServer(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ELB Classic Backend Server Policy (%s): %s", lbName, err)
+		}
+	}
+
+	return append(diags, resourcePolicyRead(ctx, d, meta)...)
+}

@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandReplicationRules(ctx context.Context, tfList []any) []types.ReplicationRule {
+	var apiObjects []types.ReplicationRule
+
+	for _, tfMapRaw := range tfList {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		apiObject := types.ReplicationRule{}
+
+		if v, ok := tfMap["delete_marker_replication"].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.DeleteMarkerReplication = expandDeleteMarkerReplication(v)
+		}
+
+		if v, ok := tfMap[names.AttrDestination].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.Destination = expandDestination(v)
+		}
+
+		if v, ok := tfMap["existing_object_replication"].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.ExistingObjectReplication = expandExistingObjectReplication(v)
+		}
+
+		if v, ok := tfMap[names.AttrID].(string); ok && v != "" {
+			apiObject.ID = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_selection_criteria"].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.SourceSelectionCriteria = expandSourceSelectionCriteria(v)
+		}
+
+		if v, ok := tfMap[names.AttrStatus].(string); ok && v != "" {
+			apiObject.Status = types.ReplicationRuleStatus(v)
+		}
+
+		// Support the empty filter block in terraform i.e. 'filter {}',
+		// which implies the replication rule does not require a specific filter,
+		// by expanding the "filter" array even if the first element is nil.
+		if v, ok := tfMap[names.AttrFilter].([]any); ok && len(v) > 0 {
+			// XML schema V2
+			apiObject.Filter = expandReplicationRuleFilter(ctx, v)
+			apiObject.Priority = aws.Int32(int32(tfMap[names.AttrPriority].(int)))
+		} else {
+			// XML schema V1
+			apiObject.Prefix = aws.String(tfMap[names.AttrPrefix].(string))
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects
+}

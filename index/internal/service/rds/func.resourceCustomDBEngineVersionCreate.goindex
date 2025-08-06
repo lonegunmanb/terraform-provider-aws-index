@@ -1,0 +1,111 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfio "github.com/hashicorp/terraform-provider-aws/internal/io"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCustomDBEngineVersionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	const (
+		mutexKey = `aws_rds_custom_engine_version`
+	)
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	input := &rds.CreateCustomDBEngineVersionInput{
+		Engine:        aws.String(d.Get(names.AttrEngine).(string)),
+		EngineVersion: aws.String(d.Get(names.AttrEngineVersion).(string)),
+		Tags:          getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("database_installation_files_s3_bucket_name"); ok {
+		input.DatabaseInstallationFilesS3BucketName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("database_installation_files_s3_prefix"); ok {
+		input.DatabaseInstallationFilesS3Prefix = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("filename"); ok {
+		// Grab an exclusive lock so that we're only reading one contact flow into
+		// memory at a time.
+		// See https://github.com/hashicorp/terraform/issues/9364
+		conns.GlobalMutexKV.Lock(mutexKey)
+		defer conns.GlobalMutexKV.Unlock(mutexKey)
+
+		file, err := tfio.ReadFileContents(v.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.Manifest = aws.String(string(file))
+	} else if v, ok := d.GetOk("manifest"); ok {
+		input.Manifest = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		input.KMSKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("source_image_id"); ok {
+		input.ImageId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("filename"); ok {
+		filename := v.(string)
+		// Grab an exclusive lock so that we're only reading one contact flow into
+		// memory at a time.
+		// See https://github.com/hashicorp/terraform/issues/9364
+		conns.GlobalMutexKV.Lock(mutexKey)
+		defer conns.GlobalMutexKV.Unlock(mutexKey)
+
+		file, err := tfio.ReadFileContents(filename)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.Manifest = aws.String(string(file))
+	} else if v, ok := d.GetOk("manifest"); ok {
+		input.Manifest = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateCustomDBEngineVersion(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating RDS Custom DB Engine Version: %s", err)
+	}
+
+	engine, engineVersion := aws.ToString(output.Engine), aws.ToString(output.EngineVersion)
+	d.SetId(customEngineDBVersionResourceID(engine, engineVersion))
+
+	if _, err := waitCustomDBEngineVersionCreated(ctx, conn, engine, engineVersion, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RDS Custom DB Engine Version (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceCustomDBEngineVersionRead(ctx, d, meta)...)
+}

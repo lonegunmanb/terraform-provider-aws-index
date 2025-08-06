@@ -1,0 +1,315 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"slices"
+	"strings"
+	"time"
+	_ "unsafe" // Required for go:linkname
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	smithyjson "github.com/aws/smithy-go/encoding/json"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	applications := d.Get("applications").(*schema.Set).List()
+	keepJobFlowAliveWhenNoSteps := true
+	if v, ok := d.GetOkExists("keep_job_flow_alive_when_no_steps"); ok {
+		keepJobFlowAliveWhenNoSteps = v.(bool)
+	}
+
+	// For multiple master nodes, EMR automatically enables
+	// termination protection and ignores this configuration at launch.
+	// There is additional handling after the job flow is running
+	// to potentially disable termination protection to match the
+	// desired Terraform configuration.
+	terminationProtection := false
+	if v, ok := d.GetOk("termination_protection"); ok {
+		terminationProtection = v.(bool)
+	}
+
+	unhealthyNodeReplacement := false
+	if v, ok := d.GetOk("unhealthy_node_replacement"); ok {
+		unhealthyNodeReplacement = v.(bool)
+	}
+
+	instanceConfig := &awstypes.JobFlowInstancesConfig{
+		KeepJobFlowAliveWhenNoSteps: aws.Bool(keepJobFlowAliveWhenNoSteps),
+		TerminationProtected:        aws.Bool(terminationProtection),
+		UnhealthyNodeReplacement:    aws.Bool(unhealthyNodeReplacement),
+	}
+
+	if l := d.Get("master_instance_group").([]any); len(l) > 0 && l[0] != nil {
+		m := l[0].(map[string]any)
+
+		instanceGroup := awstypes.InstanceGroupConfig{
+			InstanceCount: aws.Int32(int32(m[names.AttrInstanceCount].(int))),
+			InstanceRole:  awstypes.InstanceRoleTypeMaster,
+			InstanceType:  aws.String(m[names.AttrInstanceType].(string)),
+			Market:        awstypes.MarketTypeOnDemand,
+			Name:          aws.String(m[names.AttrName].(string)),
+		}
+
+		if v, ok := m["bid_price"]; ok && v.(string) != "" {
+			instanceGroup.BidPrice = aws.String(v.(string))
+			instanceGroup.Market = awstypes.MarketTypeSpot
+		}
+
+		expandEBSConfig(m, &instanceGroup)
+
+		instanceConfig.InstanceGroups = append(instanceConfig.InstanceGroups, instanceGroup)
+	}
+
+	if l := d.Get("core_instance_group").([]any); len(l) > 0 && l[0] != nil {
+		m := l[0].(map[string]any)
+
+		instanceGroup := awstypes.InstanceGroupConfig{
+			InstanceCount: aws.Int32(int32(m[names.AttrInstanceCount].(int))),
+			InstanceRole:  awstypes.InstanceRoleTypeCore,
+			InstanceType:  aws.String(m[names.AttrInstanceType].(string)),
+			Market:        awstypes.MarketTypeOnDemand,
+			Name:          aws.String(m[names.AttrName].(string)),
+		}
+
+		if v, ok := m["autoscaling_policy"]; ok && v.(string) != "" {
+			var autoScalingPolicy awstypes.AutoScalingPolicy
+
+			if err := tfjson.DecodeFromString(v.(string), &autoScalingPolicy); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+
+			instanceGroup.AutoScalingPolicy = &autoScalingPolicy
+		}
+
+		if v, ok := m["bid_price"]; ok && v.(string) != "" {
+			instanceGroup.BidPrice = aws.String(v.(string))
+			instanceGroup.Market = awstypes.MarketTypeSpot
+		}
+
+		expandEBSConfig(m, &instanceGroup)
+
+		instanceConfig.InstanceGroups = append(instanceConfig.InstanceGroups, instanceGroup)
+	}
+
+	if l := d.Get("master_instance_fleet").([]any); len(l) > 0 && l[0] != nil {
+		instanceFleetConfig := expandInstanceFleetConfig(l[0].(map[string]any), awstypes.InstanceFleetTypeMaster)
+		instanceConfig.InstanceFleets = append(instanceConfig.InstanceFleets, *instanceFleetConfig)
+	}
+
+	if l := d.Get("core_instance_fleet").([]any); len(l) > 0 && l[0] != nil {
+		instanceFleetConfig := expandInstanceFleetConfig(l[0].(map[string]any), awstypes.InstanceFleetTypeCore)
+		instanceConfig.InstanceFleets = append(instanceConfig.InstanceFleets, *instanceFleetConfig)
+	}
+
+	var instanceProfile string
+	if a, ok := d.GetOk("ec2_attributes"); ok {
+		ec2Attributes := a.([]any)
+		attributes := ec2Attributes[0].(map[string]any)
+
+		if v, ok := attributes["key_name"]; ok {
+			instanceConfig.Ec2KeyName = aws.String(v.(string))
+		}
+		if v, ok := attributes[names.AttrSubnetID]; ok {
+			instanceConfig.Ec2SubnetId = aws.String(v.(string))
+		}
+		if v, ok := attributes[names.AttrSubnetIDs]; ok {
+			instanceConfig.Ec2SubnetIds = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := attributes["additional_master_security_groups"]; ok {
+			strSlice := strings.Split(v.(string), ",")
+			for i, s := range strSlice {
+				strSlice[i] = strings.TrimSpace(s)
+			}
+			instanceConfig.AdditionalMasterSecurityGroups = strSlice
+		}
+
+		if v, ok := attributes["additional_slave_security_groups"]; ok {
+			strSlice := strings.Split(v.(string), ",")
+			for i, s := range strSlice {
+				strSlice[i] = strings.TrimSpace(s)
+			}
+			instanceConfig.AdditionalSlaveSecurityGroups = strSlice
+		}
+
+		if v, ok := attributes["emr_managed_master_security_group"]; ok {
+			instanceConfig.EmrManagedMasterSecurityGroup = aws.String(v.(string))
+		}
+		if v, ok := attributes["emr_managed_slave_security_group"]; ok {
+			instanceConfig.EmrManagedSlaveSecurityGroup = aws.String(v.(string))
+		}
+
+		if len(strings.TrimSpace(attributes["instance_profile"].(string))) != 0 {
+			instanceProfile = strings.TrimSpace(attributes["instance_profile"].(string))
+		}
+
+		if v, ok := attributes["service_access_security_group"]; ok {
+			instanceConfig.ServiceAccessSecurityGroup = aws.String(v.(string))
+		}
+	}
+
+	name := d.Get(names.AttrName).(string)
+	input := &emr.RunJobFlowInput{
+		Instances:    instanceConfig,
+		Name:         aws.String(name),
+		Applications: expandApplications(applications),
+
+		ReleaseLabel:      aws.String(d.Get("release_label").(string)),
+		ServiceRole:       aws.String(d.Get(names.AttrServiceRole).(string)),
+		VisibleToAllUsers: aws.Bool(d.Get("visible_to_all_users").(bool)),
+		Tags:              getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("additional_info"); ok {
+		v, err := structure.NormalizeJsonString(v)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		input.AdditionalInfo = aws.String(v)
+	}
+
+	if v, ok := d.GetOk("log_encryption_kms_key_id"); ok {
+		input.LogEncryptionKmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("log_uri"); ok {
+		input.LogUri = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("autoscaling_role"); ok {
+		input.AutoScalingRole = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("scale_down_behavior"); ok {
+		input.ScaleDownBehavior = awstypes.ScaleDownBehavior(v.(string))
+	}
+
+	if v, ok := d.GetOk("security_configuration"); ok {
+		input.SecurityConfiguration = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("ebs_root_volume_size"); ok {
+		input.EbsRootVolumeSize = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("custom_ami_id"); ok {
+		input.CustomAmiId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("step_concurrency_level"); ok {
+		input.StepConcurrencyLevel = aws.Int32(int32(v.(int)))
+	}
+
+	if instanceProfile != "" {
+		input.JobFlowRole = aws.String(instanceProfile)
+	}
+
+	if v, ok := d.GetOk("bootstrap_action"); ok {
+		input.BootstrapActions = expandBootstrapActions(v.([]any))
+	}
+	if v, ok := d.GetOk("step"); ok {
+		input.Steps = expandStepConfigs(v.([]any))
+	}
+	if v, ok := d.GetOk("configurations"); ok {
+		input.Configurations = expandConfigures(v.(string))
+	}
+
+	if v, ok := d.GetOk("configurations_json"); ok {
+		v, err := structure.NormalizeJsonString(v)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		input.Configurations, err = expandConfigurationJSON(v)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if v, ok := d.GetOk("kerberos_attributes"); ok {
+		input.KerberosAttributes = expandKerberosAttributes(v.([]any)[0].(map[string]any))
+	}
+	if v, ok := d.GetOk("auto_termination_policy"); ok && len(v.([]any)) > 0 {
+		input.AutoTerminationPolicy = expandAutoTerminationPolicy(v.([]any))
+	}
+
+	if v, ok := d.GetOk("placement_group_config"); ok {
+		input.PlacementGroupConfigs = expandPlacementGroupConfigs(v.([]any))
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.RunJobFlow(ctx, input)
+		},
+		func(err error) (bool, error) {
+			if tfawserr.ErrMessageContains(err, errCodeValidationException, "Invalid InstanceProfile:") {
+				return true, err
+			}
+
+			if tfawserr.ErrMessageContains(err, errCodeAccessDeniedException, "Failed to authorize instance profile") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "running EMR Job Flow (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*emr.RunJobFlowOutput).JobFlowId))
+	// This value can only be obtained through a deprecated function
+	d.Set("keep_job_flow_alive_when_no_steps", input.Instances.KeepJobFlowAliveWhenNoSteps)
+
+	cluster, err := waitClusterCreated(ctx, conn, d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EMR Cluster (%s) create: %s", d.Id(), err)
+	}
+
+	// For multiple master nodes, EMR automatically enables
+	// termination protection and ignores the configuration at launch.
+	// This additional handling is to potentially disable termination
+	// protection to match the desired Terraform configuration.
+	if aws.ToBool(cluster.TerminationProtected) != terminationProtection {
+		input := &emr.SetTerminationProtectionInput{
+			JobFlowIds:           []string{d.Id()},
+			TerminationProtected: aws.Bool(terminationProtection),
+		}
+
+		_, err := conn.SetTerminationProtection(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting EMR Cluster (%s) termination protection to match configuration: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceClusterRead(ctx, d, meta)...)
+}

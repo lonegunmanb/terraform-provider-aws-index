@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acmpca
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCertificateAuthorityCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ACMPCAClient(ctx)
+
+	input := acmpca.CreateCertificateAuthorityInput{
+		CertificateAuthorityConfiguration: expandCertificateAuthorityConfiguration(d.Get("certificate_authority_configuration").([]any)),
+		CertificateAuthorityType:          types.CertificateAuthorityType(d.Get(names.AttrType).(string)),
+		IdempotencyToken:                  aws.String(id.UniqueId()),
+		RevocationConfiguration:           expandRevocationConfiguration(d.Get("revocation_configuration").([]any)),
+		Tags:                              getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("key_storage_security_standard"); ok {
+		input.KeyStorageSecurityStandard = types.KeyStorageSecurityStandard(v.(string))
+	}
+
+	if v, ok := d.GetOk("usage_mode"); ok {
+		input.UsageMode = types.CertificateAuthorityUsageMode(v.(string))
+	}
+
+	// ValidationException: The ACM Private CA service account 'acm-pca-prod-pdx' requires getBucketAcl permissions for your S3 bucket 'tf-acc-test-5224996536060125340'. Check your S3 bucket permissions and try again.
+	outputRaw, err := tfresource.RetryWhenAWSErrMessageContains(ctx, 1*time.Minute, func() (any, error) {
+		return conn.CreateCertificateAuthority(ctx, &input)
+	}, "ValidationException", "Check your S3 bucket permissions and try again")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating ACM PCA Certificate Authority: %s", err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*acmpca.CreateCertificateAuthorityOutput).CertificateAuthorityArn))
+
+	if _, err := waitCertificateAuthorityCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ACM PCA Certificate Authority (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceCertificateAuthorityRead(ctx, d, meta)...)
+}

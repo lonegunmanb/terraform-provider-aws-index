@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOriginRequestPolicyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	apiObject := &awstypes.OriginRequestPolicyConfig{
+		Name: aws.String(name),
+	}
+
+	if v, ok := d.GetOk(names.AttrComment); ok {
+		apiObject.Comment = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("cookies_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.CookiesConfig = expandOriginRequestPolicyCookiesConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("headers_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.HeadersConfig = expandOriginRequestPolicyHeadersConfig(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("query_strings_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.QueryStringsConfig = expandOriginRequestPolicyQueryStringsConfig(v.([]any)[0].(map[string]any))
+	}
+
+	input := &cloudfront.CreateOriginRequestPolicyInput{
+		OriginRequestPolicyConfig: apiObject,
+	}
+
+	output, err := conn.CreateOriginRequestPolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudFront Origin Request Policy (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.OriginRequestPolicy.Id))
+
+	return append(diags, resourceOriginRequestPolicyRead(ctx, d, meta)...)
+}

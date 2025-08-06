@@ -1,0 +1,92 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearchserverless
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *vpcEndpointResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data vpcEndpointResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().OpenSearchServerlessClient(ctx)
+
+	input := &opensearchserverless.CreateVpcEndpointInput{}
+	resp.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	input.ClientToken = aws.String(sdkid.UniqueId())
+
+	output, err := conn.CreateVpcEndpoint(ctx, input)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionCreating, resNameVPCEndpoint, data.Name.String(), nil),
+			err.Error(),
+		)
+		return
+	}
+
+	data.ID = fwflex.StringToFramework(ctx, output.CreateVpcEndpointDetail.Id)
+
+	if _, err := waitVPCEndpointCreated(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+		resp.State.SetAttribute(ctx, path.Root(names.AttrID), data.ID) // Set 'id' so as to taint the resource.
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionWaitingForCreation, resNameVPCEndpoint, data.Name.String(), nil),
+			err.Error(),
+		)
+		return
+	}
+
+	// Security Group IDs are not returned and must be retrieved from the EC2 API.
+	vpce, err := tfec2.FindVPCEndpointByID(ctx, r.Meta().EC2Client(ctx), data.ID.ValueString())
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionReading, resNameVPCEndpoint, data.ID.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	var securityGroupIDs []*string
+	for _, group := range vpce.Groups {
+		securityGroupIDs = append(securityGroupIDs, group.GroupId)
+	}
+
+	resp.Diagnostics.Append(fwflex.Flatten(ctx, securityGroupIDs, &data.SecurityGroupIDs)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}

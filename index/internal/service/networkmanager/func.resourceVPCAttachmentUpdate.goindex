@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVPCAttachmentUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &networkmanager.UpdateVpcAttachmentInput{
+			AttachmentId: aws.String(d.Id()),
+		}
+
+		if d.HasChange("options") {
+			if v, ok := d.GetOk("options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.Options = expandVpcOptions(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("subnet_arns") {
+			o, n := d.GetChange("subnet_arns")
+			os, ns := o.(*schema.Set), n.(*schema.Set)
+
+			if add := ns.Difference(os); len(add.List()) > 0 {
+				input.AddSubnetArns = flex.ExpandStringValueSet(add)
+			}
+
+			if del := os.Difference(ns); len(del.List()) > 0 {
+				input.RemoveSubnetArns = flex.ExpandStringValueSet(del)
+			}
+		}
+
+		_, err := conn.UpdateVpcAttachment(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Network Manager VPC Attachment (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitVPCAttachmentUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Network Manager VPC Attachment (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceVPCAttachmentRead(ctx, d, meta)...)
+}

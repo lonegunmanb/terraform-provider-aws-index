@@ -1,0 +1,116 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudtrail
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
+	"github.com/aws/aws-sdk-go-v2/service/cloudtrail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTrailUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudTrailClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll, "insight_selector", "advanced_event_selector", "event_selector", "enable_logging") {
+		input := &cloudtrail.UpdateTrailInput{
+			Name: aws.String(d.Id()),
+		}
+
+		if d.HasChanges("cloud_watch_logs_role_arn", "cloud_watch_logs_group_arn") {
+			// Both of these need to be provided together in the update call otherwise API complains.
+			input.CloudWatchLogsRoleArn = aws.String(d.Get("cloud_watch_logs_role_arn").(string))
+			input.CloudWatchLogsLogGroupArn = aws.String(d.Get("cloud_watch_logs_group_arn").(string))
+		}
+
+		if d.HasChange("enable_log_file_validation") {
+			input.EnableLogFileValidation = aws.Bool(d.Get("enable_log_file_validation").(bool))
+		}
+
+		if d.HasChange("include_global_service_events") {
+			input.IncludeGlobalServiceEvents = aws.Bool(d.Get("include_global_service_events").(bool))
+		}
+
+		if d.HasChange("is_multi_region_trail") {
+			input.IsMultiRegionTrail = aws.Bool(d.Get("is_multi_region_trail").(bool))
+		}
+
+		if d.HasChange("is_organization_trail") {
+			input.IsOrganizationTrail = aws.Bool(d.Get("is_organization_trail").(bool))
+		}
+
+		if d.HasChange(names.AttrKMSKeyID) {
+			input.KmsKeyId = aws.String(d.Get(names.AttrKMSKeyID).(string))
+		}
+
+		if d.HasChange(names.AttrS3BucketName) {
+			input.S3BucketName = aws.String(d.Get(names.AttrS3BucketName).(string))
+		}
+
+		if d.HasChange(names.AttrS3KeyPrefix) {
+			input.S3KeyPrefix = aws.String(d.Get(names.AttrS3KeyPrefix).(string))
+		}
+
+		if d.HasChange("sns_topic_name") {
+			input.SnsTopicName = aws.String(d.Get("sns_topic_name").(string))
+		}
+
+		_, err := tfresource.RetryWhen(ctx, propagationTimeout,
+			func() (any, error) {
+				return conn.UpdateTrail(ctx, input)
+			},
+			func(err error) (bool, error) {
+				if errs.IsAErrorMessageContains[*types.InvalidCloudWatchLogsRoleArnException](err, "Access denied.") ||
+					errs.IsAErrorMessageContains[*types.InvalidCloudWatchLogsLogGroupArnException](err, "Access denied.") {
+					return true, err
+				}
+
+				return false, err
+			},
+		)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudTrail Trail (%s): %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("enable_logging") {
+		if err := setLogging(ctx, conn, d.Id(), d.Get("enable_logging").(bool)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange("event_selector") {
+		if err := setEventSelectors(ctx, conn, d); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange("advanced_event_selector") {
+		if err := setAdvancedEventSelectors(ctx, conn, d); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange("insight_selector") {
+		if err := setInsightSelectors(ctx, conn, d); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceTrailRead(ctx, d, meta)...)
+}

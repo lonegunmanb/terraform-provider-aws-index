@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/shield
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/shield"
+	"github.com/hashicorp/terraform-plugin-framework-validators/datasourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *protectionDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	conn := d.Meta().ShieldClient(ctx)
+
+	var data protectionDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	input := &shield.DescribeProtectionInput{}
+	if !data.ProtectionID.IsNull() {
+		data.ID = types.StringValue(data.ProtectionID.ValueString())
+		input.ProtectionId = data.ProtectionID.ValueStringPointer()
+	} else {
+		data.ID = types.StringValue(data.ResourceARN.ValueString())
+		input.ResourceArn = data.ResourceARN.ValueStringPointer()
+	}
+
+	out, err := findProtection(ctx, conn, input)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Shield, create.ErrActionReading, DSNameProtection, data.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, out, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.ProtectionID = flex.StringToFramework(ctx, out.Id)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}

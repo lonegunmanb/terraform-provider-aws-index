@@ -1,0 +1,108 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kms
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceKeyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KMSClient(ctx)
+
+	input := &kms.CreateKeyInput{
+		BypassPolicyLockoutSafetyCheck: d.Get("bypass_policy_lockout_safety_check").(bool),
+		CustomerMasterKeySpec:          awstypes.CustomerMasterKeySpec(d.Get("customer_master_key_spec").(string)),
+		KeyUsage:                       awstypes.KeyUsageType(d.Get("key_usage").(string)),
+		Tags:                           getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("multi_region"); ok {
+		input.MultiRegion = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk(names.AttrPolicy); ok {
+		p, err := structure.NormalizeJsonString(v.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.Policy = aws.String(p)
+	}
+
+	if v, ok := d.GetOk("custom_key_store_id"); ok {
+		input.Origin = awstypes.OriginTypeAwsCloudhsm
+		input.CustomKeyStoreId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("xks_key_id"); ok {
+		input.Origin = awstypes.OriginTypeExternalKeyStore
+		input.XksKeyId = aws.String(v.(string))
+	}
+
+	// AWS requires any principal in the policy to exist before the key is created.
+	// The KMS service's awareness of principals is limited by "eventual consistency".
+	// They acknowledge this here:
+	// http://docs.aws.amazon.com/kms/latest/APIReference/API_CreateKey.html
+	output, err := waitIAMPropagation(ctx, d.Timeout(schema.TimeoutCreate), func() (*kms.CreateKeyOutput, error) {
+		return conn.CreateKey(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating KMS Key: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.KeyMetadata.KeyId))
+
+	ctx = tflog.SetField(ctx, logging.KeyResourceId, d.Id())
+
+	if enableKeyRotation, rotationPeriod := d.Get("enable_key_rotation").(bool), d.Get("rotation_period_in_days").(int); enableKeyRotation {
+		if err := updateKeyRotationEnabled(ctx, conn, "KMS Key", d.Id(), enableKeyRotation, rotationPeriod); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if enabled := d.Get("is_enabled").(bool); !enabled {
+		if err := updateKeyEnabled(ctx, conn, "KMS Key", d.Id(), enabled); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	// Wait for propagation since KMS is eventually consistent.
+	if v, ok := d.GetOk(names.AttrPolicy); ok {
+		if err := waitKeyPolicyPropagated(ctx, conn, d.Id(), v.(string)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for KMS Key (%s) policy update: %s", d.Id(), err)
+		}
+	}
+
+	if tags := keyValueTags(ctx, getTagsIn(ctx)); len(tags) > 0 {
+		if err := waitTagsPropagated(ctx, conn, d.Id(), tags); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for KMS Key (%s) tag update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceKeyRead(ctx, d, meta)...)
+}

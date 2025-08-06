@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/comprehend
+import (
+	"context"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/comprehend/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findNetworkInterfaces(ctx context.Context, conn *ec2.Client, securityGroups []string, subnets []string) ([]ec2types.NetworkInterface, error) {
+	networkInterfaces, err := tfec2.FindNetworkInterfaces(ctx, conn, &ec2.DescribeNetworkInterfacesInput{
+		Filters: []ec2types.Filter{
+			tfec2.NewFilter("group-id", securityGroups),
+			tfec2.NewFilter("subnet-id", subnets),
+		},
+	})
+	if err != nil {
+		return []ec2types.NetworkInterface{}, err
+	}
+
+	comprehendENIs := make([]ec2types.NetworkInterface, 0, len(networkInterfaces))
+	for _, v := range networkInterfaces {
+		if strings.HasSuffix(aws.ToString(v.RequesterId), ":Comprehend") {
+			comprehendENIs = append(comprehendENIs, v)
+		}
+	}
+
+	return comprehendENIs, nil
+}

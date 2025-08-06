@@ -1,0 +1,39 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func statusServiceAction(ctx context.Context, conn *servicecatalog.Client, acceptLanguage, id string) retry.StateRefreshFunc {
+	return func() (any, string, error) {
+		input := &servicecatalog.DescribeServiceActionInput{
+			Id: aws.String(id),
+		}
+
+		if acceptLanguage != "" {
+			input.AcceptLanguage = aws.String(acceptLanguage)
+		}
+
+		output, err := conn.DescribeServiceAction(ctx, input)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, statusNotFound, err
+		}
+
+		if err != nil {
+			return nil, string(awstypes.StatusFailed), fmt.Errorf("describing Service Action: %w", err)
+		}
+
+		if output == nil || output.ServiceActionDetail == nil {
+			return nil, statusUnavailable, fmt.Errorf("describing Service Action: empty Service Action Detail")
+		}
+
+		return output.ServiceActionDetail, string(awstypes.StatusAvailable), nil
+	}
+}

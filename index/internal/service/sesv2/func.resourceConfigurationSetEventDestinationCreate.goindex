@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sesv2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfigurationSetEventDestinationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SESV2Client(ctx)
+
+	in := &sesv2.CreateConfigurationSetEventDestinationInput{
+		ConfigurationSetName: aws.String(d.Get("configuration_set_name").(string)),
+		EventDestination:     expandEventDestinationDefinition(d.Get("event_destination").([]any)[0].(map[string]any)),
+		EventDestinationName: aws.String(d.Get("event_destination_name").(string)),
+	}
+
+	configurationSetEventDestinationID := configurationSetEventDestinationCreateResourceID(d.Get("configuration_set_name").(string), d.Get("event_destination_name").(string))
+
+	out, err := tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateConfigurationSetEventDestination(ctx, in)
+		},
+		func(err error) (bool, error) {
+			if tfawserr.ErrMessageContains(err, errCodeBadRequestException, "Could not access Kinesis Firehose Stream") ||
+				tfawserr.ErrMessageContains(err, errCodeBadRequestException, "Could not assume IAM role") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.SESV2, create.ErrActionCreating, resNameConfigurationSetEventDestination, configurationSetEventDestinationID, err)
+	}
+
+	if out == nil {
+		return create.AppendDiagError(diags, names.SESV2, create.ErrActionCreating, resNameConfigurationSetEventDestination, configurationSetEventDestinationID, errors.New("empty output"))
+	}
+
+	d.SetId(configurationSetEventDestinationID)
+
+	return append(diags, resourceConfigurationSetEventDestinationRead(ctx, d, meta)...)
+}

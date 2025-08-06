@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go/middleware"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (g generator) GetWithSTS(ctx context.Context, clusterID string, stsAPI *sts.Client) (Token, error) {
+	// Sign the request.  The expires parameter (sets the x-amz-expires header) is
+	// not supported by the STS presigner.  We set it to 60 [nano]seconds for backwards compatibility (the
+	// parameter was a required argument to AWS SDK v1's Presign(), and authenticators 0.3.0 and older are
+	// expecting a value between 0 and 60 on the server side).
+	presigner := sts.NewPresignClient(stsAPI, func(po *sts.PresignOptions) {
+		po.ClientOptions = []func(*sts.Options){
+			func(o *sts.Options) {
+				o.APIOptions = []func(*middleware.Stack) error{
+					addClusterIdHeaderSetterMiddleware(clusterID),
+					addExpiryParamSetterMiddleware(requestPresignParam),
+				}
+			},
+		}
+	})
+
+	request, err := presigner.PresignGetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return Token{}, err
+	}
+
+	return Token{v1Prefix + base64.RawURLEncoding.EncodeToString([]byte(request.URL))}, nil
+}

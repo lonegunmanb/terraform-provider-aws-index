@@ -1,0 +1,104 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appsync
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appsync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGraphQLAPICreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppSyncClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &appsync.CreateGraphqlApiInput{
+		AuthenticationType: awstypes.AuthenticationType(d.Get("authentication_type").(string)),
+		Name:               aws.String(name),
+		Tags:               getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("additional_authentication_provider"); ok {
+		input.AdditionalAuthenticationProviders = expandAdditionalAuthenticationProviders(v.([]any), meta.(*conns.AWSClient).Region(ctx))
+	}
+
+	if v, ok := d.GetOk("api_type"); ok {
+		input.ApiType = awstypes.GraphQLApiType(v.(string))
+	}
+
+	if v, ok := d.GetOk("enhanced_metrics_config"); ok {
+		input.EnhancedMetricsConfig = expandEnhancedMetricsConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("introspection_config"); ok {
+		input.IntrospectionConfig = awstypes.GraphQLApiIntrospectionConfig(v.(string))
+	}
+
+	if v, ok := d.GetOk("lambda_authorizer_config"); ok {
+		input.LambdaAuthorizerConfig = expandLambdaAuthorizerConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("log_config"); ok {
+		input.LogConfig = expandLogConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("merged_api_execution_role_arn"); ok {
+		input.MergedApiExecutionRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("openid_connect_config"); ok {
+		input.OpenIDConnectConfig = expandOpenIDConnectConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("query_depth_limit"); ok {
+		input.QueryDepthLimit = int32(v.(int))
+	}
+
+	if v, ok := d.GetOk("resolver_count_limit"); ok {
+		input.ResolverCountLimit = int32(v.(int))
+	}
+
+	if v, ok := d.GetOk("user_pool_config"); ok {
+		input.UserPoolConfig = expandUserPoolConfig(v.([]any), meta.(*conns.AWSClient).Region(ctx))
+	}
+
+	if v, ok := d.GetOk("xray_enabled"); ok {
+		input.XrayEnabled = v.(bool)
+	}
+
+	if v, ok := d.GetOk("visibility"); ok {
+		input.Visibility = awstypes.GraphQLApiVisibility(v.(string))
+	}
+
+	output, err := conn.CreateGraphqlApi(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating AppSync GraphQL API (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.GraphqlApi.ApiId))
+
+	if v, ok := d.GetOk(names.AttrSchema); ok {
+		if err := putSchema(ctx, conn, d.Id(), v.(string), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceGraphQLAPIRead(ctx, d, meta)...)
+}

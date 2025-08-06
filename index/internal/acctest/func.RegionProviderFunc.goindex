@@ -1,0 +1,109 @@
+package github.com/hashicorp/terraform-provider-aws/internal/acctest
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/exec"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	accounttypes "github.com/aws/aws-sdk-go-v2/service/account/types"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca"
+	acmpcatypes "github.com/aws/aws-sdk-go-v2/service/acmpca/types"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	dstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	inspector2types "github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	organizationstypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/aws/aws-sdk-go-v2/service/outposts"
+	"github.com/aws/aws-sdk-go-v2/service/pinpoint"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	ssoadmintypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	wafv2types "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	terraformsdk "github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/echoprovider"
+	sdkacctest "github.com/hashicorp/terraform-plugin-testing/helper/acctest"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/acctest/jsoncmp"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/dns"
+	"github.com/hashicorp/terraform-provider-aws/internal/envvar"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfsync "github.com/hashicorp/terraform-provider-aws/internal/experimental/sync"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2"
+	tfaccount "github.com/hashicorp/terraform-provider-aws/internal/service/account"
+	tfacmpca "github.com/hashicorp/terraform-provider-aws/internal/service/acmpca"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	tfiam "github.com/hashicorp/terraform-provider-aws/internal/service/iam"
+	tforganizations "github.com/hashicorp/terraform-provider-aws/internal/service/organizations"
+	tfsts "github.com/hashicorp/terraform-provider-aws/internal/service/sts"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/jmespath/go-jmespath"
+	"github.com/mitchellh/mapstructure"
+)
+func RegionProviderFunc(ctx context.Context, region string, providers *[]*schema.Provider) ProviderFunc {
+	return func() *schema.Provider {
+		if region == "" {
+			log.Println("[DEBUG] No region given")
+			return nil
+		}
+		if providers == nil {
+			log.Println("[DEBUG] No providers given")
+			return nil
+		}
+
+		log.Printf("[DEBUG] Checking providers for AWS region: %s", region)
+		for _, provo := range *providers {
+			// Ignore if Meta is empty, this can happen for validation providers
+			if provo == nil || provo.Meta() == nil {
+				log.Printf("[DEBUG] Skipping empty provider")
+				continue
+			}
+
+			// Ignore if Meta is not conns.AWSClient, this will happen for other providers
+			client, ok := provo.Meta().(*conns.AWSClient)
+			if !ok {
+				log.Printf("[DEBUG] Skipping non-AWS provider")
+				continue
+			}
+
+			clientRegion := client.Region(ctx)
+			log.Printf("[DEBUG] Checking AWS provider region %q against %q", clientRegion, region)
+			if clientRegion == region {
+				log.Printf("[DEBUG] Found AWS provider with region: %s", region)
+				return provo
+			}
+		}
+
+		log.Printf("[DEBUG] No suitable provider found for %q in %d providers", region, len(*providers))
+		return nil
+	}
+}

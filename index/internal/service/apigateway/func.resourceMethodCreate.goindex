@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMethodCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	input := apigateway.PutMethodInput{
+		ApiKeyRequired:    d.Get("api_key_required").(bool),
+		AuthorizationType: aws.String(d.Get("authorization").(string)),
+		HttpMethod:        aws.String(d.Get("http_method").(string)),
+		ResourceId:        aws.String(d.Get(names.AttrResourceID).(string)),
+		RestApiId:         aws.String(d.Get("rest_api_id").(string)),
+	}
+
+	if v, ok := d.GetOk("authorizer_id"); ok {
+		input.AuthorizerId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("authorization_scopes"); ok {
+		input.AuthorizationScopes = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("operation_name"); ok {
+		input.OperationName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("request_models"); ok && len(v.(map[string]any)) > 0 {
+		input.RequestModels = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("request_parameters"); ok && len(v.(map[string]any)) > 0 {
+		input.RequestParameters = flex.ExpandBoolValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("request_validator_id"); ok {
+		input.RequestValidatorId = aws.String(v.(string))
+	}
+
+	_, err := conn.PutMethod(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway Method: %s", err)
+	}
+
+	d.SetId(fmt.Sprintf("agm-%s-%s-%s", d.Get("rest_api_id").(string), d.Get(names.AttrResourceID).(string), d.Get("http_method").(string)))
+
+	return diags
+}

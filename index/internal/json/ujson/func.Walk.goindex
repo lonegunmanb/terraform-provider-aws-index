@@ -1,0 +1,121 @@
+package github.com/hashicorp/terraform-provider-aws/internal/json/ujson
+import "fmt"
+func Walk(input []byte, callback func(level int, key, value []byte) bool) error {
+	var key []byte
+	var si int
+	i, ei, st, sst := 0, 0, 0, 1024
+
+	// trim the last newline
+	if len(input) > 0 && input[len(input)-1] == '\n' {
+		input = input[:len(input)-1]
+	}
+
+value:
+	si = i
+	switch input[i] {
+	case 'n', 't': // null, true
+		i += 4
+		ei = i
+		if st <= sst {
+			callback(st, key, input[si:i])
+		}
+		key = nil
+		goto closing
+	case 'f': // false
+		i += 5
+		ei = i
+		if st <= sst {
+			callback(st, key, input[si:i])
+		}
+		key = nil
+		goto closing
+	case '{', '[':
+		if st <= sst && !callback(st, key, input[i:i+1]) {
+			sst = st
+		}
+		key = nil
+		st++
+		i++
+		if input[i] == '}' || input[i] == ']' {
+			goto closing
+		}
+		goto value
+	case '"': // scan string
+		for {
+			i++
+			switch input[i] {
+			case '\\': // \. - skip 2
+				i++
+			case '"': // end of string
+				i++
+				ei = i // space, ignore
+				for input[i] == ' ' ||
+					input[i] == '\t' ||
+					input[i] == '\n' ||
+					input[i] == '\r' {
+					i++
+				}
+				if input[i] != ':' {
+					if st <= sst {
+						callback(st, key, input[si:ei])
+					}
+					key = nil
+				}
+				goto closing
+			}
+		}
+	case ' ', '\t', '\n', '\r': // space, ignore
+		i++
+		goto value
+	default: // scan number
+		for i < len(input) {
+			switch input[i] {
+			case ',', '}', ']', ' ', '\t', '\n', '\r':
+				ei = i
+				for input[i] == ' ' ||
+					input[i] == '\t' ||
+					input[i] == '\n' ||
+					input[i] == '\r' {
+					i++
+				}
+				if st <= sst {
+					callback(st, key, input[si:ei])
+				}
+				key = nil
+				goto closing
+			}
+			i++
+		}
+	}
+
+closing:
+	if i >= len(input) {
+		return nil
+	}
+	switch input[i] {
+	case ':':
+		key = input[si:ei]
+		i++
+		goto value
+	case ',':
+		i++
+		goto value
+	case ']', '}':
+		st--
+		if st == sst {
+			sst = 1024
+		} else if st < sst {
+			callback(st, nil, input[i:i+1])
+		}
+		if st <= 0 {
+			return nil
+		}
+		i++
+		goto closing
+	case ' ', '\t', '\n', '\r':
+		i++ // space, ignore
+		goto closing
+	default:
+		return parseError(i, input[i], `expect ']', '}' or ','`)
+	}
+}

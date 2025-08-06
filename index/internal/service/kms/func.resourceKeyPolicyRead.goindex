@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kms
+import (
+	"context"
+	"log"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceKeyPolicyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KMSClient(ctx)
+
+	key, err := findKeyInfo(ctx, conn, d.Id(), d.IsNewResource())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] KMS Key (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading KMS Key (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrKeyID, key.metadata.KeyId)
+
+	policyToSet, err := verify.PolicyToSet(d.Get(names.AttrPolicy).(string), key.policy)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set(names.AttrPolicy, policyToSet)
+
+	return diags
+}

@@ -1,0 +1,106 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"reflect"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLayerVersionPermissionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
+
+	layerName, versionNumber, err := layerVersionPermissionParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	output, err := findLayerVersionPolicyByTwoPartKey(ctx, conn, layerName, versionNumber)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Lambda Layer Version Permission (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Lambda Layer Version Permission (%s): %s", d.Id(), err)
+	}
+
+	policyDoc := &IAMPolicyDoc{}
+	if err := json.Unmarshal([]byte(aws.ToString(output.Policy)), policyDoc); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set("layer_name", layerName)
+	d.Set(names.AttrPolicy, output.Policy)
+	d.Set("revision_id", output.RevisionId)
+	d.Set("version_number", versionNumber)
+
+	if len(policyDoc.Statements) > 0 {
+		d.Set("statement_id", policyDoc.Statements[0].Sid)
+
+		if actions := policyDoc.Statements[0].Actions; actions != nil {
+			var action string
+
+			if t := reflect.TypeOf(actions); t.String() == "[]string" && len(actions.([]string)) > 0 {
+				action = actions.([]string)[0]
+			} else if t.String() == "string" {
+				action = actions.(string)
+			}
+
+			d.Set(names.AttrAction, action)
+		}
+
+		if len(policyDoc.Statements[0].Conditions) > 0 {
+			if values := policyDoc.Statements[0].Conditions[0].Values; values != nil {
+				var organizationID string
+
+				if t := reflect.TypeOf(values); t.String() == "[]string" && len(values.([]string)) > 0 {
+					organizationID = values.([]string)[0]
+				} else if t.String() == "string" {
+					organizationID = values.(string)
+				}
+
+				d.Set("organization_id", organizationID)
+			}
+		}
+
+		if len(policyDoc.Statements[0].Principals) > 0 {
+			if identifiers := policyDoc.Statements[0].Principals[0].Identifiers; identifiers != nil {
+				var principal string
+
+				if t := reflect.TypeOf(identifiers); t.String() == "[]string" && len(identifiers.([]string)) > 0 && identifiers.([]string)[0] == "*" {
+					principal = "*"
+				} else if t.String() == "string" {
+					policyPrincipalARN, err := arn.Parse(identifiers.(string))
+					if err != nil {
+						return sdkdiag.AppendFromErr(diags, err)
+					}
+					principal = policyPrincipalARN.AccountID
+				}
+
+				d.Set(names.AttrPrincipal, principal)
+			}
+		}
+	}
+
+	return diags
+}

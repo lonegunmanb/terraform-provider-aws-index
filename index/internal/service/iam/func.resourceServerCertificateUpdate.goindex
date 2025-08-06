@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServerCertificateUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	if d.HasChanges(names.AttrName, names.AttrNamePrefix, names.AttrPath) {
+		input := &iam.UpdateServerCertificateInput{}
+
+		if d.HasChange(names.AttrName) {
+			oldName, newName := d.GetChange(names.AttrName)
+
+			// Handle both a name change and a switch to using a name prefix
+			newSSLCertName := create.Name(newName.(string), d.Get(names.AttrNamePrefix).(string))
+
+			input.ServerCertificateName = aws.String(oldName.(string))
+			input.NewServerCertificateName = aws.String(newSSLCertName)
+		} else if d.HasChange(names.AttrNamePrefix) {
+			oldName := d.Get(names.AttrName).(string)
+
+			// Handle only a name prefix change using an empty string as name (as it hasn't been changed)
+			newSSLCertName := create.Name("", d.Get(names.AttrNamePrefix).(string))
+
+			input.ServerCertificateName = aws.String(oldName)
+			input.NewServerCertificateName = aws.String(newSSLCertName)
+		}
+		nameChanged := input.NewServerCertificateName != nil
+
+		if d.HasChange(names.AttrPath) {
+			if !nameChanged {
+				name := d.Get(names.AttrName).(string)
+				input.ServerCertificateName = aws.String(name)
+			}
+			input.NewPath = aws.String(d.Get(names.AttrPath).(string))
+		}
+
+		_, err := conn.UpdateServerCertificate(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating IAM Server Certificate (%s): %s", d.Id(), err)
+		}
+
+		// If the name was changed, the new name must be set in the state for tag update that precedes resource read
+		if nameChanged {
+			d.Set(names.AttrName, input.NewServerCertificateName)
+		}
+	}
+
+	return append(diags, resourceServerCertificateRead(ctx, d, meta)...)
+}

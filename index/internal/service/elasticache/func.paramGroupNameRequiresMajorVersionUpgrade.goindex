@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	gversion "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func paramGroupNameRequiresMajorVersionUpgrade(diff sdkv2.ResourceDiffer) error {
+	o, n := diff.GetChange(names.AttrParameterGroupName)
+	if o.(string) == n.(string) {
+		return nil
+	}
+
+	if diff.Id() == "" {
+		if !diff.HasChange(names.AttrEngineVersion) {
+			return errors.New("cannot change parameter group name without upgrading major engine version")
+		}
+	}
+
+	// cannot check for major version upgrade at plan time for new resource
+	if diff.Id() != "" {
+		o, n := diff.GetChange(names.AttrEngineVersion)
+
+		newVersion, _ := normalizeEngineVersion(n.(string))
+		oldVersion, _ := gversion.NewVersion(o.(string))
+
+		vDiff := diffVersion(newVersion, oldVersion)
+		if vDiff[0] == 0 && vDiff[1] == 0 {
+			return errors.New("cannot change parameter group name without upgrading major engine version")
+		}
+		if vDiff[0] != 1 {
+			return fmt.Errorf("cannot change parameter group name on minor engine version upgrade, upgrading from %s to %s", oldVersion.String(), newVersion.String())
+		}
+	}
+
+	return nil
+}

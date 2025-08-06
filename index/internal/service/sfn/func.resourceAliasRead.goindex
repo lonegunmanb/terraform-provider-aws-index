@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sfn
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAliasRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SFNClient(ctx)
+
+	out, err := findAliasByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SFN Alias (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.SFN, create.ErrActionReading, ResNameAlias, d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, out.StateMachineAliasArn)
+	d.Set(names.AttrName, out.Name)
+	d.Set(names.AttrDescription, out.Description)
+	d.Set(names.AttrCreationDate, aws.ToTime(out.CreationDate).Format(time.RFC3339))
+	d.SetId(aws.ToString(out.StateMachineAliasArn))
+
+	if err := d.Set("routing_configuration", flattenAliasRoutingConfiguration(out.RoutingConfiguration)); err != nil {
+		return create.AppendDiagError(diags, names.SFN, create.ErrActionSetting, ResNameAlias, d.Id(), err)
+	}
+	return diags
+}

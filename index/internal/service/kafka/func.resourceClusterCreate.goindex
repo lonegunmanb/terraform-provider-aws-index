@@ -1,0 +1,116 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kafka
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kafka"
+	"github.com/aws/aws-sdk-go-v2/service/kafka/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KafkaClient(ctx)
+
+	name := d.Get(names.AttrClusterName).(string)
+	input := &kafka.CreateClusterInput{
+		ClusterName:         aws.String(name),
+		KafkaVersion:        aws.String(d.Get("kafka_version").(string)),
+		NumberOfBrokerNodes: aws.Int32(int32(d.Get("number_of_broker_nodes").(int))),
+		Tags:                getTagsIn(ctx),
+	}
+
+	var vpcConnectivity *types.VpcConnectivity
+	if v, ok := d.GetOk("broker_node_group_info"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.BrokerNodeGroupInfo = expandBrokerNodeGroupInfo(v.([]any)[0].(map[string]any))
+		// "BadRequestException: When creating a cluster, all vpcConnectivity auth schemes must be disabled (‘enabled’ : false). You can enable auth schemes after the cluster is created"
+		if input.BrokerNodeGroupInfo != nil && input.BrokerNodeGroupInfo.ConnectivityInfo != nil {
+			vpcConnectivity = input.BrokerNodeGroupInfo.ConnectivityInfo.VpcConnectivity
+			input.BrokerNodeGroupInfo.ConnectivityInfo.VpcConnectivity = nil
+		}
+	}
+
+	if v, ok := d.GetOk("client_authentication"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.ClientAuthentication = expandClientAuthentication(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("configuration_info"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.ConfigurationInfo = expandConfigurationInfo(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("encryption_info"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.EncryptionInfo = expandEncryptionInfo(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("enhanced_monitoring"); ok {
+		input.EnhancedMonitoring = types.EnhancedMonitoring(v.(string))
+	}
+
+	if v, ok := d.GetOk("logging_info"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.LoggingInfo = expandLoggingInfo(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("open_monitoring"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.OpenMonitoring = expandOpenMonitoringInfo(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("storage_mode"); ok {
+		input.StorageMode = types.StorageMode(v.(string))
+	}
+
+	output, err := conn.CreateCluster(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating MSK Cluster (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.ClusterArn))
+
+	cluster, err := waitClusterCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for MSK Cluster (%s) create: %s", d.Id(), err)
+	}
+
+	if vpcConnectivity != nil {
+		input := &kafka.UpdateConnectivityInput{
+			ClusterArn: aws.String(d.Id()),
+			ConnectivityInfo: &types.ConnectivityInfo{
+				VpcConnectivity: vpcConnectivity,
+			},
+			CurrentVersion: cluster.CurrentVersion,
+		}
+
+		output, err := conn.UpdateConnectivity(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating MSK Cluster (%s) broker connectivity: %s", d.Id(), err)
+		}
+
+		clusterOperationARN := aws.ToString(output.ClusterOperationArn)
+
+		if _, err := waitClusterOperationCompleted(ctx, conn, clusterOperationARN, d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for MSK Cluster (%s) operation (%s) complete: %s", d.Id(), clusterOperationARN, err)
+		}
+	}
+
+	return append(diags, resourceClusterRead(ctx, d, meta)...)
+}

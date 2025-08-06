@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appconfig
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appconfig"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appconfig/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDeploymentRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppConfigClient(ctx)
+
+	applicationID, environmentID, deploymentNumber, err := deploymentParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	output, err := findDeploymentByThreePartKey(ctx, conn, applicationID, environmentID, deploymentNumber)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] AppConfig Deployment (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading AppConfig Deployment (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrApplicationID, output.ApplicationId)
+	d.Set(names.AttrARN, deploymentARN(ctx, meta.(*conns.AWSClient), applicationID, environmentID, deploymentNumber))
+	d.Set("configuration_profile_id", output.ConfigurationProfileId)
+	d.Set("configuration_version", output.ConfigurationVersion)
+	d.Set("deployment_number", output.DeploymentNumber)
+	d.Set("deployment_strategy_id", output.DeploymentStrategyId)
+	d.Set(names.AttrDescription, output.Description)
+	d.Set("environment_id", output.EnvironmentId)
+	d.Set(names.AttrKMSKeyARN, output.KmsKeyArn)
+	d.Set("kms_key_identifier", output.KmsKeyIdentifier)
+	d.Set(names.AttrState, output.State)
+
+	return diags
+}

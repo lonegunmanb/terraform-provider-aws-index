@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGlobalTableCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &dynamodb.CreateGlobalTableInput{
+		GlobalTableName:  aws.String(name),
+		ReplicationGroup: expandReplicas(d.Get("replica").(*schema.Set).List()),
+	}
+
+	_, err := conn.CreateGlobalTable(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DynamoDB Global Table (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if _, err := waitGlobalTableCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DynamoDB Global Table (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceGlobalTableRead(ctx, d, meta)...)
+}

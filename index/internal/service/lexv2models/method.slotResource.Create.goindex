@@ -1,0 +1,91 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexv2models
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelsv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelsv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *slotResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().LexV2ModelsClient(ctx)
+
+	var plan slotResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := &lexmodelsv2.CreateSlotInput{
+		SlotName: plan.Name.ValueStringPointer(),
+	}
+
+	resp.Diagnostics.Append(flex.Expand(ctx, &plan, in, slotFlexOpt)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	out, err := conn.CreateSlot(ctx, in)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LexV2Models, create.ErrActionCreating, ResNameSlot, plan.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+	if out == nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LexV2Models, create.ErrActionCreating, ResNameSlot, plan.Name.String(), nil),
+			errors.New("empty output").Error(),
+		)
+		return
+	}
+
+	idParts := []string{
+		aws.ToString(out.BotId),
+		aws.ToString(out.BotVersion),
+		aws.ToString(out.IntentId),
+		aws.ToString(out.LocaleId),
+		aws.ToString(out.SlotId),
+	}
+	id, err := intflex.FlattenResourceId(idParts, slotIDPartCount, false)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LexV2Models, create.ErrActionCreating, ResNameSlot, plan.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	plan.ID = types.StringValue(id)
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, out, &plan, slotFlexOpt)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}

@@ -1,0 +1,99 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIntegrationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	input := apigateway.PutIntegrationInput{
+		HttpMethod: aws.String(d.Get("http_method").(string)),
+		ResourceId: aws.String(d.Get(names.AttrResourceID).(string)),
+		RestApiId:  aws.String(d.Get("rest_api_id").(string)),
+		Type:       types.IntegrationType(d.Get(names.AttrType).(string)),
+	}
+
+	if v, ok := d.GetOk("cache_key_parameters"); ok && v.(*schema.Set).Len() > 0 {
+		input.CacheKeyParameters = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("cache_namespace"); ok {
+		input.CacheNamespace = aws.String(v.(string))
+	} else if input.CacheKeyParameters != nil {
+		input.CacheNamespace = aws.String(d.Get(names.AttrResourceID).(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrConnectionID); ok {
+		input.ConnectionId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("connection_type"); ok {
+		input.ConnectionType = types.ConnectionType(v.(string))
+	}
+
+	if v, ok := d.GetOk("content_handling"); ok {
+		input.ContentHandling = types.ContentHandlingStrategy(v.(string))
+	}
+
+	if v, ok := d.GetOk("credentials"); ok {
+		input.Credentials = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("integration_http_method"); ok {
+		input.IntegrationHttpMethod = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("passthrough_behavior"); ok {
+		input.PassthroughBehavior = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("request_parameters"); ok && len(v.(map[string]any)) > 0 {
+		input.RequestParameters = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("request_templates"); ok && len(v.(map[string]any)) > 0 {
+		input.RequestTemplates = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("timeout_milliseconds"); ok {
+		input.TimeoutInMillis = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("tls_config"); ok && len(v.([]any)) > 0 {
+		input.TlsConfig = expandTLSConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrURI); ok {
+		input.Uri = aws.String(v.(string))
+	}
+
+	_, err := conn.PutIntegration(ctx, &input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway Integration: %s", err)
+	}
+
+	d.SetId(fmt.Sprintf("agi-%s-%s-%s", d.Get("rest_api_id").(string), d.Get(names.AttrResourceID).(string), d.Get("http_method").(string)))
+
+	return append(diags, resourceIntegrationRead(ctx, d, meta)...)
+}

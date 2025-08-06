@@ -1,0 +1,39 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func disassociateMembers(ctx context.Context, conn *elasticache.Client, globalReplicationGroup awstypes.GlobalReplicationGroup) error {
+	var membersGroup multierror.Group
+
+	for _, member := range globalReplicationGroup.Members {
+		if aws.ToString(member.Role) == globalReplicationGroupMemberRolePrimary {
+			continue
+		}
+
+		id := aws.ToString(globalReplicationGroup.GlobalReplicationGroupId)
+
+		membersGroup.Go(func() error {
+			if err := disassociateReplicationGroup(ctx, conn, id, aws.ToString(member.ReplicationGroupId), aws.ToString(member.ReplicationGroupRegion), sweeperGlobalReplicationGroupDisassociationReadyTimeout); err != nil {
+				log.Printf("[ERROR] %s", err)
+				return err
+			}
+			return nil
+		})
+	}
+
+	return membersGroup.Wait().ErrorOrNil()
+}

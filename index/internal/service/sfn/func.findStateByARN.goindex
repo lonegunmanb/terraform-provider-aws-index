@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sfn
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findStateByARN(ctx context.Context, conn *sfn.Client, name string) ([]awstypes.StateMachineListItem, error) {
+	var output []awstypes.StateMachineListItem
+
+	pages := sfn.NewListStateMachinesPaginator(conn, &sfn.ListStateMachinesInput{})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.StateMachineDoesNotExist](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: name,
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.StateMachines {
+			if name == aws.ToString(v.Name) {
+				output = append(output, v)
+			}
+		}
+	}
+
+	return output, nil
+}

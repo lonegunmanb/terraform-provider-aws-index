@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProvisioningTemplateCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &iot.CreateProvisioningTemplateInput{
+		Enabled:      aws.Bool(d.Get(names.AttrEnabled).(bool)),
+		Tags:         getTagsIn(ctx),
+		TemplateName: aws.String(name),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("pre_provisioning_hook"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.PreProvisioningHook = expandProvisioningHook(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("provisioning_role_arn"); ok {
+		input.ProvisioningRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("template_body"); ok {
+		input.TemplateBody = aws.String(v.(string))
+	}
+
+	if v, ok := d.Get(names.AttrType).(string); ok && v != "" {
+		input.Type = awstypes.TemplateType(v)
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.InvalidRequestException](ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateProvisioningTemplate(ctx, input)
+		})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating IoT Provisioning Template (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*iot.CreateProvisioningTemplateOutput).TemplateName))
+
+	return append(diags, resourceProvisioningTemplateRead(ctx, d, meta)...)
+}

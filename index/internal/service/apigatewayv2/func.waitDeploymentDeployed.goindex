@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitDeploymentDeployed(ctx context.Context, conn *apigatewayv2.Client, apiID, deploymentID string) (*apigatewayv2.GetDeploymentOutput, error) { //nolint:unparam
+	const (
+		timeout = 5 * time.Minute
+	)
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.DeploymentStatusPending),
+		Target:  enum.Slice(awstypes.DeploymentStatusDeployed),
+		Refresh: statusDeployment(ctx, conn, apiID, deploymentID),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*apigatewayv2.GetDeploymentOutput); ok {
+		tfresource.SetLastError(err, errors.New(aws.ToString(output.DeploymentStatusMessage)))
+
+		return output, err
+	}
+
+	return nil, err
+}

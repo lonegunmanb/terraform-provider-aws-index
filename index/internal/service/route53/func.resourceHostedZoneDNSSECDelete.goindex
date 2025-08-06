@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHostedZoneDNSSECDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	log.Printf("[DEBUG] Deleting Route 53 Hosted Zone DNSSEC: %s", d.Id())
+	output, err := conn.DisableHostedZoneDNSSEC(ctx, &route53.DisableHostedZoneDNSSECInput{
+		HostedZoneId: aws.String(d.Id()),
+	})
+
+	if errs.IsA[*awstypes.DNSSECNotFound](err) || errs.IsA[*awstypes.NoSuchHostedZone](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "disabling Route 53 Hosted Zone DNSSEC (%s): %s", d.Id(), err)
+	}
+
+	if output.ChangeInfo != nil {
+		if _, err := waitChangeInsync(ctx, conn, aws.ToString(output.ChangeInfo.Id), d.Timeout(schema.TimeoutDelete)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Route 53 Hosted Zone DNSSEC (%s) synchronize: %s", d.Id(), err)
+		}
+	}
+
+	return diags
+}

@@ -1,0 +1,258 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/identitystore
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore/document"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IdentityStoreClient(ctx)
+
+	identityStoreID, userID, err := userParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &identitystore.UpdateUserInput{
+		IdentityStoreId: aws.String(identityStoreID),
+		UserId:          aws.String(userID),
+	}
+
+	// IMPLEMENTATION NOTE.
+	//
+	// Complex types, such as the `emails` field, don't allow field by field
+	// updates, and require that the entire sub-object is modified.
+	//
+	// In those sub-objects, to remove a field, it must not be present at all
+	// in the updated attribute value.
+	//
+	// However, structs such as types.Email don't specify omitempty in their
+	// struct tags, so the document.NewLazyDocument marshaller will write out
+	// nulls.
+	//
+	// This is why, for those complex fields, a custom Expand function is
+	// provided that converts the Go SDK type (e.g. types.Email) into a field
+	// by field representation of what the API would expect.
+
+	fieldsToUpdate := []struct {
+		// Attribute corresponds to the provider schema.
+		Attribute string
+
+		// Field corresponds to the AWS API schema.
+		Field string
+
+		// Expand, when not nil, is used to transform the value of the field
+		// given in Attribute before it's passed to the UpdateOperation.
+		Expand func(any) any
+	}{
+		{
+			Attribute: names.AttrDisplayName,
+			Field:     "displayName",
+		},
+		{
+			Attribute: "locale",
+			Field:     "locale",
+		},
+		{
+			Attribute: "name.0.family_name",
+			Field:     "name.familyName",
+		},
+		{
+			Attribute: "name.0.formatted",
+			Field:     "name.formatted",
+		},
+		{
+			Attribute: "name.0.given_name",
+			Field:     "name.givenName",
+		},
+		{
+			Attribute: "name.0.honorific_prefix",
+			Field:     "name.honorificPrefix",
+		},
+		{
+			Attribute: "name.0.honorific_suffix",
+			Field:     "name.honorificSuffix",
+		},
+		{
+			Attribute: "name.0.middle_name",
+			Field:     "name.middleName",
+		},
+		{
+			Attribute: "nickname",
+			Field:     "nickName",
+		},
+		{
+			Attribute: "preferred_language",
+			Field:     "preferredLanguage",
+		},
+		{
+			Attribute: "profile_url",
+			Field:     "profileUrl",
+		},
+		{
+			Attribute: "timezone",
+			Field:     "timezone",
+		},
+		{
+			Attribute: "title",
+			Field:     "title",
+		},
+		{
+			Attribute: "user_type",
+			Field:     "userType",
+		},
+		{
+			Attribute: "addresses",
+			Field:     "addresses",
+			Expand: func(value any) any {
+				addresses := expandAddresses(value.([]any))
+
+				var result []any
+
+				// The API requires a null to unset the list, so in the case
+				// of no addresses, a nil result is preferable.
+				for _, address := range addresses {
+					m := map[string]any{}
+
+					if v := address.Country; v != nil {
+						m["country"] = v
+					}
+
+					if v := address.Formatted; v != nil {
+						m["formatted"] = v
+					}
+
+					if v := address.Locality; v != nil {
+						m["locality"] = v
+					}
+
+					if v := address.PostalCode; v != nil {
+						m["postalCode"] = v
+					}
+
+					m["primary"] = address.Primary
+
+					if v := address.Region; v != nil {
+						m[names.AttrRegion] = v
+					}
+
+					if v := address.StreetAddress; v != nil {
+						m["streetAddress"] = v
+					}
+
+					if v := address.Type; v != nil {
+						m[names.AttrType] = v
+					}
+
+					result = append(result, m)
+				}
+
+				return result
+			},
+		},
+		{
+			Attribute: "emails",
+			Field:     "emails",
+			Expand: func(value any) any {
+				emails := expandEmails(value.([]any))
+
+				var result []any
+
+				// The API requires a null to unset the list, so in the case
+				// of no emails, a nil result is preferable.
+				for _, email := range emails {
+					m := map[string]any{}
+
+					m["primary"] = email.Primary
+
+					if v := email.Type; v != nil {
+						m[names.AttrType] = v
+					}
+
+					if v := email.Value; v != nil {
+						m[names.AttrValue] = v
+					}
+
+					result = append(result, m)
+				}
+
+				return result
+			},
+		},
+		{
+			Attribute: "phone_numbers",
+			Field:     "phoneNumbers",
+			Expand: func(value any) any {
+				emails := expandPhoneNumbers(value.([]any))
+
+				var result []any
+
+				// The API requires a null to unset the list, so in the case
+				// of no emails, a nil result is preferable.
+				for _, email := range emails {
+					m := map[string]any{}
+
+					m["primary"] = email.Primary
+
+					if v := email.Type; v != nil {
+						m[names.AttrType] = v
+					}
+
+					if v := email.Value; v != nil {
+						m[names.AttrValue] = v
+					}
+
+					result = append(result, m)
+				}
+
+				return result
+			},
+		},
+	}
+
+	for _, fieldToUpdate := range fieldsToUpdate {
+		if d.HasChange(fieldToUpdate.Attribute) {
+			value := d.Get(fieldToUpdate.Attribute)
+
+			if expand := fieldToUpdate.Expand; expand != nil {
+				value = expand(value)
+			}
+
+			// The API doesn't allow empty attribute values. To unset an
+			// attribute, set it to null.
+			if value == "" {
+				value = nil
+			}
+
+			input.Operations = append(input.Operations, types.AttributeOperation{
+				AttributePath:  aws.String(fieldToUpdate.Field),
+				AttributeValue: document.NewLazyDocument(value),
+			})
+		}
+	}
+
+	if len(input.Operations) > 0 {
+		_, err := conn.UpdateUser(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating IdentityStore User (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceUserRead(ctx, d, meta)...)
+}

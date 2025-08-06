@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/athena
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AthenaClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &athena.CreateWorkGroupInput{
+		Configuration: expandWorkGroupConfiguration(d.Get(names.AttrConfiguration).([]any)),
+		Name:          aws.String(name),
+		Tags:          getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateWorkGroup(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Athena WorkGroup (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if v := types.WorkGroupState(d.Get(names.AttrState).(string)); v == types.WorkGroupStateDisabled {
+		input := &athena.UpdateWorkGroupInput{
+			State:     v,
+			WorkGroup: aws.String(d.Id()),
+		}
+
+		_, err := conn.UpdateWorkGroup(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "disabling Athena WorkGroup (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceWorkGroupRead(ctx, d, meta)...)
+}

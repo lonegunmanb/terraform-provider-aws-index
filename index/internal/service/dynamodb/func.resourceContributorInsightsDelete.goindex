@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceContributorInsightsDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	tableName, indexName, err := contributorInsightsParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &dynamodb.UpdateContributorInsightsInput{
+		ContributorInsightsAction: awstypes.ContributorInsightsActionDisable,
+		TableName:                 aws.String(tableName),
+	}
+
+	if indexName != "" {
+		input.IndexName = aws.String(indexName)
+	}
+
+	log.Printf("[INFO] Deleting DynamoDB Contributor Insights: %s", d.Id())
+	_, err = conn.UpdateContributorInsights(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting DynamoDB Contributor Insights (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitContributorInsightsDeleted(ctx, conn, tableName, indexName, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DynamoDB Contributor Insights (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

@@ -1,0 +1,100 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceGatewayAssociation() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceGatewayAssociationCreate,
+		ReadWithoutTimeout:   resourceGatewayAssociationRead,
+		UpdateWithoutTimeout: resourceGatewayAssociationUpdate,
+		DeleteWithoutTimeout: resourceGatewayAssociationDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: resourceGatewayAssociationImport,
+		},
+
+		SchemaVersion: 1,
+		StateUpgraders: []schema.StateUpgrader{
+			{
+				Type:    resourceGatewayAssociationResourceV0().CoreConfigSchema().ImpliedType(),
+				Upgrade: gatewayAssociationStateUpgradeV0,
+				Version: 0,
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			"allowed_prefixes": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"associated_gateway_id": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				Computed:      true,
+				ForceNew:      true,
+				ConflictsWith: []string{"associated_gateway_owner_account_id", "proposal_id"},
+				AtLeastOneOf:  []string{"associated_gateway_id", "associated_gateway_owner_account_id", "proposal_id"},
+			},
+			"associated_gateway_owner_account_id": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				Computed:      true,
+				ForceNew:      true,
+				ValidateFunc:  verify.ValidAccountID,
+				ConflictsWith: []string{"associated_gateway_id"},
+				RequiredWith:  []string{"proposal_id"},
+				AtLeastOneOf:  []string{"associated_gateway_id", "associated_gateway_owner_account_id", "proposal_id"},
+			},
+			"associated_gateway_type": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"dx_gateway_association_id": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"dx_gateway_id": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"dx_gateway_owner_account_id": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"proposal_id": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ConflictsWith: []string{"associated_gateway_id"},
+				AtLeastOneOf:  []string{"associated_gateway_id", "associated_gateway_owner_account_id", "proposal_id"},
+			},
+		},
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(30 * time.Minute),
+			Update: schema.DefaultTimeout(30 * time.Minute),
+			Delete: schema.DefaultTimeout(30 * time.Minute),
+		},
+	}
+}

@@ -1,0 +1,473 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elasticloadbalancingv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+
+	startTime := time.Now()
+
+	var shouldWaitForCapacity bool
+	var shouldRefreshInstances bool
+
+	if d.HasChangesExcept(
+		"enabled_metrics",
+		"load_balancers",
+		"suspended_processes",
+		"tag",
+		"target_group_arns",
+		"traffic_source",
+		"warm_pool",
+	) {
+		input := autoscaling.UpdateAutoScalingGroupInput{
+			AutoScalingGroupName:             aws.String(d.Id()),
+			NewInstancesProtectedFromScaleIn: aws.Bool(d.Get("protect_from_scale_in").(bool)),
+		}
+
+		if d.HasChange(names.AttrAvailabilityZones) {
+			if v, ok := d.GetOk(names.AttrAvailabilityZones); ok && v.(*schema.Set).Len() > 0 {
+				input.AvailabilityZones = flex.ExpandStringValueSet(v.(*schema.Set))
+			}
+		}
+
+		if d.HasChange("availability_zone_distribution") {
+			if v, ok := d.GetOk("availability_zone_distribution"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.AvailabilityZoneDistribution = expandAvailabilityZoneDistribution(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("capacity_rebalance") {
+			// If the capacity rebalance field is set to null, we need to explicitly set
+			// it back to "false", or the API won't reset it for us.
+			if v, ok := d.GetOk("capacity_rebalance"); ok {
+				input.CapacityRebalance = aws.Bool(v.(bool))
+			} else {
+				input.CapacityRebalance = aws.Bool(false)
+			}
+		}
+
+		if d.HasChange("capacity_reservation_specification") {
+			if v, ok := d.GetOk("capacity_reservation_specification"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.CapacityReservationSpecification = expandCapacityReservationSpecification(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("context") {
+			input.Context = aws.String(d.Get("context").(string))
+		}
+
+		if d.HasChange("default_cooldown") {
+			input.DefaultCooldown = aws.Int32(int32(d.Get("default_cooldown").(int)))
+		}
+
+		if d.HasChange("default_instance_warmup") {
+			input.DefaultInstanceWarmup = aws.Int32(int32(d.Get("default_instance_warmup").(int)))
+		}
+
+		if d.HasChange("desired_capacity") {
+			input.DesiredCapacity = aws.Int32(int32(d.Get("desired_capacity").(int)))
+			shouldWaitForCapacity = true
+		}
+
+		if d.HasChange("desired_capacity_type") {
+			input.DesiredCapacityType = aws.String(d.Get("desired_capacity_type").(string))
+			shouldWaitForCapacity = true
+		}
+
+		if d.HasChange("health_check_grace_period") {
+			input.HealthCheckGracePeriod = aws.Int32(int32(d.Get("health_check_grace_period").(int)))
+		}
+
+		if d.HasChange("health_check_type") {
+			input.HealthCheckGracePeriod = aws.Int32(int32(d.Get("health_check_grace_period").(int)))
+			input.HealthCheckType = aws.String(d.Get("health_check_type").(string))
+		}
+
+		if d.HasChange("instance_maintenance_policy") {
+			input.InstanceMaintenancePolicy = expandInstanceMaintenancePolicy(d.Get("instance_maintenance_policy").([]any))
+		}
+
+		if d.HasChange("launch_configuration") {
+			if v, ok := d.GetOk("launch_configuration"); ok {
+				input.LaunchConfigurationName = aws.String(v.(string))
+			}
+			shouldRefreshInstances = true
+		}
+
+		if d.HasChange(names.AttrLaunchTemplate) {
+			if v, ok := d.GetOk(names.AttrLaunchTemplate); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.LaunchTemplate = expandLaunchTemplateSpecification(v.([]any)[0].(map[string]any), false)
+			}
+			shouldRefreshInstances = true
+		}
+
+		if d.HasChange("max_instance_lifetime") {
+			input.MaxInstanceLifetime = aws.Int32(int32(d.Get("max_instance_lifetime").(int)))
+		}
+
+		if d.HasChange("max_size") {
+			input.MaxSize = aws.Int32(int32(d.Get("max_size").(int)))
+		}
+
+		if d.HasChange("min_size") {
+			input.MinSize = aws.Int32(int32(d.Get("min_size").(int)))
+			shouldWaitForCapacity = true
+		}
+
+		if d.HasChange("mixed_instances_policy") {
+			if v, ok := d.GetOk("mixed_instances_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.MixedInstancesPolicy = expandMixedInstancesPolicy(v.([]any)[0].(map[string]any), true)
+			}
+			shouldRefreshInstances = true
+		}
+
+		if d.HasChange("placement_group") {
+			input.PlacementGroup = aws.String(d.Get("placement_group").(string))
+		}
+
+		if d.HasChange("service_linked_role_arn") {
+			input.ServiceLinkedRoleARN = aws.String(d.Get("service_linked_role_arn").(string))
+		}
+
+		if d.HasChange("termination_policies") {
+			// If the termination policy is set to null, we need to explicitly set
+			// it back to "Default", or the API won't reset it for us.
+			if v, ok := d.GetOk("termination_policies"); ok && len(v.([]any)) > 0 {
+				input.TerminationPolicies = flex.ExpandStringValueList(v.([]any))
+			} else {
+				input.TerminationPolicies = []string{defaultTerminationPolicy}
+			}
+		}
+
+		if d.HasChange("vpc_zone_identifier") {
+			input.VPCZoneIdentifier = expandVPCZoneIdentifiers(d.Get("vpc_zone_identifier").(*schema.Set).List())
+		}
+
+		_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutUpdate),
+			func() (any, error) {
+				return conn.UpdateAutoScalingGroup(ctx, &input)
+			},
+			errCodeOperationError, errCodeUpdateASG, errCodeValidationError)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Auto Scaling Group (%s): %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChanges("tag") {
+		oTagRaw, nTagRaw := d.GetChange("tag")
+		oldTags := svcTags(KeyValueTags(ctx, oTagRaw, d.Id(), TagResourceTypeGroup))
+		newTags := svcTags(KeyValueTags(ctx, nTagRaw, d.Id(), TagResourceTypeGroup))
+
+		if err := updateTags(ctx, conn, d.Id(), TagResourceTypeGroup, oldTags, newTags); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating tags for Auto Scaling Group (%s): %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("traffic_source") {
+		o, n := d.GetChange("traffic_source")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		// API only supports adding or removing 10 at a time.
+		batchSize := 10
+		for chunk := range slices.Chunk(expandTrafficSourceIdentifiers(os.Difference(ns).List()), batchSize) {
+			input := autoscaling.DetachTrafficSourcesInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				TrafficSources:       chunk,
+			}
+
+			_, err := conn.DetachTrafficSources(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "detaching Auto Scaling Group (%s) traffic sources: %s", d.Id(), err)
+			}
+
+			if _, err := waitTrafficSourcesDeleted(ctx, conn, d.Id(), "", d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Group (%s) traffic sources removed: %s", d.Id(), err)
+			}
+		}
+
+		for chunk := range slices.Chunk(expandTrafficSourceIdentifiers(ns.Difference(os).List()), batchSize) {
+			input := autoscaling.AttachTrafficSourcesInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				TrafficSources:       chunk,
+			}
+
+			_, err := conn.AttachTrafficSources(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "attaching Auto Scaling Group (%s) traffic sources: %s", d.Id(), err)
+			}
+
+			if _, err := waitTrafficSourcesCreated(ctx, conn, d.Id(), "", d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Group (%s) traffic sources added: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange("load_balancers") {
+		o, n := d.GetChange("load_balancers")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		// API only supports adding or removing 10 at a time.
+		batchSize := 10
+		for chunk := range slices.Chunk(flex.ExpandStringValueSet(os.Difference(ns)), batchSize) {
+			input := autoscaling.DetachLoadBalancersInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				LoadBalancerNames:    chunk,
+			}
+
+			_, err := conn.DetachLoadBalancers(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "detaching Auto Scaling Group (%s) load balancers: %s", d.Id(), err)
+			}
+
+			if _, err := waitLoadBalancersRemoved(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Group (%s) load balancers removed: %s", d.Id(), err)
+			}
+		}
+
+		for chunk := range slices.Chunk(flex.ExpandStringValueSet(ns.Difference(os)), batchSize) {
+			input := autoscaling.AttachLoadBalancersInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				LoadBalancerNames:    chunk,
+			}
+
+			_, err := conn.AttachLoadBalancers(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "attaching Auto Scaling Group (%s) load balancers: %s", d.Id(), err)
+			}
+
+			if _, err := waitLoadBalancersAdded(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Group (%s) load balancers added: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange("target_group_arns") {
+		o, n := d.GetChange("target_group_arns")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		// API only supports adding or removing 10 at a time.
+		batchSize := 10
+		for chunk := range slices.Chunk(flex.ExpandStringValueSet(os.Difference(ns)), batchSize) {
+			input := autoscaling.DetachLoadBalancerTargetGroupsInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				TargetGroupARNs:      chunk,
+			}
+
+			_, err := conn.DetachLoadBalancerTargetGroups(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "detaching Auto Scaling Group (%s) target groups: %s", d.Id(), err)
+			}
+
+			if _, err := waitLoadBalancerTargetGroupsRemoved(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Group (%s) target groups removed: %s", d.Id(), err)
+			}
+		}
+
+		for chunk := range slices.Chunk(flex.ExpandStringValueSet(ns.Difference(os)), batchSize) {
+			input := autoscaling.AttachLoadBalancerTargetGroupsInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				TargetGroupARNs:      chunk,
+			}
+
+			_, err := conn.AttachLoadBalancerTargetGroups(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "attaching Auto Scaling Group (%s) target groups: %s", d.Id(), err)
+			}
+
+			if _, err := waitLoadBalancerTargetGroupsAdded(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Group (%s) target groups added: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("instance_refresh"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+
+		if !shouldRefreshInstances {
+			if v, ok := tfMap[names.AttrTriggers].(*schema.Set); ok && v.Len() > 0 {
+				var triggers []string
+
+				for _, v := range v.List() {
+					if v := v.(string); v != "" {
+						triggers = append(triggers, v)
+					}
+				}
+
+				shouldRefreshInstances = d.HasChanges(triggers...)
+			}
+		}
+
+		if shouldRefreshInstances {
+			var launchTemplate *awstypes.LaunchTemplateSpecification
+
+			if v, ok := d.GetOk(names.AttrLaunchTemplate); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				launchTemplate = expandLaunchTemplateSpecification(v.([]any)[0].(map[string]any), false)
+			}
+
+			var mixedInstancesPolicy *awstypes.MixedInstancesPolicy
+
+			if v, ok := d.GetOk("mixed_instances_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				mixedInstancesPolicy = expandMixedInstancesPolicy(v.([]any)[0].(map[string]any), true)
+			}
+
+			if err := startInstanceRefresh(ctx, conn, expandStartInstanceRefreshInput(d.Id(), tfMap, launchTemplate, mixedInstancesPolicy)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	if d.HasChange("warm_pool") {
+		w := d.Get("warm_pool").([]any)
+
+		// No warm pool exists in new config. Delete it.
+		if len(w) == 0 || w[0] == nil {
+			forceDeleteWarmPool := d.Get(names.AttrForceDelete).(bool) || d.Get("force_delete_warm_pool").(bool)
+
+			if err := deleteWarmPool(ctx, conn, d.Id(), forceDeleteWarmPool, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		} else {
+			_, err := conn.PutWarmPool(ctx, expandPutWarmPoolInput(d.Id(), w[0].(map[string]any)))
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating Auto Scaling Warm Pool (%s): %s", d.Id(), err)
+			}
+		}
+	}
+
+	if shouldWaitForCapacity {
+		if v, ok := d.GetOk("wait_for_capacity_timeout"); ok {
+			if timeout, _ := time.ParseDuration(v.(string)); timeout > 0 {
+				// On update all targets are specific.
+				f := func(nASG, nELB int) error {
+					minSize := d.Get("min_size").(int)
+					if desiredCapacity := d.Get("desired_capacity").(int); desiredCapacity > minSize {
+						minSize = desiredCapacity
+					}
+
+					if nASG != minSize {
+						return fmt.Errorf("want exactly %d healthy instance(s) in Auto Scaling Group, have %d", minSize, nASG)
+					}
+
+					if waitForELBCapacity := d.Get("wait_for_elb_capacity").(int); waitForELBCapacity > 0 {
+						if nELB != waitForELBCapacity {
+							return fmt.Errorf("want exactly %d healthy instance(s) registered to Load Balancer, have %d", waitForELBCapacity, nELB)
+						}
+					}
+
+					return nil
+				}
+
+				if err := waitGroupCapacitySatisfied(ctx, conn, meta.(*conns.AWSClient).ELBClient(ctx), meta.(*conns.AWSClient).ELBV2Client(ctx), d.Id(), f, startTime, d.Get("ignore_failed_scaling_activities").(bool), timeout); err != nil {
+					return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Group (%s) capacity satisfied: %s", d.Id(), err)
+				}
+			}
+		}
+	}
+
+	if d.HasChange("enabled_metrics") {
+		o, n := d.GetChange("enabled_metrics")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		if disableMetrics := os.Difference(ns); disableMetrics.Len() != 0 {
+			input := autoscaling.DisableMetricsCollectionInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				Metrics:              flex.ExpandStringValueSet(disableMetrics),
+			}
+
+			_, err := conn.DisableMetricsCollection(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "disabling Auto Scaling Group (%s) metrics collection: %s", d.Id(), err)
+			}
+		}
+
+		if enableMetrics := ns.Difference(os); enableMetrics.Len() != 0 {
+			input := autoscaling.EnableMetricsCollectionInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				Granularity:          aws.String(d.Get("metrics_granularity").(string)),
+				Metrics:              flex.ExpandStringValueSet(enableMetrics),
+			}
+
+			_, err := conn.EnableMetricsCollection(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "enabling Auto Scaling Group (%s) metrics collection: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange("suspended_processes") {
+		o, n := d.GetChange("suspended_processes")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		if resumeProcesses := os.Difference(ns); resumeProcesses.Len() != 0 {
+			input := autoscaling.ResumeProcessesInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				ScalingProcesses:     flex.ExpandStringValueSet(resumeProcesses),
+			}
+
+			_, err := conn.ResumeProcesses(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "resuming Auto Scaling Group (%s) scaling processes: %s", d.Id(), err)
+			}
+		}
+
+		if suspendProcesses := ns.Difference(os); suspendProcesses.Len() != 0 {
+			input := autoscaling.SuspendProcessesInput{
+				AutoScalingGroupName: aws.String(d.Id()),
+				ScalingProcesses:     flex.ExpandStringValueSet(suspendProcesses),
+			}
+
+			_, err := conn.SuspendProcesses(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "suspending Auto Scaling Group (%s) scaling processes: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceGroupRead(ctx, d, meta)...)
+}

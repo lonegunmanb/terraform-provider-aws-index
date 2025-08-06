@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/xray
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/xray"
+	"github.com/aws/aws-sdk-go-v2/service/xray/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSamplingRuleCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).XRayClient(ctx)
+
+	name := d.Get("rule_name").(string)
+	samplingRule := &types.SamplingRule{
+		FixedRate:     d.Get("fixed_rate").(float64),
+		Host:          aws.String(d.Get("host").(string)),
+		HTTPMethod:    aws.String(d.Get("http_method").(string)),
+		Priority:      aws.Int32(int32(d.Get(names.AttrPriority).(int))),
+		ReservoirSize: int32(d.Get("reservoir_size").(int)),
+		ResourceARN:   aws.String(d.Get(names.AttrResourceARN).(string)),
+		RuleName:      aws.String(name),
+		ServiceName:   aws.String(d.Get(names.AttrServiceName).(string)),
+		ServiceType:   aws.String(d.Get("service_type").(string)),
+		URLPath:       aws.String(d.Get("url_path").(string)),
+		Version:       aws.Int32(int32(d.Get(names.AttrVersion).(int))),
+	}
+
+	if v, ok := d.GetOk(names.AttrAttributes); ok && len(v.(map[string]any)) > 0 {
+		samplingRule.Attributes = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	input := xray.CreateSamplingRuleInput{
+		SamplingRule: samplingRule,
+		Tags:         getTagsIn(ctx),
+	}
+
+	output, err := conn.CreateSamplingRule(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating XRay Sampling Rule (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.SamplingRuleRecord.SamplingRule.RuleName))
+
+	return append(diags, resourceSamplingRuleRead(ctx, d, meta)...)
+}

@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/macie2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/macie2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/macie2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMemberUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Macie2Client(ctx)
+
+	if d.HasChange("invite") {
+		if d.Get("invite").(bool) {
+			if err := inviteMember(ctx, conn, d, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		} else {
+			input := macie2.DisassociateMemberInput{
+				Id: aws.String(d.Id()),
+			}
+
+			_, err := conn.DisassociateMember(ctx, &input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "disassociating Macie Member invite (%s): %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChange(names.AttrStatus) {
+		input := macie2.UpdateMemberSessionInput{
+			Id:     aws.String(d.Id()),
+			Status: awstypes.MacieStatus(d.Get(names.AttrStatus).(string)),
+		}
+
+		_, err := conn.UpdateMemberSession(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Macie Member (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceMemberRead(ctx, d, meta)...)
+}

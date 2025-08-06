@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/devopsguru
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/service/devopsguru"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/devopsguru/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findResourceCollectionByID(ctx context.Context, conn *devopsguru.Client, id string) (*awstypes.ResourceCollectionFilter, error) {
+	collectionType := awstypes.ResourceCollectionType(id)
+	in := &devopsguru.GetResourceCollectionInput{
+		ResourceCollectionType: collectionType,
+	}
+
+	out, err := conn.GetResourceCollection(ctx, in)
+	if err != nil {
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: in,
+			}
+		}
+
+		return nil, err
+	}
+
+	if out == nil || out.ResourceCollection == nil {
+		return nil, tfresource.NewEmptyResultError(in)
+	}
+
+	switch collectionType {
+	case awstypes.ResourceCollectionTypeAwsCloudFormation, awstypes.ResourceCollectionTypeAwsService:
+		// AWS_CLOUD_FORMATION and AWS_SERVICE collection types should have
+		// a non-empty array of stack names
+		if out.ResourceCollection.CloudFormation == nil ||
+			len(out.ResourceCollection.CloudFormation.StackNames) == 0 {
+			return nil, &retry.NotFoundError{
+				LastRequest: in,
+			}
+		}
+	case awstypes.ResourceCollectionTypeAwsTags:
+		// AWS_TAGS collection types should have a Tags array with 1 item,
+		// and that object should have a TagValues array with at least 1 item
+		if len(out.ResourceCollection.Tags) == 0 ||
+			len(out.ResourceCollection.Tags) == 1 && len(out.ResourceCollection.Tags[0].TagValues) == 0 {
+			return nil, &retry.NotFoundError{
+				LastRequest: in,
+			}
+		}
+	}
+
+	return out.ResourceCollection, nil
+}

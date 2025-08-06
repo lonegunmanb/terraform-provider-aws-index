@@ -1,0 +1,102 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenGRPCRoute(grpcRoute *awstypes.GrpcRoute) []any {
+	if grpcRoute == nil {
+		return []any{}
+	}
+
+	mGrpcRoute := map[string]any{}
+
+	if action := grpcRoute.Action; action != nil {
+		if weightedTargets := action.WeightedTargets; weightedTargets != nil {
+			vWeightedTargets := []any{}
+
+			for _, weightedTarget := range weightedTargets {
+				mWeightedTarget := map[string]any{
+					"virtual_node":   aws.ToString(weightedTarget.VirtualNode),
+					names.AttrWeight: weightedTarget.Weight,
+				}
+
+				if v := aws.ToInt32(weightedTarget.Port); v != 0 {
+					mWeightedTarget[names.AttrPort] = v
+				}
+
+				vWeightedTargets = append(vWeightedTargets, mWeightedTarget)
+			}
+
+			mGrpcRoute[names.AttrAction] = []any{
+				map[string]any{
+					"weighted_target": vWeightedTargets,
+				},
+			}
+		}
+	}
+
+	if grpcRouteMatch := grpcRoute.Match; grpcRouteMatch != nil {
+		vGrpcRouteMetadatas := []any{}
+
+		for _, grpcRouteMetadata := range grpcRouteMatch.Metadata {
+			mGrpcRouteMetadata := map[string]any{
+				"invert":       aws.ToBool(grpcRouteMetadata.Invert),
+				names.AttrName: aws.ToString(grpcRouteMetadata.Name),
+			}
+
+			if match := grpcRouteMetadata.Match; match != nil {
+				mMatch := map[string]any{}
+
+				switch v := match.(type) {
+				case *awstypes.GrpcRouteMetadataMatchMethodMemberExact:
+					mMatch["exact"] = v.Value
+				case *awstypes.GrpcRouteMetadataMatchMethodMemberPrefix:
+					mMatch[names.AttrPrefix] = v.Value
+				case *awstypes.GrpcRouteMetadataMatchMethodMemberRegex:
+					mMatch["regex"] = v.Value
+				case *awstypes.GrpcRouteMetadataMatchMethodMemberSuffix:
+					mMatch["suffix"] = v.Value
+				case *awstypes.GrpcRouteMetadataMatchMethodMemberRange:
+					mRange := map[string]any{
+						"end":   aws.ToInt64(v.Value.End),
+						"start": aws.ToInt64(v.Value.Start),
+					}
+
+					mMatch["range"] = []any{mRange}
+				}
+
+				mGrpcRouteMetadata["match"] = []any{mMatch}
+			}
+
+			vGrpcRouteMetadatas = append(vGrpcRouteMetadatas, mGrpcRouteMetadata)
+		}
+
+		mGrpcRoute["match"] = []any{
+			map[string]any{
+				"metadata":            vGrpcRouteMetadatas,
+				"method_name":         aws.ToString(grpcRouteMatch.MethodName),
+				names.AttrPort:        aws.ToInt32(grpcRouteMatch.Port),
+				names.AttrServiceName: aws.ToString(grpcRouteMatch.ServiceName),
+			},
+		}
+	}
+
+	if grpcRetryPolicy := grpcRoute.RetryPolicy; grpcRetryPolicy != nil {
+		mGrpcRetryPolicy := map[string]any{
+			"grpc_retry_events": grpcRetryPolicy.GrpcRetryEvents,
+			"http_retry_events": grpcRetryPolicy.HttpRetryEvents,
+			"max_retries":       aws.ToInt64(grpcRetryPolicy.MaxRetries),
+			"per_retry_timeout": flattenDuration(grpcRetryPolicy.PerRetryTimeout),
+			"tcp_retry_events":  grpcRetryPolicy.TcpRetryEvents,
+		}
+
+		mGrpcRoute["retry_policy"] = []any{mGrpcRetryPolicy}
+	}
+
+	mGrpcRoute[names.AttrTimeout] = flattenGRPCTimeout(grpcRoute.Timeout)
+
+	return []any{mGrpcRoute}
+}

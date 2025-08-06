@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appsync
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appsync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataSourceUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppSyncClient(ctx)
+	region := meta.(*conns.AWSClient).Region(ctx)
+
+	apiID, name, err := dataSourceParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &appsync.UpdateDataSourceInput{
+		ApiId: aws.String(apiID),
+		Name:  aws.String(name),
+		Type:  awstypes.DataSourceType(d.Get(names.AttrType).(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("dynamodb_config"); ok {
+		input.DynamodbConfig = expandDynamoDBDataSourceConfig(v.([]any), region)
+	}
+
+	if v, ok := d.GetOk("elasticsearch_config"); ok {
+		input.ElasticsearchConfig = expandElasticsearchDataSourceConfig(v.([]any), region)
+	}
+
+	if v, ok := d.GetOk("http_config"); ok {
+		input.HttpConfig = expandHTTPDataSourceConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("lambda_config"); ok {
+		input.LambdaConfig = expandLambdaDataSourceConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("opensearchservice_config"); ok {
+		input.OpenSearchServiceConfig = expandOpenSearchServiceDataSourceConfig(v.([]any), region)
+	}
+
+	if v, ok := d.GetOk("relational_database_config"); ok {
+		input.RelationalDatabaseConfig = expandRelationalDatabaseDataSourceConfig(v.([]any), region)
+	}
+
+	if v, ok := d.GetOk(names.AttrServiceRoleARN); ok {
+		input.ServiceRoleArn = aws.String(v.(string))
+	}
+
+	_, err = conn.UpdateDataSource(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Appsync Data Source (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDataSourceRead(ctx, d, meta)...)
+}

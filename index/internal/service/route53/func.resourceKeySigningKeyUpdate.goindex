@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceKeySigningKeyUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), keySigningKeyResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	hostedZoneID, name := parts[0], parts[1]
+
+	if d.HasChange(names.AttrStatus) {
+		var changeInfo *awstypes.ChangeInfo
+		status := d.Get(names.AttrStatus).(string)
+
+		if status == keySigningKeyStatusActive {
+			input := &route53.ActivateKeySigningKeyInput{
+				HostedZoneId: aws.String(hostedZoneID),
+				Name:         aws.String(name),
+			}
+
+			output, err := conn.ActivateKeySigningKey(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "activating Route 53 Key Signing Key (%s): %s", d.Id(), err)
+			}
+
+			changeInfo = output.ChangeInfo
+		} else {
+			input := &route53.DeactivateKeySigningKeyInput{
+				HostedZoneId: aws.String(hostedZoneID),
+				Name:         aws.String(name),
+			}
+
+			output, err := conn.DeactivateKeySigningKey(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "deactivating Route 53 Key Signing Key (%s): %s", d.Id(), err)
+			}
+
+			changeInfo = output.ChangeInfo
+		}
+
+		if changeInfo != nil {
+			if _, err := waitChangeInsync(ctx, conn, aws.ToString(changeInfo.Id), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Route 53 Key Signing Key (%s) synchronize: %s", d.Id(), err)
+			}
+		}
+
+		if _, err := waitKeySigningKeyStatusUpdated(ctx, conn, hostedZoneID, name, status); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Route 53 Key Signing Key (%s) status update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceKeySigningKeyRead(ctx, d, meta)...)
+}

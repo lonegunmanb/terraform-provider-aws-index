@@ -1,0 +1,268 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	if d.HasChangesExcept("aqua_configuration_status", names.AttrAvailabilityZone, "iam_roles", "multi_az", names.AttrTags, names.AttrTagsAll, "skip_final_snapshot") {
+		input := &redshift.ModifyClusterInput{
+			ClusterIdentifier: aws.String(d.Id()),
+		}
+
+		if d.HasChange("allow_version_upgrade") {
+			input.AllowVersionUpgrade = aws.Bool(d.Get("allow_version_upgrade").(bool))
+		}
+
+		if d.HasChange("automated_snapshot_retention_period") {
+			input.AutomatedSnapshotRetentionPeriod = aws.Int32(int32(d.Get("automated_snapshot_retention_period").(int)))
+		}
+
+		if d.HasChange("availability_zone_relocation_enabled") {
+			input.AvailabilityZoneRelocation = aws.Bool(d.Get("availability_zone_relocation_enabled").(bool))
+		}
+
+		if d.HasChange("cluster_parameter_group_name") {
+			input.ClusterParameterGroupName = aws.String(d.Get("cluster_parameter_group_name").(string))
+		}
+
+		if d.HasChange("maintenance_track_name") {
+			input.MaintenanceTrackName = aws.String(d.Get("maintenance_track_name").(string))
+		}
+
+		if d.HasChange("manual_snapshot_retention_period") {
+			input.ManualSnapshotRetentionPeriod = aws.Int32(int32(d.Get("manual_snapshot_retention_period").(int)))
+		}
+
+		// If the cluster type, node type, or number of nodes changed, then the AWS API expects all three
+		// items to be sent over.
+		if d.HasChanges("cluster_type", "node_type", "number_of_nodes") {
+			input.NodeType = aws.String(d.Get("node_type").(string))
+
+			if v := d.Get("number_of_nodes").(int); v > 1 {
+				input.ClusterType = aws.String(clusterTypeMultiNode)
+				input.NumberOfNodes = aws.Int32(int32(d.Get("number_of_nodes").(int)))
+			} else {
+				input.ClusterType = aws.String(clusterTypeSingleNode)
+			}
+		}
+
+		if d.HasChange("cluster_version") {
+			input.ClusterVersion = aws.String(d.Get("cluster_version").(string))
+		}
+
+		var isEncrypted bool
+		v := d.Get(names.AttrEncrypted)
+		if v, null, _ := nullable.Bool(v.(string)).ValueBool(); !null {
+			isEncrypted = v
+		}
+
+		if d.HasChange(names.AttrEncrypted) {
+			input.Encrypted = aws.Bool(isEncrypted)
+		}
+
+		if d.HasChange("enhanced_vpc_routing") {
+			input.EnhancedVpcRouting = aws.Bool(d.Get("enhanced_vpc_routing").(bool))
+		}
+
+		if isEncrypted && d.HasChange(names.AttrKMSKeyID) {
+			input.KmsKeyId = aws.String(d.Get(names.AttrKMSKeyID).(string))
+		}
+
+		if d.HasChange("master_password") {
+			input.MasterUserPassword = aws.String(d.Get("master_password").(string))
+		}
+
+		if d.HasChange("master_password_wo_version") {
+			masterPasswordWO, di := flex.GetWriteOnlyStringValue(d, cty.GetAttrPath("master_password_wo"))
+			diags = append(diags, di...)
+			if diags.HasError() {
+				return diags
+			}
+
+			if masterPasswordWO != "" {
+				input.MasterUserPassword = aws.String(masterPasswordWO)
+			}
+		}
+
+		if d.HasChange("master_password_secret_kms_key_id") {
+			input.MasterPasswordSecretKmsKeyId = aws.String(d.Get("master_password_secret_kms_key_id").(string))
+		}
+
+		if d.HasChange("manage_master_password") {
+			input.ManageMasterPassword = aws.Bool(d.Get("manage_master_password").(bool))
+		}
+
+		if d.HasChange(names.AttrPreferredMaintenanceWindow) {
+			input.PreferredMaintenanceWindow = aws.String(d.Get(names.AttrPreferredMaintenanceWindow).(string))
+		}
+
+		if d.HasChange(names.AttrPubliclyAccessible) {
+			input.PubliclyAccessible = aws.Bool(d.Get(names.AttrPubliclyAccessible).(bool))
+		}
+
+		if d.HasChange(names.AttrVPCSecurityGroupIDs) {
+			input.VpcSecurityGroupIds = flex.ExpandStringValueSet(d.Get(names.AttrVPCSecurityGroupIDs).(*schema.Set))
+		}
+
+		_, err := conn.ModifyCluster(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "modifying Redshift Cluster (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Redshift Cluster (%s) update: %s", d.Id(), err)
+		}
+
+		if _, err := waitClusterRelocationStatusResolved(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Redshift Cluster (%s) Availability Zone Relocation Status resolution: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChanges("default_iam_role_arn", "iam_roles") {
+		o, n := d.GetChange("iam_roles")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+		add, del := ns.Difference(os), os.Difference(ns)
+
+		input := &redshift.ModifyClusterIamRolesInput{
+			AddIamRoles:       flex.ExpandStringValueSet(add),
+			ClusterIdentifier: aws.String(d.Id()),
+			RemoveIamRoles:    flex.ExpandStringValueSet(del),
+			DefaultIamRoleArn: aws.String(d.Get("default_iam_role_arn").(string)),
+		}
+
+		_, err := conn.ModifyClusterIamRoles(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "modifying Redshift Cluster (%s) IAM roles: %s", d.Id(), err)
+		}
+
+		if _, err := waitClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Redshift Cluster (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("aqua_configuration_status") {
+		input := &redshift.ModifyAquaConfigurationInput{
+			AquaConfigurationStatus: awstypes.AquaConfigurationStatus(d.Get("aqua_configuration_status").(string)),
+			ClusterIdentifier:       aws.String(d.Id()),
+		}
+
+		_, err := conn.ModifyAquaConfiguration(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "modifying Redshift Cluster (%s) Aqua Configuration: %s", d.Id(), err)
+		}
+
+		if d.Get(names.AttrApplyImmediately).(bool) {
+			input := &redshift.RebootClusterInput{
+				ClusterIdentifier: aws.String(d.Id()),
+			}
+
+			_, err := tfresource.RetryWhenIsA[*awstypes.InvalidClusterStateFault](ctx, clusterInvalidClusterStateFaultTimeout,
+				func() (any, error) {
+					return conn.RebootCluster(ctx, input)
+				})
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "rebooting Redshift Cluster (%s): %s", d.Id(), err)
+			}
+
+			if _, err := waitClusterRebooted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Redshift Cluster (%s) reboot: %s", d.Id(), err)
+			}
+
+			if _, err := waitClusterAquaApplied(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Redshift Cluster (%s) Aqua Configuration update: %s", d.Id(), err)
+			}
+		}
+	}
+
+	// Availability Zone cannot be changed at the same time as other settings
+	if d.HasChange(names.AttrAvailabilityZone) {
+		input := &redshift.ModifyClusterInput{
+			AvailabilityZone:  aws.String(d.Get(names.AttrAvailabilityZone).(string)),
+			ClusterIdentifier: aws.String(d.Id()),
+		}
+
+		_, err := conn.ModifyCluster(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "relocating Redshift Cluster (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Redshift Cluster (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("multi_az") {
+		azRelocationEnabled, multiAZ := d.Get("availability_zone_relocation_enabled").(bool), d.Get("multi_az").(bool)
+		input := &redshift.ModifyClusterInput{
+			ClusterIdentifier: aws.String(d.Id()),
+			MultiAZ:           aws.Bool(multiAZ),
+		}
+
+		_, err := conn.ModifyCluster(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "modifying Redshift Cluster (%s) multi-AZ: %s", d.Id(), err)
+		}
+
+		if _, err = waitClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Redshift Cluster (%s) update: %s", d.Id(), err)
+		}
+
+		if !multiAZ {
+			// Disabling MultiAZ, Redshift automatically enables AZ Relocation.
+			// For that reason is necessary to align it with the current configuration.
+			input = &redshift.ModifyClusterInput{
+				AvailabilityZoneRelocation: aws.Bool(azRelocationEnabled),
+				ClusterIdentifier:          aws.String(d.Id()),
+			}
+
+			_, err = conn.ModifyCluster(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "modifying Redshift Cluster (%s) AZ relocation: %s", d.Id(), err)
+			}
+
+			if _, err = waitClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Redshift Cluster (%s) update: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceClusterRead(ctx, d, meta)...)
+}

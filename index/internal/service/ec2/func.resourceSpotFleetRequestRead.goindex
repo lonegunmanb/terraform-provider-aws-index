@@ -1,0 +1,119 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSpotFleetRequestRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	output, err := findSpotFleetRequestByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EC2 Spot Fleet Request %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Spot Fleet Request (%s): %s", d.Id(), err)
+	}
+
+	d.Set("spot_request_state", output.SpotFleetRequestState)
+
+	config := output.SpotFleetRequestConfig
+
+	d.Set("allocation_strategy", config.AllocationStrategy)
+
+	// The default of this argument does not get set in the create operation
+	// Therefore if the API does not return a value, being a *int32 type it will result in 0 and always create a diff.
+	if config.InstancePoolsToUseCount != nil { // nosemgrep:ci.helper-schema-ResourceData-Set-extraneous-nil-check
+		d.Set("instance_pools_to_use_count", config.InstancePoolsToUseCount)
+	}
+
+	d.Set("client_token", config.ClientToken)
+	d.Set("context", config.Context)
+	d.Set("excess_capacity_termination_policy", config.ExcessCapacityTerminationPolicy)
+	d.Set("iam_fleet_role", config.IamFleetRole)
+	d.Set("spot_maintenance_strategies", flattenSpotMaintenanceStrategies(config.SpotMaintenanceStrategies))
+	d.Set("spot_price", config.SpotPrice)
+	d.Set("target_capacity", config.TargetCapacity)
+	d.Set("target_capacity_unit_type", config.TargetCapacityUnitType)
+	d.Set("terminate_instances_with_expiration", config.TerminateInstancesWithExpiration)
+	if config.ValidFrom != nil {
+		d.Set("valid_from", aws.ToTime(config.ValidFrom).Format(time.RFC3339))
+	}
+	if config.ValidUntil != nil {
+		d.Set("valid_until", aws.ToTime(config.ValidUntil).Format(time.RFC3339))
+	}
+
+	launchSpec, err := launchSpecsToSet(ctx, conn, config.LaunchSpecifications)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Spot Fleet Request (%s) launch specifications: %s", d.Id(), err)
+	}
+
+	d.Set("replace_unhealthy_instances", config.ReplaceUnhealthyInstances)
+	d.Set("instance_interruption_behaviour", config.InstanceInterruptionBehavior)
+	d.Set("fleet_type", config.Type)
+	d.Set("launch_specification", launchSpec)
+
+	setTagsOut(ctx, output.Tags)
+
+	if err := d.Set("launch_template_config", flattenLaunchTemplateConfigs(config.LaunchTemplateConfigs)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting launch_template_config: %s", err)
+	}
+
+	d.Set("on_demand_target_capacity", config.OnDemandTargetCapacity)
+	d.Set("on_demand_allocation_strategy", config.OnDemandAllocationStrategy)
+	d.Set("on_demand_max_total_price", config.OnDemandMaxTotalPrice)
+
+	if config.LoadBalancersConfig != nil {
+		lbConf := config.LoadBalancersConfig
+
+		if lbConf.ClassicLoadBalancersConfig != nil {
+			flatLbs := make([]*string, 0)
+			for _, lb := range lbConf.ClassicLoadBalancersConfig.ClassicLoadBalancers {
+				flatLbs = append(flatLbs, lb.Name)
+			}
+			if err := d.Set("load_balancers", flex.FlattenStringSet(flatLbs)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "setting load_balancers: %s", err)
+			}
+		}
+
+		if lbConf.TargetGroupsConfig != nil {
+			flatTgs := make([]*string, 0)
+			for _, tg := range lbConf.TargetGroupsConfig.TargetGroups {
+				flatTgs = append(flatTgs, tg.Arn)
+			}
+			if err := d.Set("target_group_arns", flex.FlattenStringSet(flatTgs)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "setting target_group_arns: %s", err)
+			}
+		}
+	}
+
+	return diags
+}

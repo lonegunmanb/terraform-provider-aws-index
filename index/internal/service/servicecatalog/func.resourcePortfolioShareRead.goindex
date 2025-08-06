@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePortfolioShareRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	portfolioID, shareType, principalID, err := portfolioShareParseResourceID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "could not parse ID (%s): %s", d.Id(), err)
+	}
+
+	waitForAcceptance := false
+	if v, ok := d.GetOk("wait_for_acceptance"); ok {
+		waitForAcceptance = v.(bool)
+	}
+
+	output, err := waitPortfolioShareReady(ctx, conn, portfolioID, shareType, principalID, waitForAcceptance, d.Timeout(schema.TimeoutRead))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Service Catalog Portfolio Share (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "readingService Catalog Portfolio Share (%s): %s", d.Id(), err)
+	}
+
+	d.Set("accepted", output.Accepted)
+	d.Set("portfolio_id", portfolioID)
+	d.Set("principal_id", output.PrincipalId)
+	d.Set("share_principals", output.SharePrincipals)
+	d.Set("share_tag_options", output.ShareTagOptions)
+	d.Set(names.AttrType, output.Type)
+	d.Set("wait_for_acceptance", waitForAcceptance)
+
+	return diags
+}

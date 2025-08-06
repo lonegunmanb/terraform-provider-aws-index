@@ -1,0 +1,137 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/auditmanager
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/auditmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/auditmanager/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *assessmentResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN: framework.ARNAttributeComputedOnly(),
+			names.AttrDescription: schema.StringAttribute{
+				Optional: true,
+			},
+			"framework_id": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			names.AttrID: framework.IDAttribute(),
+			names.AttrName: schema.StringAttribute{
+				Required: true,
+			},
+			// The roles attribute is split into "roles" and "roles_all" to account for roles
+			// that are given access to assessments by default. It isn't possible for this attribute
+			// to be both Required (CreateAssessment and UpdateAssessment both require non-empty
+			// values) and Computed (capturing roles with access by default and returned in
+			// the response output). "roles" stores the items specifically added by the practitioner,
+			// while "roles_all" will track everything with access to the assessment.
+			//
+			"roles_all": framework.ResourceComputedListOfObjectsAttribute[roleModel](ctx, listplanmodifier.UseStateForUnknown()),
+			names.AttrStatus: schema.StringAttribute{
+				Computed: true,
+			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
+		},
+		Blocks: map[string]schema.Block{
+			"assessment_reports_destination": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[assessmentReportsDestinationModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrDestination: schema.StringAttribute{
+							Required: true,
+						},
+						"destination_type": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.AssessmentReportDestinationType](),
+							Required:   true,
+						},
+					},
+				},
+			},
+			"roles": schema.SetNestedBlock{
+				CustomType: fwtypes.NewSetNestedObjectTypeOf[roleModel](ctx),
+				Validators: []validator.Set{
+					setvalidator.IsRequired(),
+					setvalidator.SizeAtLeast(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrRoleARN: schema.StringAttribute{
+							CustomType: fwtypes.ARNType,
+							Required:   true,
+						},
+						"role_type": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.RoleType](),
+							Required:   true,
+						},
+					},
+				},
+			},
+			names.AttrScope: schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[scopeModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"aws_accounts": schema.SetNestedBlock{
+							CustomType: fwtypes.NewSetNestedObjectTypeOf[awsAccountModel](ctx),
+							Validators: []validator.Set{
+								setvalidator.SizeAtLeast(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrID: schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+						"aws_services": schema.SetNestedBlock{
+							CustomType: fwtypes.NewSetNestedObjectTypeOf[awsServiceModel](ctx),
+							Validators: []validator.Set{
+								setvalidator.SizeAtLeast(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrServiceName: schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

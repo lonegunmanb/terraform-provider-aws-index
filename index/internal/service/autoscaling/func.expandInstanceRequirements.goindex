@@ -1,0 +1,142 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elasticloadbalancingv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandInstanceRequirements(tfMap map[string]any) *awstypes.InstanceRequirements {
+	if tfMap == nil {
+		return nil
+	}
+
+	apiObject := &awstypes.InstanceRequirements{}
+
+	if v, ok := tfMap["accelerator_count"].([]any); ok && len(v) > 0 {
+		apiObject.AcceleratorCount = expandAcceleratorCountRequest(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["accelerator_manufacturers"].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.AcceleratorManufacturers = flex.ExpandStringyValueSet[awstypes.AcceleratorManufacturer](v)
+	}
+
+	if v, ok := tfMap["accelerator_names"].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.AcceleratorNames = flex.ExpandStringyValueSet[awstypes.AcceleratorName](v)
+	}
+
+	if v, ok := tfMap["accelerator_total_memory_mib"].([]any); ok && len(v) > 0 {
+		apiObject.AcceleratorTotalMemoryMiB = expandAcceleratorTotalMemoryMiBRequest(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["accelerator_types"].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.AcceleratorTypes = flex.ExpandStringyValueSet[awstypes.AcceleratorType](v)
+	}
+
+	if v, ok := tfMap["allowed_instance_types"].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.AllowedInstanceTypes = flex.ExpandStringValueSet(v)
+	}
+
+	if v, ok := tfMap["bare_metal"].(string); ok && v != "" {
+		apiObject.BareMetal = awstypes.BareMetal(v)
+	}
+
+	if v, ok := tfMap["baseline_ebs_bandwidth_mbps"].([]any); ok && len(v) > 0 {
+		apiObject.BaselineEbsBandwidthMbps = expandBaselineEBSBandwidthMbpsRequest(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["burstable_performance"].(string); ok && v != "" {
+		apiObject.BurstablePerformance = awstypes.BurstablePerformance(v)
+	}
+
+	if v, ok := tfMap["cpu_manufacturers"].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.CpuManufacturers = flex.ExpandStringyValueSet[awstypes.CpuManufacturer](v)
+	}
+
+	if v, ok := tfMap["excluded_instance_types"].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.ExcludedInstanceTypes = flex.ExpandStringValueSet(v)
+	}
+
+	if v, ok := tfMap["instance_generations"].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.InstanceGenerations = flex.ExpandStringyValueSet[awstypes.InstanceGeneration](v)
+	}
+
+	if v, ok := tfMap["local_storage"].(string); ok && v != "" {
+		apiObject.LocalStorage = awstypes.LocalStorage(v)
+	}
+
+	if v, ok := tfMap["local_storage_types"].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.LocalStorageTypes = flex.ExpandStringyValueSet[awstypes.LocalStorageType](v)
+	}
+
+	if v, ok := tfMap["max_spot_price_as_percentage_of_optimal_on_demand_price"].(int); ok && v != 0 {
+		apiObject.MaxSpotPriceAsPercentageOfOptimalOnDemandPrice = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["memory_gib_per_vcpu"].([]any); ok && len(v) > 0 {
+		apiObject.MemoryGiBPerVCpu = expandMemoryGiBPerVCPURequest(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["memory_mib"].([]any); ok && len(v) > 0 {
+		apiObject.MemoryMiB = expandMemoryMiBRequest(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["network_bandwidth_gbps"].([]any); ok && len(v) > 0 {
+		apiObject.NetworkBandwidthGbps = expandNetworkBandwidthGbpsRequest(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["network_interface_count"].([]any); ok && len(v) > 0 {
+		apiObject.NetworkInterfaceCount = expandNetworkInterfaceCountRequest(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["on_demand_max_price_percentage_over_lowest_price"].(int); ok && v != 0 {
+		apiObject.OnDemandMaxPricePercentageOverLowestPrice = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["require_hibernate_support"].(bool); ok && v {
+		apiObject.RequireHibernateSupport = aws.Bool(v)
+	}
+
+	if v, ok := tfMap["spot_max_price_percentage_over_lowest_price"].(int); ok && v != 0 {
+		apiObject.SpotMaxPricePercentageOverLowestPrice = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["total_local_storage_gb"].([]any); ok && len(v) > 0 {
+		apiObject.TotalLocalStorageGB = expandTotalLocalStorageGBRequest(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["vcpu_count"].([]any); ok && len(v) > 0 {
+		apiObject.VCpuCount = expandVCPUCountRequest(v[0].(map[string]any))
+	}
+
+	return apiObject
+}

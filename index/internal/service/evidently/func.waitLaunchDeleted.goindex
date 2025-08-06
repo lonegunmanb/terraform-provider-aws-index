@@ -1,0 +1,33 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/evidently
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/evidently"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/evidently/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitLaunchDeleted(ctx context.Context, conn *evidently.Client, id string, timeout time.Duration) (*awstypes.Launch, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.LaunchStatusCreated, awstypes.LaunchStatusCompleted, awstypes.LaunchStatusRunning, awstypes.LaunchStatusCancelled, awstypes.LaunchStatusUpdating),
+		Target:  []string{},
+		Refresh: statusLaunch(ctx, conn, id),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.Launch); ok {
+		if v := aws.ToString(output.StatusReason); v != "" {
+			tfresource.SetLastError(err, errors.New(v))
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}

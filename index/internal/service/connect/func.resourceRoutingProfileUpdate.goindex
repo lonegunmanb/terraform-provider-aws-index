@@ -1,0 +1,103 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRoutingProfileUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID, routingProfileID, err := routingProfileParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	// RoutingProfile has 4 update APIs
+	// UpdateRoutingProfileConcurrency: Updates the channels that agents can handle in the Contact Control Panel (CCP) for a routing profile.
+	// UpdateRoutingProfileDefaultOutboundQueue: Updates the default outbound queue of a routing profile.
+	// UpdateRoutingProfileName: Updates the name and description of a routing profile.
+	// UpdateRoutingProfileQueues: Updates the properties associated with a set of queues for a routing profile.
+
+	if d.HasChange("media_concurrencies") {
+		// updates to concurrency
+		input := &connect.UpdateRoutingProfileConcurrencyInput{
+			InstanceId:         aws.String(instanceID),
+			MediaConcurrencies: expandMediaConcurrencies(d.Get("media_concurrencies").(*schema.Set).List()),
+			RoutingProfileId:   aws.String(routingProfileID),
+		}
+
+		_, err = conn.UpdateRoutingProfileConcurrency(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Routing Profile (%s) Concurrency: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("default_outbound_queue_id") {
+		// updates to default outbound queue id
+		input := &connect.UpdateRoutingProfileDefaultOutboundQueueInput{
+			DefaultOutboundQueueId: aws.String(d.Get("default_outbound_queue_id").(string)),
+			InstanceId:             aws.String(instanceID),
+			RoutingProfileId:       aws.String(routingProfileID),
+		}
+
+		_, err = conn.UpdateRoutingProfileDefaultOutboundQueue(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Routing Profile (%s) DefaultOutboundQueue: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChanges(names.AttrName, names.AttrDescription) {
+		// updates to name and/or description
+		input := &connect.UpdateRoutingProfileNameInput{
+			Description:      aws.String(d.Get(names.AttrDescription).(string)),
+			InstanceId:       aws.String(instanceID),
+			Name:             aws.String(d.Get(names.AttrName).(string)),
+			RoutingProfileId: aws.String(routingProfileID),
+		}
+
+		_, err = conn.UpdateRoutingProfileName(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Routing Profile (%s) Name: %s", d.Id(), err)
+		}
+	}
+
+	// updates to queue configs
+	// There are 3 APIs for this
+	// AssociateRoutingProfileQueues - Associates a set of queues with a routing profile.
+	// DisassociateRoutingProfileQueues - Disassociates a set of queues from a routing profile.
+	// UpdateRoutingProfileQueues - Updates the properties associated with a set of queues for a routing profile.
+	// since the update only updates the existing queues that are associated, we will instead disassociate and associate
+	// the respective queues based on the diff detected
+	if d.HasChange("queue_configs") {
+		o, n := d.GetChange("queue_configs")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+		add, del := expandRoutingProfileQueueConfigs(ns.Difference(os).List()), expandRoutingProfileQueueConfigs(os.Difference(ns).List())
+
+		if err := updateRoutingProfileQueueAssociations(ctx, conn, instanceID, routingProfileID, add, del); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceRoutingProfileRead(ctx, d, meta)...)
+}

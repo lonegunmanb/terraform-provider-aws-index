@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+	"fmt"
+	"unique"
+
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/interceptors"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r tagsResourceInterceptor) read(ctx context.Context, opts interceptorOptions[resource.ReadRequest, resource.ReadResponse]) diag.Diagnostics {
+	c := opts.c
+	var diags diag.Diagnostics
+
+	if !r.Enabled() {
+		return diags
+	}
+
+	sp, serviceName, resourceName, tagsInContext, ok := interceptors.InfoFromContext(ctx, c)
+	if !ok {
+		return diags
+	}
+
+	switch response, when := opts.response, opts.when; when {
+	case After:
+		// Will occur on a refresh when the resource does not exist in AWS and needs to be recreated, e.g. "_disappears" tests.
+		if response.State.Raw.IsNull() {
+			return diags
+		}
+
+		// If the R handler didn't set tags, try and read them from the service API.
+		if tagsInContext.TagsOut.IsNone() {
+			// Some old resources may not have the required attribute set after Read:
+			// https://github.com/hashicorp/terraform-provider-aws/issues/31180
+			if identifier := r.GetIdentifierFramework(ctx, response.State); identifier != "" {
+				if err := r.ListTags(ctx, sp, c, identifier); err != nil {
+					diags.AddError(fmt.Sprintf("listing tags for %s %s (%s)", serviceName, resourceName, identifier), err.Error())
+
+					return diags
+				}
+			}
+		}
+
+		apiTags := tagsInContext.TagsOut.UnwrapOrDefault()
+
+		// AWS APIs often return empty lists of tags when none have been configured.
+		var stateTags tftags.Map
+		response.State.GetAttribute(ctx, path.Root(names.AttrTags), &stateTags)
+		// Remove any provider configured ignore_tags and system tags from those returned from the service API.
+		// The resource's configured tags do not include any provider configured default_tags.
+		if v := apiTags.IgnoreSystem(sp.ServicePackageName()).IgnoreConfig(c.IgnoreTagsConfig(ctx)).ResolveDuplicatesFramework(ctx, c.DefaultTagsConfig(ctx), c.IgnoreTagsConfig(ctx), response, &diags).Map(); len(v) > 0 {
+			stateTags = tftags.NewMapFromMapValue(fwflex.FlattenFrameworkStringValueMapLegacy(ctx, v))
+		}
+		diags.Append(response.State.SetAttribute(ctx, path.Root(names.AttrTags), &stateTags)...)
+		if diags.HasError() {
+			return diags
+		}
+
+		// Computed tags_all do.
+		stateTagsAll := fwflex.FlattenFrameworkStringValueMapLegacy(ctx, apiTags.IgnoreSystem(sp.ServicePackageName()).IgnoreConfig(c.IgnoreTagsConfig(ctx)).Map())
+		diags.Append(response.State.SetAttribute(ctx, path.Root(names.AttrTagsAll), tftags.NewMapFromMapValue(stateTagsAll))...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+
+	return diags
+}

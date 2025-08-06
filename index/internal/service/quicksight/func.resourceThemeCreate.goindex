@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceThemeCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID := meta.(*conns.AWSClient).AccountID(ctx)
+	if v, ok := d.GetOk(names.AttrAWSAccountID); ok {
+		awsAccountID = v.(string)
+	}
+	themeID := d.Get("theme_id").(string)
+	id := themeCreateResourceID(awsAccountID, themeID)
+	input := &quicksight.CreateThemeInput{
+		AwsAccountId: aws.String(awsAccountID),
+		BaseThemeId:  aws.String(d.Get("base_theme_id").(string)),
+		Name:         aws.String(d.Get(names.AttrName).(string)),
+		Tags:         getTagsIn(ctx),
+		ThemeId:      aws.String(themeID),
+	}
+
+	if v, ok := d.GetOk(names.AttrConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Configuration = quicksightschema.ExpandThemeConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrPermissions); ok && v.(*schema.Set).Len() != 0 {
+		input.Permissions = quicksightschema.ExpandResourcePermissions(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("version_description"); ok {
+		input.VersionDescription = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateTheme(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating QuickSight Theme (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitThemeCreated(ctx, conn, awsAccountID, themeID, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for QuickSight Theme (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceThemeRead(ctx, d, meta)...)
+}

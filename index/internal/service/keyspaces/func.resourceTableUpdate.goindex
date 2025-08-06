@@ -1,0 +1,195 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/keyspaces
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/keyspaces"
+	"github.com/aws/aws-sdk-go-v2/service/keyspaces/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTableUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KeyspacesClient(ctx)
+
+	keyspaceName, tableName, err := tableParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		// https://docs.aws.amazon.com/keyspaces/latest/APIReference/API_UpdateTable.html
+		// Note that you can only update one specific table setting per update operation.
+		if d.HasChange("capacity_specification") {
+			if v, ok := d.GetOk("capacity_specification"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input := &keyspaces.UpdateTableInput{
+					CapacitySpecification: expandCapacitySpecification(v.([]any)[0].(map[string]any)),
+					KeyspaceName:          aws.String(keyspaceName),
+					TableName:             aws.String(tableName),
+				}
+
+				_, err := conn.UpdateTable(ctx, input)
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "updating Keyspaces Table (%s) CapacitySpecification: %s", d.Id(), err)
+				}
+
+				if _, err := waitTableUpdated(ctx, conn, keyspaceName, tableName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendErrorf(diags, "waiting for Keyspaces Table (%s) CapacitySpecification update: %s", d.Id(), err)
+				}
+			}
+		}
+
+		if d.HasChange("client_side_timestamps") {
+			if v, ok := d.GetOk("client_side_timestamps"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input := &keyspaces.UpdateTableInput{
+					ClientSideTimestamps: expandClientSideTimestamps(v.([]any)[0].(map[string]any)),
+					KeyspaceName:         aws.String(keyspaceName),
+					TableName:            aws.String(tableName),
+				}
+
+				_, err := conn.UpdateTable(ctx, input)
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "updating Keyspaces Table (%s) ClientSideTimestamps: %s", d.Id(), err)
+				}
+
+				if _, err := waitTableUpdated(ctx, conn, keyspaceName, tableName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendErrorf(diags, "waiting for Keyspaces Table (%s) ClientSideTimestamps update: %s", d.Id(), err)
+				}
+			}
+		}
+
+		if d.HasChange("default_time_to_live") {
+			input := &keyspaces.UpdateTableInput{
+				DefaultTimeToLive: aws.Int32(int32(d.Get("default_time_to_live").(int))),
+				KeyspaceName:      aws.String(keyspaceName),
+				TableName:         aws.String(tableName),
+			}
+
+			_, err := conn.UpdateTable(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating Keyspaces Table (%s) DefaultTimeToLive: %s", d.Id(), err)
+			}
+
+			if _, err := waitTableUpdated(ctx, conn, keyspaceName, tableName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Keyspaces Table (%s) DefaultTimeToLive update: %s", d.Id(), err)
+			}
+		}
+
+		if d.HasChange("encryption_specification") {
+			if v, ok := d.GetOk("encryption_specification"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input := &keyspaces.UpdateTableInput{
+					EncryptionSpecification: expandEncryptionSpecification(v.([]any)[0].(map[string]any)),
+					KeyspaceName:            aws.String(keyspaceName),
+					TableName:               aws.String(tableName),
+				}
+
+				_, err := conn.UpdateTable(ctx, input)
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "updating Keyspaces Table (%s) EncryptionSpecification: %s", d.Id(), err)
+				}
+
+				if _, err := waitTableUpdated(ctx, conn, keyspaceName, tableName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendErrorf(diags, "waiting for Keyspaces Table (%s) EncryptionSpecification update: %s", d.Id(), err)
+				}
+			}
+		}
+
+		if d.HasChange("point_in_time_recovery") {
+			if v, ok := d.GetOk("point_in_time_recovery"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input := &keyspaces.UpdateTableInput{
+					KeyspaceName:        aws.String(keyspaceName),
+					PointInTimeRecovery: expandPointInTimeRecovery(v.([]any)[0].(map[string]any)),
+					TableName:           aws.String(tableName),
+				}
+
+				_, err := conn.UpdateTable(ctx, input)
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "updating Keyspaces Table (%s) PointInTimeRecovery: %s", d.Id(), err)
+				}
+
+				if _, err := waitTableUpdated(ctx, conn, keyspaceName, tableName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendErrorf(diags, "waiting for Keyspaces Table (%s) PointInTimeRecovery update: %s", d.Id(), err)
+				}
+			}
+		}
+
+		if d.HasChange("ttl") {
+			if v, ok := d.GetOk("ttl"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input := &keyspaces.UpdateTableInput{
+					KeyspaceName: aws.String(keyspaceName),
+					TableName:    aws.String(tableName),
+					Ttl:          expandTimeToLive(v.([]any)[0].(map[string]any)),
+				}
+
+				_, err := conn.UpdateTable(ctx, input)
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "updating Keyspaces Table (%s) Ttl: %s", d.Id(), err)
+				}
+
+				if _, err := waitTableUpdated(ctx, conn, keyspaceName, tableName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendErrorf(diags, "waiting for Keyspaces Table (%s) Ttl update: %s", d.Id(), err)
+				}
+			}
+		}
+
+		if d.HasChange("schema_definition") {
+			o, n := d.GetChange("schema_definition")
+			var os, ns *schema.Set
+
+			if v, ok := o.([]any); ok && len(v) > 0 && v[0] != nil {
+				if v, ok := v[0].(map[string]any)["column"].(*schema.Set); ok {
+					os = v
+				}
+			}
+			if v, ok := n.([]any); ok && len(v) > 0 && v[0] != nil {
+				if v, ok := v[0].(map[string]any)["column"].(*schema.Set); ok {
+					ns = v
+				}
+			}
+
+			if os != nil && ns != nil {
+				if add := ns.Difference(os); add.Len() > 0 {
+					input := &keyspaces.UpdateTableInput{
+						AddColumns:   expandColumnDefinitions(add.List()),
+						KeyspaceName: aws.String(keyspaceName),
+						TableName:    aws.String(tableName),
+					}
+
+					_, err := conn.UpdateTable(ctx, input)
+
+					if err != nil {
+						return sdkdiag.AppendErrorf(diags, "updating Keyspaces Table (%s) AddColumns: %s", d.Id(), err)
+					}
+
+					if _, err := waitTableUpdated(ctx, conn, keyspaceName, tableName, d.Timeout(schema.TimeoutUpdate)); err != nil {
+						return sdkdiag.AppendErrorf(diags, "waiting for Keyspaces Table (%s) AddColumns update: %s", d.Id(), err)
+					}
+				}
+			}
+		}
+	}
+
+	return append(diags, resourceTableRead(ctx, d, meta)...)
+}

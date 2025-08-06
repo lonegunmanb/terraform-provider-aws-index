@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"strconv"
+
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func upgradeLifecycleExpirationModelStateFromV0(ctx context.Context, old fwtypes.ListNestedObjectValueOf[lifecycleExpirationModelV0], diags *diag.Diagnostics) (result fwtypes.ListNestedObjectValueOf[lifecycleExpirationModel]) {
+	oldExpirations, d := old.ToSlice(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return result
+	}
+
+	newThings := make([]lifecycleExpirationModel, len(oldExpirations))
+	for i, oldExpiration := range oldExpirations {
+		newExpiration := lifecycleExpirationModel{
+			Date:                      migrateDate(ctx, oldExpiration.Date, diags),
+			Days:                      int64ToInt32(ctx, oldExpiration.Days),
+			ExpiredObjectDeleteMarker: oldExpiration.ExpiredObjectDeleteMarker,
+		}
+		if diags.HasError() {
+			return result
+		}
+
+		newThings[i] = newExpiration
+	}
+
+	result, d = fwtypes.NewListNestedObjectValueOfValueSlice(ctx, newThings)
+	diags.Append(d...)
+	if diags.HasError() {
+		return result
+	}
+
+	return result
+}

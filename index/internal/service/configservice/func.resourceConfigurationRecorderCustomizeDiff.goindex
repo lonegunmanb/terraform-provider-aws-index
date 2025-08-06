@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"errors"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfigurationRecorderCustomizeDiff(_ context.Context, diff *schema.ResourceDiff, v any) error {
+	if diff.Id() == "" { // New resource.
+		if v, ok := diff.GetOk("recording_group"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			tfMap := v.([]any)[0].(map[string]any)
+
+			if h, ok := tfMap["all_supported"]; ok {
+				if i, ok := tfMap["recording_strategy"]; ok && len(i.([]any)) > 0 && i.([]any)[0] != nil {
+					strategy := i.([]any)[0].(map[string]any)
+
+					if j, ok := strategy["use_only"].(string); ok {
+						if h.(bool) && j != string(types.RecordingStrategyTypeAllSupportedResourceTypes) {
+							return errors.New(` Invalid record group strategy  , all_supported must be set to true  `)
+						}
+
+						if k, ok := tfMap["exclusion_by_resource_types"]; ok && len(k.([]any)) > 0 && k.([]any)[0] != nil {
+							if h.(bool) {
+								return errors.New(` Invalid record group , all_supported must be set to false when exclusion_by_resource_types is set `)
+							}
+
+							if j != string(types.RecordingStrategyTypeExclusionByResourceTypes) {
+								return errors.New(` Invalid record group strategy ,  use only must be set to EXCLUSION_BY_RESOURCE_TYPES`)
+							}
+
+							if l, ok := tfMap["resource_types"]; ok {
+								resourceTypes := flex.ExpandStringSet(l.(*schema.Set))
+								if len(resourceTypes) > 0 {
+									return errors.New(` Invalid record group , resource_types must not be set when exclusion_by_resource_types is set `)
+								}
+							}
+						}
+
+						if l, ok := tfMap["resource_types"]; ok {
+							resourceTypes := flex.ExpandStringSet(l.(*schema.Set))
+							if len(resourceTypes) > 0 {
+								if h.(bool) {
+									return errors.New(` Invalid record group , all_supported must be set to false when resource_types is set `)
+								}
+
+								if j != string(types.RecordingStrategyTypeInclusionByResourceTypes) {
+									return errors.New(` Invalid record group strategy ,  use only must be set to INCLUSION_BY_RESOURCE_TYPES`)
+								}
+
+								if m, ok := tfMap["exclusion_by_resource_types"]; ok && len(m.([]any)) > 0 && i.([]any)[0] != nil {
+									return errors.New(` Invalid record group , exclusion_by_resource_types must not be set when resource_types is set `)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}

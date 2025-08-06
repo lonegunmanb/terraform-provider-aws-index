@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitChangeInsync(ctx context.Context, conn *route53.Client, id string, timeout time.Duration) (*awstypes.ChangeInfo, error) {
+	// Route53 is vulnerable to throttling so a longer delay and poll interval helps to avoid it.
+	const (
+		delay        = 15 * time.Second
+		minTimeout   = 5 * time.Second
+		pollInterval = 15 * time.Second
+	)
+	stateConf := &retry.StateChangeConf{
+		Pending:      enum.Slice(awstypes.ChangeStatusPending),
+		Target:       enum.Slice(awstypes.ChangeStatusInsync),
+		Refresh:      statusChange(ctx, conn, id),
+		Delay:        delay,
+		MinTimeout:   minTimeout,
+		PollInterval: pollInterval,
+		Timeout:      timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.ChangeInfo); ok {
+		return output, err
+	}
+
+	return nil, err
+}

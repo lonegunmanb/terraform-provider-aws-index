@@ -1,0 +1,205 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ses
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandReceiptRule(d *schema.ResourceData) *awstypes.ReceiptRule {
+	apiObject := &awstypes.ReceiptRule{
+		Name: aws.String(d.Get(names.AttrName).(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrEnabled); ok {
+		apiObject.Enabled = v.(bool)
+	}
+
+	if v, ok := d.GetOk("recipients"); ok {
+		apiObject.Recipients = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("scan_enabled"); ok {
+		apiObject.ScanEnabled = v.(bool)
+	}
+
+	if v, ok := d.GetOk("tls_policy"); ok {
+		apiObject.TlsPolicy = awstypes.TlsPolicy(v.(string))
+	}
+
+	actions := make(map[int]awstypes.ReceiptAction)
+
+	if v, ok := d.GetOk("add_header_action"); ok {
+		for _, element := range v.(*schema.Set).List() {
+			elem := element.(map[string]any)
+
+			actions[elem["position"].(int)] = awstypes.ReceiptAction{
+				AddHeaderAction: &awstypes.AddHeaderAction{
+					HeaderName:  aws.String(elem["header_name"].(string)),
+					HeaderValue: aws.String(elem["header_value"].(string)),
+				},
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("bounce_action"); ok {
+		for _, element := range v.(*schema.Set).List() {
+			elem := element.(map[string]any)
+
+			bounceAction := &awstypes.BounceAction{
+				Message:       aws.String(elem[names.AttrMessage].(string)),
+				Sender:        aws.String(elem["sender"].(string)),
+				SmtpReplyCode: aws.String(elem["smtp_reply_code"].(string)),
+			}
+
+			if elem[names.AttrStatusCode] != "" {
+				bounceAction.StatusCode = aws.String(elem[names.AttrStatusCode].(string))
+			}
+
+			if elem[names.AttrTopicARN] != "" {
+				bounceAction.TopicArn = aws.String(elem[names.AttrTopicARN].(string))
+			}
+
+			actions[elem["position"].(int)] = awstypes.ReceiptAction{
+				BounceAction: bounceAction,
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("lambda_action"); ok {
+		for _, element := range v.(*schema.Set).List() {
+			elem := element.(map[string]any)
+
+			lambdaAction := &awstypes.LambdaAction{
+				FunctionArn: aws.String(elem[names.AttrFunctionARN].(string)),
+			}
+
+			if elem["invocation_type"] != "" {
+				lambdaAction.InvocationType = awstypes.InvocationType(elem["invocation_type"].(string))
+			}
+
+			if elem[names.AttrTopicARN] != "" {
+				lambdaAction.TopicArn = aws.String(elem[names.AttrTopicARN].(string))
+			}
+
+			actions[elem["position"].(int)] = awstypes.ReceiptAction{
+				LambdaAction: lambdaAction,
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("s3_action"); ok {
+		for _, element := range v.(*schema.Set).List() {
+			elem := element.(map[string]any)
+
+			s3Action := &awstypes.S3Action{
+				BucketName: aws.String(elem[names.AttrBucketName].(string)),
+			}
+
+			if elem[names.AttrIAMRoleARN] != "" {
+				s3Action.IamRoleArn = aws.String(elem[names.AttrIAMRoleARN].(string))
+			}
+
+			if elem[names.AttrKMSKeyARN] != "" {
+				s3Action.KmsKeyArn = aws.String(elem[names.AttrKMSKeyARN].(string))
+			}
+
+			if elem["object_key_prefix"] != "" {
+				s3Action.ObjectKeyPrefix = aws.String(elem["object_key_prefix"].(string))
+			}
+
+			if elem[names.AttrTopicARN] != "" {
+				s3Action.TopicArn = aws.String(elem[names.AttrTopicARN].(string))
+			}
+
+			actions[elem["position"].(int)] = awstypes.ReceiptAction{
+				S3Action: s3Action,
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("sns_action"); ok {
+		for _, element := range v.(*schema.Set).List() {
+			elem := element.(map[string]any)
+
+			snsAction := &awstypes.SNSAction{
+				TopicArn: aws.String(elem[names.AttrTopicARN].(string)),
+				Encoding: awstypes.SNSActionEncoding(elem["encoding"].(string)),
+			}
+
+			actions[elem["position"].(int)] = awstypes.ReceiptAction{
+				SNSAction: snsAction,
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("stop_action"); ok {
+		for _, element := range v.(*schema.Set).List() {
+			elem := element.(map[string]any)
+
+			stopAction := &awstypes.StopAction{
+				Scope: awstypes.StopScope(elem[names.AttrScope].(string)),
+			}
+
+			if elem[names.AttrTopicARN] != "" {
+				stopAction.TopicArn = aws.String(elem[names.AttrTopicARN].(string))
+			}
+
+			actions[elem["position"].(int)] = awstypes.ReceiptAction{
+				StopAction: stopAction,
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("workmail_action"); ok {
+		for _, element := range v.(*schema.Set).List() {
+			elem := element.(map[string]any)
+
+			workmailAction := &awstypes.WorkmailAction{
+				OrganizationArn: aws.String(elem["organization_arn"].(string)),
+			}
+
+			if elem[names.AttrTopicARN] != "" {
+				workmailAction.TopicArn = aws.String(elem[names.AttrTopicARN].(string))
+			}
+
+			actions[elem["position"].(int)] = awstypes.ReceiptAction{
+				WorkmailAction: workmailAction,
+			}
+		}
+	}
+
+	var keys []int
+	for k := range actions {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	sortedActions := []awstypes.ReceiptAction{}
+	for _, k := range keys {
+		sortedActions = append(sortedActions, actions[k])
+	}
+
+	apiObject.Actions = sortedActions
+
+	return apiObject
+}

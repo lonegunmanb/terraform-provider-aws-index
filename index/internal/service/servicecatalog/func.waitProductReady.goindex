@@ -1,0 +1,32 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+)
+func waitProductReady(ctx context.Context, conn *servicecatalog.Client, acceptLanguage, productID string, timeout time.Duration) (*servicecatalog.DescribeProductAsAdminOutput, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending:                   enum.Slice(awstypes.StatusCreating, statusNotFound, statusUnavailable),
+		Target:                    enum.Slice(awstypes.StatusAvailable, statusCreated),
+		Refresh:                   statusProduct(ctx, conn, acceptLanguage, productID),
+		Timeout:                   timeout,
+		ContinuousTargetOccurence: continuousTargetOccurrence,
+		NotFoundChecks:            notFoundChecks,
+		MinTimeout:                minTimeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*servicecatalog.DescribeProductAsAdminOutput); ok {
+		return output, err
+	}
+
+	return nil, err
+}

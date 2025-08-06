@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceThingGroupMembershipCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	thingGroupName := d.Get("thing_group_name").(string)
+	thingName := d.Get("thing_name").(string)
+	input := &iot.AddThingToThingGroupInput{
+		ThingGroupName: aws.String(thingGroupName),
+		ThingName:      aws.String(thingName),
+	}
+
+	if v, ok := d.GetOk("override_dynamic_group"); ok {
+		input.OverrideDynamicGroups = v.(bool)
+	}
+
+	_, err := conn.AddThingToThingGroup(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "adding IoT Thing (%s) to IoT Thing Group (%s): %s", thingName, thingGroupName, err)
+	}
+
+	d.SetId(thingGroupMembershipCreateResourceID(thingGroupName, thingName))
+
+	return append(diags, resourceThingGroupMembershipRead(ctx, d, meta)...)
+}

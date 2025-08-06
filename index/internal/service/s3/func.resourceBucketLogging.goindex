@@ -1,0 +1,131 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketLogging() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceBucketLoggingCreate,
+		ReadWithoutTimeout:   resourceBucketLoggingRead,
+		UpdateWithoutTimeout: resourceBucketLoggingUpdate,
+		DeleteWithoutTimeout: resourceBucketLoggingDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrBucket: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringLenBetween(1, 63),
+			},
+			names.AttrExpectedBucketOwner: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: verify.ValidAccountID,
+			},
+			"target_bucket": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"target_grant": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"grantee": {
+							Type:     schema.TypeList,
+							Required: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									names.AttrDisplayName: {
+										Type:     schema.TypeString,
+										Computed: true,
+									},
+									"email_address": {
+										Type:     schema.TypeString,
+										Optional: true,
+									},
+									names.AttrID: {
+										Type:     schema.TypeString,
+										Optional: true,
+									},
+									names.AttrType: {
+										Type:             schema.TypeString,
+										Required:         true,
+										ValidateDiagFunc: enum.Validate[types.Type](),
+									},
+									names.AttrURI: {
+										Type:     schema.TypeString,
+										Optional: true,
+									},
+								},
+							},
+						},
+						"permission": {
+							Type:             schema.TypeString,
+							Required:         true,
+							ValidateDiagFunc: enum.Validate[types.BucketLogsPermission](),
+						},
+					},
+				},
+			},
+			"target_object_key_format": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"partitioned_prefix": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"partition_date_source": {
+										Type:             schema.TypeString,
+										Required:         true,
+										ValidateDiagFunc: enum.Validate[types.PartitionDateSource](),
+									},
+								},
+							},
+							ExactlyOneOf: []string{"target_object_key_format.0.partitioned_prefix", "target_object_key_format.0.simple_prefix"},
+						},
+						"simple_prefix": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{},
+							},
+							ExactlyOneOf: []string{"target_object_key_format.0.partitioned_prefix", "target_object_key_format.0.simple_prefix"},
+						},
+					},
+				},
+			},
+			"target_prefix": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+		},
+	}
+}

@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicequotas
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *templateResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new templateResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	parts, err := flex.ExpandResourceId(new.ID.ValueString(), templateResourceIDPartCount, false)
+	if err != nil {
+		response.Diagnostics.AddError("parsing resource ID", err.Error())
+
+		return
+	}
+
+	conn := r.Meta().ServiceQuotasClient(ctx)
+
+	if !new.DesiredValue.Equal(old.DesiredValue) {
+		input := servicequotas.PutServiceQuotaIncreaseRequestIntoTemplateInput{
+			AwsRegion:    aws.String(parts[0]),
+			DesiredValue: fwflex.Float64FromFramework(ctx, new.DesiredValue),
+			QuotaCode:    aws.String(parts[1]),
+			ServiceCode:  aws.String(parts[2]),
+		}
+
+		_, err := conn.PutServiceQuotaIncreaseRequestIntoTemplate(ctx, &input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating Service Quotas Template (%s)", new.ID.ValueString()), err.Error())
+
+			return
+		}
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, new)...)
+}

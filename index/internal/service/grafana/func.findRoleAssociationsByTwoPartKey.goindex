@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/grafana
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/grafana"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/grafana/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findRoleAssociationsByTwoPartKey(ctx context.Context, conn *grafana.Client, role awstypes.Role, workspaceID string) (map[awstypes.UserType][]string, error) {
+	input := &grafana.ListPermissionsInput{
+		WorkspaceId: aws.String(workspaceID),
+	}
+	output := make(map[awstypes.UserType][]string, 0)
+
+	pages := grafana.NewListPermissionsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: input,
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.Permissions {
+			if v.Role == role {
+				userType := v.User.Type
+				output[userType] = append(output[userType], aws.ToString(v.User.Id))
+			}
+		}
+	}
+
+	if len(output) == 0 {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	return output, nil
+}

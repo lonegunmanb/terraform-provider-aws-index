@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConformancePackPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConfigServiceClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &configservice.PutConformancePackInput{
+		ConformancePackName: aws.String(name),
+	}
+
+	if v, ok := d.GetOk("delivery_s3_bucket"); ok {
+		input.DeliveryS3Bucket = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("delivery_s3_key_prefix"); ok {
+		input.DeliveryS3KeyPrefix = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("input_parameter"); ok && v.(*schema.Set).Len() > 0 {
+		input.ConformancePackInputParameters = expandConformancePackInputParameters(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("template_body"); ok {
+		input.TemplateBody = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("template_s3_uri"); ok {
+		input.TemplateS3Uri = aws.String(v.(string))
+	}
+
+	_, err := conn.PutConformancePack(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting ConfigService Conformance Pack (%s): %s", name, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(name)
+	}
+
+	const (
+		timeout = 5 * time.Minute
+	)
+	if _, err := waitConformancePackCreated(ctx, conn, d.Id(), timeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ConfigService Conformance Pack (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceConformancePackRead(ctx, d, meta)...)
+}

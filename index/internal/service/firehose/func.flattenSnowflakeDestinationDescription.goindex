@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/firehose
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/firehose"
+	"github.com/aws/aws-sdk-go-v2/service/firehose/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenSnowflakeDestinationDescription(apiObject *types.SnowflakeDestinationDescription, configuredKeyPassphrase, configuredPrivateKey string) []any {
+	if apiObject == nil {
+		return []any{}
+	}
+
+	roleARN := aws.ToString(apiObject.RoleARN)
+	tfMap := map[string]any{
+		"account_url":                   aws.ToString(apiObject.AccountUrl),
+		"cloudwatch_logging_options":    flattenCloudWatchLoggingOptions(apiObject.CloudWatchLoggingOptions),
+		"content_column_name":           aws.ToString(apiObject.ContentColumnName),
+		"data_loading_option":           apiObject.DataLoadingOption,
+		names.AttrDatabase:              aws.ToString(apiObject.Database),
+		"key_passphrase":                configuredKeyPassphrase,
+		"metadata_column_name":          aws.ToString(apiObject.MetaDataColumnName),
+		names.AttrPrivateKey:            configuredPrivateKey,
+		"processing_configuration":      flattenProcessingConfiguration(apiObject.ProcessingConfiguration, destinationTypeSnowflake, roleARN),
+		names.AttrRoleARN:               roleARN,
+		"s3_backup_mode":                apiObject.S3BackupMode,
+		"s3_configuration":              flattenS3DestinationDescription(apiObject.S3DestinationDescription),
+		names.AttrSchema:                aws.ToString(apiObject.Schema),
+		"secrets_manager_configuration": flattenSecretsManagerConfiguration(apiObject.SecretsManagerConfiguration),
+		"snowflake_role_configuration":  flattenSnowflakeRoleConfiguration(apiObject.SnowflakeRoleConfiguration),
+		"snowflake_vpc_configuration":   flattenSnowflakeVPCConfiguration(apiObject.SnowflakeVpcConfiguration),
+		"table":                         aws.ToString(apiObject.Table),
+		"user":                          aws.ToString(apiObject.User),
+	}
+
+	if v := apiObject.BufferingHints; v != nil {
+		if v.IntervalInSeconds != nil {
+			tfMap["buffering_interval"] = int(aws.ToInt32(v.IntervalInSeconds))
+		}
+		if v.SizeInMBs != nil {
+			tfMap["buffering_size"] = int(aws.ToInt32(v.SizeInMBs))
+		}
+	}
+
+	if apiObject.RetryOptions != nil {
+		tfMap["retry_duration"] = int(aws.ToInt32(apiObject.RetryOptions.DurationInSeconds))
+	}
+
+	return []any{tfMap}
+}

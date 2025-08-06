@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSecurityConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	input := &glue.GetSecurityConfigurationInput{
+		Name: aws.String(d.Id()),
+	}
+
+	log.Printf("[DEBUG] Reading Glue Security Configuration: %+v", input)
+	output, err := conn.GetSecurityConfiguration(ctx, input)
+
+	if errs.IsA[*awstypes.EntityNotFoundException](err) {
+		log.Printf("[WARN] Glue Security Configuration (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Glue Security Configuration (%s): %s", d.Id(), err)
+	}
+
+	securityConfiguration := output.SecurityConfiguration
+	if securityConfiguration == nil {
+		log.Printf("[WARN] Glue Security Configuration (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err := d.Set(names.AttrEncryptionConfiguration, flattenEncryptionConfiguration(securityConfiguration.EncryptionConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting encryption_configuration: %s", err)
+	}
+
+	d.Set(names.AttrName, securityConfiguration.Name)
+
+	return diags
+}

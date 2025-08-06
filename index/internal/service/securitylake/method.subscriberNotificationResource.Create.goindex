@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/securitylake
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/securitylake"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/securitylake/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *subscriberNotificationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data subscriberNotificationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().SecurityLakeClient(ctx)
+
+	var configurationData []subscriberNotificationResourceConfigurationModel
+	response.Diagnostics.Append(data.Configuration.ElementsAs(ctx, &configurationData, false)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	configuration, d := expandSubscriberNotificationResourceConfiguration(ctx, configurationData)
+	response.Diagnostics.Append(d...)
+
+	input := &securitylake.CreateSubscriberNotificationInput{
+		SubscriberId:  fwflex.StringFromFramework(ctx, data.SubscriberID),
+		Configuration: configuration,
+	}
+
+	output, err := conn.CreateSubscriberNotification(ctx, input)
+	if err != nil {
+		response.Diagnostics.AddError("creating Security Lake Subscriber Notification", err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.EndpointID = fwflex.StringToFramework(ctx, output.SubscriberEndpoint)
+	data.SubscriberEndpoint = fwflex.StringToFramework(ctx, output.SubscriberEndpoint)
+	id, err := data.setID()
+	if err != nil {
+		response.Diagnostics.AddError("creating Security Lake Subscriber Notification", err.Error())
+		return
+	}
+	data.ID = types.StringValue(id)
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

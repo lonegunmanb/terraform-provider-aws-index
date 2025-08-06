@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceLinkAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	globalNetworkID := d.Get("global_network_id").(string)
+	linkID := d.Get("link_id").(string)
+	deviceID := d.Get("device_id").(string)
+	id := linkAssociationCreateResourceID(globalNetworkID, linkID, deviceID)
+	input := &networkmanager.AssociateLinkInput{
+		DeviceId:        aws.String(deviceID),
+		GlobalNetworkId: aws.String(globalNetworkID),
+		LinkId:          aws.String(linkID),
+	}
+
+	log.Printf("[DEBUG] Creating Network Manager Link Association: %#v", input)
+	_, err := conn.AssociateLink(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Network Manager Link Association (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitLinkAssociationCreated(ctx, conn, globalNetworkID, linkID, deviceID, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Link Association (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceLinkAssociationRead(ctx, d, meta)...)
+}

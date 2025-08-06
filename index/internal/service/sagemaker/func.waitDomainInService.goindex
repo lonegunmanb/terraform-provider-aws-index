@@ -1,0 +1,33 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitDomainInService(ctx context.Context, conn *sagemaker.Client, domainID string) error {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.DomainStatusPending, awstypes.DomainStatusUpdating),
+		Target:  enum.Slice(awstypes.DomainStatusInService),
+		Refresh: statusDomain(ctx, conn, domainID),
+		Timeout: domainInServiceTimeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*sagemaker.DescribeDomainOutput); ok {
+		if status, reason := output.Status, aws.ToString(output.FailureReason); status == awstypes.DomainStatusFailed || status == awstypes.DomainStatusUpdateFailed && reason != "" {
+			tfresource.SetLastError(err, errors.New(reason))
+		}
+
+		return err
+	}
+
+	return err
+}

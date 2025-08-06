@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRouteTableAssociationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	input := &ec2.ReplaceRouteTableAssociationInput{
+		AssociationId: aws.String(d.Id()),
+		RouteTableId:  aws.String(d.Get("route_table_id").(string)),
+	}
+
+	log.Printf("[DEBUG] Updating Route Table Association: %v", input)
+	output, err := conn.ReplaceRouteTableAssociation(ctx, input)
+
+	// This whole thing with the resource ID being changed on update seems unsustainable.
+	// Keeping it here for backwards compatibility...
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidAssociationIDNotFound) {
+		// Not found, so just create a new one
+		return append(diags, resourceRouteTableAssociationCreate(ctx, d, meta)...)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Route Table Association (%s): %s", d.Id(), err)
+	}
+
+	// I don't think we'll ever reach this code for a subnet/gateway route table association.
+	// It would only come in to play for a VPC main route table association.
+
+	d.SetId(aws.ToString(output.NewAssociationId))
+
+	if _, err := waitRouteTableAssociationUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Route Table Association (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceRouteTableAssociationRead(ctx, d, meta)...)
+}

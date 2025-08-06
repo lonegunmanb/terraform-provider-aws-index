@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amp
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amp"
+	"github.com/aws/aws-sdk-go-v2/service/amp/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkspaceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AMPClient(ctx)
+
+	input := amp.CreateWorkspaceInput{
+		Tags: getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrAlias); ok {
+		input.Alias = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyARN); ok {
+		input.KmsKeyArn = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateWorkspace(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Prometheus Workspace: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.WorkspaceId))
+
+	if _, err := waitWorkspaceCreated(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Prometheus Workspace (%s) create: %s", d.Id(), err)
+	}
+
+	if v, ok := d.GetOk(names.AttrLoggingConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		input := amp.CreateLoggingConfigurationInput{
+			LogGroupArn: aws.String(tfMap["log_group_arn"].(string)),
+			WorkspaceId: aws.String(d.Id()),
+		}
+
+		_, err := conn.CreateLoggingConfiguration(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating Prometheus Workspace (%s) logging configuration: %s", d.Id(), err)
+		}
+
+		if _, err := waitLoggingConfigurationCreated(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Prometheus Workspace (%s) logging configuration create: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceWorkspaceRead(ctx, d, meta)...)
+}

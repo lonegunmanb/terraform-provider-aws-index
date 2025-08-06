@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceKeySigningKeyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), keySigningKeyResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	hostedZoneID, name := parts[0], parts[1]
+	keySigningKey, err := findKeySigningKeyByTwoPartKey(ctx, conn, hostedZoneID, name)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Route 53 Key Signing Key (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Route 53 Key Signing Key (%s): %s", d.Id(), err)
+	}
+
+	d.Set("digest_algorithm_mnemonic", keySigningKey.DigestAlgorithmMnemonic)
+	d.Set("digest_algorithm_type", keySigningKey.DigestAlgorithmType)
+	d.Set("digest_value", keySigningKey.DigestValue)
+	d.Set("dnskey_record", keySigningKey.DNSKEYRecord)
+	d.Set("ds_record", keySigningKey.DSRecord)
+	d.Set("flag", keySigningKey.Flag)
+	d.Set(names.AttrHostedZoneID, hostedZoneID)
+	d.Set("key_management_service_arn", keySigningKey.KmsArn)
+	d.Set("key_tag", keySigningKey.KeyTag)
+	d.Set(names.AttrName, keySigningKey.Name)
+	d.Set(names.AttrPublicKey, keySigningKey.PublicKey)
+	d.Set("signing_algorithm_mnemonic", keySigningKey.SigningAlgorithmMnemonic)
+	d.Set("signing_algorithm_type", keySigningKey.SigningAlgorithmType)
+	d.Set(names.AttrStatus, keySigningKey.Status)
+
+	return diags
+}

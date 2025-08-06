@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepMacSecKeys(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	input := &directconnect.DescribeConnectionsInput{}
+	dxConn := client.DirectConnectClient(ctx)
+	// Clean up leaked Secrets Manager resources created by Direct Connect.
+	// Direct Connect does not remove the corresponding Secrets Manager
+	// key when deleting the MACsec key association. The only option to
+	// clean up the dangling resource is to use Secrets Manager to delete
+	// the MACsec key secret.
+	smConn := client.SecretsManagerClient(ctx)
+
+	output, err := dxConn.DescribeConnections(ctx, input)
+
+	if awsv2.SkipSweepError(err) {
+		log.Printf("[WARN] Skipping Direct Connect MACsec Keys sweep for %s: %s", region, err)
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("error listing Direct Connect Connections (%s): %w", region, err)
+	}
+
+	for _, v := range output.Connections {
+		for _, v := range v.MacSecKeys {
+			arn := aws.ToString(v.SecretARN)
+
+			input := &secretsmanager.DeleteSecretInput{
+				SecretId: aws.String(arn),
+			}
+
+			log.Printf("[DEBUG] Deleting MACSec secret key: %s", arn)
+			_, err := smConn.DeleteSecret(ctx, input)
+
+			if err != nil {
+				continue
+			}
+		}
+	}
+
+	return nil
+}

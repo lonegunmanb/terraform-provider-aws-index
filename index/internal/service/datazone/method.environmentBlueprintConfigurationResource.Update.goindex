@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datazone"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *environmentBlueprintConfigurationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().DataZoneClient(ctx)
+
+	var plan, state environmentBlueprintConfigurationResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.EnabledRegions.Equal(state.EnabledRegions) ||
+		!plan.ManageAccessRoleArn.Equal(state.ManageAccessRoleArn) ||
+		!plan.ProvisioningRoleArn.Equal(state.ProvisioningRoleArn) ||
+		!plan.RegionalParameters.Equal(state.RegionalParameters) {
+		in := &datazone.PutEnvironmentBlueprintConfigurationInput{
+			DomainIdentifier:               plan.DomainId.ValueStringPointer(),
+			EnabledRegions:                 flex.ExpandFrameworkStringValueList(ctx, plan.EnabledRegions),
+			EnvironmentBlueprintIdentifier: plan.EnvironmentBlueprintId.ValueStringPointer(),
+		}
+
+		if !plan.ManageAccessRoleArn.IsNull() {
+			in.ManageAccessRoleArn = plan.ManageAccessRoleArn.ValueStringPointer()
+		}
+
+		if !plan.ProvisioningRoleArn.IsNull() {
+			in.ProvisioningRoleArn = plan.ProvisioningRoleArn.ValueStringPointer()
+		}
+
+		if !plan.RegionalParameters.IsNull() {
+			var tfMap map[string]map[string]string
+			resp.Diagnostics.Append(plan.RegionalParameters.ElementsAs(ctx, &tfMap, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+
+			in.RegionalParameters = tfMap
+		}
+
+		out, err := conn.PutEnvironmentBlueprintConfiguration(ctx, in)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.DataZone, create.ErrActionUpdating, ResNameEnvironmentBlueprintConfiguration, plan.EnvironmentBlueprintId.String(), err),
+				err.Error(),
+			)
+			return
+		}
+		if out == nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.DataZone, create.ErrActionUpdating, ResNameEnvironmentBlueprintConfiguration, plan.EnvironmentBlueprintId.String(), nil),
+				errors.New("empty output").Error(),
+			)
+			return
+		}
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

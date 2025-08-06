@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTypeRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	output, err := findTypeByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudFormation Type (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudFormation Type (%s): %s", d.Id(), err)
+	}
+
+	typeARN, versionID, err := typeVersionARNToTypeARNAndVersionID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set(names.AttrARN, output.Arn)
+	d.Set("default_version_id", output.DefaultVersionId)
+	d.Set("deprecated_status", output.DeprecatedStatus)
+	d.Set(names.AttrDescription, output.Description)
+	d.Set("documentation_url", output.DocumentationUrl)
+	d.Set(names.AttrExecutionRoleARN, output.ExecutionRoleArn)
+	d.Set("is_default_version", output.IsDefaultVersion)
+	if output.LoggingConfig != nil {
+		if err := d.Set("logging_config", []any{flattenLoggingConfig(output.LoggingConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting logging_config: %s", err)
+		}
+	} else {
+		d.Set("logging_config", nil)
+	}
+	d.Set("provisioning_type", output.ProvisioningType)
+	d.Set(names.AttrSchema, output.Schema)
+	d.Set("source_url", output.SourceUrl)
+	d.Set(names.AttrType, output.Type)
+	d.Set("type_arn", typeARN)
+	d.Set("type_name", output.TypeName)
+	d.Set("version_id", versionID)
+	d.Set("visibility", output.Visibility)
+
+	return diags
+}

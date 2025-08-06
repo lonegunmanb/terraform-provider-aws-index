@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"log"
+	"maps"
+	"os"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	awsbase "github.com/hashicorp/aws-sdk-go-base/v2"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/internal/attribute"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandIgnoreTags(ctx context.Context, tfMap map[string]any) *tftags.IgnoreConfig {
+	var keys, keyPrefixes []any
+
+	if tfMap != nil {
+		if v, ok := tfMap["keys"].(*schema.Set); ok {
+			keys = v.List()
+		}
+		if v, ok := tfMap["key_prefixes"].(*schema.Set); ok {
+			keyPrefixes = v.List()
+		}
+	}
+
+	if v := os.Getenv(tftags.IgnoreTagsKeysEnvVar); v != "" {
+		for k := range strings.SplitSeq(v, ",") {
+			if trimmed := strings.TrimSpace(k); trimmed != "" {
+				keys = append(keys, trimmed)
+			}
+		}
+	}
+
+	if v := os.Getenv(tftags.IgnoreTagsKeyPrefixesEnvVar); v != "" {
+		for kp := range strings.SplitSeq(v, ",") {
+			if trimmed := strings.TrimSpace(kp); trimmed != "" {
+				keyPrefixes = append(keyPrefixes, trimmed)
+			}
+		}
+	}
+
+	// To preseve behavior prior to supporting environment variables:
+	//
+	// - Return nil when no keys or prefixes are set
+	// - For a non-nil return, `keys` or `key_prefixes` should be
+	//   nil if empty (versus a zero-value `KeyValueTags` struct)
+	if len(keys) == 0 && len(keyPrefixes) == 0 {
+		return nil
+	}
+
+	ignoreConfig := &tftags.IgnoreConfig{}
+	if len(keys) > 0 {
+		ignoreConfig.Keys = tftags.New(ctx, keys)
+	}
+	if len(keyPrefixes) > 0 {
+		ignoreConfig.KeyPrefixes = tftags.New(ctx, keyPrefixes)
+	}
+
+	return ignoreConfig
+}

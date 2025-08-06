@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSigningCertificateCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	createOpts := &iam.UploadSigningCertificateInput{
+		CertificateBody: aws.String(d.Get("certificate_body").(string)),
+		UserName:        aws.String(d.Get(names.AttrUserName).(string)),
+	}
+
+	resp, err := conn.UploadSigningCertificate(ctx, createOpts)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "uploading IAM Signing Certificate: %s", err)
+	}
+
+	cert := resp.Certificate
+	certId := cert.CertificateId
+	d.SetId(fmt.Sprintf("%s:%s", aws.ToString(certId), aws.ToString(cert.UserName)))
+
+	if v, ok := d.GetOk(names.AttrStatus); ok && v.(string) != string(awstypes.StatusTypeActive) {
+		updateInput := &iam.UpdateSigningCertificateInput{
+			CertificateId: certId,
+			UserName:      aws.String(d.Get(names.AttrUserName).(string)),
+			Status:        awstypes.StatusType(v.(string)),
+		}
+
+		_, err := conn.UpdateSigningCertificate(ctx, updateInput)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "settings IAM Signing Certificate status: %s", err)
+		}
+	}
+
+	return append(diags, resourceSigningCertificateRead(ctx, d, meta)...)
+}

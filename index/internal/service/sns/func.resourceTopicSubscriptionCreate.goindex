@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sns
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/davecgh/go-spew/spew"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/attrmap"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTopicSubscriptionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SNSClient(ctx)
+
+	attributes, err := subscriptionAttributeMap.ResourceDataToAPIAttributesCreate(d)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	// Endpoint, Protocol and TopicArn are not passed in Attributes.
+	delete(attributes, subscriptionAttributeNameEndpoint)
+	delete(attributes, subscriptionAttributeNameProtocol)
+	delete(attributes, subscriptionAttributeNameTopicARN)
+
+	protocol := d.Get(names.AttrProtocol).(string)
+	input := &sns.SubscribeInput{
+		Attributes:            attributes,
+		Endpoint:              aws.String(d.Get(names.AttrEndpoint).(string)),
+		Protocol:              aws.String(protocol),
+		ReturnSubscriptionArn: true, // even if not confirmed, will get ARN
+		TopicArn:              aws.String(d.Get(names.AttrTopicARN).(string)),
+	}
+
+	output, err := conn.Subscribe(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SNS Topic Subscription: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.SubscriptionArn))
+
+	if waitForConfirmation(d.Get("endpoint_auto_confirms").(bool), protocol) {
+		timeout := subscriptionPendingConfirmationTimeout
+		if strings.Contains(protocol, "http") {
+			timeout = time.Duration(int64(d.Get("confirmation_timeout_in_minutes").(int)) * int64(time.Minute))
+		}
+
+		if _, err := waitSubscriptionConfirmed(ctx, conn, d.Id(), timeout); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for SNS Topic Subscription (%s) confirmation: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceTopicSubscriptionRead(ctx, d, meta)...)
+}

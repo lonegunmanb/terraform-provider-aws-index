@@ -1,0 +1,102 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sfn
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStateMachineUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SFNClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		// "You must include at least one of definition or roleArn or you will receive a MissingRequiredParameter error"
+		publish := d.Get("publish").(bool)
+		input := &sfn.UpdateStateMachineInput{
+			Definition:      aws.String(d.Get("definition").(string)),
+			Publish:         publish,
+			RoleArn:         aws.String(d.Get(names.AttrRoleARN).(string)),
+			StateMachineArn: aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrEncryptionConfiguration) {
+			if v, ok := d.GetOk(names.AttrEncryptionConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.EncryptionConfiguration = expandEncryptionConfiguration(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange(names.AttrLoggingConfiguration) {
+			if v, ok := d.GetOk(names.AttrLoggingConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.LoggingConfiguration = expandLoggingConfiguration(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("tracing_configuration") {
+			if v, ok := d.GetOk("tracing_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.TracingConfiguration = expandTracingConfiguration(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if publish {
+			input.VersionDescription = aws.String(d.Get("version_description").(string))
+		}
+
+		_, err := conn.UpdateStateMachine(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Step Functions State Machine (%s): %s", d.Id(), err)
+		}
+
+		// Handle eventual consistency after update.
+		err = retry.RetryContext(ctx, d.Timeout(schema.TimeoutUpdate), func() *retry.RetryError { // nosemgrep:ci.helper-schema-retry-RetryContext-without-TimeoutError-check
+			output, err := findStateMachineByARN(ctx, conn, d.Id())
+
+			if err != nil {
+				return retry.NonRetryableError(err)
+			}
+
+			if d.HasChange("definition") && !verify.JSONBytesEqual([]byte(aws.ToString(output.Definition)), []byte(d.Get("definition").(string))) ||
+				d.HasChange(names.AttrRoleARN) && aws.ToString(output.RoleArn) != d.Get(names.AttrRoleARN).(string) ||
+				//d.HasChange("publish") && aws.Bool(output.Publish) != d.Get("publish").(bool) ||
+				d.HasChange("tracing_configuration.0.enabled") && output.TracingConfiguration != nil && output.TracingConfiguration.Enabled != d.Get("tracing_configuration.0.enabled").(bool) ||
+				d.HasChange("logging_configuration.0.include_execution_data") && output.LoggingConfiguration != nil && output.LoggingConfiguration.IncludeExecutionData != d.Get("logging_configuration.0.include_execution_data").(bool) ||
+				d.HasChange("logging_configuration.0.level") && output.LoggingConfiguration != nil && string(output.LoggingConfiguration.Level) != d.Get("logging_configuration.0.level").(string) ||
+				d.HasChange("encryption_configuration.0.kms_key_id") && output.EncryptionConfiguration != nil && output.EncryptionConfiguration.KmsKeyId != nil && aws.ToString(output.EncryptionConfiguration.KmsKeyId) != d.Get("encryption_configuration.0.kms_key_id") ||
+				d.HasChange("encryption_configuration.0.encryption_type") && output.EncryptionConfiguration != nil && string(output.EncryptionConfiguration.Type) != d.Get("encryption_configuration.0.encryption_type").(string) ||
+				d.HasChange("encryption_configuration.0.kms_data_key_reuse_period_seconds") && output.EncryptionConfiguration != nil && output.EncryptionConfiguration.KmsDataKeyReusePeriodSeconds != nil && aws.ToInt32(output.EncryptionConfiguration.KmsDataKeyReusePeriodSeconds) != int32(d.Get("encryption_configuration.0.kms_data_key_reuse_period_seconds").(int)) {
+				return retry.RetryableError(fmt.Errorf("Step Functions State Machine (%s) eventual consistency", d.Id()))
+			}
+
+			return nil
+		})
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Step Functions State Machine (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceStateMachineRead(ctx, d, meta)...)
+}

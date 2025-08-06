@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceTypeRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	input := &cloudformation.DescribeTypeInput{}
+
+	if v, ok := d.GetOk(names.AttrARN); ok {
+		input.Arn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrType); ok {
+		input.Type = awstypes.RegistryType(v.(string))
+	}
+
+	if v, ok := d.GetOk("type_name"); ok {
+		input.TypeName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("version_id"); ok {
+		input.VersionId = aws.String(v.(string))
+	}
+
+	output, err := findType(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudFormation Type: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.Arn))
+	d.Set(names.AttrARN, output.Arn)
+	d.Set("default_version_id", output.DefaultVersionId)
+	d.Set("deprecated_status", output.DeprecatedStatus)
+	d.Set(names.AttrDescription, output.Description)
+	d.Set("documentation_url", output.DocumentationUrl)
+	d.Set(names.AttrExecutionRoleARN, output.ExecutionRoleArn)
+	d.Set("is_default_version", output.IsDefaultVersion)
+	if output.LoggingConfig != nil {
+		if err := d.Set("logging_config", []any{flattenLoggingConfig(output.LoggingConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting logging_config: %s", err)
+		}
+	} else {
+		d.Set("logging_config", nil)
+	}
+	d.Set("provisioning_type", output.ProvisioningType)
+	d.Set(names.AttrSchema, output.Schema)
+	d.Set("source_url", output.SourceUrl)
+	d.Set(names.AttrType, output.Type)
+	d.Set("type_name", output.TypeName)
+	d.Set("visibility", output.Visibility)
+
+	return diags
+}

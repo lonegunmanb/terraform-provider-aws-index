@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionSetUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSOAdminClient(ctx)
+
+	permissionSetARN, instanceARN, err := ParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChanges(names.AttrDescription, "relay_state", "session_duration") {
+		input := &ssoadmin.UpdatePermissionSetInput{
+			InstanceArn:      aws.String(instanceARN),
+			PermissionSetArn: aws.String(permissionSetARN),
+		}
+
+		// The AWS SSO API requires we send the RelayState value regardless if it's unchanged
+		// else the existing Permission Set's RelayState value will be cleared;
+		// for consistency, we'll check for the "presence of" instead of "if changed" for all input fields
+		// Reference: https://github.com/hashicorp/terraform-provider-aws/issues/17411
+
+		if v, ok := d.GetOk(names.AttrDescription); ok {
+			input.Description = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("relay_state"); ok {
+			input.RelayState = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("session_duration"); ok {
+			input.SessionDuration = aws.String(v.(string))
+		}
+
+		_, err := conn.UpdatePermissionSet(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating SSO Permission Set (%s): %s", d.Id(), err)
+		}
+
+		// Re-provision ALL accounts after making the above changes
+		if err := provisionPermissionSet(ctx, conn, permissionSetARN, instanceARN, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange(names.AttrTagsAll) {
+		o, n := d.GetChange(names.AttrTagsAll)
+		if err := updateTags(ctx, conn, permissionSetARN, instanceARN, o, n); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating tags: %s", err)
+		}
+	}
+
+	return append(diags, resourcePermissionSetRead(ctx, d, meta)...)
+}

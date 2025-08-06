@@ -1,0 +1,118 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandResourceRecordSet(d *schema.ResourceData, zoneName string) *awstypes.ResourceRecordSet {
+	// get expanded name
+	en := expandRecordName(d.Get(names.AttrName).(string), zoneName)
+
+	// Create the RecordSet request with the fully expanded name, e.g.
+	// sub.domain.com. Route 53 requires a fully qualified domain name, but does
+	// not require the trailing ".", which it will itself, so we don't call FQDN
+	// here.
+	rrType := awstypes.RRType(d.Get(names.AttrType).(string))
+	apiObject := &awstypes.ResourceRecordSet{
+		Name: aws.String(en),
+		Type: rrType,
+	}
+
+	// Resource records
+	if v, ok := d.GetOk("records"); ok {
+		apiObject.ResourceRecords = expandResourceRecords(flex.ExpandStringValueSet(v.(*schema.Set)), rrType)
+
+		// TTL and ResourceRecords
+		if v := d.GetRawPlan().GetAttr("ttl"); v.IsKnown() && !v.IsNull() {
+			v, _ := v.AsBigFloat().Int64()
+			apiObject.TTL = aws.Int64(v)
+		}
+	}
+
+	// Alias record
+	if v, ok := d.GetOk(names.AttrAlias); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		apiObject.AliasTarget = &awstypes.AliasTarget{
+			DNSName:              aws.String(tfMap[names.AttrName].(string)),
+			EvaluateTargetHealth: tfMap["evaluate_target_health"].(bool),
+			HostedZoneId:         aws.String(tfMap["zone_id"].(string)),
+		}
+	}
+
+	if v, ok := d.GetOk("cidr_routing_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		apiObject.CidrRoutingConfig = &awstypes.CidrRoutingConfig{
+			CollectionId: aws.String(tfMap["collection_id"].(string)),
+			LocationName: aws.String(tfMap["location_name"].(string)),
+		}
+	}
+
+	if v, ok := d.GetOk("failover_routing_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		apiObject.Failover = awstypes.ResourceRecordSetFailover(tfMap[names.AttrType].(string))
+	}
+
+	if v, ok := d.GetOk("geolocation_routing_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		apiObject.GeoLocation = &awstypes.GeoLocation{
+			ContinentCode:   nilString(tfMap["continent"].(string)),
+			CountryCode:     nilString(tfMap["country"].(string)),
+			SubdivisionCode: nilString(tfMap["subdivision"].(string)),
+		}
+	}
+
+	if v, ok := d.GetOk("geoproximity_routing_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		apiObject.GeoProximityLocation = &awstypes.GeoProximityLocation{
+			AWSRegion:      nilString(tfMap["aws_region"].(string)),
+			Bias:           aws.Int32(int32(tfMap["bias"].(int))),
+			Coordinates:    expandCoordinates(tfMap["coordinates"].(*schema.Set).List()),
+			LocalZoneGroup: nilString(tfMap["local_zone_group"].(string)),
+		}
+	}
+
+	if v, ok := d.GetOk("health_check_id"); ok {
+		apiObject.HealthCheckId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("latency_routing_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		apiObject.Region = awstypes.ResourceRecordSetRegion(tfMap[names.AttrRegion].(string))
+	}
+
+	if v, ok := d.GetOk("multivalue_answer_routing_policy"); ok {
+		apiObject.MultiValueAnswer = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("set_identifier"); ok {
+		apiObject.SetIdentifier = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("weighted_routing_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		apiObject.Weight = aws.Int64(int64(tfMap[names.AttrWeight].(int)))
+	}
+
+	return apiObject
+}

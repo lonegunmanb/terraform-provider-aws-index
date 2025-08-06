@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandStepAdjustments(configured []any) ([]awstypes.StepAdjustment, error) {
+	var adjustments []awstypes.StepAdjustment
+
+	// Loop over our configured step adjustments and create an array
+	// of aws-sdk-go compatible objects. We're forced to convert strings
+	// to floats here because there's no way to detect whether or not
+	// an uninitialized, optional schema element is "0.0" deliberately.
+	// With strings, we can test for "", which is definitely an empty
+	// struct value.
+	for _, raw := range configured {
+		data := raw.(map[string]any)
+		a := awstypes.StepAdjustment{
+			ScalingAdjustment: aws.Int32(int32(data["scaling_adjustment"].(int))),
+		}
+		if data["metric_interval_lower_bound"] != "" {
+			bound := data["metric_interval_lower_bound"]
+			switch bound := bound.(type) {
+			case string:
+				f, err := strconv.ParseFloat(bound, 64)
+				if err != nil {
+					return nil, errors.New("metric_interval_lower_bound must be a float value represented as a string")
+				}
+				a.MetricIntervalLowerBound = aws.Float64(f)
+			default:
+				return nil, errors.New("metric_interval_lower_bound isn't a string")
+			}
+		}
+		if data["metric_interval_upper_bound"] != "" {
+			bound := data["metric_interval_upper_bound"]
+			switch bound := bound.(type) {
+			case string:
+				f, err := strconv.ParseFloat(bound, 64)
+				if err != nil {
+					return nil, errors.New("metric_interval_upper_bound must be a float value represented as a string")
+				}
+				a.MetricIntervalUpperBound = aws.Float64(f)
+			default:
+				return nil, errors.New("metric_interval_upper_bound isn't a string")
+			}
+		}
+		adjustments = append(adjustments, a)
+	}
+
+	return adjustments, nil
+}

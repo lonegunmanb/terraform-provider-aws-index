@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amp
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amp"
+	"github.com/aws/aws-sdk-go-v2/service/amp/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkspaceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AMPClient(ctx)
+
+	ws, err := findWorkspaceByID(ctx, conn, d.Id())
+
+	if tfresource.NotFound(err) && !d.IsNewResource() {
+		log.Printf("[WARN] Prometheus Workspace (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Prometheus Workspace (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrAlias, ws.Alias)
+	arn := aws.ToString(ws.Arn)
+	d.Set(names.AttrARN, arn)
+	d.Set(names.AttrKMSKeyARN, ws.KmsKeyArn)
+	d.Set("prometheus_endpoint", ws.PrometheusEndpoint)
+
+	loggingConfiguration, err := findLoggingConfigurationByWorkspaceID(ctx, conn, d.Id())
+
+	if tfresource.NotFound(err) {
+		d.Set(names.AttrLoggingConfiguration, nil)
+	} else if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Prometheus Workspace (%s) logging configuration: %s", d.Id(), err)
+	} else {
+		if err := d.Set(names.AttrLoggingConfiguration, []any{flattenLoggingConfigurationMetadata(loggingConfiguration)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting logging_configuration: %s", err)
+		}
+	}
+
+	return diags
+}

@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appmesh"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandGRPCGatewayRoute(vGrpcRoute []any) *awstypes.GrpcGatewayRoute {
+	if len(vGrpcRoute) == 0 || vGrpcRoute[0] == nil {
+		return nil
+	}
+
+	route := &awstypes.GrpcGatewayRoute{}
+
+	mGrpcRoute := vGrpcRoute[0].(map[string]any)
+
+	if vRouteAction, ok := mGrpcRoute[names.AttrAction].([]any); ok && len(vRouteAction) > 0 && vRouteAction[0] != nil {
+		routeAction := &awstypes.GrpcGatewayRouteAction{}
+
+		mRouteAction := vRouteAction[0].(map[string]any)
+
+		if vRouteTarget, ok := mRouteAction[names.AttrTarget].([]any); ok {
+			routeAction.Target = expandGatewayRouteTarget(vRouteTarget)
+		}
+
+		route.Action = routeAction
+	}
+
+	if vRouteMatch, ok := mGrpcRoute["match"].([]any); ok && len(vRouteMatch) > 0 && vRouteMatch[0] != nil {
+		routeMatch := &awstypes.GrpcGatewayRouteMatch{}
+
+		mRouteMatch := vRouteMatch[0].(map[string]any)
+
+		if vServiceName, ok := mRouteMatch[names.AttrServiceName].(string); ok && vServiceName != "" {
+			routeMatch.ServiceName = aws.String(vServiceName)
+		}
+
+		if vPort, ok := mRouteMatch[names.AttrPort].(int); ok && vPort > 0 {
+			routeMatch.Port = aws.Int32(int32(vPort))
+		}
+
+		route.Match = routeMatch
+	}
+
+	return route
+}

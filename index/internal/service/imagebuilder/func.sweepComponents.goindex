@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/imagebuilder
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/imagebuilder"
+	"github.com/aws/aws-sdk-go-v2/service/imagebuilder/types"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepComponents(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.ImageBuilderClient(ctx)
+
+	var sweepResources []sweep.Sweepable
+
+	r := resourceComponent()
+	input := imagebuilder.ListComponentsInput{
+		Owner: types.OwnershipSelf,
+	}
+	pages := imagebuilder.NewListComponentsPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.ComponentVersionList {
+			// The Delete operation needs the Component Build Version ARN, not just the Component Version ARN
+			input := imagebuilder.ListComponentBuildVersionsInput{
+				ComponentVersionArn: v.Arn,
+			}
+			pages := imagebuilder.NewListComponentBuildVersionsPaginator(conn, &input)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+				if err != nil {
+					return nil, err
+				}
+
+				for _, v := range page.ComponentSummaryList {
+					d := r.Data(nil)
+					d.SetId(aws.ToString(v.Arn))
+
+					sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+				}
+			}
+		}
+	}
+
+	return sweepResources, nil
+}

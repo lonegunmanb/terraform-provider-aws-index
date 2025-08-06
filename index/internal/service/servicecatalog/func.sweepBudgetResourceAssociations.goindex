@@ -1,0 +1,107 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepBudgetResourceAssociations(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+
+	conn := client.ServiceCatalogClient(ctx)
+	sweepResources := make([]sweep.Sweepable, 0)
+	var errs *multierror.Error
+
+	pages := servicecatalog.NewListPortfoliosPaginator(conn, &servicecatalog.ListPortfoliosInput{})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			errs = multierror.Append(errs, fmt.Errorf("error describing Service Catalog Portfolio for %s: %w", region, err))
+		}
+
+		for _, port := range page.PortfolioDetails {
+			input := &servicecatalog.ListBudgetsForResourceInput{
+				ResourceId: port.Id,
+			}
+
+			pages := servicecatalog.NewListBudgetsForResourcePaginator(conn, input)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+
+				if err != nil {
+					errs = multierror.Append(errs, fmt.Errorf("error describing Service Catalog Portfolio Budget for %s: %w", region, err))
+				}
+
+				for _, budget := range page.Budgets {
+					r := resourceBudgetResourceAssociation()
+					d := r.Data(nil)
+					d.SetId(budgetResourceAssociationID(aws.ToString(budget.BudgetName), aws.ToString(port.Id)))
+
+					sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+				}
+			}
+		}
+	}
+
+	pagesProducts := servicecatalog.NewSearchProductsAsAdminPaginator(conn, &servicecatalog.SearchProductsAsAdminInput{})
+	for pagesProducts.HasMorePages() {
+		page, err := pagesProducts.NextPage(ctx)
+
+		if err != nil {
+			errs = multierror.Append(errs, fmt.Errorf("error describing Service Catalog Products for %s: %w", region, err))
+		}
+
+		for _, pvd := range page.ProductViewDetails {
+			if pvd.ProductViewSummary == nil {
+				continue
+			}
+
+			input := &servicecatalog.ListBudgetsForResourceInput{
+				ResourceId: pvd.ProductViewSummary.ProductId,
+			}
+
+			pages := servicecatalog.NewListBudgetsForResourcePaginator(conn, input)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+
+				if err != nil {
+					errs = multierror.Append(errs, fmt.Errorf("error describing Service Catalog Budget Resource (Product) Associations for %s: %w", region, err))
+				}
+
+				for _, budget := range page.Budgets {
+					r := resourceBudgetResourceAssociation()
+					d := r.Data(nil)
+					d.SetId(budgetResourceAssociationID(aws.ToString(budget.BudgetName), aws.ToString(pvd.ProductViewSummary.ProductId)))
+
+					sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+				}
+			}
+		}
+	}
+
+	if err = sweep.SweepOrchestrator(ctx, sweepResources); err != nil {
+		errs = multierror.Append(errs, fmt.Errorf("error sweeping Service Catalog Budget Resource Associations for %s: %w", region, err))
+	}
+
+	if awsv2.SkipSweepError(errs.ErrorOrNil()) {
+		log.Printf("[WARN] Skipping Service Catalog Budget Resource Associations sweep for %s: %s", region, errs)
+		return nil
+	}
+
+	return errs.ErrorOrNil()
+}

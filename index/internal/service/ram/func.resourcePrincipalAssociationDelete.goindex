@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ram"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePrincipalAssociationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RAMClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), principalAssociationResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+	resourceShareARN, principal := parts[0], parts[1]
+
+	log.Printf("[DEBUG] Deleting RAM Principal Association: %s", d.Id())
+	_, err = conn.DisassociateResourceShare(ctx, &ram.DisassociateResourceShareInput{
+		Principals:       []string{principal},
+		ResourceShareArn: aws.String(resourceShareARN),
+	})
+
+	if errs.IsA[*awstypes.UnknownResourceException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting RAM Principal Association (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitPrincipalAssociationDeleted(ctx, conn, resourceShareARN, principal); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RAM Principal Association (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

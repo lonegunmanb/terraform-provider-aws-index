@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fms
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fms"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fms/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandPolicy(d *schema.ResourceData) *awstypes.Policy {
+	resourceType := aws.String("ResourceTypeList")
+	if v, ok := d.GetOk(names.AttrResourceType); ok {
+		resourceType = aws.String(v.(string))
+	}
+
+	apiObject := &awstypes.Policy{
+		DeleteUnusedFMManagedResources: d.Get("delete_unused_fm_managed_resources").(bool),
+		ExcludeMap:                     expandPolicyMap(d.Get("exclude_map").([]any)),
+		ExcludeResourceTags:            d.Get("exclude_resource_tags").(bool),
+		IncludeMap:                     expandPolicyMap(d.Get("include_map").([]any)),
+		PolicyDescription:              aws.String(d.Get(names.AttrDescription).(string)),
+		PolicyName:                     aws.String(d.Get(names.AttrName).(string)),
+		RemediationEnabled:             d.Get("remediation_enabled").(bool),
+		ResourceType:                   resourceType,
+		ResourceTypeList:               flex.ExpandStringValueSet(d.Get("resource_type_list").(*schema.Set)),
+		ResourceSetIds:                 flex.ExpandStringValueSet(d.Get("resource_set_ids").(*schema.Set)),
+	}
+
+	if d.Id() != "" {
+		apiObject.PolicyId = aws.String(d.Id())
+		apiObject.PolicyUpdateToken = aws.String(d.Get("policy_update_token").(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrResourceTags); ok && len(v.(map[string]any)) > 0 {
+		for k, v := range flex.ExpandStringValueMap(v.(map[string]any)) {
+			apiObject.ResourceTags = append(apiObject.ResourceTags, awstypes.ResourceTag{
+				Key:   aws.String(k),
+				Value: aws.String(v),
+			})
+		}
+	}
+
+	tfMap := d.Get("security_service_policy_data").([]any)[0].(map[string]any)
+	apiObject.SecurityServicePolicyData = &awstypes.SecurityServicePolicyData{
+		ManagedServiceData: aws.String(tfMap["managed_service_data"].(string)),
+		Type:               awstypes.SecurityServiceType(tfMap[names.AttrType].(string)),
+	}
+
+	if v, ok := tfMap["policy_option"].([]any); ok && len(v) > 0 && v[0] != nil {
+		apiObject.SecurityServicePolicyData.PolicyOption = expandPolicyOption(v[0].(map[string]any))
+	}
+
+	return apiObject
+}

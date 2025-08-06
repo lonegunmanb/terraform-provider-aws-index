@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datapipeline
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datapipeline"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datapipeline/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePipelineDefinitionPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).DataPipelineClient(ctx)
+
+	pipelineID := d.Get("pipeline_id").(string)
+	input := &datapipeline.PutPipelineDefinitionInput{
+		PipelineId:      aws.String(pipelineID),
+		PipelineObjects: expandPipelineDefinitionObjects(d.Get("pipeline_object").(*schema.Set).List()),
+	}
+
+	if v, ok := d.GetOk("parameter_object"); ok {
+		input.ParameterObjects = expandPipelineDefinitionParameterObjects(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("parameter_value"); ok {
+		input.ParameterValues = expandPipelineDefinitionParameterValues(v.(*schema.Set).List())
+	}
+
+	var err error
+	var output *datapipeline.PutPipelineDefinitionOutput
+	err = retry.RetryContext(ctx, d.Timeout(schema.TimeoutCreate), func() *retry.RetryError {
+		output, err = conn.PutPipelineDefinition(ctx, input)
+		if err != nil {
+			if errs.IsA[*awstypes.InternalServiceError](err) {
+				return retry.RetryableError(err)
+			}
+
+			return retry.NonRetryableError(err)
+		}
+		if output.Errored {
+			errors := getValidationError(output.ValidationErrors)
+			if strings.Contains(errors.Error(), names.AttrRole) {
+				return retry.RetryableError(fmt.Errorf("validating after creation DataPipeline Pipeline Definition (%s): %w", pipelineID, errors))
+			}
+		}
+
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		output, err = conn.PutPipelineDefinition(ctx, input)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DataPipeline Pipeline Definition (%s): %s", pipelineID, err)
+	}
+
+	if output.Errored {
+		return sdkdiag.AppendErrorf(diags, "validating after creation DataPipeline Pipeline Definition (%s): %s", pipelineID, getValidationError(output.ValidationErrors))
+	}
+
+	// Activate pipeline if enabled
+	input2 := &datapipeline.ActivatePipelineInput{
+		PipelineId: aws.String(pipelineID),
+	}
+
+	_, err = conn.ActivatePipeline(ctx, input2)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "activating DataPipeline Pipeline Definition (%s): %s", pipelineID, err)
+	}
+
+	d.SetId(pipelineID)
+
+	return append(diags, resourcePipelineDefinitionRead(ctx, d, meta)...)
+}

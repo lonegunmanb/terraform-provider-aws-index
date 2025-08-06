@@ -1,0 +1,220 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"net/url"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+
+	var optFns []func(*s3.Options)
+	// Via S3 access point: "Invalid configuration: region from ARN `us-east-1` does not match client region `aws-global` and UseArnRegion is `false`".
+	if arn.IsARN(bucket) && conn.Options().Region == endpoints.AwsGlobalRegionID {
+		optFns = append(optFns, func(o *s3.Options) { o.UseARNRegion = true })
+	}
+
+	input := &s3.CopyObjectInput{
+		Bucket:     aws.String(bucket),
+		CopySource: aws.String(url.QueryEscape(d.Get(names.AttrSource).(string))),
+		Key:        aws.String(sdkv1CompatibleCleanKey(d.Get(names.AttrKey).(string))),
+	}
+
+	if v, ok := d.GetOk("acl"); ok {
+		input.ACL = types.ObjectCannedACL(v.(string))
+	}
+
+	if v, ok := d.GetOk("bucket_key_enabled"); ok {
+		input.BucketKeyEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("cache_control"); ok {
+		input.CacheControl = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("checksum_algorithm"); ok {
+		input.ChecksumAlgorithm = types.ChecksumAlgorithm(v.(string))
+	}
+
+	if v, ok := d.GetOk("content_disposition"); ok {
+		input.ContentDisposition = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("content_encoding"); ok {
+		input.ContentEncoding = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("content_language"); ok {
+		input.ContentLanguage = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrContentType); ok {
+		input.ContentType = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("copy_if_match"); ok {
+		input.CopySourceIfMatch = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("copy_if_modified_since"); ok {
+		input.CopySourceIfModifiedSince = expandObjectDate(v.(string))
+	}
+
+	if v, ok := d.GetOk("copy_if_none_match"); ok {
+		input.CopySourceIfNoneMatch = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("copy_if_unmodified_since"); ok {
+		input.CopySourceIfUnmodifiedSince = expandObjectDate(v.(string))
+	}
+
+	if v, ok := d.GetOk("customer_algorithm"); ok {
+		input.SSECustomerAlgorithm = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("customer_key"); ok {
+		input.SSECustomerKey = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("customer_key_md5"); ok {
+		input.SSECustomerKeyMD5 = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrExpectedBucketOwner); ok {
+		input.ExpectedBucketOwner = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("expected_source_bucket_owner"); ok {
+		input.ExpectedSourceBucketOwner = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("expires"); ok {
+		input.Expires = expandObjectDate(v.(string))
+	}
+
+	if v, ok := d.GetOk("grant"); ok && v.(*schema.Set).Len() > 0 {
+		grants := expandObjectCopyGrants(v.(*schema.Set).List())
+		input.GrantFullControl = grants.FullControl
+		input.GrantRead = grants.Read
+		input.GrantReadACP = grants.ReadACP
+		input.GrantWriteACP = grants.WriteACP
+		input.ACL = ""
+	}
+
+	if v, ok := d.GetOk("kms_encryption_context"); ok {
+		input.SSEKMSEncryptionContext = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		input.SSEKMSKeyId = aws.String(v.(string))
+		input.ServerSideEncryption = types.ServerSideEncryptionAwsKms
+	}
+
+	if v, ok := d.GetOk("metadata"); ok {
+		input.Metadata = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("metadata_directive"); ok {
+		input.MetadataDirective = types.MetadataDirective(v.(string))
+	}
+
+	if v, ok := d.GetOk("object_lock_legal_hold_status"); ok {
+		input.ObjectLockLegalHoldStatus = types.ObjectLockLegalHoldStatus(v.(string))
+	}
+
+	if v, ok := d.GetOk("object_lock_mode"); ok {
+		input.ObjectLockMode = types.ObjectLockMode(v.(string))
+	}
+
+	if v, ok := d.GetOk("object_lock_retain_until_date"); ok {
+		input.ObjectLockRetainUntilDate = expandObjectDate(v.(string))
+	}
+
+	if v, ok := d.GetOk("request_payer"); ok {
+		input.RequestPayer = types.RequestPayer(v.(string))
+	}
+
+	if v, ok := d.GetOk("server_side_encryption"); ok {
+		input.ServerSideEncryption = types.ServerSideEncryption(v.(string))
+	}
+
+	if v, ok := d.GetOk("source_customer_algorithm"); ok {
+		input.CopySourceSSECustomerAlgorithm = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("source_customer_key"); ok {
+		input.CopySourceSSECustomerKey = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("source_customer_key_md5"); ok {
+		input.CopySourceSSECustomerKeyMD5 = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrStorageClass); ok {
+		input.StorageClass = types.StorageClass(v.(string))
+	}
+
+	if v, ok := d.GetOk("tagging_directive"); ok {
+		input.TaggingDirective = types.TaggingDirective(v.(string))
+	}
+
+	defaultTagsConfig := meta.(*conns.AWSClient).DefaultTagsConfig(ctx)
+	tags := tftags.New(ctx, d.Get(names.AttrTags).(map[string]any))
+	if ignoreProviderDefaultTags(ctx, d) {
+		tags = tags.RemoveDefaultConfig(defaultTagsConfig)
+	} else {
+		tags = defaultTagsConfig.MergeTags(tftags.New(ctx, tags))
+	}
+
+	if len(tags) > 0 {
+		// The tag-set must be encoded as URL Query parameters.
+		input.Tagging = aws.String(tags.IgnoreAWS().URLEncode())
+	}
+
+	if v, ok := d.GetOk("website_redirect"); ok {
+		input.WebsiteRedirectLocation = aws.String(v.(string))
+	}
+
+	output, err := conn.CopyObject(ctx, input, optFns...)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "copying %s to S3 Bucket (%s) Object (%s): %s", aws.ToString(input.CopySource), aws.ToString(input.Bucket), aws.ToString(input.Key), err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(d.Get(names.AttrKey).(string))
+	}
+
+	// These attributes aren't returned from HeadObject.
+	d.Set("kms_encryption_context", output.SSEKMSEncryptionContext)
+	d.Set("request_charged", output.RequestCharged == types.RequestChargedRequester)
+	d.Set("source_version_id", output.CopySourceVersionId)
+
+	return append(diags, resourceObjectCopyRead(ctx, d, meta)...)
+}

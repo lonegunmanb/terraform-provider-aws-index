@@ -1,0 +1,112 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataLakeSettingsCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LakeFormationClient(ctx)
+
+	input := &lakeformation.PutDataLakeSettingsInput{}
+
+	if v, ok := d.GetOk(names.AttrCatalogID); ok {
+		input.CatalogId = aws.String(v.(string))
+	}
+
+	settings := &awstypes.DataLakeSettings{}
+
+	if v, ok := d.GetOk("admins"); ok {
+		settings.DataLakeAdmins = expandDataLakeSettingsAdmins(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("allow_external_data_filtering"); ok {
+		settings.AllowExternalDataFiltering = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("allow_full_table_external_data_access"); ok {
+		settings.AllowFullTableExternalDataAccess = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("authorized_session_tag_value_list"); ok {
+		settings.AuthorizedSessionTagValueList = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("create_database_default_permissions"); ok {
+		settings.CreateDatabaseDefaultPermissions = expandDataLakeSettingsCreateDefaultPermissions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("create_table_default_permissions"); ok {
+		settings.CreateTableDefaultPermissions = expandDataLakeSettingsCreateDefaultPermissions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("external_data_filtering_allow_list"); ok {
+		settings.ExternalDataFilteringAllowList = expandDataLakeSettingsDataFilteringAllowList(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk(names.AttrParameters); ok {
+		settings.Parameters = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("read_only_admins"); ok {
+		settings.ReadOnlyAdmins = expandDataLakeSettingsAdmins(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("trusted_resource_owners"); ok {
+		settings.TrustedResourceOwners = flex.ExpandStringValueList(v.([]any))
+	}
+
+	input.DataLakeSettings = settings
+
+	var output *lakeformation.PutDataLakeSettingsOutput
+	err := retry.RetryContext(ctx, IAMPropagationTimeout, func() *retry.RetryError {
+		var err error
+		output, err = conn.PutDataLakeSettings(ctx, input)
+		if err != nil {
+			if errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "Invalid principal") {
+				return retry.RetryableError(err)
+			}
+
+			if errs.IsA[*awstypes.ConcurrentModificationException](err) {
+				return retry.RetryableError(err)
+			}
+
+			return retry.NonRetryableError(fmt.Errorf("creating Lake Formation data lake settings: %w", err))
+		}
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		output, err = conn.PutDataLakeSettings(ctx, input)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Lake Formation data lake settings: %s", err)
+	}
+
+	if output == nil {
+		return sdkdiag.AppendErrorf(diags, "creating Lake Formation data lake settings: empty response")
+	}
+
+	d.SetId(strconv.Itoa(create.StringHashcode(prettify(input))))
+
+	return append(diags, resourceDataLakeSettingsRead(ctx, d, meta)...)
+}

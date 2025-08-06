@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/controltower
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/controltower"
+	"github.com/aws/aws-sdk-go-v2/service/controltower/document"
+	"github.com/aws/aws-sdk-go-v2/service/controltower/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceControlCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ControlTowerClient(ctx)
+
+	controlIdentifier := d.Get("control_identifier").(string)
+	targetIdentifier := d.Get("target_identifier").(string)
+	id, err := flex.FlattenResourceId([]string{targetIdentifier, controlIdentifier}, controlResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &controltower.EnableControlInput{
+		ControlIdentifier: aws.String(controlIdentifier),
+		TargetIdentifier:  aws.String(targetIdentifier),
+	}
+
+	if v, ok := d.GetOk(names.AttrParameters); ok && v.(*schema.Set).Len() > 0 {
+		p, err := expandControlParameters(v.(*schema.Set).List())
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating ControlTower Control (%s): %s", id, err)
+		}
+
+		input.Parameters = p
+	}
+
+	output, err := conn.EnableControl(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating ControlTower Control (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+	d.Set(names.AttrARN, output.Arn)
+
+	if _, err := waitOperationSucceeded(ctx, conn, aws.ToString(output.OperationIdentifier), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ControlTower Control (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceControlRead(ctx, d, meta)...)
+}

@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTopicRuleDestinationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	log.Printf("[INFO] Deleting IoT Topic Rule Destination: %s", d.Id())
+
+	// DeleteTopicRuleDestination returns unhelpful errors such as
+	// "UnauthorizedException: Access to TopicRuleDestination 'xxx' was denied" when querying for a rule destination that doesn't exist.
+	_, err := conn.DeleteTopicRuleDestination(ctx, &iot.DeleteTopicRuleDestinationInput{
+		Arn: aws.String(d.Id()),
+	})
+
+	if errs.IsA[*awstypes.UnauthorizedException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting IoT Topic Rule Destination: %s", err)
+	}
+
+	if _, err := waitTopicRuleDestinationDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for IoT Topic Rule Destination (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

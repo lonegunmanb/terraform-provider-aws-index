@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDistributionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	out, err := FindDistributionByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Lightsail Distribution (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.Lightsail, create.ErrActionReading, ResNameDistribution, d.Id(), err)
+	}
+
+	d.Set("alternative_domain_names", out.AlternativeDomainNames)
+	d.Set(names.AttrARN, out.Arn)
+	d.Set("bundle_id", out.BundleId)
+	if err := d.Set("cache_behavior", flattenCacheBehaviorsPerPath(out.CacheBehaviors)); err != nil {
+		return create.AppendDiagError(diags, names.Lightsail, create.ErrActionSetting, ResNameDistribution, d.Id(), err)
+	}
+
+	if out.CacheBehaviorSettings != nil {
+		if err := d.Set("cache_behavior_settings", []any{flattenCacheSettings(out.CacheBehaviorSettings)}); err != nil {
+			return create.AppendDiagError(diags, names.Lightsail, create.ErrActionSetting, ResNameDistribution, d.Id(), err)
+		}
+	} else {
+		d.Set("cache_behavior_settings", nil)
+	}
+
+	d.Set("certificate_name", out.CertificateName)
+	d.Set(names.AttrCreatedAt, out.CreatedAt.Format(time.RFC3339))
+
+	if err := d.Set("default_cache_behavior", []any{flattenCacheBehavior(out.DefaultCacheBehavior)}); err != nil {
+		return create.AppendDiagError(diags, names.Lightsail, create.ErrActionSetting, ResNameDistribution, d.Id(), err)
+	}
+	d.Set(names.AttrDomainName, out.DomainName)
+	d.Set("is_enabled", out.IsEnabled)
+	d.Set(names.AttrIPAddressType, out.IpAddressType)
+	d.Set(names.AttrLocation, []any{flattenResourceLocation(out.Location)})
+	if err := d.Set("origin", []any{flattenOrigin(out.Origin)}); err != nil {
+		return create.AppendDiagError(diags, names.Lightsail, create.ErrActionSetting, ResNameDistribution, d.Id(), err)
+	}
+	d.Set(names.AttrName, out.Name)
+	d.Set("origin_public_dns", out.OriginPublicDNS)
+	d.Set(names.AttrResourceType, out.ResourceType)
+	d.Set(names.AttrStatus, out.Status)
+	d.Set("support_code", out.SupportCode)
+
+	setTagsOut(ctx, out.Tags)
+
+	return diags
+}

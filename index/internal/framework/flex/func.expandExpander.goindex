@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	smithyjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func expandExpander(ctx context.Context, fromExpander Expander, toVal reflect.Value) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	expanded, d := fromExpander.Expand(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	if expanded == nil {
+		diags.Append(diagExpandsToNil(reflect.TypeOf(fromExpander)))
+		return diags
+	}
+
+	expandedVal := reflect.ValueOf(expanded)
+
+	targetType := toVal.Type()
+	if targetType.Kind() == reflect.Interface {
+		expandedType := reflect.TypeOf(expanded)
+		if !expandedType.Implements(targetType) {
+			diags.Append(diagExpandedTypeDoesNotImplement(expandedType, targetType))
+			return diags
+		}
+
+		toVal.Set(expandedVal)
+
+		return diags
+	}
+
+	if targetType.Kind() == reflect.Struct {
+		expandedVal = expandedVal.Elem()
+	}
+	expandedType := expandedVal.Type()
+
+	if !expandedType.AssignableTo(targetType) {
+		diags.Append(diagCannotBeAssigned(expandedType, targetType))
+		return diags
+	}
+
+	toVal.Set(expandedVal)
+
+	return diags
+}

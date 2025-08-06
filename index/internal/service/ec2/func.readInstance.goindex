@@ -1,0 +1,94 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"log"
+	"math/big"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func readInstance(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	instance, err := findInstanceByID(ctx, conn, d.Get("spot_instance_id").(string))
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set("public_dns", instance.PublicDnsName)
+	d.Set("public_ip", instance.PublicIpAddress)
+	d.Set("private_dns", instance.PrivateDnsName)
+	d.Set("private_ip", instance.PrivateIpAddress)
+	d.Set("source_dest_check", instance.SourceDestCheck)
+
+	// set connection information
+	if instance.PublicIpAddress != nil {
+		d.SetConnInfo(map[string]string{
+			names.AttrType: "ssh",
+			"host":         *instance.PublicIpAddress,
+		})
+	} else if instance.PrivateIpAddress != nil {
+		d.SetConnInfo(map[string]string{
+			names.AttrType: "ssh",
+			"host":         *instance.PrivateIpAddress,
+		})
+	}
+	if err := readBlockDevices(ctx, d, meta, instance, false); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	var ipv6Addresses []string
+	if len(instance.NetworkInterfaces) > 0 {
+		for _, ni := range instance.NetworkInterfaces {
+			if aws.ToInt32(ni.Attachment.DeviceIndex) == 0 {
+				d.Set(names.AttrSubnetID, ni.SubnetId)
+				d.Set("primary_network_interface_id", ni.NetworkInterfaceId)
+				d.Set("associate_public_ip_address", ni.Association != nil)
+				d.Set("ipv6_address_count", len(ni.Ipv6Addresses))
+
+				for _, address := range ni.Ipv6Addresses {
+					ipv6Addresses = append(ipv6Addresses, *address.Ipv6Address)
+				}
+			}
+		}
+	} else {
+		d.Set(names.AttrSubnetID, instance.SubnetId)
+		d.Set("primary_network_interface_id", "")
+	}
+
+	if err := d.Set("ipv6_addresses", ipv6Addresses); err != nil {
+		log.Printf("[WARN] Error setting ipv6_addresses for AWS Spot Instance (%s): %s", d.Id(), err)
+	}
+
+	if err := readSecurityGroups(ctx, d, instance, conn); err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Instance (%s): %s", aws.ToString(instance.InstanceId), err)
+	}
+
+	if d.Get("get_password_data").(bool) {
+		passwordData, err := getInstancePasswordData(ctx, *instance.InstanceId, conn, d.Timeout(schema.TimeoutRead))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		d.Set("password_data", passwordData)
+	} else {
+		d.Set("get_password_data", false)
+		d.Set("password_data", nil)
+	}
+
+	return diags
+}

@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"encoding/json"
+	"log"
+
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+)
+func suppressEquivalentTaskSettings(k, state, proposed string, d *schema.ResourceData) bool {
+	if !json.Valid([]byte(state)) || !json.Valid([]byte(proposed)) {
+		return state == proposed
+	}
+
+	var stateMap, proposedMap map[string]any
+
+	if err := json.Unmarshal([]byte(state), &stateMap); err != nil {
+		log.Printf("[ERROR] failed to unmarshal task settings JSON: %v", err)
+		return false
+	}
+
+	if s, ok := stateMap["Logging"]; ok {
+		stateLogging := s.(map[string]any)
+		if stateLogging != nil {
+			delete(stateLogging, "CloudWatchLogGroup")
+			delete(stateLogging, "CloudWatchLogStream")
+		}
+		normalizeLogComponents(stateLogging)
+	}
+
+	if err := json.Unmarshal([]byte(proposed), &proposedMap); err != nil {
+		log.Printf("[ERROR] failed to unmarshal task settings JSON: %v", err)
+		return false
+	}
+
+	if p, ok := proposedMap["Logging"]; ok {
+		proposedLogging := p.(map[string]any)
+
+		normalizeLogComponents(proposedLogging)
+	}
+
+	return taskSettingsEqual(stateMap, proposedMap)
+}

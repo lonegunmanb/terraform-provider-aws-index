@@ -1,0 +1,100 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/gamelift
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/gamelift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/gamelift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFleetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GameLiftClient(ctx)
+
+	startTime := time.Now()
+	name := d.Get(names.AttrName).(string)
+	input := &gamelift.CreateFleetInput{
+		EC2InstanceType: awstypes.EC2InstanceType(d.Get("ec2_instance_type").(string)),
+		Name:            aws.String(name),
+		Tags:            getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("build_id"); ok {
+		input.BuildId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("certificate_configuration"); ok {
+		input.CertificateConfiguration = expandCertificateConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("fleet_type"); ok {
+		input.FleetType = awstypes.FleetType(v.(string))
+	}
+
+	if v, ok := d.GetOk("ec2_inbound_permission"); ok {
+		input.EC2InboundPermissions = expandIPPermissions(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("instance_role_arn"); ok {
+		input.InstanceRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("metric_groups"); ok {
+		input.MetricGroups = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("new_game_session_protection_policy"); ok {
+		input.NewGameSessionProtectionPolicy = awstypes.ProtectionPolicy(v.(string))
+	}
+
+	if v, ok := d.GetOk("resource_creation_limit_policy"); ok {
+		input.ResourceCreationLimitPolicy = expandResourceCreationLimitPolicy(v.([]any))
+	}
+
+	if v, ok := d.GetOk("runtime_configuration"); ok {
+		input.RuntimeConfiguration = expandRuntimeConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("script_id"); ok {
+		input.ScriptId = aws.String(v.(string))
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidRequestException](ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateFleet(ctx, input)
+	}, "GameLift is not authorized to perform")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating GameLift Fleet (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*gamelift.CreateFleetOutput).FleetAttributes.FleetId))
+
+	if _, err := waitFleetActive(ctx, conn, d.Id(), startTime, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for GameLift Fleet (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceFleetRead(ctx, d, meta)...)
+}

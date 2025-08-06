@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudtrail
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudtrail/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tforganizations "github.com/hashicorp/terraform-provider-aws/internal/service/organizations"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *organizationDelegatedAdminAccountResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	var data organizationDelegatedAdminAccountResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if err := data.InitFromID(); err != nil {
+		response.Diagnostics.AddError("parsing resource ID", err.Error())
+
+		return
+	}
+
+	conn := r.Meta().OrganizationsClient(ctx)
+
+	delegatedAdministrator, err := tforganizations.FindDelegatedAdministratorByTwoPartKey(ctx, conn, data.ID.ValueString(), servicePrincipal)
+
+	if tfresource.NotFound(err) {
+		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		response.State.RemoveResource(ctx)
+
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading CloudTrail Organization Delegated Admin Account (%s)", data.ID.ValueString()), err.Error())
+
+		return
+	}
+
+	// Set attributes for import.
+	data.ARN = fwflex.StringToFramework(ctx, delegatedAdministrator.Arn)
+	data.Email = fwflex.StringToFramework(ctx, delegatedAdministrator.Email)
+	data.Name = fwflex.StringToFramework(ctx, delegatedAdministrator.Name)
+	data.ServicePrincipal = fwflex.StringValueToFramework(ctx, servicePrincipal)
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

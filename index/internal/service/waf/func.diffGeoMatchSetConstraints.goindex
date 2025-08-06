@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/waf
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/waf"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/waf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func diffGeoMatchSetConstraints(oldT, newT []any) []awstypes.GeoMatchSetUpdate {
+	updates := make([]awstypes.GeoMatchSetUpdate, 0)
+
+	for _, od := range oldT {
+		constraint := od.(map[string]any)
+
+		if idx, contains := sliceContainsMap(newT, constraint); contains {
+			newT = slices.Delete(newT, idx, idx+1)
+			continue
+		}
+
+		updates = append(updates, awstypes.GeoMatchSetUpdate{
+			Action: awstypes.ChangeActionDelete,
+			GeoMatchConstraint: &awstypes.GeoMatchConstraint{
+				Type:  awstypes.GeoMatchConstraintType(constraint[names.AttrType].(string)),
+				Value: awstypes.GeoMatchConstraintValue(constraint[names.AttrValue].(string)),
+			},
+		})
+	}
+
+	for _, nd := range newT {
+		constraint := nd.(map[string]any)
+
+		updates = append(updates, awstypes.GeoMatchSetUpdate{
+			Action: awstypes.ChangeActionInsert,
+			GeoMatchConstraint: &awstypes.GeoMatchConstraint{
+				Type:  awstypes.GeoMatchConstraintType(constraint[names.AttrType].(string)),
+				Value: awstypes.GeoMatchConstraintValue(constraint[names.AttrValue].(string)),
+			},
+		})
+	}
+	return updates
+}

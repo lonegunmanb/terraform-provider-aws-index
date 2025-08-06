@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (o *blueGreenOrchestrator) Switchover(ctx context.Context, identifier string, timeout time.Duration) (*types.BlueGreenDeployment, error) {
+	input := &rds.SwitchoverBlueGreenDeploymentInput{
+		BlueGreenDeploymentIdentifier: aws.String(identifier),
+	}
+	_, err := tfresource.RetryWhen(ctx, 10*time.Minute,
+		func() (any, error) {
+			return o.conn.SwitchoverBlueGreenDeployment(ctx, input)
+		},
+		func(err error) (bool, error) {
+			return errs.IsA[*types.InvalidBlueGreenDeploymentStateFault](err), err
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("switching over Blue/Green Deployment: %s", err)
+	}
+
+	dep, err := waitBlueGreenDeploymentSwitchoverCompleted(ctx, o.conn, identifier, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("switching over Blue/Green Deployment: waiting for completion: %s", err)
+	}
+	return dep, nil
+}

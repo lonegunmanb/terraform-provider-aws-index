@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/batch
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/batch/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceJobDefinitionDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).BatchClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &batch.DescribeJobDefinitionsInput{
+		JobDefinitionName: aws.String(name),
+		Status:            aws.String(jobDefinitionStatusActive),
+	}
+
+	jds, err := findJobDefinitions(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Batch Job Definitions (%s): %s", name, err)
+	}
+
+	for i := range jds {
+		arn := aws.ToString(jds[i].JobDefinitionArn)
+
+		log.Printf("[DEBUG] Deregistering Batch Job Definition: %s", arn)
+		input := batch.DeregisterJobDefinitionInput{
+			JobDefinition: aws.String(arn),
+		}
+		_, err := conn.DeregisterJobDefinition(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "deregistering Batch Job Definition (%s): %s", arn, err)
+		}
+	}
+
+	return diags
+}

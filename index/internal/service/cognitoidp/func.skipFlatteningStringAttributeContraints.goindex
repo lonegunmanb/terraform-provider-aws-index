@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func skipFlatteningStringAttributeContraints(configuredAttributes []awstypes.SchemaAttributeType, apiObject *awstypes.SchemaAttributeType) bool {
+	for _, configuredAttribute := range configuredAttributes {
+		// Root elements are all equal
+		if reflect.DeepEqual(apiObject.AttributeDataType, configuredAttribute.AttributeDataType) &&
+			reflect.DeepEqual(apiObject.DeveloperOnlyAttribute, configuredAttribute.DeveloperOnlyAttribute) &&
+			reflect.DeepEqual(apiObject.Mutable, configuredAttribute.Mutable) &&
+			reflect.DeepEqual(apiObject.Name, configuredAttribute.Name) &&
+			reflect.DeepEqual(apiObject.Required, configuredAttribute.Required) &&
+			// The configured "string_attribute_constraints" object is empty, but the returned value is not
+			(configuredAttribute.AttributeDataType == awstypes.AttributeDataTypeString &&
+				configuredAttribute.StringAttributeConstraints == nil &&
+				apiObject.StringAttributeConstraints != nil) {
+			return true
+		}
+	}
+
+	return false
+}

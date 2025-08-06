@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/backup
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/backup"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/backup/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *restoreTestingSelectionResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new restoreTestingSelectionResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().BackupClient(ctx)
+
+	if !old.IAMRoleARN.Equal(new.IAMRoleARN) ||
+		!old.ProtectedResourceConditions.Equal(new.ProtectedResourceConditions) ||
+		!old.RestoreMetadataOverrides.Equal(new.RestoreMetadataOverrides) ||
+		!old.ValidationWindowHours.Equal(new.ValidationWindowHours) {
+		restoreTestingPlanName := new.RestoreTestingPlanName.ValueString()
+		name := new.RestoreTestingSelectionName.ValueString()
+		input := &backup.UpdateRestoreTestingSelectionInput{
+			RestoreTestingPlanName:      aws.String(restoreTestingPlanName),
+			RestoreTestingSelection:     &awstypes.RestoreTestingSelectionForUpdate{},
+			RestoreTestingSelectionName: aws.String(name),
+		}
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, input.RestoreTestingSelection)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		_, err := conn.UpdateRestoreTestingSelection(ctx, input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating Backup Restore Testing Selection (%s)", name), err.Error())
+
+			return
+		}
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+}

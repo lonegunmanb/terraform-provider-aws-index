@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMethodResponseCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	input := apigateway.PutMethodResponseInput{
+		HttpMethod: aws.String(d.Get("http_method").(string)),
+		ResourceId: aws.String(d.Get(names.AttrResourceID).(string)),
+		RestApiId:  aws.String(d.Get("rest_api_id").(string)),
+		StatusCode: aws.String(d.Get(names.AttrStatusCode).(string)),
+	}
+
+	if v, ok := d.GetOk("response_models"); ok && len(v.(map[string]any)) > 0 {
+		input.ResponseModels = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("response_parameters"); ok && len(v.(map[string]any)) > 0 {
+		input.ResponseParameters = flex.ExpandBoolValueMap(v.(map[string]any))
+	}
+
+	mutexKey := "api-gateway-method-response"
+	conns.GlobalMutexKV.Lock(mutexKey)
+	defer conns.GlobalMutexKV.Unlock(mutexKey)
+
+	const (
+		timeout = 2 * time.Minute
+	)
+	_, err := tfresource.RetryWhenIsA[*types.ConflictException](ctx, timeout, func() (any, error) {
+		return conn.PutMethodResponse(ctx, &input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway Method Response: %s", err)
+	}
+
+	d.SetId(fmt.Sprintf("agmr-%s-%s-%s-%s", d.Get("rest_api_id").(string), d.Get(names.AttrResourceID).(string), d.Get("http_method").(string), d.Get(names.AttrStatusCode).(string)))
+
+	return diags
+}

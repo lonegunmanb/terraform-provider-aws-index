@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMemberRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GuardDutyClient(ctx)
+
+	accountID, detectorID, err := DecodeMemberID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading GuardDuty Member (%s): %s", d.Id(), err)
+	}
+
+	input := guardduty.GetMembersInput{
+		AccountIds: []string{accountID},
+		DetectorId: aws.String(detectorID),
+	}
+
+	log.Printf("[DEBUG] Reading GuardDuty Member: %+v", input)
+	gmo, err := conn.GetMembers(ctx, &input)
+	if err != nil {
+		if errs.IsAErrorMessageContains[*awstypes.BadRequestException](err, "The request is rejected because the input detectorId is not owned by the current account.") {
+			log.Printf("[WARN] GuardDuty detector %q not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+		return sdkdiag.AppendErrorf(diags, "reading GuardDuty Member (%s): %s", d.Id(), err)
+	}
+
+	if gmo.Members == nil || (len(gmo.Members) < 1) {
+		log.Printf("[WARN] GuardDuty Member %q not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	member := gmo.Members[0]
+	d.Set(names.AttrAccountID, member.AccountId)
+	d.Set("detector_id", detectorID)
+	d.Set(names.AttrEmail, member.Email)
+
+	status := aws.ToString(member.RelationshipStatus)
+	d.Set("relationship_status", status)
+
+	// https://docs.aws.amazon.com/guardduty/latest/ug/list-members.html
+	d.Set("invite", false)
+	if status == "Disabled" || status == "Enabled" || status == "Invited" || status == "EmailVerificationInProgress" {
+		d.Set("invite", true)
+	}
+
+	return diags
+}

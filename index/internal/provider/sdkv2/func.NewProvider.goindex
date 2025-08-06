@@ -1,0 +1,307 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"log"
+	"maps"
+	"os"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	awsbase "github.com/hashicorp/aws-sdk-go-base/v2"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/internal/attribute"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func NewProvider(ctx context.Context) (*schema.Provider, error) {
+	log.Printf("Creating Terraform AWS Provider (SDKv2-style)...")
+
+	sdkProvider := &sdkProvider{
+		provider: &schema.Provider{
+			// This schema must match exactly the Terraform Protocol v6 (Terraform Plugin Framework) provider's schema.
+			// Notably the attributes can have no Default values.
+			Schema: map[string]*schema.Schema{
+				"access_key": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "The access key for API operations. You can retrieve this\n" +
+						"from the 'Security & Credentials' section of the AWS console.",
+				},
+				"allowed_account_ids": {
+					Type:          schema.TypeSet,
+					Elem:          &schema.Schema{Type: schema.TypeString},
+					Optional:      true,
+					ConflictsWith: []string{"forbidden_account_ids"},
+				},
+				"assume_role":                   assumeRoleSchema(),
+				"assume_role_with_web_identity": assumeRoleWithWebIdentitySchema(),
+				"custom_ca_bundle": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "File containing custom root and intermediate certificates. " +
+						"Can also be configured using the `AWS_CA_BUNDLE` environment variable. " +
+						"(Setting `ca_bundle` in the shared config file is not supported.)",
+				},
+				"default_tags": {
+					Type:        schema.TypeList,
+					Optional:    true,
+					MaxItems:    1,
+					Description: "Configuration block with settings to default resource tags across all resources.",
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"tags": {
+								Type:     schema.TypeMap,
+								Optional: true,
+								Elem:     &schema.Schema{Type: schema.TypeString},
+								Description: "Resource tags to default across all resources. " +
+									"Can also be configured with environment variables like `" + tftags.DefaultTagsEnvVarPrefix + "<tag_name>`.",
+							},
+						},
+					},
+				},
+				"ec2_metadata_service_endpoint": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "Address of the EC2 metadata service endpoint to use. " +
+						"Can also be configured using the `AWS_EC2_METADATA_SERVICE_ENDPOINT` environment variable.",
+				},
+				"ec2_metadata_service_endpoint_mode": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "Protocol to use with EC2 metadata service endpoint." +
+						"Valid values are `IPv4` and `IPv6`. Can also be configured using the `AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE` environment variable.",
+				},
+				"endpoints": endpointsSchema(),
+				"forbidden_account_ids": {
+					Type:          schema.TypeSet,
+					Elem:          &schema.Schema{Type: schema.TypeString},
+					Optional:      true,
+					ConflictsWith: []string{"allowed_account_ids"},
+				},
+				"http_proxy": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "URL of a proxy to use for HTTP requests when accessing the AWS API. " +
+						"Can also be set using the `HTTP_PROXY` or `http_proxy` environment variables.",
+				},
+				"https_proxy": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "URL of a proxy to use for HTTPS requests when accessing the AWS API. " +
+						"Can also be set using the `HTTPS_PROXY` or `https_proxy` environment variables.",
+				},
+				"ignore_tags": {
+					Type:        schema.TypeList,
+					Optional:    true,
+					MaxItems:    1,
+					Description: "Configuration block with settings to ignore resource tags across all resources.",
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"keys": {
+								Type:     schema.TypeSet,
+								Optional: true,
+								Elem:     &schema.Schema{Type: schema.TypeString},
+								Description: "Resource tag keys to ignore across all resources. " +
+									"Can also be configured with the " + tftags.IgnoreTagsKeysEnvVar + " environment variable.",
+							},
+							"key_prefixes": {
+								Type:     schema.TypeSet,
+								Optional: true,
+								Elem:     &schema.Schema{Type: schema.TypeString},
+								Description: "Resource tag key prefixes to ignore across all resources. " +
+									"Can also be configured with the " + tftags.IgnoreTagsKeyPrefixesEnvVar + " environment variable.",
+							},
+						},
+					},
+				},
+				"insecure": {
+					Type:     schema.TypeBool,
+					Optional: true,
+					Description: "Explicitly allow the provider to perform \"insecure\" SSL requests. If omitted, " +
+						"default value is `false`",
+				},
+				"max_retries": {
+					Type:     schema.TypeInt,
+					Optional: true,
+					Description: "The maximum number of times an AWS API request is\n" +
+						"being executed. If the API request still fails, an error is\n" +
+						"thrown.",
+				},
+				"no_proxy": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "Comma-separated list of hosts that should not use HTTP or HTTPS proxies. " +
+						"Can also be set using the `NO_PROXY` or `no_proxy` environment variables.",
+				},
+				"profile": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "The profile for API operations. If not set, the default profile\n" +
+						"created with `aws configure` will be used.",
+				},
+				"region": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "The region where AWS operations will take place. Examples\n" +
+						"are us-east-1, us-west-2, etc.", // lintignore:AWSAT003,
+				},
+				"retry_mode": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "Specifies how retries are attempted. Valid values are `standard` and `adaptive`. " +
+						"Can also be configured using the `AWS_RETRY_MODE` environment variable.",
+				},
+				"s3_use_path_style": {
+					Type:     schema.TypeBool,
+					Optional: true,
+					Description: "Set this to true to enable the request to use path-style addressing,\n" +
+						"i.e., https://s3.amazonaws.com/BUCKET/KEY. By default, the S3 client will\n" +
+						"use virtual hosted bucket addressing when possible\n" +
+						"(https://BUCKET.s3.amazonaws.com/KEY). Specific to the Amazon S3 service.",
+				},
+				"s3_us_east_1_regional_endpoint": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "Specifies whether S3 API calls in the `us-east-1` region use the legacy global endpoint or a regional endpoint. " + //lintignore:AWSAT003
+						"Valid values are `legacy` or `regional`. " +
+						"Can also be configured using the `AWS_S3_US_EAST_1_REGIONAL_ENDPOINT` environment variable or the `s3_us_east_1_regional_endpoint` shared config file parameter",
+				},
+				"secret_key": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "The secret key for API operations. You can retrieve this\n" +
+						"from the 'Security & Credentials' section of the AWS console.",
+				},
+				"shared_config_files": {
+					Type:        schema.TypeList,
+					Optional:    true,
+					Description: "List of paths to shared config files. If not set, defaults to [~/.aws/config].",
+					Elem:        &schema.Schema{Type: schema.TypeString},
+				},
+				"shared_credentials_files": {
+					Type:        schema.TypeList,
+					Optional:    true,
+					Description: "List of paths to shared credentials files. If not set, defaults to [~/.aws/credentials].",
+					Elem:        &schema.Schema{Type: schema.TypeString},
+				},
+				"skip_credentials_validation": {
+					Type:     schema.TypeBool,
+					Optional: true,
+					Description: "Skip the credentials validation via STS API. " +
+						"Used for AWS API implementations that do not have STS available/implemented.",
+				},
+				"skip_metadata_api_check": {
+					Type:         nullable.TypeNullableBool,
+					Optional:     true,
+					ValidateFunc: nullable.ValidateTypeStringNullableBool,
+					Description: "Skip the AWS Metadata API check. " +
+						"Used for AWS API implementations that do not have a metadata api endpoint.",
+				},
+				"skip_region_validation": {
+					Type:     schema.TypeBool,
+					Optional: true,
+					Description: "Skip static validation of region name. " +
+						"Used by users of alternative AWS-like APIs or users w/ access to regions that are not public (yet).",
+				},
+				"skip_requesting_account_id": {
+					Type:     schema.TypeBool,
+					Optional: true,
+					Description: "Skip requesting the account ID. " +
+						"Used for AWS API implementations that do not have IAM/STS API and/or metadata API.",
+				},
+				"sts_region": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "The region where AWS STS operations will take place. Examples\n" +
+						"are us-east-1 and us-west-2.", // lintignore:AWSAT003,
+				},
+				"token": {
+					Type:     schema.TypeString,
+					Optional: true,
+					Description: "session token. A session token is only required if you are\n" +
+						"using temporary security credentials.",
+				},
+				"token_bucket_rate_limiter_capacity": {
+					Type:        schema.TypeInt,
+					Optional:    true,
+					Description: "The capacity of the AWS SDK's token bucket rate limiter.",
+				},
+				"use_dualstack_endpoint": {
+					Type:        schema.TypeBool,
+					Optional:    true,
+					Description: "Resolve an endpoint with DualStack capability",
+				},
+				"use_fips_endpoint": {
+					Type:        schema.TypeBool,
+					Optional:    true,
+					Description: "Resolve an endpoint with FIPS capability",
+				},
+			},
+
+			// Data sources and resources implemented using Terraform Plugin SDK
+			// should use the @SDKDataSource and @SDKResource function-level annotations
+			// rather than adding directly to these maps.
+			DataSourcesMap: make(map[string]*schema.Resource),
+			ResourcesMap:   make(map[string]*schema.Resource),
+		},
+		servicePackages: slices.All(servicePackages(ctx)),
+	}
+
+	sdkProvider.provider.ConfigureContextFunc = sdkProvider.configure
+
+	// Acceptance tests call this function multiple times, potentially in parallel.
+	// To avoid "fatal error: concurrent map writes", take a lock.
+	const (
+		mutexKVKey = "provider.New"
+	)
+	conns.GlobalMutexKV.Lock(mutexKVKey)
+	defer conns.GlobalMutexKV.Unlock(mutexKVKey)
+
+	// Because we try and share resource schemas as much as possible,
+	// we need to ensure that we only validate the resource schemas once.
+	if !resourceSchemasValidated {
+		if err := sdkProvider.validateResourceSchemas(ctx); err != nil {
+			return nil, err
+		}
+
+		resourceSchemasValidated = true
+	}
+
+	servicePackageMap, err := sdkProvider.initialize(ctx)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Set the provider Meta (instance data) here.
+	// It will be overwritten by the result of the call to ConfigureContextFunc,
+	// but can be used pre-configuration by other (non-primary) provider servers.
+	var c *conns.AWSClient
+	if v, ok := sdkProvider.provider.Meta().(*conns.AWSClient); ok {
+		c = v
+	} else {
+		c = new(conns.AWSClient)
+	}
+	c.SetServicePackages(ctx, servicePackageMap)
+	sdkProvider.provider.SetMeta(c)
+
+	return sdkProvider.provider, nil
+}

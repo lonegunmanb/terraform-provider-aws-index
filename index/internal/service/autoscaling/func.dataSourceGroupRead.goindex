@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+	ignoreTagsConfig := meta.(*conns.AWSClient).IgnoreTagsConfig(ctx)
+
+	groupName := d.Get(names.AttrName).(string)
+	group, err := findGroupByName(ctx, conn, groupName)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Auto Scaling Group (%s): %s", groupName, err)
+	}
+
+	d.SetId(aws.ToString(group.AutoScalingGroupName))
+	d.Set(names.AttrARN, group.AutoScalingGroupARN)
+	d.Set(names.AttrAvailabilityZones, group.AvailabilityZones)
+	d.Set("default_cooldown", group.DefaultCooldown)
+	d.Set("desired_capacity", group.DesiredCapacity)
+	d.Set("desired_capacity_type", group.DesiredCapacityType)
+	d.Set("enabled_metrics", flattenEnabledMetrics(group.EnabledMetrics))
+	d.Set("health_check_grace_period", group.HealthCheckGracePeriod)
+	d.Set("health_check_type", group.HealthCheckType)
+	if err := d.Set("instance_maintenance_policy", flattenInstanceMaintenancePolicy(group.InstanceMaintenancePolicy)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting instance_maintenance_policy: %s", err)
+	}
+	d.Set("launch_configuration", group.LaunchConfigurationName)
+	if group.LaunchTemplate != nil {
+		if err := d.Set(names.AttrLaunchTemplate, []any{flattenLaunchTemplateSpecification(group.LaunchTemplate)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting launch_template: %s", err)
+		}
+	} else {
+		d.Set(names.AttrLaunchTemplate, nil)
+	}
+	d.Set("load_balancers", group.LoadBalancerNames)
+	d.Set("max_instance_lifetime", group.MaxInstanceLifetime)
+	d.Set("max_size", group.MaxSize)
+	d.Set("min_size", group.MinSize)
+	if group.MixedInstancesPolicy != nil {
+		if err := d.Set("mixed_instances_policy", []any{flattenMixedInstancesPolicy(group.MixedInstancesPolicy)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting mixed_instances_policy: %s", err)
+		}
+	} else {
+		d.Set("mixed_instances_policy", nil)
+	}
+	d.Set(names.AttrName, group.AutoScalingGroupName)
+	d.Set("new_instances_protected_from_scale_in", group.NewInstancesProtectedFromScaleIn)
+	d.Set("placement_group", group.PlacementGroup)
+	d.Set("predicted_capacity", group.PredictedCapacity)
+	d.Set("service_linked_role_arn", group.ServiceLinkedRoleARN)
+	d.Set(names.AttrStatus, group.Status)
+	d.Set("suspended_processes", flattenSuspendedProcesses(group.SuspendedProcesses))
+	if err := d.Set("tag", listOfMap(KeyValueTags(ctx, group.Tags, d.Id(), TagResourceTypeGroup).IgnoreAWS().IgnoreConfig(ignoreTagsConfig))); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting tag: %s", err)
+	}
+	d.Set("target_group_arns", group.TargetGroupARNs)
+	d.Set("termination_policies", group.TerminationPolicies)
+	if err := d.Set("traffic_source", flattenTrafficSourceIdentifiers(group.TrafficSources)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting traffic_source: %s", err)
+	}
+	d.Set("vpc_zone_identifier", group.VPCZoneIdentifier)
+	if group.WarmPoolConfiguration != nil {
+		if err := d.Set("warm_pool", []any{flattenWarmPoolConfiguration(group.WarmPoolConfiguration)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting warm_pool: %s", err)
+		}
+	} else {
+		d.Set("warm_pool", nil)
+	}
+	d.Set("warm_pool_size", group.WarmPoolSize)
+
+	return diags
+}

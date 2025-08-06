@@ -1,0 +1,95 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dax
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dax"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dax/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DAXClient(ctx)
+
+	req := &dax.DescribeClustersInput{
+		ClusterNames: []string{d.Id()},
+	}
+
+	res, err := conn.DescribeClusters(ctx, req)
+
+	if errs.IsA[*awstypes.ClusterNotFoundFault](err) {
+		log.Printf("[WARN] DAX cluster (%s) not found", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DAX cluster (%s): %s", d.Id(), err)
+	}
+
+	if len(res.Clusters) == 0 {
+		log.Printf("[WARN] DAX cluster (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	c := res.Clusters[0]
+	d.Set(names.AttrARN, c.ClusterArn)
+	d.Set(names.AttrClusterName, c.ClusterName)
+	d.Set("cluster_endpoint_encryption_type", c.ClusterEndpointEncryptionType)
+	d.Set(names.AttrDescription, c.Description)
+	d.Set(names.AttrIAMRoleARN, c.IamRoleArn)
+	d.Set("node_type", c.NodeType)
+	d.Set("replication_factor", c.TotalNodes)
+
+	if c.ClusterDiscoveryEndpoint != nil {
+		d.Set(names.AttrPort, c.ClusterDiscoveryEndpoint.Port)
+		d.Set("configuration_endpoint", fmt.Sprintf("%s:%d", aws.ToString(c.ClusterDiscoveryEndpoint.Address), c.ClusterDiscoveryEndpoint.Port))
+		d.Set("cluster_address", c.ClusterDiscoveryEndpoint.Address)
+	}
+
+	d.Set("subnet_group_name", c.SubnetGroup)
+	d.Set(names.AttrSecurityGroupIDs, flattenSecurityGroupIDs(c.SecurityGroups))
+
+	if c.ParameterGroup != nil {
+		d.Set(names.AttrParameterGroupName, c.ParameterGroup.ParameterGroupName)
+	}
+
+	d.Set("maintenance_window", c.PreferredMaintenanceWindow)
+
+	if c.NotificationConfiguration != nil {
+		if aws.ToString(c.NotificationConfiguration.TopicStatus) == "active" {
+			d.Set("notification_topic_arn", c.NotificationConfiguration.TopicArn)
+		}
+	}
+
+	if err := setClusterNodeData(d, c); err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DAX cluster (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("server_side_encryption", flattenEncryptAtRestOptions(c.SSEDescription)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting server_side_encryption: %s", err)
+	}
+
+	return diags
+}

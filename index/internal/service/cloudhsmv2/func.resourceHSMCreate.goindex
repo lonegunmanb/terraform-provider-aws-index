@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudhsmv2
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHSMCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudHSMV2Client(ctx)
+
+	clusterID := d.Get("cluster_id").(string)
+	input := &cloudhsmv2.CreateHsmInput{
+		ClusterId: aws.String(clusterID),
+	}
+
+	if v, ok := d.GetOk(names.AttrAvailabilityZone); ok {
+		input.AvailabilityZone = aws.String(v.(string))
+	} else {
+		cluster, err := findClusterByID(ctx, conn, clusterID)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading CloudHSMv2 Cluster (%s): %s", clusterID, err)
+		}
+
+		subnetID := d.Get(names.AttrSubnetID).(string)
+		for az, sn := range cluster.SubnetMapping {
+			if sn == subnetID {
+				input.AvailabilityZone = aws.String(az)
+			}
+		}
+	}
+
+	if v, ok := d.GetOk(names.AttrIPAddress); ok {
+		input.IpAddress = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateHsm(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudHSMv2 HSM: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.Hsm.HsmId))
+
+	if _, err := waitHSMCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for CloudHSMv2 HSM (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceHSMRead(ctx, d, meta)...)
+}

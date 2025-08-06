@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acmpca
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCertificateAuthorityUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ACMPCAClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := acmpca.UpdateCertificateAuthorityInput{
+			CertificateAuthorityArn: aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrEnabled) {
+			input.Status = types.CertificateAuthorityStatusActive
+			if !d.Get(names.AttrEnabled).(bool) {
+				input.Status = types.CertificateAuthorityStatusDisabled
+			}
+		}
+
+		if d.HasChange("revocation_configuration") {
+			input.RevocationConfiguration = expandRevocationConfiguration(d.Get("revocation_configuration").([]any))
+		}
+
+		_, err := conn.UpdateCertificateAuthority(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating ACM PCA Certificate Authority (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceCertificateAuthorityRead(ctx, d, meta)...)
+}

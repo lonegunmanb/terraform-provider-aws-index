@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceInstanceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	// Build up search parameters
+	input := ec2.DescribeInstancesInput{}
+
+	if tags, tagsOk := d.GetOk("instance_tags"); tagsOk {
+		input.Filters = append(input.Filters, newTagFilterList(
+			svcTags(tftags.New(ctx, tags.(map[string]any))),
+		)...)
+	}
+
+	input.Filters = append(input.Filters, newCustomFilterList(
+		d.Get(names.AttrFilter).(*schema.Set),
+	)...)
+	if len(input.Filters) == 0 {
+		// Don't send an empty filters list; the EC2 API won't accept it.
+		input.Filters = nil
+	}
+
+	if v, ok := d.GetOk(names.AttrInstanceID); ok {
+		input.InstanceIds = []string{v.(string)}
+	}
+
+	instance, err := findInstance(ctx, conn, &input)
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, tfresource.SingularDataSourceFindError("EC2 Instance", err))
+	}
+
+	log.Printf("[DEBUG] aws_instance - Single Instance ID found: %s", aws.ToString(instance.InstanceId))
+	if err := instanceDescriptionAttributes(ctx, d, meta, instance); err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Instance (%s): %s", aws.ToString(instance.InstanceId), err)
+	}
+
+	if d.Get("get_password_data").(bool) {
+		passwordData, err := getInstancePasswordData(ctx, aws.ToString(instance.InstanceId), conn, d.Timeout(schema.TimeoutRead))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading EC2 Instance (%s): %s", aws.ToString(instance.InstanceId), err)
+		}
+		d.Set("password_data", passwordData)
+	}
+
+	// ARN
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		Service:   names.EC2,
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("instance/%s", d.Id()),
+	}
+	d.Set(names.AttrARN, arn.String())
+
+	return diags
+}

@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceProfileRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	instanceProfile, err := findInstanceProfileByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] IAM Instance Profile (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading IAM Instance Profile (%s): %s", d.Id(), err)
+	}
+
+	if len(instanceProfile.Roles) > 0 {
+		roleName := aws.ToString(instanceProfile.Roles[0].RoleName)
+		_, err := findRoleByName(ctx, conn, roleName)
+
+		if err != nil {
+			if tfresource.NotFound(err) {
+				err := instanceProfileRemoveRole(ctx, conn, d.Id(), roleName)
+
+				if err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+			}
+
+			return sdkdiag.AppendErrorf(diags, "reading IAM Role (%s) attached to IAM Instance Profile (%s): %s", roleName, d.Id(), err)
+		}
+	}
+
+	d.Set(names.AttrARN, instanceProfile.Arn)
+	d.Set("create_date", instanceProfile.CreateDate.Format(time.RFC3339))
+	d.Set(names.AttrName, instanceProfile.InstanceProfileName)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(instanceProfile.InstanceProfileName)))
+	d.Set(names.AttrPath, instanceProfile.Path)
+
+	if d.Get(names.AttrRole) != "" {
+		d.Set(names.AttrRole, nil)
+	}
+	if len(instanceProfile.Roles) > 0 {
+		d.Set(names.AttrRole, instanceProfile.Roles[0].RoleName) //there will only be 1 role returned
+	}
+
+	d.Set("unique_id", instanceProfile.InstanceProfileId)
+
+	setTagsOut(ctx, instanceProfile.Tags)
+
+	return diags
+}

@@ -1,0 +1,131 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *trustResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	trustType := fwtypes.StringEnumType[awstypes.TrustType]()
+
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"conditional_forwarder_ip_addrs": schema.SetAttribute{
+				CustomType:  fwtypes.SetOfStringType,
+				ElementType: types.StringType,
+				Optional:    true,
+				PlanModifiers: []planmodifier.Set{
+					setplanmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.Set{
+					setvalidator.SizeBetween(1, 4),
+					setvalidator.ValueStringsAre(
+						fwvalidators.IPv4Address(),
+					),
+				},
+			},
+			"created_date_time": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"delete_associated_conditional_forwarder": schema.BoolAttribute{
+				Computed: true,
+				Optional: true,
+				Default:  booldefault.StaticBool(false),
+			},
+			"directory_id": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					directoryIDValidator,
+				},
+			},
+			names.AttrID: framework.IDAttribute(),
+			"last_updated_date_time": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			"remote_domain_name": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.LengthAtMost(1024),
+					domainWithTrailingDotValidator,
+				},
+			},
+			"selective_auth": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.SelectiveAuth](),
+				Optional:   true,
+				Computed:   true,
+			},
+			"state_last_updated_date_time": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			"trust_direction": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.TrustDirection](),
+				Required:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"trust_password": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.LengthAtMost(128),
+					trustPasswordValidator,
+				},
+			},
+			"trust_state": schema.StringAttribute{
+				Computed: true,
+			},
+			"trust_state_reason": schema.StringAttribute{
+				Computed: true,
+			},
+			"trust_type": schema.StringAttribute{
+				CustomType: trustType,
+				Optional:   true,
+				Computed:   true,
+				Default:    trustType.AttributeDefault(awstypes.TrustTypeForest),
+			},
+		},
+	}
+}

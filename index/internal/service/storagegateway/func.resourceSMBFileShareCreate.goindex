@@ -1,0 +1,116 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/storagegateway
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/storagegateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSMBFileShareCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).StorageGatewayClient(ctx)
+
+	input := &storagegateway.CreateSMBFileShareInput{
+		AccessBasedEnumeration: aws.Bool(d.Get("access_based_enumeration").(bool)),
+		ClientToken:            aws.String(id.UniqueId()),
+		GatewayARN:             aws.String(d.Get("gateway_arn").(string)),
+		GuessMIMETypeEnabled:   aws.Bool(d.Get("guess_mime_type_enabled").(bool)),
+		KMSEncrypted:           aws.Bool(d.Get("kms_encrypted").(bool)),
+		LocationARN:            aws.String(d.Get("location_arn").(string)),
+		ReadOnly:               aws.Bool(d.Get("read_only").(bool)),
+		RequesterPays:          aws.Bool(d.Get("requester_pays").(bool)),
+		Role:                   aws.String(d.Get(names.AttrRoleARN).(string)),
+		SMBACLEnabled:          aws.Bool(d.Get("smb_acl_enabled").(bool)),
+		Tags:                   getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("admin_user_list"); ok && v.(*schema.Set).Len() > 0 {
+		input.AdminUserList = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("audit_destination_arn"); ok {
+		input.AuditDestinationARN = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("authentication"); ok {
+		input.Authentication = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("bucket_region"); ok {
+		input.BucketRegion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("cache_attributes"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.CacheAttributes = expandCacheAttributes(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("case_sensitivity"); ok {
+		input.CaseSensitivity = awstypes.CaseSensitivity(v.(string))
+	}
+
+	if v, ok := d.GetOk("default_storage_class"); ok {
+		input.DefaultStorageClass = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("file_share_name"); ok {
+		input.FileShareName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("invalid_user_list"); ok && v.(*schema.Set).Len() > 0 {
+		input.InvalidUserList = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyARN); ok {
+		input.KMSKey = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("notification_policy"); ok {
+		input.NotificationPolicy = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("object_acl"); ok {
+		input.ObjectACL = awstypes.ObjectACL(v.(string))
+	}
+
+	if v, ok := d.GetOk("oplocks_enabled"); ok {
+		input.OplocksEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("valid_user_list"); ok && v.(*schema.Set).Len() > 0 {
+		input.ValidUserList = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("vpc_endpoint_dns_name"); ok {
+		input.VPCEndpointDNSName = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateSMBFileShare(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Storage Gateway SMB File Share: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.FileShareARN))
+
+	if _, err = waitSMBFileShareCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Storage Gateway SMB File Share (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceSMBFileShareRead(ctx, d, meta)...)
+}

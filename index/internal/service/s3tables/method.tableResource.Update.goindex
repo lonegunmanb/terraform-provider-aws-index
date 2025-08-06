@@ -1,0 +1,166 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3tables
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/s3tables"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3tables/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *tableResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().S3TablesClient(ctx)
+
+	var plan, state tableResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.Name.Equal(state.Name) || !plan.Namespace.Equal(state.Namespace) {
+		input := s3tables.RenameTableInput{
+			TableBucketARN: state.TableBucketARN.ValueStringPointer(),
+			Namespace:      state.Namespace.ValueStringPointer(),
+			Name:           state.Name.ValueStringPointer(),
+		}
+
+		if !plan.Name.Equal(state.Name) {
+			input.NewName = plan.Name.ValueStringPointer()
+		}
+
+		if !plan.Namespace.Equal(state.Namespace) {
+			input.NewNamespaceName = plan.Namespace.ValueStringPointer()
+		}
+
+		_, err := conn.RenameTable(ctx, &input)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.S3Tables, create.ErrActionUpdating, ResNameTable, state.Name.String(), err),
+				err.Error(),
+			)
+		}
+	}
+
+	if !plan.MaintenanceConfiguration.Equal(state.MaintenanceConfiguration) {
+		planMC, d := plan.MaintenanceConfiguration.ToPtr(ctx)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		stateMC, d := state.MaintenanceConfiguration.ToPtr(ctx)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		if !planMC.IcebergCompaction.Equal(stateMC.IcebergCompaction) {
+			input := s3tables.PutTableMaintenanceConfigurationInput{
+				Name:           plan.Name.ValueStringPointer(),
+				Namespace:      plan.Namespace.ValueStringPointer(),
+				TableBucketARN: plan.TableBucketARN.ValueStringPointer(),
+				Type:           awstypes.TableMaintenanceTypeIcebergCompaction,
+			}
+
+			value, d := expandTableMaintenanceIcebergCompaction(ctx, planMC.IcebergCompaction)
+			resp.Diagnostics.Append(d...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			input.Value = &value
+
+			_, err := conn.PutTableMaintenanceConfiguration(ctx, &input)
+			if err != nil {
+				resp.Diagnostics.AddError(
+					create.ProblemStandardMessage(names.S3Tables, create.ErrActionUpdating, resNameTableBucket, plan.Name.String(), err),
+					err.Error(),
+				)
+				return
+			}
+		}
+
+		if !planMC.IcebergSnapshotManagement.Equal(stateMC.IcebergSnapshotManagement) {
+			input := s3tables.PutTableMaintenanceConfigurationInput{
+				Name:           plan.Name.ValueStringPointer(),
+				Namespace:      plan.Namespace.ValueStringPointer(),
+				TableBucketARN: plan.TableBucketARN.ValueStringPointer(),
+				Type:           awstypes.TableMaintenanceTypeIcebergSnapshotManagement,
+			}
+
+			value, d := expandTableMaintenanceIcebergSnapshotManagement(ctx, planMC.IcebergSnapshotManagement)
+			resp.Diagnostics.Append(d...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			input.Value = &value
+
+			_, err := conn.PutTableMaintenanceConfiguration(ctx, &input)
+			if err != nil {
+				resp.Diagnostics.AddError(
+					create.ProblemStandardMessage(names.S3Tables, create.ErrActionUpdating, resNameTableBucket, plan.Name.String(), err),
+					err.Error(),
+				)
+				return
+			}
+		}
+	}
+
+	table, err := findTable(ctx, conn, plan.TableBucketARN.ValueString(), plan.Namespace.ValueString(), plan.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.S3Tables, create.ErrActionUpdating, ResNameTable, plan.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, table, &plan, flex.WithFieldNamePrefix("Table"))...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.Namespace = types.StringValue(table.Namespace[0])
+
+	awsMaintenanceConfig, err := conn.GetTableMaintenanceConfiguration(ctx, &s3tables.GetTableMaintenanceConfigurationInput{
+		Name:           plan.Name.ValueStringPointer(),
+		Namespace:      plan.Namespace.ValueStringPointer(),
+		TableBucketARN: plan.TableBucketARN.ValueStringPointer(),
+	})
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.S3Tables, create.ErrActionUpdating, resNameTableBucket, plan.Name.String(), err),
+			err.Error(),
+		)
+	}
+	maintenanceConfiguration, d := flattenTableMaintenanceConfiguration(ctx, awsMaintenanceConfig)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.MaintenanceConfiguration = maintenanceConfiguration
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

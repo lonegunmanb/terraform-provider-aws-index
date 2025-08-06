@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRegionUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DSClient(ctx)
+
+	directoryID, regionName, err := regionParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	// The Region must be updated using a client in the region.
+	optFn := func(o *directoryservice.Options) {
+		o.Region = regionName
+	}
+
+	if d.HasChange("desired_number_of_domain_controllers") {
+		if err := updateNumberOfDomainControllers(ctx, conn, directoryID, d.Get("desired_number_of_domain_controllers").(int), d.Timeout(schema.TimeoutUpdate), optFn); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange(names.AttrTagsAll) {
+		o, n := d.GetChange(names.AttrTagsAll)
+
+		if err := updateTags(ctx, conn, directoryID, o, n, optFn); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Directory Service Directory (%s) tags: %s", directoryID, err)
+		}
+	}
+
+	return append(diags, resourceRegionRead(ctx, d, meta)...)
+}

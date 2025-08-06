@@ -1,0 +1,34 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"regexp"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	gversion "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func setEngineVersionRedis(d *schema.ResourceData, version *string) error {
+	engineVersion, err := gversion.NewVersion(aws.ToString(version))
+	if err != nil {
+		return fmt.Errorf("reading engine version: %w", err)
+	}
+	if engineVersion.Segments()[0] < 6 {
+		d.Set(names.AttrEngineVersion, engineVersion.String())
+	} else {
+		// Handle major-only version number
+		configVersion := d.Get(names.AttrEngineVersion).(string)
+		if t, _ := regexp.MatchString(`[6-9]\.x`, configVersion); t {
+			d.Set(names.AttrEngineVersion, fmt.Sprintf("%d.x", engineVersion.Segments()[0]))
+		} else {
+			d.Set(names.AttrEngineVersion, fmt.Sprintf("%d.%d", engineVersion.Segments()[0], engineVersion.Segments()[1]))
+		}
+	}
+	d.Set("engine_version_actual", engineVersion.String())
+
+	return nil
+}

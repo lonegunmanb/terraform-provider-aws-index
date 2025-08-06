@@ -1,0 +1,112 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appmesh"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenVirtualGatewayClientPolicy(clientPolicy *awstypes.VirtualGatewayClientPolicy) []any {
+	if clientPolicy == nil {
+		return []any{}
+	}
+
+	mClientPolicy := map[string]any{}
+
+	if tls := clientPolicy.Tls; tls != nil {
+		mTls := map[string]any{
+			"enforce": aws.ToBool(tls.Enforce),
+			"ports":   flex.FlattenInt32ValueSet(tls.Ports),
+		}
+
+		if certificate := tls.Certificate; certificate != nil {
+			mCertificate := map[string]any{}
+
+			switch v := certificate.(type) {
+			case *awstypes.VirtualGatewayClientTlsCertificateMemberFile:
+				mFile := map[string]any{
+					names.AttrCertificateChain: aws.ToString(v.Value.CertificateChain),
+					names.AttrPrivateKey:       aws.ToString(v.Value.PrivateKey),
+				}
+
+				mCertificate["file"] = []any{mFile}
+			case *awstypes.VirtualGatewayClientTlsCertificateMemberSds:
+				mSds := map[string]any{
+					"secret_name": aws.ToString(v.Value.SecretName),
+				}
+
+				mCertificate["sds"] = []any{mSds}
+			}
+
+			mTls[names.AttrCertificate] = []any{mCertificate}
+		}
+
+		if validation := tls.Validation; validation != nil {
+			mValidation := map[string]any{}
+
+			if subjectAlternativeNames := validation.SubjectAlternativeNames; subjectAlternativeNames != nil {
+				mSubjectAlternativeNames := map[string]any{}
+
+				if match := subjectAlternativeNames.Match; match != nil {
+					mMatch := map[string]any{
+						"exact": match.Exact,
+					}
+
+					mSubjectAlternativeNames["match"] = []any{mMatch}
+				}
+
+				mValidation["subject_alternative_names"] = []any{mSubjectAlternativeNames}
+			}
+
+			if trust := validation.Trust; trust != nil {
+				mTrust := map[string]any{}
+
+				switch v := trust.(type) {
+				case *awstypes.VirtualGatewayTlsValidationContextTrustMemberAcm:
+					mAcm := map[string]any{
+						"certificate_authority_arns": v.Value.CertificateAuthorityArns,
+					}
+
+					mTrust["acm"] = []any{mAcm}
+				case *awstypes.VirtualGatewayTlsValidationContextTrustMemberFile:
+					mFile := map[string]any{
+						names.AttrCertificateChain: aws.ToString(v.Value.CertificateChain),
+					}
+
+					mTrust["file"] = []any{mFile}
+				case *awstypes.VirtualGatewayTlsValidationContextTrustMemberSds:
+					mSds := map[string]any{
+						"secret_name": aws.ToString(v.Value.SecretName),
+					}
+
+					mTrust["sds"] = []any{mSds}
+				}
+
+				mValidation["trust"] = []any{mTrust}
+			}
+
+			mTls["validation"] = []any{mValidation}
+		}
+
+		mClientPolicy["tls"] = []any{mTls}
+	}
+
+	return []any{mClientPolicy}
+}

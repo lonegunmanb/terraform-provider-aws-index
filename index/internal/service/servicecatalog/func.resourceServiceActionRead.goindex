@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServiceActionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	output, err := waitServiceActionReady(ctx, conn, d.Get("accept_language").(string), d.Id(), d.Timeout(schema.TimeoutRead))
+
+	if !d.IsNewResource() && errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		log.Printf("[WARN] Service Catalog Service Action (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "describing Service Catalog Service Action (%s): %s", d.Id(), err)
+	}
+
+	if output == nil || output.ServiceActionSummary == nil {
+		return sdkdiag.AppendErrorf(diags, "getting Service Catalog Service Action (%s): empty response", d.Id())
+	}
+
+	sas := output.ServiceActionSummary
+
+	d.Set(names.AttrDescription, sas.Description)
+	d.Set(names.AttrName, sas.Name)
+
+	if output.Definition != nil {
+		d.Set("definition", []any{flattenServiceActionDefinition(output.Definition, sas.DefinitionType)})
+	} else {
+		d.Set("definition", nil)
+	}
+
+	return diags
+}

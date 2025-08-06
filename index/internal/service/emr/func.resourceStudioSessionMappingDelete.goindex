@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceStudioSessionMappingDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	studioID, identityType, identityIDOrName, err := studioSessionMappingParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &emr.DeleteStudioSessionMappingInput{
+		IdentityType: awstypes.IdentityType(identityType),
+		StudioId:     aws.String(studioID),
+	}
+
+	if isIdentityID(identityIDOrName) {
+		input.IdentityId = aws.String(identityIDOrName)
+	} else {
+		input.IdentityName = aws.String(identityIDOrName)
+	}
+
+	log.Printf("[INFO] Deleting EMR Studio Session Mapping: %s", d.Id())
+	_, err = conn.DeleteStudioSessionMapping(ctx, input)
+
+	if errs.IsAErrorMessageContains[*awstypes.InvalidRequestException](err, "Studio session mapping does not exist.") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting EMR Studio Session Mapping (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

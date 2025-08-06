@@ -1,0 +1,125 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSecurityGroupRuleImport(_ context.Context, d *schema.ResourceData, _ any) ([]*schema.ResourceData, error) {
+	invalidIDError := func(msg string) error {
+		return fmt.Errorf("unexpected format for ID (%q), expected SECURITYGROUPID_TYPE_PROTOCOL_FROMPORT_TOPORT_SOURCE[_SOURCE]*: %s", d.Id(), msg)
+	}
+
+	// example: sg-09a093729ef9382a6_ingress_tcp_8000_8000_10.0.3.0/24
+	// example: sg-09a093729ef9382a6_ingress_92_0_65536_10.0.3.0/24_10.0.4.0/24
+	// example: sg-09a093729ef9382a6_egress_tcp_8000_8000_10.0.3.0/24
+	// example: sg-09a093729ef9382a6_egress_tcp_8000_8000_pl-34800000
+	// example: sg-09a093729ef9382a6_ingress_all_0_65536_sg-08123412342323
+	// example: sg-09a093729ef9382a6_ingress_tcp_100_121_10.1.0.0/16_2001:db8::/48_10.2.0.0/16_2002:db8::/48
+	parts := strings.Split(d.Id(), securityGroupRuleIDSeparator)
+
+	if len(parts) < 6 {
+		return nil, invalidIDError("too few parts")
+	}
+
+	securityGroupID := parts[0]
+	ruleType := securityGroupRuleType(parts[1])
+	protocol := parts[2]
+	fromPort := parts[3]
+	toPort := parts[4]
+	sources := parts[5:]
+
+	if !strings.HasPrefix(securityGroupID, "sg-") {
+		return nil, invalidIDError("invalid Security Group ID")
+	}
+
+	if ruleType != securityGroupRuleTypeIngress && ruleType != securityGroupRuleTypeEgress {
+		return nil, invalidIDError("expecting 'ingress' or 'egress'")
+	}
+
+	if _, ok := securityGroupProtocolIntegers[protocol]; !ok {
+		if _, err := strconv.Atoi(protocol); err != nil {
+			return nil, invalidIDError("protocol must be tcp/udp/icmp/icmpv6/all or a number")
+		}
+	}
+
+	protocolName := protocolForValue(protocol)
+	if protocolName == "icmp" || protocolName == "icmpv6" {
+		if v, err := strconv.Atoi(fromPort); err != nil || v < -1 || v > 255 {
+			return nil, invalidIDError("invalid icmp type")
+		} else if v, err := strconv.Atoi(toPort); err != nil || v < -1 || v > 255 {
+			return nil, invalidIDError("invalid icmp code")
+		}
+	} else {
+		if p1, err := strconv.Atoi(fromPort); err != nil {
+			return nil, invalidIDError("invalid from_port")
+		} else if p2, err := strconv.Atoi(toPort); err != nil {
+			return nil, invalidIDError("invalid to_port")
+		} else if p2 < p1 {
+			return nil, invalidIDError("to_port lower than from_port")
+		}
+	}
+
+	for _, v := range sources {
+		// will be properly validated later
+		if v != "self" && !strings.Contains(v, "sg-") && !strings.Contains(v, "pl-") && !strings.Contains(v, ":") && !strings.Contains(v, ".") {
+			return nil, invalidIDError("source must be cidr, ipv6cidr, prefix list, 'self', or a Security Group ID")
+		}
+	}
+
+	d.Set("security_group_id", securityGroupID)
+	d.Set(names.AttrType, ruleType)
+	d.Set(names.AttrProtocol, protocolName)
+	if v, err := strconv.Atoi(fromPort); err == nil {
+		d.Set("from_port", v)
+	}
+	if v, err := strconv.Atoi(toPort); err == nil {
+		d.Set("to_port", v)
+	}
+	d.Set("self", false)
+
+	var cidrBlocks, ipv6CIDRBlocks, prefixListIDs []string
+
+	for _, v := range sources {
+		switch {
+		case v == "self":
+			d.Set("self", true)
+		case strings.Contains(v, "sg-"):
+			d.Set("source_security_group_id", v)
+		case strings.Contains(v, ":"):
+			ipv6CIDRBlocks = append(ipv6CIDRBlocks, v)
+		case strings.Contains(v, "pl-"):
+			prefixListIDs = append(prefixListIDs, v)
+		default:
+			cidrBlocks = append(cidrBlocks, v)
+		}
+	}
+
+	d.Set("cidr_blocks", cidrBlocks)
+	d.Set("ipv6_cidr_blocks", ipv6CIDRBlocks)
+	d.Set("prefix_list_ids", prefixListIDs)
+
+	return []*schema.ResourceData{d}, nil
+}

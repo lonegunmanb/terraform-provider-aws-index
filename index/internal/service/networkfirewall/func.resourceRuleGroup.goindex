@@ -1,0 +1,456 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkfirewall
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkfirewall"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkfirewall/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRuleGroup() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceRuleGroupCreate,
+		ReadWithoutTimeout:   resourceRuleGroupRead,
+		UpdateWithoutTimeout: resourceRuleGroupUpdate,
+		DeleteWithoutTimeout: resourceRuleGroupDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		SchemaFunc: func() map[string]*schema.Schema {
+			return map[string]*schema.Schema{
+				names.AttrARN: {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+				"capacity": {
+					Type:     schema.TypeInt,
+					Required: true,
+					ForceNew: true,
+				},
+				names.AttrDescription: {
+					Type:     schema.TypeString,
+					Optional: true,
+				},
+				names.AttrEncryptionConfiguration: encryptionConfigurationSchema(),
+				names.AttrName: {
+					Type:     schema.TypeString,
+					Required: true,
+					ForceNew: true,
+				},
+				"rule_group": {
+					Type:     schema.TypeList,
+					MaxItems: 1,
+					Optional: true,
+					Computed: true,
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"reference_sets": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"ip_set_references": {
+											Type:     schema.TypeSet,
+											Optional: true,
+											MaxItems: 5,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													"ip_set_reference": {
+														Type:     schema.TypeList,
+														Required: true,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																"reference_arn": {
+																	Type:         schema.TypeString,
+																	Required:     true,
+																	ValidateFunc: verify.ValidARN,
+																},
+															},
+														},
+													},
+													names.AttrKey: {
+														Type:     schema.TypeString,
+														Required: true,
+														ValidateFunc: validation.All(
+															validation.StringLenBetween(1, 32),
+															validation.StringMatch(regexache.MustCompile(`^[A-Za-z]`), "must begin with alphabetic character"),
+															validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_]+$`), "must contain only alphanumeric and underscore characters"),
+														),
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+							"rules_source": {
+								Type:     schema.TypeList,
+								Required: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"rules_source_list": {
+											Type:     schema.TypeList,
+											Optional: true,
+											MaxItems: 1,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													"generated_rules_type": {
+														Type:             schema.TypeString,
+														Required:         true,
+														ValidateDiagFunc: enum.Validate[awstypes.GeneratedRulesType](),
+													},
+													"target_types": {
+														Type:     schema.TypeSet,
+														Required: true,
+														Elem: &schema.Schema{
+															Type:             schema.TypeString,
+															ValidateDiagFunc: enum.Validate[awstypes.TargetType](),
+														},
+													},
+													"targets": {
+														Type:     schema.TypeSet,
+														Required: true,
+														Elem:     &schema.Schema{Type: schema.TypeString},
+													},
+												},
+											},
+										},
+										"rules_string": {
+											Type:     schema.TypeString,
+											Optional: true,
+										},
+										"stateful_rule": {
+											Type:     schema.TypeList,
+											Optional: true,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													names.AttrAction: {
+														Type:             schema.TypeString,
+														Required:         true,
+														ValidateDiagFunc: enum.Validate[awstypes.StatefulAction](),
+													},
+													names.AttrHeader: {
+														Type:     schema.TypeList,
+														Required: true,
+														MaxItems: 1,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																names.AttrDestination: {
+																	Type:     schema.TypeString,
+																	Required: true,
+																},
+																"destination_port": {
+																	Type:     schema.TypeString,
+																	Required: true,
+																},
+																"direction": {
+																	Type:             schema.TypeString,
+																	Required:         true,
+																	ValidateDiagFunc: enum.Validate[awstypes.StatefulRuleDirection](),
+																},
+																names.AttrProtocol: {
+																	Type:             schema.TypeString,
+																	Required:         true,
+																	ValidateDiagFunc: enum.Validate[awstypes.StatefulRuleProtocol](),
+																},
+																names.AttrSource: {
+																	Type:     schema.TypeString,
+																	Required: true,
+																},
+																"source_port": {
+																	Type:     schema.TypeString,
+																	Required: true,
+																},
+															},
+														},
+													},
+													"rule_option": {
+														Type:     schema.TypeSet,
+														Required: true,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																"keyword": {
+																	Type:     schema.TypeString,
+																	Required: true,
+																},
+																"settings": {
+																	Type:     schema.TypeSet,
+																	Optional: true,
+																	Elem:     &schema.Schema{Type: schema.TypeString},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+										"stateless_rules_and_custom_actions": {
+											Type:     schema.TypeList,
+											MaxItems: 1,
+											Optional: true,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													"custom_action": customActionSchema(),
+													"stateless_rule": {
+														Type:     schema.TypeSet,
+														Required: true,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																names.AttrPriority: {
+																	Type:     schema.TypeInt,
+																	Required: true,
+																},
+																"rule_definition": {
+																	Type:     schema.TypeList,
+																	MaxItems: 1,
+																	Required: true,
+																	Elem: &schema.Resource{
+																		Schema: map[string]*schema.Schema{
+																			names.AttrActions: {
+																				Type:     schema.TypeSet,
+																				Required: true,
+																				Elem:     &schema.Schema{Type: schema.TypeString},
+																			},
+																			"match_attributes": {
+																				Type:     schema.TypeList,
+																				MaxItems: 1,
+																				Required: true,
+																				Elem: &schema.Resource{
+																					Schema: map[string]*schema.Schema{
+																						names.AttrDestination: {
+																							Type:     schema.TypeSet,
+																							Optional: true,
+																							Elem: &schema.Resource{
+																								Schema: map[string]*schema.Schema{
+																									"address_definition": {
+																										Type:         schema.TypeString,
+																										Required:     true,
+																										ValidateFunc: verify.ValidIPv4CIDRNetworkAddress,
+																									},
+																								},
+																							},
+																						},
+																						"destination_port": {
+																							Type:     schema.TypeSet,
+																							Optional: true,
+																							Elem: &schema.Resource{
+																								Schema: map[string]*schema.Schema{
+																									"from_port": {
+																										Type:     schema.TypeInt,
+																										Required: true,
+																									},
+																									"to_port": {
+																										Type:     schema.TypeInt,
+																										Optional: true,
+																									},
+																								},
+																							},
+																						},
+																						"protocols": {
+																							Type:     schema.TypeSet,
+																							Optional: true,
+																							Elem:     &schema.Schema{Type: schema.TypeInt},
+																						},
+																						names.AttrSource: {
+																							Type:     schema.TypeSet,
+																							Optional: true,
+																							Elem: &schema.Resource{
+																								Schema: map[string]*schema.Schema{
+																									"address_definition": {
+																										Type:         schema.TypeString,
+																										Required:     true,
+																										ValidateFunc: verify.ValidIPv4CIDRNetworkAddress,
+																									},
+																								},
+																							},
+																						},
+																						"source_port": {
+																							Type:     schema.TypeSet,
+																							Optional: true,
+																							Elem: &schema.Resource{
+																								Schema: map[string]*schema.Schema{
+																									"from_port": {
+																										Type:     schema.TypeInt,
+																										Required: true,
+																									},
+																									"to_port": {
+																										Type:     schema.TypeInt,
+																										Optional: true,
+																									},
+																								},
+																							},
+																						},
+																						"tcp_flag": {
+																							Type:     schema.TypeSet,
+																							Optional: true,
+																							Elem: &schema.Resource{
+																								Schema: map[string]*schema.Schema{
+																									"flags": {
+																										Type:     schema.TypeSet,
+																										Required: true,
+																										Elem: &schema.Schema{
+																											Type:             schema.TypeString,
+																											ValidateDiagFunc: enum.Validate[awstypes.TCPFlag](),
+																										},
+																									},
+																									"masks": {
+																										Type:     schema.TypeSet,
+																										Optional: true,
+																										Elem: &schema.Schema{
+																											Type:             schema.TypeString,
+																											ValidateDiagFunc: enum.Validate[awstypes.TCPFlag](),
+																										},
+																									},
+																								},
+																							},
+																						},
+																					},
+																				},
+																			},
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+							"rule_variables": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"ip_sets": {
+											Type:     schema.TypeSet,
+											Optional: true,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													names.AttrKey: {
+														Type:     schema.TypeString,
+														Required: true,
+														ValidateFunc: validation.All(
+															validation.StringLenBetween(1, 32),
+															validation.StringMatch(regexache.MustCompile(`^[A-Za-z]`), "must begin with alphabetic character"),
+															validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_]+$`), "must contain only alphanumeric and underscore characters"),
+														),
+													},
+													"ip_set": {
+														Type:     schema.TypeList,
+														Required: true,
+														MaxItems: 1,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																"definition": {
+																	Type:     schema.TypeSet,
+																	Required: true,
+																	Elem:     &schema.Schema{Type: schema.TypeString},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+										"port_sets": {
+											Type:     schema.TypeSet,
+											Optional: true,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													names.AttrKey: {
+														Type:     schema.TypeString,
+														Required: true,
+														ValidateFunc: validation.All(
+															validation.StringLenBetween(1, 32),
+															validation.StringMatch(regexache.MustCompile(`^[A-Za-z]`), "must begin with alphabetic character"),
+															validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_]+$`), "must contain only alphanumeric and underscore characters"),
+														),
+													},
+													"port_set": {
+														Type:     schema.TypeList,
+														Required: true,
+														MaxItems: 1,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																"definition": {
+																	Type:     schema.TypeSet,
+																	Required: true,
+																	Elem:     &schema.Schema{Type: schema.TypeString},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+							"stateful_rule_options": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"rule_order": {
+											Type:             schema.TypeString,
+											Required:         true,
+											ValidateDiagFunc: enum.Validate[awstypes.RuleOrder](),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"rules": {
+					Type:     schema.TypeString,
+					Optional: true,
+				},
+				names.AttrTags:    tftags.TagsSchema(),
+				names.AttrTagsAll: tftags.TagsSchemaComputed(),
+				names.AttrType: {
+					Type:             schema.TypeString,
+					Required:         true,
+					ValidateDiagFunc: enum.Validate[awstypes.RuleGroupType](),
+				},
+				"update_token": {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+			}
+		},
+
+		CustomizeDiff: customdiff.Sequence(
+			// The stateful rule_order default action can be explicitly or implicitly set,
+			// so ignore spurious diffs if toggling between the two.
+			func(_ context.Context, d *schema.ResourceDiff, meta any) error {
+				return forceNewIfNotRuleOrderDefault("rule_group.0.stateful_rule_options.0.rule_order", d)
+			},
+		),
+	}
+}

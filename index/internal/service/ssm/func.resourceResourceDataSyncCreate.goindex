@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourceDataSyncCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSMClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &ssm.CreateResourceDataSyncInput{
+		S3Destination: expandResourceDataSyncS3Destination(d),
+		SyncName:      aws.String(name),
+	}
+
+	const (
+		timeout = 1 * time.Minute
+	)
+	_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.ResourceDataSyncInvalidConfigurationException](ctx, timeout, func() (any, error) {
+		return conn.CreateResourceDataSync(ctx, input)
+	}, "S3 write failed for bucket")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SSM Resource Data Sync (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	return append(diags, resourceResourceDataSyncRead(ctx, d, meta)...)
+}

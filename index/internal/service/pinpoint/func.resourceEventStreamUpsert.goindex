@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pinpoint
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pinpoint"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/pinpoint/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEventStreamUpsert(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).PinpointClient(ctx)
+
+	applicationId := d.Get(names.AttrApplicationID).(string)
+
+	params := &awstypes.WriteEventStream{
+		DestinationStreamArn: aws.String(d.Get("destination_stream_arn").(string)),
+		RoleArn:              aws.String(d.Get(names.AttrRoleARN).(string)),
+	}
+
+	req := pinpoint.PutEventStreamInput{
+		ApplicationId:    aws.String(applicationId),
+		WriteEventStream: params,
+	}
+
+	// Retry for IAM eventual consistency
+	_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.BadRequestException](ctx, propagationTimeout, func() (any, error) {
+		return conn.PutEventStream(ctx, &req)
+	}, "make sure the IAM Role is configured correctly")
+
+	if tfresource.TimedOut(err) { // nosemgrep:ci.helper-schema-TimeoutError-check-doesnt-return-output
+		_, err = conn.PutEventStream(ctx, &req)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting Pinpoint Event Stream for application %s: %s", applicationId, err)
+	}
+
+	d.SetId(applicationId)
+
+	return append(diags, resourceEventStreamRead(ctx, d, meta)...)
+}

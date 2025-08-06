@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkfirewall
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkfirewall"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkfirewall/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *tlsInspectionConfigurationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data tlsInspectionConfigurationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().NetworkFirewallClient(ctx)
+
+	name := data.TLSInspectionConfigurationName.ValueString()
+	input := &networkfirewall.CreateTLSInspectionConfigurationInput{}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	input.Tags = getTagsIn(ctx)
+
+	outputC, err := conn.CreateTLSInspectionConfiguration(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating NetworkFirewall TLS Inspection Configuration (%s)", name), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.TLSInspectionConfigurationARN = fwflex.StringToFramework(ctx, outputC.TLSInspectionConfigurationResponse.TLSInspectionConfigurationArn)
+	data.TLSInspectionConfigurationID = fwflex.StringToFramework(ctx, outputC.TLSInspectionConfigurationResponse.TLSInspectionConfigurationId)
+	data.UpdateToken = fwflex.StringToFramework(ctx, outputC.UpdateToken)
+	data.setID()
+
+	outputR, err := waitTLSInspectionConfigurationCreated(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for NetworkFirewall TLS Inspection Configuration (%s) create", data.ID.ValueString()), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	response.Diagnostics.Append(flattenDescribeTLSInspectionConfigurationOutput(ctx, &data, outputR)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

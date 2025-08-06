@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/memorydb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/memorydb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/memorydb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).MemoryDBClient(ctx)
+
+	userName := d.Get(names.AttrUserName).(string)
+	input := &memorydb.CreateUserInput{
+		AccessString: aws.String(d.Get("access_string").(string)),
+		Tags:         getTagsIn(ctx),
+		UserName:     aws.String(userName),
+	}
+
+	if v, ok := d.GetOk("authentication_mode"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.AuthenticationMode = expandAuthenticationMode(v.([]any)[0].(map[string]any))
+	}
+
+	_, err := conn.CreateUser(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating MemoryDB User (%s): %s", userName, err)
+	}
+
+	d.SetId(userName)
+
+	return append(diags, resourceUserRead(ctx, d, meta)...)
+}

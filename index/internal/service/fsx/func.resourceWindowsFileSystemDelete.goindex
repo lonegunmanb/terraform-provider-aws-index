@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWindowsFileSystemDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	input := &fsx.DeleteFileSystemInput{
+		ClientRequestToken: aws.String(id.UniqueId()),
+		FileSystemId:       aws.String(d.Id()),
+		WindowsConfiguration: &awstypes.DeleteFileSystemWindowsConfiguration{
+			SkipFinalBackup: aws.Bool(d.Get("skip_final_backup").(bool)),
+		},
+	}
+
+	if v, ok := d.GetOk("final_backup_tags"); ok && len(v.(map[string]any)) > 0 {
+		input.WindowsConfiguration.FinalBackupTags = svcTags(tftags.New(ctx, v))
+	}
+
+	log.Printf("[DEBUG] Deleting FSx for Windows File Server File System: %s", d.Id())
+	_, err := conn.DeleteFileSystem(ctx, input)
+
+	if errs.IsA[*awstypes.FileSystemNotFound](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting FSx for Windows File Server File System (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitFileSystemDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for FSx for Windows File Server File System (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

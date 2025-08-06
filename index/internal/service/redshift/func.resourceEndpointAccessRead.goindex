@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointAccessRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	endpoint, err := findEndpointAccessByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Redshift endpoint access (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Redshift endpoint access (%s): %s", d.Id(), err)
+	}
+
+	d.Set("endpoint_name", endpoint.EndpointName)
+	d.Set("subnet_group_name", endpoint.SubnetGroupName)
+	d.Set(names.AttrVPCSecurityGroupIDs, vpcSgsIdsToSlice(endpoint.VpcSecurityGroups))
+	d.Set(names.AttrResourceOwner, endpoint.ResourceOwner)
+	d.Set(names.AttrClusterIdentifier, endpoint.ClusterIdentifier)
+	d.Set(names.AttrPort, endpoint.Port)
+	d.Set(names.AttrAddress, endpoint.Address)
+
+	if err := d.Set("vpc_endpoint", flattenVPCEndpoint(endpoint.VpcEndpoint)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting vpc_endpoint: %s", err)
+	}
+
+	return diags
+}

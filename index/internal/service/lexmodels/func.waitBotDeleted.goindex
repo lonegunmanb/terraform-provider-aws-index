@@ -1,0 +1,37 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexmodels
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitBotDeleted(ctx context.Context, conn *lexmodelbuildingservice.Client, name string, timeout time.Duration) (*lexmodelbuildingservice.GetBotOutput, error) {
+	stateChangeConf := &retry.StateChangeConf{
+		Pending: enum.Slice(
+			awstypes.StatusNotBuilt,
+			awstypes.StatusReady,
+			awstypes.StatusReadyBasicTesting,
+		),
+		Target:  []string{},
+		Refresh: statusBotVersion(ctx, conn, name, BotVersionLatest),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateChangeConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*lexmodelbuildingservice.GetBotOutput); ok {
+		if output.Status == awstypes.StatusFailed {
+			tfresource.SetLastError(err, errors.New(aws.ToString(output.FailureReason)))
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}

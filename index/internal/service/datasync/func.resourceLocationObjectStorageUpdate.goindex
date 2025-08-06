@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datasync
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datasync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datasync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLocationObjectStorageUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DataSyncClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &datasync.UpdateLocationObjectStorageInput{
+			LocationArn: aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrAccessKey) {
+			input.AccessKey = aws.String(d.Get(names.AttrAccessKey).(string))
+		}
+
+		if d.HasChange("agent_arns") {
+			input.AgentArns = flex.ExpandStringValueSet(d.Get("agent_arns").(*schema.Set))
+
+			// Access key must be specified when updating agent ARNs
+			input.AccessKey = aws.String("")
+			if v, ok := d.GetOk(names.AttrAccessKey); ok {
+				input.AccessKey = aws.String(v.(string))
+			}
+
+			// Secret key must be specified when updating agent ARNs
+			input.SecretKey = aws.String("")
+			if v, ok := d.GetOk(names.AttrSecretKey); ok {
+				input.SecretKey = aws.String(v.(string))
+			}
+		}
+
+		if d.HasChange(names.AttrSecretKey) {
+			input.SecretKey = aws.String(d.Get(names.AttrSecretKey).(string))
+		}
+
+		if d.HasChange("server_certificate") {
+			input.ServerCertificate = []byte(d.Get("server_certificate").(string))
+		}
+
+		if d.HasChange("server_port") {
+			input.ServerPort = aws.Int32(int32(d.Get("server_port").(int)))
+		}
+
+		if d.HasChange("server_protocol") {
+			input.ServerProtocol = awstypes.ObjectStorageServerProtocol(d.Get("server_protocol").(string))
+		}
+
+		if d.HasChange("subdirectory") {
+			input.Subdirectory = aws.String(d.Get("subdirectory").(string))
+		}
+
+		_, err := conn.UpdateLocationObjectStorage(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating DataSync Location Object Storage (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceLocationObjectStorageRead(ctx, d, meta)...)
+}

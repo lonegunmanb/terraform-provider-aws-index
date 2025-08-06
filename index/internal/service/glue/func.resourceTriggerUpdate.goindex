@@ -1,0 +1,94 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTriggerUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	if d.HasChanges(names.AttrActions, names.AttrDescription, "predicate", names.AttrSchedule, "event_batching_condition") {
+		triggerUpdate := &awstypes.TriggerUpdate{
+			Actions: expandActions(d.Get(names.AttrActions).([]any)),
+		}
+
+		if v, ok := d.GetOk(names.AttrDescription); ok {
+			triggerUpdate.Description = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("predicate"); ok {
+			triggerUpdate.Predicate = expandPredicate(v.([]any))
+		}
+
+		if v, ok := d.GetOk(names.AttrSchedule); ok {
+			triggerUpdate.Schedule = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("event_batching_condition"); ok {
+			triggerUpdate.EventBatchingCondition = expandEventBatchingCondition(v.([]any))
+		}
+
+		input := &glue.UpdateTriggerInput{
+			Name:          aws.String(d.Id()),
+			TriggerUpdate: triggerUpdate,
+		}
+
+		log.Printf("[DEBUG] Updating Glue Trigger: %+v", input)
+		_, err := conn.UpdateTrigger(ctx, input)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Glue Trigger (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitTriggerCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Glue Trigger (%s) to be Update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange(names.AttrEnabled) {
+		if d.Get(names.AttrEnabled).(bool) {
+			input := &glue.StartTriggerInput{
+				Name: aws.String(d.Id()),
+			}
+
+			log.Printf("[DEBUG] Starting Glue Trigger: %+v", input)
+			_, err := conn.StartTrigger(ctx, input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "starting Glue Trigger (%s): %s", d.Id(), err)
+			}
+		} else {
+			//Skip if Trigger is type is ON_DEMAND and is in CREATED state as this means the trigger is not running or has ran already.
+			if !(d.Get(names.AttrType).(string) == string(awstypes.TriggerTypeOnDemand) && d.Get(names.AttrState).(string) == string(awstypes.TriggerStateCreated)) {
+				input := &glue.StopTriggerInput{
+					Name: aws.String(d.Id()),
+				}
+
+				log.Printf("[DEBUG] Stopping Glue Trigger: %+v", input)
+				_, err := conn.StopTrigger(ctx, input)
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "stopping Glue Trigger (%s): %s", d.Id(), err)
+				}
+			}
+		}
+	}
+
+	return diags
+}

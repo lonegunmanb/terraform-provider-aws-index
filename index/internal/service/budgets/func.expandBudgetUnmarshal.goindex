@@ -1,0 +1,100 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/budgets
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/budgets"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/budgets/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/shopspring/decimal"
+)
+func expandBudgetUnmarshal(d *schema.ResourceData) (*awstypes.Budget, error) {
+	budgetName := d.Get(names.AttrName).(string)
+	budgetType := d.Get("budget_type").(string)
+	budgetTimeUnit := d.Get("time_unit").(string)
+	budgetCostFilters := make(map[string][]string)
+
+	if costFilter, ok := d.GetOk("cost_filter"); ok {
+		for _, v := range costFilter.(*schema.Set).List() {
+			element := v.(map[string]any)
+			key := element[names.AttrName].(string)
+			for _, filterValue := range element[names.AttrValues].([]any) {
+				budgetCostFilters[key] = append(budgetCostFilters[key], filterValue.(string))
+			}
+		}
+	}
+
+	budgetTimePeriodStart, err := timePeriodTimestampFromString(d.Get("time_period_start").(string))
+
+	if err != nil {
+		return nil, err
+	}
+
+	budgetTimePeriodEnd, err := timePeriodTimestampFromString(d.Get("time_period_end").(string))
+
+	if err != nil {
+		return nil, err
+	}
+
+	budget := &awstypes.Budget{
+		BudgetName: aws.String(budgetName),
+		BudgetType: awstypes.BudgetType(budgetType),
+		TimePeriod: &awstypes.TimePeriod{
+			End:   budgetTimePeriodEnd,
+			Start: budgetTimePeriodStart,
+		},
+		TimeUnit:    awstypes.TimeUnit(budgetTimeUnit),
+		CostFilters: budgetCostFilters,
+	}
+
+	if v, ok := d.GetOk("auto_adjust_data"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		budget.AutoAdjustData = expandAutoAdjustData(v.([]any)[0].(map[string]any))
+	} else {
+		if plannedBudgetLimitsRaw, ok := d.GetOk("planned_limit"); ok {
+			plannedBudgetLimitsRaw := plannedBudgetLimitsRaw.(*schema.Set).List()
+
+			plannedBudgetLimits, err := expandPlannedBudgetLimitsUnmarshal(plannedBudgetLimitsRaw)
+			if err != nil {
+				return nil, err
+			}
+
+			budget.PlannedBudgetLimits = plannedBudgetLimits
+		} else {
+			spendAmountValue, spendLimitOk := d.GetOk("limit_amount")
+			spendUnitValue, spendUnitOk := d.GetOk("limit_unit")
+
+			if spendUnitOk && spendLimitOk {
+				budget.BudgetLimit = &awstypes.Spend{
+					Amount: aws.String(spendAmountValue.(string)),
+					Unit:   aws.String(spendUnitValue.(string)),
+				}
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("cost_types"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		budget.CostTypes = expandCostTypes(v.([]any)[0].(map[string]any))
+	}
+
+	return budget, nil
+}

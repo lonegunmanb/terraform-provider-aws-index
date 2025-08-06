@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"errors"
+	"log"
+	"reflect"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findEntitiesForPolicyByARN(ctx context.Context, conn *iam.Client, arn string) ([]string, []string, []string, error) {
+	input := &iam.ListEntitiesForPolicyInput{
+		PolicyArn: aws.String(arn),
+	}
+	groups, roles, users, err := findEntitiesForPolicy(ctx, conn, input)
+
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if len(groups) == 0 && len(roles) == 0 && len(users) == 0 {
+		return nil, nil, nil, tfresource.NewEmptyResultError(input)
+	}
+
+	groupName := tfslices.ApplyToAll(groups, func(v awstypes.PolicyGroup) string { return aws.ToString(v.GroupName) })
+	roleNames := tfslices.ApplyToAll(roles, func(v awstypes.PolicyRole) string { return aws.ToString(v.RoleName) })
+	userNames := tfslices.ApplyToAll(users, func(v awstypes.PolicyUser) string { return aws.ToString(v.UserName) })
+
+	return groupName, roleNames, userNames, nil
+}

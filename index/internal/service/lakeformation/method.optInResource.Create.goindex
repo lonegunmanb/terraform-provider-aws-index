@@ -1,0 +1,111 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"errors"
+	"reflect"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *optInResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().LakeFormationClient(ctx)
+
+	var plan optInResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := lakeformation.CreateLakeFormationOptInInput{}
+
+	resp.Diagnostics.Append(fwflex.Expand(ctx, plan, &in)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	principal, diags := plan.Principal.ToPtr(ctx)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var output *lakeformation.CreateLakeFormationOptInOutput
+	err := retry.RetryContext(ctx, 2*IAMPropagationTimeout, func() *retry.RetryError {
+		var err error
+		output, err = conn.CreateLakeFormationOptIn(ctx, &in)
+		if err != nil {
+			if errs.IsAErrorMessageContains[*awstypes.AccessDeniedException](err, "Insufficient Lake Formation permission(s) on Catalog") {
+				return retry.RetryableError(err)
+			}
+			return retry.NonRetryableError(err)
+		}
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		output, err = conn.CreateLakeFormationOptIn(ctx, &in)
+	}
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LakeFormation, create.ErrActionCreating, ResNameOptIn, principal.DataLakePrincipalIdentifier.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	if output == nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LakeFormation, create.ErrActionCreating, ResNameOptIn, principal.DataLakePrincipalIdentifier.ValueString(), nil),
+			errors.New("empty output").Error(),
+		)
+		return
+	}
+
+	lstrsc, err := conn.ListLakeFormationOptIns(ctx, &lakeformation.ListLakeFormationOptInsInput{})
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LakeFormation, create.ErrActionSetting, ResNameOptIn, principal.DataLakePrincipalIdentifier.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	plan.LastModified = fwflex.TimeToFramework(ctx, lstrsc.LakeFormationOptInsInfoList[0].LastModified)
+	plan.LastUpdatedBy = fwflex.StringValueToFramework(ctx, *lstrsc.LakeFormationOptInsInfoList[0].LastUpdatedBy)
+
+	resp.Diagnostics.Append(fwflex.Flatten(ctx, output, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}

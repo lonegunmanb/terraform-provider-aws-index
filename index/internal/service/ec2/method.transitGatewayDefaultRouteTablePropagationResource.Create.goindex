@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *transitGatewayDefaultRouteTablePropagationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data transitGatewayDefaultRouteTablePropagationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EC2Client(ctx)
+
+	tgwID := data.TransitGatewayID.ValueString()
+	tgw, err := findTransitGatewayByID(ctx, conn, tgwID)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading EC2 Transit Gateway (%s)", tgwID), err.Error())
+
+		return
+	}
+
+	input := &ec2.ModifyTransitGatewayInput{
+		Options: &awstypes.ModifyTransitGatewayOptions{
+			PropagationDefaultRouteTableId: fwflex.StringFromFramework(ctx, data.RouteTableID),
+		},
+		TransitGatewayId: aws.String(tgwID),
+	}
+
+	_, err = conn.ModifyTransitGateway(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating EC2 Transit Gateway Default Route Table Propagation (%s)", tgwID), err.Error())
+
+		return
+	}
+
+	// Set unknowns.
+	data.ID = fwflex.StringValueToFramework(ctx, tgwID)
+	data.OriginalDefaultRouteTableID = fwflex.StringToFramework(ctx, tgw.Options.PropagationDefaultRouteTableId)
+
+	if _, err := waitTransitGatewayUpdated(ctx, conn, tgwID, r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for EC2 Transit Gateway Default Route Table Propagation (%s) create", tgwID), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

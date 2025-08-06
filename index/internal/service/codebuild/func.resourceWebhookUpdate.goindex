@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codebuild
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWebhookUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeBuildClient(ctx)
+
+	input := codebuild.UpdateWebhookInput{
+		ProjectName: aws.String(d.Id()),
+	}
+
+	if v, ok := d.GetOk("build_type"); ok {
+		input.BuildType = types.WebhookBuildType(v.(string))
+	}
+
+	var filterGroups [][]types.WebhookFilter
+	if v, ok := d.GetOk("filter_group"); ok && v.(*schema.Set).Len() > 0 {
+		filterGroups = expandWebhookFilterGroups(v.(*schema.Set).List())
+	}
+	if len(filterGroups) > 0 {
+		input.FilterGroups = filterGroups
+	} else {
+		input.BranchFilter = aws.String(d.Get("branch_filter").(string))
+	}
+
+	_, err := conn.UpdateWebhook(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating CodeBuild Webhook (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceWebhookRead(ctx, d, meta)...)
+}

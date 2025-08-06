@@ -1,0 +1,143 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/batch
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/batch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceComputeEnvironmentCustomizeDiff(_ context.Context, diff *schema.ResourceDiff, meta any) error {
+	if computeEnvironmentType := strings.ToUpper(diff.Get(names.AttrType).(string)); computeEnvironmentType == string(awstypes.CETypeUnmanaged) {
+		// UNMANAGED compute environments can have no compute_resources configured.
+		if v, ok := diff.GetOk("compute_resources"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			return fmt.Errorf("no `compute_resources` can be specified when `type` is %q", computeEnvironmentType)
+		}
+	}
+
+	if diff.Id() != "" {
+		// Update.
+
+		fargateComputeResources := isFargateType(awstypes.CRType(diff.Get("compute_resources.0.type").(string)))
+
+		if !isUpdatableComputeEnvironment(diff) {
+			if diff.HasChange("compute_resources.0.security_group_ids") && !fargateComputeResources {
+				if err := diff.ForceNew("compute_resources.0.security_group_ids"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.subnets") && !fargateComputeResources {
+				if err := diff.ForceNew("compute_resources.0.subnets"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.allocation_strategy") {
+				if err := diff.ForceNew("compute_resources.0.allocation_strategy"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.bid_percentage") {
+				if err := diff.ForceNew("compute_resources.0.bid_percentage"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.ec2_configuration.#") {
+				if err := diff.ForceNew("compute_resources.0.ec2_configuration.#"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.ec2_configuration.0.image_id_override") {
+				if err := diff.ForceNew("compute_resources.0.ec2_configuration.0.image_id_override"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.ec2_configuration.0.image_type") {
+				if err := diff.ForceNew("compute_resources.0.ec2_configuration.0.image_type"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.ec2_key_pair") {
+				if err := diff.ForceNew("compute_resources.0.ec2_key_pair"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.image_id") {
+				if err := diff.ForceNew("compute_resources.0.image_id"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.instance_role") {
+				if err := diff.ForceNew("compute_resources.0.instance_role"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.instance_type") {
+				if err := diff.ForceNew("compute_resources.0.instance_type"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.launch_template.#") {
+				if err := diff.ForceNew("compute_resources.0.launch_template.#"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.launch_template.0.launch_template_id") {
+				if err := diff.ForceNew("compute_resources.0.launch_template.0.launch_template_id"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.launch_template.0.launch_template_name") {
+				if err := diff.ForceNew("compute_resources.0.launch_template.0.launch_template_name"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.launch_template.0.version") {
+				if err := diff.ForceNew("compute_resources.0.launch_template.0.version"); err != nil {
+					return err
+				}
+			}
+
+			if diff.HasChange("compute_resources.0.tags") {
+				if err := diff.ForceNew("compute_resources.0.tags"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}

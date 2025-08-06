@@ -1,0 +1,810 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pipes
+import (
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pipes/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func targetParametersSchema() *schema.Schema {
+	return &schema.Schema{
+		Type:     schema.TypeList,
+		Optional: true,
+		MaxItems: 1,
+		Elem: &schema.Resource{
+			Schema: map[string]*schema.Schema{
+				"batch_job_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"array_properties": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										names.AttrSize: {
+											Type:         schema.TypeInt,
+											Optional:     true,
+											ValidateFunc: validation.IntBetween(2, 10000),
+										},
+									},
+								},
+							},
+							"container_overrides": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"command": {
+											Type:     schema.TypeList,
+											Optional: true,
+											Elem: &schema.Schema{
+												Type: schema.TypeString,
+											},
+										},
+										names.AttrEnvironment: {
+											Type:     schema.TypeList,
+											Optional: true,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													names.AttrName: {
+														Type:     schema.TypeString,
+														Optional: true,
+													},
+													names.AttrValue: {
+														Type:     schema.TypeString,
+														Optional: true,
+													},
+												},
+											},
+										},
+										names.AttrInstanceType: {
+											Type:     schema.TypeString,
+											Optional: true,
+										},
+										"resource_requirement": {
+											Type:     schema.TypeList,
+											Optional: true,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													names.AttrType: {
+														Type:             schema.TypeString,
+														Required:         true,
+														ValidateDiagFunc: enum.Validate[types.BatchResourceRequirementType](),
+													},
+													names.AttrValue: {
+														Type:     schema.TypeString,
+														Required: true,
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+							"depends_on": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 20,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"job_id": {
+											Type:     schema.TypeString,
+											Optional: true,
+										},
+										names.AttrType: {
+											Type:             schema.TypeString,
+											Optional:         true,
+											ValidateDiagFunc: enum.Validate[types.BatchJobDependencyType](),
+										},
+									},
+								},
+							},
+							"job_definition": {
+								Type:     schema.TypeString,
+								Required: true,
+							},
+							"job_name": {
+								Type:         schema.TypeString,
+								Required:     true,
+								ValidateFunc: validation.StringLenBetween(1, 128),
+							},
+							names.AttrParameters: {
+								Type:     schema.TypeMap,
+								Optional: true,
+								Elem:     &schema.Schema{Type: schema.TypeString},
+							},
+							"retry_strategy": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"attempts": {
+											Type:         schema.TypeInt,
+											Optional:     true,
+											ValidateFunc: validation.IntBetween(1, 10),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"cloudwatch_logs_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"log_stream_name": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: validation.StringLenBetween(0, 256),
+							},
+							"timestamp": {
+								Type:     schema.TypeString,
+								Optional: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 256),
+									validation.StringMatch(regexache.MustCompile(`^\$(\.[\w/_-]+(\[(\d+|\*)\])*)*$`), ""),
+								),
+							},
+						},
+					},
+				},
+				"ecs_task_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							names.AttrCapacityProviderStrategy: {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 6,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"base": {
+											Type:         schema.TypeInt,
+											Optional:     true,
+											ValidateFunc: validation.IntBetween(0, 100000),
+										},
+										"capacity_provider": {
+											Type:         schema.TypeString,
+											Required:     true,
+											ValidateFunc: validation.StringLenBetween(1, 255),
+										},
+										names.AttrWeight: {
+											Type:         schema.TypeInt,
+											Optional:     true,
+											ValidateFunc: validation.IntBetween(0, 1000),
+										},
+									},
+								},
+							},
+							"enable_ecs_managed_tags": {
+								Type:     schema.TypeBool,
+								Optional: true,
+							},
+							"enable_execute_command": {
+								Type:     schema.TypeBool,
+								Optional: true,
+							},
+							"group": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: validation.StringLenBetween(1, 255),
+							},
+							"launch_type": {
+								Type:             schema.TypeString,
+								Optional:         true,
+								ValidateDiagFunc: enum.Validate[types.LaunchType](),
+							},
+							names.AttrNetworkConfiguration: {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"aws_vpc_configuration": {
+											Type:     schema.TypeList,
+											Optional: true,
+											MaxItems: 1,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													"assign_public_ip": {
+														Type:             schema.TypeString,
+														Optional:         true,
+														ValidateDiagFunc: enum.Validate[types.AssignPublicIp](),
+													},
+													names.AttrSecurityGroups: {
+														Type:     schema.TypeSet,
+														Optional: true,
+														MaxItems: 5,
+														Elem: &schema.Schema{
+															Type: schema.TypeString,
+															ValidateFunc: validation.All(
+																validation.StringLenBetween(1, 1024),
+																validation.StringMatch(regexache.MustCompile(`^sg-[0-9A-Za-z]*|(\$(\.[\w/_-]+(\[(\d+|\*)\])*)*)$`), ""),
+															),
+														},
+													},
+													names.AttrSubnets: {
+														Type:     schema.TypeSet,
+														Optional: true,
+														MaxItems: 16,
+														Elem: &schema.Schema{
+															Type: schema.TypeString,
+															ValidateFunc: validation.All(
+																validation.StringLenBetween(1, 1024),
+																validation.StringMatch(regexache.MustCompile(`^subnet-[0-9a-z]*|(\$(\.[\w/_-]+(\[(\d+|\*)\])*)*)$`), ""),
+															),
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+							"overrides": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"container_override": {
+											Type:     schema.TypeList,
+											Optional: true,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													"command": {
+														Type:     schema.TypeList,
+														Optional: true,
+														Elem: &schema.Schema{
+															Type: schema.TypeString,
+														},
+													},
+													"cpu": {
+														Type:     schema.TypeInt,
+														Optional: true,
+													},
+													names.AttrEnvironment: {
+														Type:     schema.TypeList,
+														Optional: true,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																names.AttrName: {
+																	Type:     schema.TypeString,
+																	Optional: true,
+																},
+																names.AttrValue: {
+																	Type:     schema.TypeString,
+																	Optional: true,
+																},
+															},
+														},
+													},
+													"environment_file": {
+														Type:     schema.TypeList,
+														Optional: true,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																names.AttrType: {
+																	Type:             schema.TypeString,
+																	Required:         true,
+																	ValidateDiagFunc: enum.Validate[types.EcsEnvironmentFileType](),
+																},
+																names.AttrValue: {
+																	Type:         schema.TypeString,
+																	Required:     true,
+																	ValidateFunc: verify.ValidARN,
+																},
+															},
+														},
+													},
+													"memory": {
+														Type:     schema.TypeInt,
+														Optional: true,
+													},
+													"memory_reservation": {
+														Type:     schema.TypeInt,
+														Optional: true,
+													},
+													names.AttrName: {
+														Type:     schema.TypeString,
+														Optional: true,
+													},
+													"resource_requirement": {
+														Type:     schema.TypeList,
+														Optional: true,
+														Elem: &schema.Resource{
+															Schema: map[string]*schema.Schema{
+																names.AttrType: {
+																	Type:             schema.TypeString,
+																	Required:         true,
+																	ValidateDiagFunc: enum.Validate[types.EcsResourceRequirementType](),
+																},
+																names.AttrValue: {
+																	Type:     schema.TypeString,
+																	Required: true,
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+										"cpu": {
+											Type:     schema.TypeString,
+											Optional: true,
+										},
+										"ephemeral_storage": {
+											Type:     schema.TypeList,
+											Optional: true,
+											MaxItems: 1,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													"size_in_gib": {
+														Type:         schema.TypeInt,
+														Required:     true,
+														ValidateFunc: validation.IntBetween(21, 200),
+													},
+												},
+											},
+										},
+										names.AttrExecutionRoleARN: {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verify.ValidARN,
+										},
+										"inference_accelerator_override": {
+											Type:     schema.TypeList,
+											Optional: true,
+											Elem: &schema.Resource{
+												Schema: map[string]*schema.Schema{
+													names.AttrDeviceName: {
+														Type:     schema.TypeString,
+														Optional: true,
+													},
+													"device_type": {
+														Type:     schema.TypeString,
+														Optional: true,
+													},
+												},
+											},
+										},
+										"memory": {
+											Type:     schema.TypeString,
+											Optional: true,
+										},
+										"task_role_arn": {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verify.ValidARN,
+										},
+									},
+								},
+							},
+							"placement_constraint": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 10,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										names.AttrExpression: {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: validation.StringLenBetween(1, 2000),
+										},
+										names.AttrType: {
+											Type:             schema.TypeString,
+											Optional:         true,
+											ValidateDiagFunc: enum.Validate[types.PlacementConstraintType](),
+										},
+									},
+								},
+							},
+							"placement_strategy": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 5,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										names.AttrField: {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: validation.StringLenBetween(1, 255),
+										},
+										names.AttrType: {
+											Type:             schema.TypeString,
+											Optional:         true,
+											ValidateDiagFunc: enum.Validate[types.PlacementStrategyType](),
+										},
+									},
+								},
+							},
+							"platform_version": {
+								Type:     schema.TypeString,
+								Optional: true,
+							},
+							names.AttrPropagateTags: {
+								Type:             schema.TypeString,
+								Optional:         true,
+								ValidateDiagFunc: enum.Validate[types.PropagateTags](),
+							},
+							"reference_id": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: validation.StringLenBetween(1, 1024),
+							},
+							names.AttrTags: tftags.TagsSchema(),
+							"task_count": {
+								Type:     schema.TypeInt,
+								Optional: true,
+							},
+							"task_definition_arn": {
+								Type:         schema.TypeString,
+								Required:     true,
+								ValidateFunc: verify.ValidARN,
+							},
+						},
+					},
+				},
+				"eventbridge_event_bus_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"detail_type": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: validation.StringLenBetween(0, 128),
+							},
+							"endpoint_id": {
+								Type:     schema.TypeString,
+								Optional: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 50),
+									validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z-]+[\.][0-9A-Za-z-]+$`), ""),
+								),
+							},
+							names.AttrResources: {
+								Type:     schema.TypeSet,
+								Optional: true,
+								MaxItems: 10,
+								Elem: &schema.Schema{
+									Type:         schema.TypeString,
+									ValidateFunc: verify.ValidARN,
+								},
+							},
+							names.AttrSource: {
+								Type:     schema.TypeString,
+								Optional: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 256),
+								),
+							},
+							"time": {
+								Type:     schema.TypeString,
+								Optional: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 256),
+									validation.StringMatch(regexache.MustCompile(`^\$(\.[\w/_-]+(\[(\d+|\*)\])*)*$`), ""),
+								),
+							},
+						},
+					},
+				},
+				"http_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"header_parameters": {
+								Type:     schema.TypeMap,
+								Optional: true,
+								Elem:     &schema.Schema{Type: schema.TypeString},
+							},
+							"path_parameter_values": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Schema{
+									Type: schema.TypeString,
+								},
+							},
+							"query_string_parameters": {
+								Type:     schema.TypeMap,
+								Optional: true,
+								Elem:     &schema.Schema{Type: schema.TypeString},
+							},
+						},
+					},
+				},
+				"input_template": {
+					Type:         schema.TypeString,
+					Optional:     true,
+					ValidateFunc: validation.StringLenBetween(0, 8192),
+				},
+				"kinesis_stream_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"partition_key": {
+								Type:         schema.TypeString,
+								Required:     true,
+								ValidateFunc: validation.StringLenBetween(1, 256),
+							},
+						},
+					},
+				},
+				"lambda_function_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"invocation_type": {
+								Type:             schema.TypeString,
+								Required:         true,
+								ValidateDiagFunc: enum.Validate[types.PipeTargetInvocationType](),
+							},
+						},
+					},
+				},
+				"redshift_data_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							names.AttrDatabase: {
+								Type:         schema.TypeString,
+								Required:     true,
+								ValidateFunc: validation.StringLenBetween(1, 64),
+							},
+							"db_user": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: validation.StringLenBetween(1, 128),
+							},
+							"secret_manager_arn": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: verify.ValidARN,
+							},
+							"sqls": {
+								Type:     schema.TypeSet,
+								Required: true,
+								Elem: &schema.Schema{
+									Type:         schema.TypeString,
+									ValidateFunc: validation.StringLenBetween(1, 100000),
+								},
+							},
+							"statement_name": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: validation.StringLenBetween(1, 500),
+							},
+							"with_event": {
+								Type:     schema.TypeBool,
+								Optional: true,
+							},
+						},
+					},
+				},
+				"sagemaker_pipeline_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"pipeline_parameter": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 200,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										names.AttrName: {
+											Type:     schema.TypeString,
+											Required: true,
+											ValidateFunc: validation.All(
+												validation.StringLenBetween(1, 256),
+												validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z](-*[0-9A-Za-z])*|(\$(\.[\w/_-]+(\[(\d+|\*)\])*)*)$`), ""),
+											),
+										},
+										names.AttrValue: {
+											Type:         schema.TypeString,
+											Required:     true,
+											ValidateFunc: validation.StringLenBetween(1, 1024),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"sqs_queue_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.step_function_state_machine_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"message_deduplication_id": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: validation.StringLenBetween(1, 100),
+							},
+							"message_group_id": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: validation.StringLenBetween(1, 100),
+							},
+						},
+					},
+				},
+				"step_function_state_machine_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"target_parameters.0.batch_job_parameters",
+						"target_parameters.0.cloudwatch_logs_parameters",
+						"target_parameters.0.ecs_task_parameters",
+						"target_parameters.0.eventbridge_event_bus_parameters",
+						"target_parameters.0.http_parameters",
+						"target_parameters.0.kinesis_stream_parameters",
+						"target_parameters.0.lambda_function_parameters",
+						"target_parameters.0.redshift_data_parameters",
+						"target_parameters.0.sagemaker_pipeline_parameters",
+						"target_parameters.0.sqs_queue_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"invocation_type": {
+								Type:             schema.TypeString,
+								Required:         true,
+								ValidateDiagFunc: enum.Validate[types.PipeTargetInvocationType](),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

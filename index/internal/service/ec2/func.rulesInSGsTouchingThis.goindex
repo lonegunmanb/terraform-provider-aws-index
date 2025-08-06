@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func rulesInSGsTouchingThis(ctx context.Context, conn *ec2.Client, id string, searchAll bool) ([]awstypes.SecurityGroupRule, error) {
+	var input *ec2.DescribeSecurityGroupRulesInput
+
+	if searchAll {
+		input = &ec2.DescribeSecurityGroupRulesInput{}
+	} else {
+		sgs, err := relatedSGs(ctx, conn, id)
+		if err != nil {
+			return nil, fmt.Errorf("describing security group rules: %s", err)
+		}
+
+		input = &ec2.DescribeSecurityGroupRulesInput{
+			Filters: []awstypes.Filter{
+				{
+					Name:   aws.String("group-id"),
+					Values: sgs,
+				},
+			},
+		}
+	}
+
+	rules := []awstypes.SecurityGroupRule{}
+
+	pages := ec2.NewDescribeSecurityGroupRulesPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return nil, fmt.Errorf("reading Security Group rules: %w", err)
+		}
+
+		for _, rule := range page.SecurityGroupRules {
+			if rule.GroupId == nil {
+				continue
+			}
+
+			if aws.ToString(rule.GroupId) == id {
+				rules = append(rules, rule)
+				continue
+			}
+
+			if rule.ReferencedGroupInfo != nil && rule.ReferencedGroupInfo.GroupId != nil && aws.ToString(rule.ReferencedGroupInfo.GroupId) == id {
+				rules = append(rules, rule)
+				continue
+			}
+		}
+	}
+
+	return rules, nil
+}

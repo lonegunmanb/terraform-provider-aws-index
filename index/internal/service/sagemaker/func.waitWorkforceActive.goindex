@@ -1,0 +1,33 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitWorkforceActive(ctx context.Context, conn *sagemaker.Client, name string) error {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.WorkforceStatusInitializing, awstypes.WorkforceStatusUpdating),
+		Target:  enum.Slice(awstypes.WorkforceStatusActive),
+		Refresh: statusWorkforce(ctx, conn, name),
+		Timeout: workforceActiveTimeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.Workforce); ok {
+		if status, reason := output.Status, aws.ToString(output.FailureReason); status == awstypes.WorkforceStatusFailed && reason != "" {
+			tfresource.SetLastError(err, errors.New(reason))
+		}
+
+		return err
+	}
+
+	return err
+}

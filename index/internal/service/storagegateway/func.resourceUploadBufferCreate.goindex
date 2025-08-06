@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/storagegateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/storagegateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceUploadBufferCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).StorageGatewayClient(ctx)
+
+	diskID := d.Get("disk_id").(string)
+	gatewayARN := d.Get("gateway_arn").(string)
+	input := &storagegateway.AddUploadBufferInput{
+		GatewayARN: aws.String(gatewayARN),
+	}
+
+	if diskID != "" {
+		input.DiskIds = []string{diskID}
+	}
+
+	// Reference: https://github.com/hashicorp/terraform-provider-aws/issues/17809.
+	var diskPath string
+	if v, ok := d.GetOk("disk_path"); ok {
+		diskPath = v.(string)
+		input.DiskIds = []string{diskPath}
+	}
+
+	output, err := conn.AddUploadBuffer(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Storage Gateway Upload Buffer: %s", err)
+	}
+
+	gatewayARN = aws.ToString(output.GatewayARN)
+
+	if diskID != "" {
+		d.SetId(uploadBufferCreateResourceID(gatewayARN, diskID))
+
+		return append(diags, resourceUploadBufferRead(ctx, d, meta)...)
+	}
+
+	disk, err := findLocalDiskByGatewayARNAndDiskPath(ctx, conn, aws.ToString(output.GatewayARN), diskPath)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Storage Gateway Local Disk (%s): %s", diskPath, err)
+	}
+
+	diskID = aws.ToString(disk.DiskId)
+	d.SetId(uploadBufferCreateResourceID(gatewayARN, diskID))
+
+	return append(diags, resourceUploadBufferRead(ctx, d, meta)...)
+}

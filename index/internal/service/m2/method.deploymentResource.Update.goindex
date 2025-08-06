@@ -1,0 +1,115 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/m2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/m2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/m2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *deploymentResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new deploymentResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().M2Client(ctx)
+
+	timeout := r.UpdateTimeout(ctx, new.Timeouts)
+	if !new.ApplicationVersion.Equal(old.ApplicationVersion) {
+		applicationID := new.ApplicationID.ValueString()
+
+		// Stop the application if it was running.
+		if old.Start.ValueBool() {
+			if _, err := stopApplicationIfRunning(ctx, conn, applicationID, new.ForceStop.ValueBool(), timeout); err != nil {
+				response.Diagnostics.AddError(fmt.Sprintf("stopping Mainframe Modernization Application (%s)", applicationID), err.Error())
+
+				return
+			}
+		}
+
+		input := &m2.CreateDeploymentInput{}
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, input)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		// Additional fields.
+		input.ClientToken = aws.String(sdkid.UniqueId())
+
+		output, err := conn.CreateDeployment(ctx, input)
+
+		if err != nil {
+			response.Diagnostics.AddError("creating Mainframe Modernization Deployment", err.Error())
+
+			return
+		}
+
+		// Set values for unknowns.
+		new.DeploymentID = fwflex.StringToFramework(ctx, output.DeploymentId)
+		id, err := new.setID()
+		if err != nil {
+			response.Diagnostics.AddError("creating Mainframe Modernization Deployment", err.Error())
+			return
+		}
+		new.ID = types.StringValue(id)
+
+		if _, err := waitDeploymentUpdated(ctx, conn, new.ApplicationID.ValueString(), new.DeploymentID.ValueString(), timeout); err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("waiting for Mainframe Modernization Deployment (%s) update", new.ID.ValueString()), err.Error())
+
+			return
+		}
+
+		// Start the application if plan says to.
+		if new.Start.ValueBool() {
+			applicationID := new.ApplicationID.ValueString()
+			if _, err := startApplication(ctx, conn, applicationID, timeout); err != nil {
+				response.Diagnostics.AddError(fmt.Sprintf("starting Mainframe Modernization Application (%s)", applicationID), err.Error())
+				return
+			}
+		}
+
+		response.Diagnostics.Append(response.State.Set(ctx, new)...)
+		return
+	}
+
+	// Start/stop deployment if no other update is needed
+	if !old.Start.Equal(new.Start) {
+		applicationID := new.ApplicationID.ValueString()
+		new.DeploymentID = old.DeploymentID
+		if new.Start.ValueBool() {
+			if _, err := startApplication(ctx, conn, applicationID, timeout); err != nil {
+				response.Diagnostics.AddError(fmt.Sprintf("starting Mainframe Modernization Application (%s)", applicationID), err.Error())
+			}
+		} else {
+			if _, err := stopApplicationIfRunning(ctx, conn, applicationID, new.ForceStop.ValueBool(), timeout); err != nil {
+				response.Diagnostics.AddError(fmt.Sprintf("stopping Mainframe Modernization Application (%s)", applicationID), err.Error())
+			}
+		}
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, new)...)
+}

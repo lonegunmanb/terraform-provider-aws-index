@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findNetworkACLEntryByThreePartKey(ctx context.Context, conn *ec2.Client, naclID string, egress bool, ruleNumber int) (*awstypes.NetworkAclEntry, error) {
+	input := ec2.DescribeNetworkAclsInput{
+		Filters: newAttributeFilterList(map[string]string{
+			"entry.egress":      strconv.FormatBool(egress),
+			"entry.rule-number": strconv.Itoa(ruleNumber),
+		}),
+		NetworkAclIds: []string{naclID},
+	}
+
+	output, err := findNetworkACL(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return tfresource.AssertSingleValueResult(tfslices.Filter(output.Entries, func(v awstypes.NetworkAclEntry) bool {
+		return aws.ToBool(v.Egress) == egress && aws.ToInt32(v.RuleNumber) == int32(ruleNumber)
+	}))
+}

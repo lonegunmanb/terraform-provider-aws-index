@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elasticloadbalancingv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandInstancesDistribution(tfMap map[string]any) *awstypes.InstancesDistribution {
+	if tfMap == nil {
+		return nil
+	}
+
+	apiObject := &awstypes.InstancesDistribution{}
+
+	if v, ok := tfMap["on_demand_allocation_strategy"].(string); ok && v != "" {
+		apiObject.OnDemandAllocationStrategy = aws.String(v)
+	}
+
+	if v, ok := tfMap["on_demand_base_capacity"].(int); ok {
+		apiObject.OnDemandBaseCapacity = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["on_demand_percentage_above_base_capacity"].(int); ok {
+		apiObject.OnDemandPercentageAboveBaseCapacity = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["spot_allocation_strategy"].(string); ok && v != "" {
+		apiObject.SpotAllocationStrategy = aws.String(v)
+	}
+
+	if v, ok := tfMap["spot_instance_pools"].(int); ok && v != 0 {
+		apiObject.SpotInstancePools = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["spot_max_price"].(string); ok {
+		apiObject.SpotMaxPrice = aws.String(v)
+	}
+
+	return apiObject
+}

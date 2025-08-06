@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *exportTaskResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data exportTaskResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().RDSClient(ctx)
+
+	id := fwflex.StringValueFromFramework(ctx, data.ExportTaskIdentifier)
+	var input rds.StartExportTaskInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	input.S3BucketName = fwflex.StringFromFramework(ctx, data.S3Bucket)
+
+	_, err := conn.StartExportTask(ctx, &input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("starting RDS Export Task (%s)", id), err.Error())
+
+		return
+	}
+
+	data.ID = fwflex.StringValueToFramework(ctx, id)
+
+	exportTask, err := waitExportTaskCreated(ctx, conn, id, r.CreateTimeout(ctx, data.Timeouts))
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for RDS Export Task (%s) create", id), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	response.Diagnostics.Append(fwflex.Flatten(ctx, exportTask, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

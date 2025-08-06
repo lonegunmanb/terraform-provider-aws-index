@@ -1,0 +1,102 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codebuild
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandProjectSource(tfMap map[string]any) *types.ProjectSource {
+	if tfMap == nil {
+		return nil
+	}
+
+	sourceType := types.SourceType(tfMap[names.AttrType].(string))
+	apiObject := &types.ProjectSource{
+		Buildspec:     aws.String(tfMap["buildspec"].(string)),
+		GitCloneDepth: aws.Int32(int32(tfMap["git_clone_depth"].(int))),
+		InsecureSsl:   aws.Bool(tfMap["insecure_ssl"].(bool)),
+		Type:          sourceType,
+	}
+
+	if v, ok := tfMap[names.AttrLocation].(string); ok && v != "" {
+		apiObject.Location = aws.String(v)
+	}
+
+	if v, ok := tfMap["source_identifier"].(string); ok && v != "" {
+		apiObject.SourceIdentifier = aws.String(v)
+	}
+
+	// Only valid for BITBUCKET, GITHUB, GITHUB_ENTERPRISE, GITLAB, and GITLAB_SELF_MANAGED source types
+	// e.g., InvalidInputException: Source type NO_SOURCE does not support ReportBuildStatus
+	if sourceType == types.SourceTypeBitbucket || sourceType == types.SourceTypeGithub || sourceType == types.SourceTypeGithubEnterprise || sourceType == types.SourceTypeGitlab || sourceType == types.SourceTypeGitlabSelfManaged {
+		apiObject.ReportBuildStatus = aws.Bool(tfMap["report_build_status"].(bool))
+	}
+
+	// Only valid for BITBUCKET, CODECOMMIT, GITHUB, and GITHUB_ENTERPRISE source types
+	if sourceType == types.SourceTypeBitbucket || sourceType == types.SourceTypeCodecommit || sourceType == types.SourceTypeGithub || sourceType == types.SourceTypeGithubEnterprise {
+		if v, ok := tfMap["git_submodules_config"].([]any); ok && len(v) > 0 && v[0] != nil {
+			tfMap := v[0].(map[string]any)
+
+			gitSubmodulesConfig := &types.GitSubmodulesConfig{}
+
+			if v, ok := tfMap["fetch_submodules"].(bool); ok {
+				gitSubmodulesConfig.FetchSubmodules = aws.Bool(v)
+			}
+
+			apiObject.GitSubmodulesConfig = gitSubmodulesConfig
+		}
+	}
+
+	// Only valid for BITBUCKET, GITHUB, GITHUB_ENTERPRISE, GITLAB, and GITLAB_SELF_MANAGED source types
+	if sourceType == types.SourceTypeBitbucket || sourceType == types.SourceTypeGithub || sourceType == types.SourceTypeGithubEnterprise || sourceType == types.SourceTypeGitlab || sourceType == types.SourceTypeGitlabSelfManaged {
+		if v, ok := tfMap["build_status_config"].([]any); ok && len(v) > 0 && v[0] != nil {
+			tfMap := v[0].(map[string]any)
+
+			buildStatusConfig := &types.BuildStatusConfig{}
+
+			if v, ok := tfMap["context"].(string); ok && v != "" {
+				buildStatusConfig.Context = aws.String(v)
+			}
+			if v, ok := tfMap["target_url"].(string); ok && v != "" {
+				buildStatusConfig.TargetUrl = aws.String(v)
+			}
+
+			apiObject.BuildStatusConfig = buildStatusConfig
+		}
+	}
+
+	if v, ok := tfMap["auth"].([]any); ok && len(v) > 0 && v[0] != nil {
+		tfMap := v[0].(map[string]any)
+
+		sourceAuthConfig := &types.SourceAuth{}
+
+		if v, ok := tfMap["resource"].(string); ok && v != "" {
+			sourceAuthConfig.Resource = aws.String(v)
+		}
+		if v, ok := tfMap[names.AttrType].(string); ok && v != "" {
+			sourceAuthConfig.Type = types.SourceAuthType(v)
+		}
+
+		apiObject.Auth = sourceAuthConfig
+	}
+
+	return apiObject
+}

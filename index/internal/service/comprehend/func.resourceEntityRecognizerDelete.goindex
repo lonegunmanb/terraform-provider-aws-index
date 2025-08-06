@@ -1,0 +1,133 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/comprehend
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/aws/ratelimit"
+	"github.com/aws/aws-sdk-go-v2/service/comprehend"
+	"github.com/aws/aws-sdk-go-v2/service/comprehend/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	tfkms "github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEntityRecognizerDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ComprehendClient(ctx)
+
+	log.Printf("[INFO] Stopping Comprehend Entity Recognizer (%s)", d.Id())
+
+	input := comprehend.StopTrainingEntityRecognizerInput{
+		EntityRecognizerArn: aws.String(d.Id()),
+	}
+	_, err := conn.StopTrainingEntityRecognizer(ctx, &input)
+	if err != nil {
+		var nfe *types.ResourceNotFoundException
+		if errors.As(err, &nfe) {
+			return diags
+		}
+
+		return sdkdiag.AppendErrorf(diags, "stopping Comprehend Entity Recognizer (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitEntityRecognizerStopped(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		var nfe *types.ResourceNotFoundException
+		if errors.As(err, &nfe) {
+			return diags
+		}
+
+		return sdkdiag.AppendErrorf(diags, "waiting for Comprehend Entity Recognizer (%s) to be stopped: %s", d.Id(), err)
+	}
+
+	name, err := EntityRecognizerParseARN(d.Id())
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Comprehend Entity Recognizer (%s): %s", d.Id(), err)
+	}
+
+	log.Printf("[INFO] Deleting Comprehend Entity Recognizer (%s)", name)
+
+	versions, err := ListEntityRecognizerVersionsByName(ctx, conn, name)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Comprehend Entity Recognizer (%s): %s", name, err)
+	}
+
+	var g multierror.Group
+	for _, v := range versions {
+		g.Go(func() error {
+			input := comprehend.DeleteEntityRecognizerInput{
+				EntityRecognizerArn: v.EntityRecognizerArn,
+			}
+			_, err = conn.DeleteEntityRecognizer(ctx, &input)
+			if err != nil {
+				var nfe *types.ResourceNotFoundException
+				if !errors.As(err, &nfe) {
+					return fmt.Errorf("deleting version (%s): %w", aws.ToString(v.VersionName), err)
+				}
+			}
+
+			if _, err := waitEntityRecognizerDeleted(ctx, conn, aws.ToString(v.EntityRecognizerArn), d.Timeout(schema.TimeoutDelete)); err != nil {
+				return fmt.Errorf("waiting for version (%s) to be deleted: %s", aws.ToString(v.VersionName), err)
+			}
+
+			ec2Conn := meta.(*conns.AWSClient).EC2Client(ctx)
+			networkInterfaces, err := tfec2.FindNetworkInterfaces(ctx, ec2Conn, &ec2.DescribeNetworkInterfacesInput{
+				Filters: []ec2types.Filter{
+					tfec2.NewFilter("tag:"+entityRecognizerTagKey, []string{aws.ToString(v.EntityRecognizerArn)}),
+				},
+			})
+			if err != nil {
+				return fmt.Errorf("finding ENIs for version (%s): %w", aws.ToString(v.VersionName), err)
+			}
+
+			for _, v := range networkInterfaces {
+				g.Go(func() error {
+					networkInterfaceID := aws.ToString(v.NetworkInterfaceId)
+
+					if v.Attachment != nil {
+						err = tfec2.DetachNetworkInterface(ctx, ec2Conn, networkInterfaceID, aws.ToString(v.Attachment.AttachmentId), d.Timeout(schema.TimeoutDelete))
+
+						if err != nil {
+							return fmt.Errorf("detaching ENI (%s): %w", networkInterfaceID, err)
+						}
+					}
+
+					err = tfec2.DeleteNetworkInterface(ctx, ec2Conn, networkInterfaceID)
+					if err != nil {
+						return fmt.Errorf("deleting ENI (%s): %w", networkInterfaceID, err)
+					}
+
+					return nil
+				})
+			}
+
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Comprehend Entity Recognizer (%s): %s", name, err)
+	}
+
+	return diags
+}

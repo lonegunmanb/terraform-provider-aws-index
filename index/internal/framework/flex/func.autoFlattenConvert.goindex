@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	smithyjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	"github.com/shopspring/decimal"
+)
+func autoFlattenConvert(ctx context.Context, from, to any, flexer autoFlexer) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	sourcePath := path.Empty()
+	targetPath := path.Empty()
+
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourcePath, sourcePath.String())
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeyTargetPath, targetPath.String())
+
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourceType, fullTypeName(reflect.TypeOf(from)))
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeyTargetType, fullTypeName(reflect.TypeOf(to)))
+
+	if _, ok := to.(attr.Value); !ok {
+		vf := reflect.ValueOf(from)
+		if vf.Kind() == reflect.Invalid || vf.Kind() == reflect.Pointer && vf.IsNil() {
+			tflog.SubsystemError(ctx, subsystemName, "Source is nil")
+			diags.Append(diagFlatteningSourceIsNil(reflect.TypeOf(from)))
+			return diags
+		}
+	}
+
+	ctx, valFrom, valTo, d := autoFlexValues(ctx, from, to)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	// Top-level struct to struct conversion.
+	if valFrom.IsValid() && valTo.IsValid() {
+		if typFrom, typTo := valFrom.Type(), valTo.Type(); typFrom.Kind() == reflect.Struct && typTo.Kind() == reflect.Struct &&
+			!typTo.Implements(reflect.TypeFor[basetypes.ListValuable]()) &&
+			!typTo.Implements(reflect.TypeFor[basetypes.SetValuable]()) {
+			tflog.SubsystemInfo(ctx, subsystemName, "Converting")
+			diags.Append(flattenStruct(ctx, sourcePath, from, targetPath, to, flexer)...)
+			return diags
+		}
+	}
+
+	valFrom = reflect.ValueOf(from)
+
+	// Anything else.
+	diags.Append(flexer.convert(ctx, sourcePath, valFrom, targetPath, valTo, fieldOpts{})...)
+	return diags
+}

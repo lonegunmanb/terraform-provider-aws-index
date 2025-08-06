@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3control
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3control"
+	"github.com/aws/aws-sdk-go-v2/service/s3control/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMultiRegionAccessPointPolicy() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceMultiRegionAccessPointPolicyCreate,
+		ReadWithoutTimeout:   resourceMultiRegionAccessPointPolicyRead,
+		UpdateWithoutTimeout: resourceMultiRegionAccessPointPolicyUpdate,
+		DeleteWithoutTimeout: schema.NoopContext,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(15 * time.Minute),
+			Update: schema.DefaultTimeout(15 * time.Minute),
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrAccountID: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Computed:     true,
+				ForceNew:     true,
+				ValidateFunc: verify.ValidAccountID,
+			},
+			"details": {
+				Type:     schema.TypeList,
+				Required: true,
+				MinItems: 1,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrName: {
+							Type:         schema.TypeString,
+							Required:     true,
+							ForceNew:     true,
+							ValidateFunc: validateS3MultiRegionAccessPointName,
+						},
+						names.AttrPolicy: {
+							Type:                  schema.TypeString,
+							Required:              true,
+							ValidateFunc:          validation.StringIsJSON,
+							DiffSuppressFunc:      verify.SuppressEquivalentPolicyDiffs,
+							DiffSuppressOnRefresh: true,
+							StateFunc: func(v any) string {
+								json, _ := structure.NormalizeJsonString(v)
+								return json
+							},
+						},
+					},
+				},
+			},
+			"established": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"proposed": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+		},
+	}
+}

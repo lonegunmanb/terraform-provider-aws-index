@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *contributorManagedInsightRulesDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	conn := d.Meta().CloudWatchClient(ctx)
+
+	var data contributorManagedInsightRulesDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resourceARN := data.ResourceARN.ValueString()
+	input := &cloudwatch.ListManagedInsightRulesInput{
+		ResourceARN: aws.String(resourceARN),
+	}
+
+	filter := tfslices.PredicateTrue[*awstypes.ManagedRuleDescription]()
+
+	output, err := findContributorManagedInsightRules(ctx, conn, input, filter)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.CloudWatch, create.ErrActionReading, DSNameContributorManagedInsightRules, data.ResourceARN.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(fwflex.Flatten(
+		ctx,
+		struct {
+			ManagedRules []awstypes.ManagedRuleDescription
+		}{
+			ManagedRules: output,
+		},
+		&data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}

@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/costoptimizationhub
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/costoptimizationhub"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/costoptimizationhub/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *preferencesResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().CostOptimizationHubClient(ctx)
+
+	var plan, state preferencesResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.MemberAccountDiscountVisibility.Equal(state.MemberAccountDiscountVisibility) ||
+		!plan.SavingsEstimationMode.Equal(state.SavingsEstimationMode) {
+		in := &costoptimizationhub.UpdatePreferencesInput{}
+		if !plan.MemberAccountDiscountVisibility.IsNull() {
+			in.MemberAccountDiscountVisibility = awstypes.MemberAccountDiscountVisibility(plan.MemberAccountDiscountVisibility.ValueString())
+		}
+		if !plan.SavingsEstimationMode.IsNull() {
+			in.SavingsEstimationMode = awstypes.SavingsEstimationMode(plan.SavingsEstimationMode.ValueString())
+		}
+
+		out, err := conn.UpdatePreferences(ctx, in)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.CostOptimizationHub, create.ErrActionCreating, resNamePreferences, plan.ID.String(), err),
+				err.Error(),
+			)
+			return
+		}
+
+		if out == nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.CostOptimizationHub, create.ErrActionCreating, resNamePreferences, plan.ID.String(), nil),
+				errors.New("empty out").Error(),
+			)
+			return
+		}
+
+		plan.ID = state.ID
+		plan.MemberAccountDiscountVisibility = flex.StringValueToFramework(ctx, out.MemberAccountDiscountVisibility)
+		plan.SavingsEstimationMode = flex.StringValueToFramework(ctx, out.SavingsEstimationMode)
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

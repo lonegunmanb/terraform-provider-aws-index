@@ -1,0 +1,133 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenHTTPRoute(httpRoute *awstypes.HttpRoute) []any {
+	if httpRoute == nil {
+		return []any{}
+	}
+
+	mHttpRoute := map[string]any{}
+
+	if action := httpRoute.Action; action != nil {
+		if weightedTargets := action.WeightedTargets; weightedTargets != nil {
+			vWeightedTargets := []any{}
+
+			for _, weightedTarget := range weightedTargets {
+				mWeightedTarget := map[string]any{
+					"virtual_node":   aws.ToString(weightedTarget.VirtualNode),
+					names.AttrWeight: weightedTarget.Weight,
+				}
+
+				if v := aws.ToInt32(weightedTarget.Port); v != 0 {
+					mWeightedTarget[names.AttrPort] = v
+				}
+
+				vWeightedTargets = append(vWeightedTargets, mWeightedTarget)
+			}
+
+			mHttpRoute[names.AttrAction] = []any{
+				map[string]any{
+					"weighted_target": vWeightedTargets,
+				},
+			}
+		}
+	}
+
+	if httpRouteMatch := httpRoute.Match; httpRouteMatch != nil {
+		vHttpRouteHeaders := []any{}
+
+		for _, httpRouteHeader := range httpRouteMatch.Headers {
+			mHttpRouteHeader := map[string]any{
+				"invert":       aws.ToBool(httpRouteHeader.Invert),
+				names.AttrName: aws.ToString(httpRouteHeader.Name),
+			}
+
+			if match := httpRouteHeader.Match; match != nil {
+				mMatch := map[string]any{}
+
+				switch v := match.(type) {
+				case *awstypes.HeaderMatchMethodMemberExact:
+					mMatch["exact"] = v.Value
+				case *awstypes.HeaderMatchMethodMemberPrefix:
+					mMatch[names.AttrPrefix] = v.Value
+				case *awstypes.HeaderMatchMethodMemberRegex:
+					mMatch["regex"] = v.Value
+				case *awstypes.HeaderMatchMethodMemberSuffix:
+					mMatch["suffix"] = v.Value
+				case *awstypes.HeaderMatchMethodMemberRange:
+					mRange := map[string]any{
+						"end":   aws.ToInt64(v.Value.End),
+						"start": aws.ToInt64(v.Value.Start),
+					}
+
+					mMatch["range"] = []any{mRange}
+				}
+
+				mHttpRouteHeader["match"] = []any{mMatch}
+			}
+
+			vHttpRouteHeaders = append(vHttpRouteHeaders, mHttpRouteHeader)
+		}
+
+		vHttpRoutePath := []any{}
+
+		if httpRoutePath := httpRouteMatch.Path; httpRoutePath != nil {
+			mHttpRoutePath := map[string]any{
+				"exact": aws.ToString(httpRoutePath.Exact),
+				"regex": aws.ToString(httpRoutePath.Regex),
+			}
+
+			vHttpRoutePath = []any{mHttpRoutePath}
+		}
+
+		vHttpRouteQueryParameters := []any{}
+
+		for _, httpRouteQueryParameter := range httpRouteMatch.QueryParameters {
+			mHttpRouteQueryParameter := map[string]any{
+				names.AttrName: aws.ToString(httpRouteQueryParameter.Name),
+			}
+
+			if match := httpRouteQueryParameter.Match; match != nil {
+				mMatch := map[string]any{
+					"exact": aws.ToString(match.Exact),
+				}
+
+				mHttpRouteQueryParameter["match"] = []any{mMatch}
+			}
+
+			vHttpRouteQueryParameters = append(vHttpRouteQueryParameters, mHttpRouteQueryParameter)
+		}
+
+		mHttpRoute["match"] = []any{
+			map[string]any{
+				names.AttrHeader:  vHttpRouteHeaders,
+				"method":          httpRouteMatch.Method,
+				names.AttrPath:    vHttpRoutePath,
+				names.AttrPort:    aws.ToInt32(httpRouteMatch.Port),
+				names.AttrPrefix:  aws.ToString(httpRouteMatch.Prefix),
+				"query_parameter": vHttpRouteQueryParameters,
+				"scheme":          httpRouteMatch.Scheme,
+			},
+		}
+	}
+
+	if httpRetryPolicy := httpRoute.RetryPolicy; httpRetryPolicy != nil {
+		mHttpRetryPolicy := map[string]any{
+			"http_retry_events": httpRetryPolicy.HttpRetryEvents,
+			"max_retries":       aws.ToInt64(httpRetryPolicy.MaxRetries),
+			"per_retry_timeout": flattenDuration(httpRetryPolicy.PerRetryTimeout),
+			"tcp_retry_events":  httpRetryPolicy.TcpRetryEvents,
+		}
+
+		mHttpRoute["retry_policy"] = []any{mHttpRetryPolicy}
+	}
+
+	mHttpRoute[names.AttrTimeout] = flattenHTTPTimeout(httpRoute.Timeout)
+
+	return []any{mHttpRoute}
+}

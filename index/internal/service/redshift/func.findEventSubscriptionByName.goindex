@@ -1,0 +1,39 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findEventSubscriptionByName(ctx context.Context, conn *redshift.Client, name string) (*awstypes.EventSubscription, error) {
+	input := &redshift.DescribeEventSubscriptionsInput{
+		SubscriptionName: aws.String(name),
+	}
+
+	output, err := conn.DescribeEventSubscriptions(ctx, input)
+
+	if errs.IsA[*awstypes.SubscriptionNotFoundFault](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output == nil || len(output.EventSubscriptionsList) == 0 {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	if count := len(output.EventSubscriptionsList); count > 1 {
+		return nil, tfresource.NewTooManyResultsError(count, input)
+	}
+
+	return tfresource.AssertSingleValueResult(output.EventSubscriptionsList)
+}

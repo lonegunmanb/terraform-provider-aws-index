@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/efs
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/efs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicationConfigurationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EFSClient(ctx)
+
+	fsID := d.Get("source_file_system_id").(string)
+	input := &efs.CreateReplicationConfigurationInput{
+		SourceFileSystemId: aws.String(fsID),
+	}
+
+	if v, ok := d.GetOk(names.AttrDestination); ok && len(v.([]any)) > 0 {
+		input.Destinations = expandDestinationsToCreate(v.([]any))
+	}
+
+	_, err := conn.CreateReplicationConfiguration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EFS Replication Configuration (%s): %s", fsID, err)
+	}
+
+	d.SetId(fsID)
+
+	if _, err := waitReplicationConfigurationCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EFS Replication Configuration (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceReplicationConfigurationRead(ctx, d, meta)...)
+}

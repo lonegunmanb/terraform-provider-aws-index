@@ -1,0 +1,147 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudsearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudsearch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudsearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudSearchClient(ctx)
+
+	requiresIndexDocuments := false
+	if d.HasChange("scaling_parameters") {
+		input := &cloudsearch.UpdateScalingParametersInput{
+			DomainName: aws.String(d.Id()),
+		}
+
+		if v, ok := d.GetOk("scaling_parameters"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.ScalingParameters = expandScalingParameters(v.([]any)[0].(map[string]any))
+		} else {
+			input.ScalingParameters = &types.ScalingParameters{}
+		}
+
+		output, err := conn.UpdateScalingParameters(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudSearch Domain (%s) scaling parameters: %s", d.Id(), err)
+		}
+
+		if output != nil && output.ScalingParameters != nil && output.ScalingParameters.Status != nil && output.ScalingParameters.Status.State == types.OptionStateRequiresIndexDocuments {
+			requiresIndexDocuments = true
+		}
+	}
+
+	if d.HasChange("multi_az") {
+		input := &cloudsearch.UpdateAvailabilityOptionsInput{
+			DomainName: aws.String(d.Id()),
+			MultiAZ:    aws.Bool(d.Get("multi_az").(bool)),
+		}
+
+		output, err := conn.UpdateAvailabilityOptions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudSearch Domain (%s) availability options: %s", d.Id(), err)
+		}
+
+		if output != nil && output.AvailabilityOptions != nil && output.AvailabilityOptions.Status != nil && output.AvailabilityOptions.Status.State == types.OptionStateRequiresIndexDocuments {
+			requiresIndexDocuments = true
+		}
+	}
+
+	if d.HasChange("endpoint_options") {
+		input := &cloudsearch.UpdateDomainEndpointOptionsInput{
+			DomainName: aws.String(d.Id()),
+		}
+
+		if v, ok := d.GetOk("endpoint_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.DomainEndpointOptions = expandDomainEndpointOptions(v.([]any)[0].(map[string]any))
+		} else {
+			input.DomainEndpointOptions = &types.DomainEndpointOptions{}
+		}
+
+		output, err := conn.UpdateDomainEndpointOptions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudSearch Domain (%s) endpoint options: %s", d.Id(), err)
+		}
+
+		if output != nil && output.DomainEndpointOptions != nil && output.DomainEndpointOptions.Status != nil && output.DomainEndpointOptions.Status.State == types.OptionStateRequiresIndexDocuments {
+			requiresIndexDocuments = true
+		}
+	}
+
+	if d.HasChange("index_field") {
+		o, n := d.GetChange("index_field")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		for _, tfMapRaw := range os.Difference(ns).List() {
+			tfMap, ok := tfMapRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			fieldName, _ := tfMap[names.AttrName].(string)
+
+			if fieldName == "" {
+				continue
+			}
+
+			input := &cloudsearch.DeleteIndexFieldInput{
+				DomainName:     aws.String(d.Id()),
+				IndexFieldName: aws.String(fieldName),
+			}
+
+			_, err := conn.DeleteIndexField(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "deleting CloudSearch Domain (%s) index field (%s): %s", d.Id(), fieldName, err)
+			}
+
+			requiresIndexDocuments = true
+		}
+
+		if v := ns.Difference(os); v.Len() > 0 {
+			if err := defineIndexFields(ctx, conn, d.Id(), v.List()); err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating CloudSearch Domain (%s): %s", d.Id(), err)
+			}
+
+			requiresIndexDocuments = true
+		}
+	}
+
+	if requiresIndexDocuments {
+		input := &cloudsearch.IndexDocumentsInput{
+			DomainName: aws.String(d.Id()),
+		}
+
+		_, err := conn.IndexDocuments(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "indexing CloudSearch Domain (%s) documents: %s", d.Id(), err)
+		}
+	}
+
+	if _, err := waitDomainActive(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for CloudSearch Domain (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDomainRead(ctx, d, meta)...)
+}

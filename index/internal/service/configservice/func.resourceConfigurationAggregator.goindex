@@ -1,0 +1,120 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfigurationAggregator() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceConfigurationAggregatorPut,
+		ReadWithoutTimeout:   resourceConfigurationAggregatorRead,
+		UpdateWithoutTimeout: resourceConfigurationAggregatorPut,
+		DeleteWithoutTimeout: resourceConfigurationAggregatorDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		CustomizeDiff: customdiff.Sequence(
+			// This is to prevent this error:
+			// All fields are ForceNew or Computed w/out Optional, Update is superfluous
+			customdiff.ForceNewIfChange("account_aggregation_source", func(_ context.Context, old, new, meta any) bool {
+				return len(old.([]any)) == 0 && len(new.([]any)) > 0
+			}),
+			customdiff.ForceNewIfChange("organization_aggregation_source", func(_ context.Context, old, new, meta any) bool {
+				return len(old.([]any)) == 0 && len(new.([]any)) > 0
+			}),
+		),
+
+		Schema: map[string]*schema.Schema{
+			"account_aggregation_source": {
+				Type:          schema.TypeList,
+				Optional:      true,
+				MaxItems:      1,
+				ConflictsWith: []string{"organization_aggregation_source"},
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"account_ids": {
+							Type:     schema.TypeList,
+							Required: true,
+							MinItems: 1,
+							Elem: &schema.Schema{
+								Type:         schema.TypeString,
+								ValidateFunc: verify.ValidAccountID,
+							},
+						},
+						"all_regions": {
+							Type:     schema.TypeBool,
+							Default:  false,
+							Optional: true,
+						},
+						"regions": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MinItems: 1,
+							Elem: &schema.Schema{
+								Type: schema.TypeString,
+							},
+						},
+					},
+				},
+			},
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrName: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringLenBetween(0, 256),
+			},
+			"organization_aggregation_source": {
+				Type:          schema.TypeList,
+				Optional:      true,
+				MaxItems:      1,
+				ConflictsWith: []string{"account_aggregation_source"},
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"all_regions": {
+							Type:     schema.TypeBool,
+							Default:  false,
+							Optional: true,
+						},
+						"regions": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MinItems: 1,
+							Elem: &schema.Schema{
+								Type: schema.TypeString,
+							},
+						},
+						names.AttrRoleARN: {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: verify.ValidARN,
+						},
+					},
+				},
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+		},
+	}
+}

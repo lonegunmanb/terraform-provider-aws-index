@@ -1,0 +1,136 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elasticloadbalancingv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenInstanceRequirements(apiObject *awstypes.InstanceRequirements) map[string]any {
+	if apiObject == nil {
+		return nil
+	}
+
+	tfMap := map[string]any{}
+
+	if v := apiObject.AcceleratorCount; v != nil {
+		tfMap["accelerator_count"] = []any{flattenAcceleratorCount(v)}
+	}
+
+	if apiObject.AcceleratorManufacturers != nil {
+		tfMap["accelerator_manufacturers"] = apiObject.AcceleratorManufacturers
+	}
+
+	if apiObject.AcceleratorNames != nil {
+		tfMap["accelerator_names"] = apiObject.AcceleratorNames
+	}
+
+	if v := apiObject.AcceleratorTotalMemoryMiB; v != nil {
+		tfMap["accelerator_total_memory_mib"] = []any{flattenAcceleratorTotalMemoryMiB(v)}
+	}
+
+	if apiObject.AcceleratorTypes != nil {
+		tfMap["accelerator_types"] = apiObject.AcceleratorTypes
+	}
+
+	if apiObject.AllowedInstanceTypes != nil {
+		tfMap["allowed_instance_types"] = apiObject.AllowedInstanceTypes
+	}
+
+	tfMap["bare_metal"] = apiObject.BareMetal
+
+	if v := apiObject.BaselineEbsBandwidthMbps; v != nil {
+		tfMap["baseline_ebs_bandwidth_mbps"] = []any{flattenBaselineEBSBandwidthMbps(v)}
+	}
+
+	tfMap["burstable_performance"] = apiObject.BurstablePerformance
+
+	if v := apiObject.CpuManufacturers; v != nil {
+		tfMap["cpu_manufacturers"] = apiObject.CpuManufacturers
+	}
+
+	if v := apiObject.ExcludedInstanceTypes; v != nil {
+		tfMap["excluded_instance_types"] = apiObject.ExcludedInstanceTypes
+	}
+
+	if v := apiObject.InstanceGenerations; v != nil {
+		tfMap["instance_generations"] = apiObject.InstanceGenerations
+	}
+
+	tfMap["local_storage"] = apiObject.LocalStorage
+
+	if v := apiObject.LocalStorageTypes; v != nil {
+		tfMap["local_storage_types"] = apiObject.LocalStorageTypes
+	}
+
+	if v := apiObject.MaxSpotPriceAsPercentageOfOptimalOnDemandPrice; v != nil {
+		tfMap["max_spot_price_as_percentage_of_optimal_on_demand_price"] = aws.ToInt32(v)
+	}
+
+	if v := apiObject.MemoryGiBPerVCpu; v != nil {
+		tfMap["memory_gib_per_vcpu"] = []any{flattenMemoryGiBPerVCPU(v)}
+	}
+
+	if v := apiObject.MemoryMiB; v != nil {
+		tfMap["memory_mib"] = []any{flattenMemoryMiB(v)}
+	}
+
+	if v := apiObject.NetworkBandwidthGbps; v != nil {
+		tfMap["network_bandwidth_gbps"] = []any{flattenNetworkBandwidthGbps(v)}
+	}
+
+	if v := apiObject.NetworkInterfaceCount; v != nil {
+		tfMap["network_interface_count"] = []any{flattenNetworkInterfaceCount(v)}
+	}
+
+	if v := apiObject.OnDemandMaxPricePercentageOverLowestPrice; v != nil {
+		tfMap["on_demand_max_price_percentage_over_lowest_price"] = aws.ToInt32(v)
+	}
+
+	if v := apiObject.RequireHibernateSupport; v != nil {
+		tfMap["require_hibernate_support"] = aws.ToBool(v)
+	}
+
+	if v := apiObject.SpotMaxPricePercentageOverLowestPrice; v != nil {
+		tfMap["spot_max_price_percentage_over_lowest_price"] = aws.ToInt32(v)
+	}
+
+	if v := apiObject.TotalLocalStorageGB; v != nil {
+		tfMap["total_local_storage_gb"] = []any{flattentTotalLocalStorageGB(v)}
+	}
+
+	if v := apiObject.VCpuCount; v != nil {
+		tfMap["vcpu_count"] = []any{flattenVCPUCount(v)}
+	}
+
+	return tfMap
+}

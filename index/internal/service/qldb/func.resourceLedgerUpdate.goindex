@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/qldb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/qldb"
+	"github.com/aws/aws-sdk-go-v2/service/qldb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLedgerUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QLDBClient(ctx)
+
+	if d.HasChange("permissions_mode") {
+		input := &qldb.UpdateLedgerPermissionsModeInput{
+			Name:            aws.String(d.Id()),
+			PermissionsMode: types.PermissionsMode(d.Get("permissions_mode").(string)),
+		}
+
+		if _, err := conn.UpdateLedgerPermissionsMode(ctx, input); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QLDB Ledger (%s) permissions mode: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChanges(names.AttrDeletionProtection, names.AttrKMSKey) {
+		input := &qldb.UpdateLedgerInput{
+			DeletionProtection: aws.Bool(d.Get(names.AttrDeletionProtection).(bool)),
+			Name:               aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrKMSKey) {
+			input.KmsKey = aws.String(d.Get(names.AttrKMSKey).(string))
+		}
+
+		if _, err := conn.UpdateLedger(ctx, input); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QLDB Ledger (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceLedgerRead(ctx, d, meta)...)
+}

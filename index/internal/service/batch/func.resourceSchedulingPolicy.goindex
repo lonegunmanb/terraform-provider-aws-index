@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/batch
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/batch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSchedulingPolicy() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceSchedulingPolicyCreate,
+		ReadWithoutTimeout:   resourceSchedulingPolicyRead,
+		UpdateWithoutTimeout: resourceSchedulingPolicyUpdate,
+		DeleteWithoutTimeout: resourceSchedulingPolicyDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"fair_share_policy": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"compute_reservation": {
+							Type:         schema.TypeInt,
+							Optional:     true,
+							ValidateFunc: validation.IntBetween(0, 99),
+						},
+						"share_decay_seconds": {
+							Type:         schema.TypeInt,
+							Optional:     true,
+							ValidateFunc: validation.IntBetween(0, 604800),
+						},
+						"share_distribution": {
+							Type: schema.TypeSet,
+							// There can be no more than 500 fair share identifiers active in a job queue.
+							MaxItems: 500,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"share_identifier": {
+										Type:         schema.TypeString,
+										Required:     true,
+										ValidateFunc: validShareIdentifier,
+									},
+									"weight_factor": {
+										Type:         schema.TypeFloat,
+										Optional:     true,
+										ValidateFunc: validation.FloatBetween(0.0001, 999.9999),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrName: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validName,
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+		},
+	}
+}

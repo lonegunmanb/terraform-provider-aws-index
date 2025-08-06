@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLifecycleHook() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceLifecycleHookPut,
+		ReadWithoutTimeout:   resourceLifecycleHookRead,
+		UpdateWithoutTimeout: resourceLifecycleHookPut,
+		DeleteWithoutTimeout: resourceLifecycleHookDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: resourceLifecycleHookImport,
+		},
+
+		Schema: map[string]*schema.Schema{
+			"autoscaling_group_name": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"default_result": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateDiagFunc: enum.Validate[lifecycleHookDefaultResult](),
+			},
+			"heartbeat_timeout": {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				ValidateFunc: validation.IntBetween(30, 7200),
+			},
+			"lifecycle_transition": {
+				Type:             schema.TypeString,
+				Required:         true,
+				ValidateDiagFunc: enum.Validate[lifecycleHookLifecycleTransition](),
+			},
+			names.AttrName: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+				ValidateFunc: validation.All(
+					validation.StringLenBetween(1, 255),
+					validation.StringMatch(regexache.MustCompile(`[A-Za-z0-9\-_\/]+`),
+						`no spaces or special characters except "-", "_", and "/"`),
+				),
+			},
+			"notification_metadata": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"notification_target_arn": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: verify.ValidARN,
+			},
+			names.AttrRoleARN: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: verify.ValidARN,
+			},
+		},
+	}
+}

@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIdentityProviderUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	userPoolID, providerName, err := identityProviderParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &cognitoidentityprovider.UpdateIdentityProviderInput{
+		ProviderName: aws.String(providerName),
+		UserPoolId:   aws.String(userPoolID),
+	}
+
+	if d.HasChange("attribute_mapping") {
+		input.AttributeMapping = flex.ExpandStringValueMap(d.Get("attribute_mapping").(map[string]any))
+	}
+
+	if d.HasChange("idp_identifiers") {
+		input.IdpIdentifiers = flex.ExpandStringValueList(d.Get("idp_identifiers").([]any))
+	}
+
+	if d.HasChange("provider_details") {
+		v := flex.ExpandStringValueMap(d.Get("provider_details").(map[string]any))
+		delete(v, "ActiveEncryptionCertificate")
+		input.ProviderDetails = v
+	}
+
+	_, err = conn.UpdateIdentityProvider(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Cognito Identity Provider (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceIdentityProviderRead(ctx, d, meta)...)
+}

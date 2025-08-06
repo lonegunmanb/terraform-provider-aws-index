@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWebACLAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFV2Client(ctx)
+
+	webACLARN := d.Get("web_acl_arn").(string)
+	resourceARN := d.Get(names.AttrResourceARN).(string)
+	id, err := flex.FlattenResourceId([]string{webACLARN, resourceARN}, webACLAssociationResourceIDPartCount, true)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &wafv2.AssociateWebACLInput{
+		ResourceArn: aws.String(resourceARN),
+		WebACLArn:   aws.String(webACLARN),
+	}
+
+	log.Printf("[INFO] Creating WAFv2 WebACL Association: %s", d.Id())
+	if _, err = tfresource.RetryWhenIsA[*awstypes.WAFUnavailableEntityException](ctx, d.Timeout(schema.TimeoutCreate), func() (any, error) {
+		return conn.AssociateWebACL(ctx, input)
+	}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating WAFv2 WebACL Association (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceWebACLAssociationRead(ctx, d, meta)...)
+}

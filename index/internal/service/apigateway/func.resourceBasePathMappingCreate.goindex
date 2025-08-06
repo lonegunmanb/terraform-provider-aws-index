@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBasePathMappingCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	domainName, basePath := d.Get(names.AttrDomainName).(string), d.Get("base_path").(string)
+	input := apigateway.CreateBasePathMappingInput{
+		RestApiId:  aws.String(d.Get("api_id").(string)),
+		DomainName: aws.String(domainName),
+		BasePath:   aws.String(basePath),
+		Stage:      aws.String(d.Get("stage_name").(string)),
+	}
+
+	var id string
+	if v, ok := d.GetOk("domain_name_id"); ok {
+		domainNameID := v.(string)
+		input.DomainNameId = aws.String(domainNameID)
+		id = basePathMappingCreateResourceID(domainName, basePath, domainNameID)
+	} else {
+		id = basePathMappingCreateResourceID(domainName, basePath, "")
+	}
+
+	const (
+		timeout = 30 * time.Second
+	)
+	_, err := tfresource.RetryWhenIsA[*types.BadRequestException](ctx, timeout, func() (any, error) {
+		return conn.CreateBasePathMapping(ctx, &input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway Base Path Mapping (%s): %s", err, id)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceBasePathMappingRead(ctx, d, meta)...)
+}

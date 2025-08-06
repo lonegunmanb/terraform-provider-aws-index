@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePortfolioShareDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	input := &servicecatalog.DeletePortfolioShareInput{
+		PortfolioId: aws.String(d.Get("portfolio_id").(string)),
+	}
+
+	if v, ok := d.GetOk("accept_language"); ok {
+		input.AcceptLanguage = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrType); ok && v.(string) == string(awstypes.DescribePortfolioShareTypeAccount) {
+		input.AccountId = aws.String(d.Get("principal_id").(string))
+	} else {
+		orgNode := &awstypes.OrganizationNode{}
+		orgNode.Value = aws.String(d.Get("principal_id").(string))
+
+		if v.(string) == string(awstypes.DescribePortfolioShareTypeOrganizationMemberAccount) {
+			// portfolio_share type ORGANIZATION_MEMBER_ACCOUNT = org node type ACCOUNT
+			orgNode.Type = awstypes.OrganizationNodeTypeAccount
+		} else {
+			orgNode.Type = awstypes.OrganizationNodeType(d.Get(names.AttrType).(string))
+		}
+
+		input.OrganizationNode = orgNode
+	}
+
+	output, err := conn.DeletePortfolioShare(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Service Catalog Portfolio Share (%s): %s", d.Id(), err)
+	}
+
+	// only get a token if organization node, otherwise check without token
+	if output.PortfolioShareToken != nil {
+		if _, err := waitPortfolioShareDeletedWithToken(ctx, conn, aws.ToString(output.PortfolioShareToken), d.Timeout(schema.TimeoutDelete)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Service Catalog Portfolio Share (%s) to be deleted: %s", d.Id(), err)
+		}
+	} else {
+		if _, err := waitPortfolioShareDeleted(ctx, conn, d.Get("portfolio_id").(string), d.Get(names.AttrType).(string), d.Get("principal_id").(string), d.Timeout(schema.TimeoutDelete)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Service Catalog Portfolio Share (%s) to be deleted: %s", d.Id(), err)
+		}
+	}
+
+	return diags
+}

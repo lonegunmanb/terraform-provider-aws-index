@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitVPCLinkAvailable(ctx context.Context, conn *apigateway.Client, id string) (*apigateway.GetVpcLinkOutput, error) { //nolint:unparam
+	const (
+		timeout = 20 * time.Minute
+	)
+	stateConf := &retry.StateChangeConf{
+		Pending:    enum.Slice(types.VpcLinkStatusPending),
+		Target:     enum.Slice(types.VpcLinkStatusAvailable),
+		Refresh:    vpcLinkStatus(ctx, conn, id),
+		Timeout:    timeout,
+		MinTimeout: 3 * time.Second,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*apigateway.GetVpcLinkOutput); ok {
+		tfresource.SetLastError(err, errors.New(aws.ToString(output.StatusMessage)))
+
+		return output, err
+	}
+
+	return nil, err
+}

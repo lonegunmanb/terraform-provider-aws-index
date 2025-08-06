@@ -1,0 +1,128 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandRuleConditions(tfList []any) ([]awstypes.RuleCondition, error) {
+	apiObjects := make([]awstypes.RuleCondition, len(tfList))
+
+	for i, tfMapRaw := range tfList {
+		tfMap := tfMapRaw.(map[string]any)
+		apiObjects[i] = awstypes.RuleCondition{}
+
+		var field string
+		var attrs int
+
+		if hostHeader, ok := tfMap["host_header"].([]any); ok && len(hostHeader) > 0 {
+			field = "host-header"
+			attrs += 1
+			values := hostHeader[0].(map[string]any)[names.AttrValues].(*schema.Set)
+
+			apiObjects[i].HostHeaderConfig = &awstypes.HostHeaderConditionConfig{
+				Values: flex.ExpandStringValueSet(values),
+			}
+		}
+
+		if httpHeader, ok := tfMap["http_header"].([]any); ok && len(httpHeader) > 0 {
+			field = "http-header"
+			attrs += 1
+			httpHeaderMap := httpHeader[0].(map[string]any)
+			values := httpHeaderMap[names.AttrValues].(*schema.Set)
+
+			apiObjects[i].HttpHeaderConfig = &awstypes.HttpHeaderConditionConfig{
+				HttpHeaderName: aws.String(httpHeaderMap["http_header_name"].(string)),
+				Values:         flex.ExpandStringValueSet(values),
+			}
+		}
+
+		if httpRequestMethod, ok := tfMap["http_request_method"].([]any); ok && len(httpRequestMethod) > 0 {
+			field = "http-request-method"
+			attrs += 1
+			values := httpRequestMethod[0].(map[string]any)[names.AttrValues].(*schema.Set)
+
+			apiObjects[i].HttpRequestMethodConfig = &awstypes.HttpRequestMethodConditionConfig{
+				Values: flex.ExpandStringValueSet(values),
+			}
+		}
+
+		if pathPattern, ok := tfMap["path_pattern"].([]any); ok && len(pathPattern) > 0 {
+			field = "path-pattern"
+			attrs += 1
+			values := pathPattern[0].(map[string]any)[names.AttrValues].(*schema.Set)
+
+			apiObjects[i].PathPatternConfig = &awstypes.PathPatternConditionConfig{
+				Values: flex.ExpandStringValueSet(values),
+			}
+		}
+
+		if queryString, ok := tfMap["query_string"].(*schema.Set); ok && queryString.Len() > 0 {
+			field = "query-string"
+			attrs += 1
+			values := queryString.List()
+
+			apiObjects[i].QueryStringConfig = &awstypes.QueryStringConditionConfig{
+				Values: make([]awstypes.QueryStringKeyValuePair, len(values)),
+			}
+			for j, p := range values {
+				valuePair := p.(map[string]any)
+				elbValuePair := awstypes.QueryStringKeyValuePair{
+					Value: aws.String(valuePair[names.AttrValue].(string)),
+				}
+				if valuePair[names.AttrKey].(string) != "" {
+					elbValuePair.Key = aws.String(valuePair[names.AttrKey].(string))
+				}
+				apiObjects[i].QueryStringConfig.Values[j] = elbValuePair
+			}
+		}
+
+		if sourceIp, ok := tfMap["source_ip"].([]any); ok && len(sourceIp) > 0 {
+			field = "source-ip"
+			attrs += 1
+			values := sourceIp[0].(map[string]any)[names.AttrValues].(*schema.Set)
+
+			apiObjects[i].SourceIpConfig = &awstypes.SourceIpConditionConfig{
+				Values: flex.ExpandStringValueSet(values),
+			}
+		}
+
+		// FIXME Rework this and use ConflictsWith when it finally works with collections:
+		// https://github.com/hashicorp/terraform/issues/13016
+		// Still need to ensure that one of the condition attributes is set.
+		if attrs == 0 {
+			return nil, errors.New("One of host_header, http_header, http_request_method, path_pattern, query_string or source_ip must be set in a condition block")
+		} else if attrs > 1 {
+			return nil, errors.New("Only one of host_header, http_header, http_request_method, path_pattern, query_string or source_ip can be set in a condition block")
+		}
+
+		apiObjects[i].Field = aws.String(field)
+	}
+
+	return apiObjects, nil
+}

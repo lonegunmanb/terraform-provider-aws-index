@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepUsers(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %s", err)
+	}
+	conn := client.IAMClient(ctx)
+	prefixes := []string{
+		"test-user",
+		"test_user",
+		"tf-acc",
+		"tf_acc",
+	}
+
+	var sweepResources []sweep.Sweepable
+
+	pages := iam.NewListUsersPaginator(conn, &iam.ListUsersInput{})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping IAM User sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("retrieving IAM Users: %s", err)
+		}
+
+		for _, user := range page.Users {
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(aws.ToString(user.UserName), prefix) {
+					r := resourceUser()
+					d := r.Data(nil)
+					d.SetId(aws.ToString(user.UserName))
+					d.Set(names.AttrForceDestroy, true)
+
+					// In general, sweeping should use the resource's Delete function. If Delete
+					// is missing something that affects sweeping, fix Delete. Most of the time,
+					// if something in Delete is causing sweep problems, it's also affecting
+					// some users when they destroy.
+					sweepResources = append(sweepResources, sdk.NewSweepResource(r, d, client))
+					break
+				}
+			}
+		}
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+	if err != nil {
+		return fmt.Errorf("sweeping IAM Users (%s): %w", region, err)
+	}
+
+	return nil
+}

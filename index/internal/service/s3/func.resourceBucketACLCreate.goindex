@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketACLCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+	expectedBucketOwner := d.Get(names.AttrExpectedBucketOwner).(string)
+	acl := d.Get("acl").(string)
+	input := &s3.PutBucketAclInput{
+		Bucket: aws.String(bucket),
+	}
+	if acl != "" {
+		input.ACL = types.BucketCannedACL(acl)
+	}
+	if expectedBucketOwner != "" {
+		input.ExpectedBucketOwner = aws.String(expectedBucketOwner)
+	}
+
+	if v, ok := d.GetOk("access_control_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.AccessControlPolicy = expandAccessControlPolicy(v.([]any))
+	}
+
+	_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, bucketPropagationTimeout, func() (any, error) {
+		return conn.PutBucketAcl(ctx, input)
+	}, errCodeNoSuchBucket)
+
+	if tfawserr.ErrHTTPStatusCodeEquals(err, http.StatusNotImplemented) {
+		err = errDirectoryBucket(err)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating S3 Bucket (%s) ACL: %s", bucket, err)
+	}
+
+	d.SetId(BucketACLCreateResourceID(bucket, expectedBucketOwner, acl))
+
+	_, err = tfresource.RetryWhenNotFound(ctx, bucketPropagationTimeout, func() (any, error) {
+		return findBucketACL(ctx, conn, bucket, expectedBucketOwner)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for S3 Bucket ACL (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceBucketACLRead(ctx, d, meta)...)
+}

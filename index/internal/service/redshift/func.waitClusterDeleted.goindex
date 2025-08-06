@@ -1,0 +1,32 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitClusterDeleted(ctx context.Context, conn *redshift.Client, id string, timeout time.Duration) (*awstypes.Cluster, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: []string{clusterAvailabilityStatusMaintenance, clusterAvailabilityStatusModifying},
+		Target:  []string{},
+		Refresh: statusClusterAvailability(ctx, conn, id),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.Cluster); ok {
+		tfresource.SetLastError(err, errors.New(aws.ToString(output.ClusterStatus)))
+
+		return output, err
+	}
+
+	return nil, err
+}

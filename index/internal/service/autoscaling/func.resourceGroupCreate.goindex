@@ -1,0 +1,278 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elasticloadbalancingv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+
+	startTime := time.Now()
+
+	asgName := create.Name(d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string))
+	inputCASG := autoscaling.CreateAutoScalingGroupInput{
+		AutoScalingGroupName:             aws.String(asgName),
+		NewInstancesProtectedFromScaleIn: aws.Bool(d.Get("protect_from_scale_in").(bool)),
+	}
+	inputUASG := autoscaling.UpdateAutoScalingGroupInput{
+		AutoScalingGroupName: aws.String(asgName),
+	}
+
+	initialLifecycleHooks := d.Get("initial_lifecycle_hook").(*schema.Set).List()
+	twoPhases := len(initialLifecycleHooks) > 0
+
+	maxSize := d.Get("max_size").(int)
+	minSize := d.Get("min_size").(int)
+	desiredCapacity := d.Get("desired_capacity").(int)
+
+	if twoPhases {
+		inputCASG.MaxSize = aws.Int32(0)
+		inputCASG.MinSize = aws.Int32(0)
+
+		inputUASG.MaxSize = aws.Int32(int32(maxSize))
+		inputUASG.MinSize = aws.Int32(int32(minSize))
+
+		if desiredCapacity > 0 {
+			inputUASG.DesiredCapacity = aws.Int32(int32(desiredCapacity))
+		}
+
+		if v, ok := d.GetOk("desired_capacity_type"); ok {
+			inputUASG.DesiredCapacityType = aws.String(v.(string))
+		}
+	} else {
+		inputCASG.MaxSize = aws.Int32(int32(maxSize))
+		inputCASG.MinSize = aws.Int32(int32(minSize))
+
+		if desiredCapacity > 0 {
+			inputCASG.DesiredCapacity = aws.Int32(int32(desiredCapacity))
+		}
+
+		if v, ok := d.GetOk("desired_capacity_type"); ok {
+			inputCASG.DesiredCapacityType = aws.String(v.(string))
+		}
+	}
+
+	if v, ok := d.GetOk(names.AttrAvailabilityZones); ok && v.(*schema.Set).Len() > 0 {
+		inputCASG.AvailabilityZones = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("availability_zone_distribution"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		inputCASG.AvailabilityZoneDistribution = expandAvailabilityZoneDistribution(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("capacity_rebalance"); ok {
+		inputCASG.CapacityRebalance = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("capacity_reservation_specification"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		inputCASG.CapacityReservationSpecification = expandCapacityReservationSpecification(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("context"); ok {
+		inputCASG.Context = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("default_cooldown"); ok {
+		inputCASG.DefaultCooldown = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("default_instance_warmup"); ok {
+		inputCASG.DefaultInstanceWarmup = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("health_check_type"); ok {
+		inputCASG.HealthCheckType = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("health_check_grace_period"); ok {
+		inputCASG.HealthCheckGracePeriod = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("instance_maintenance_policy"); ok {
+		inputCASG.InstanceMaintenancePolicy = expandInstanceMaintenancePolicy(v.([]any))
+	}
+
+	if v, ok := d.GetOk("launch_configuration"); ok {
+		inputCASG.LaunchConfigurationName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrLaunchTemplate); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		inputCASG.LaunchTemplate = expandLaunchTemplateSpecification(v.([]any)[0].(map[string]any), false)
+	}
+
+	if v, ok := d.GetOk("load_balancers"); ok && v.(*schema.Set).Len() > 0 {
+		inputCASG.LoadBalancerNames = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("max_instance_lifetime"); ok {
+		inputCASG.MaxInstanceLifetime = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("mixed_instances_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		inputCASG.MixedInstancesPolicy = expandMixedInstancesPolicy(v.([]any)[0].(map[string]any), true)
+	}
+
+	if v, ok := d.GetOk("placement_group"); ok {
+		inputCASG.PlacementGroup = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("service_linked_role_arn"); ok {
+		inputCASG.ServiceLinkedRoleARN = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("tag"); ok {
+		inputCASG.Tags = svcTags(KeyValueTags(ctx, v, asgName, TagResourceTypeGroup).IgnoreAWS())
+	}
+
+	if v, ok := d.GetOk("target_group_arns"); ok && len(v.(*schema.Set).List()) > 0 {
+		inputCASG.TargetGroupARNs = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("termination_policies"); ok && len(v.([]any)) > 0 {
+		inputCASG.TerminationPolicies = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("traffic_source"); ok && v.(*schema.Set).Len() > 0 {
+		inputCASG.TrafficSources = expandTrafficSourceIdentifiers(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("vpc_zone_identifier"); ok && v.(*schema.Set).Len() > 0 {
+		inputCASG.VPCZoneIdentifier = expandVPCZoneIdentifiers(v.(*schema.Set).List())
+	}
+
+	_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateAutoScalingGroup(ctx, &inputCASG)
+		},
+		// ValidationError: You must use a valid fully-formed launch template. Value (tf-acc-test-6643732652421074386) for parameter iamInstanceProfile.name is invalid. Invalid IAM Instance Profile name
+		errCodeValidationError, "Invalid IAM Instance Profile")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Auto Scaling Group (%s): %s", asgName, err)
+	}
+
+	d.SetId(asgName)
+
+	if twoPhases {
+		for _, input := range expandPutLifecycleHookInputs(asgName, initialLifecycleHooks) {
+			const (
+				timeout = 5 * time.Minute
+			)
+			_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, timeout,
+				func() (any, error) {
+					return conn.PutLifecycleHook(ctx, input)
+				},
+				errCodeValidationError, "Unable to publish test message to notification target")
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "creating Auto Scaling Group (%s) Lifecycle Hook: %s", d.Id(), err)
+			}
+		}
+
+		_, err = conn.UpdateAutoScalingGroup(ctx, &inputUASG)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting Auto Scaling Group (%s) initial capacity: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("wait_for_capacity_timeout"); ok {
+		if timeout, _ := time.ParseDuration(v.(string)); timeout > 0 {
+			// On creation all targets are minimums.
+			f := func(nASG, nELB int) error {
+				minSize := minSize
+				if desiredCapacity > 0 {
+					minSize = desiredCapacity
+				}
+
+				if nASG < minSize {
+					return fmt.Errorf("want at least %d healthy instance(s) in Auto Scaling Group, have %d", minSize, nASG)
+				}
+
+				minELBCapacity := d.Get("min_elb_capacity").(int)
+				if waitForELBCapacity := d.Get("wait_for_elb_capacity").(int); waitForELBCapacity > 0 {
+					minELBCapacity = waitForELBCapacity
+				}
+
+				if nELB < minELBCapacity {
+					return fmt.Errorf("want at least %d healthy instance(s) registered to Load Balancer, have %d", minELBCapacity, nELB)
+				}
+
+				return nil
+			}
+
+			if err := waitGroupCapacitySatisfied(ctx, conn, meta.(*conns.AWSClient).ELBClient(ctx), meta.(*conns.AWSClient).ELBV2Client(ctx), d.Id(), f, startTime, d.Get("ignore_failed_scaling_activities").(bool), timeout); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Group (%s) capacity satisfied: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("suspended_processes"); ok && v.(*schema.Set).Len() > 0 {
+		input := autoscaling.SuspendProcessesInput{
+			AutoScalingGroupName: aws.String(d.Id()),
+			ScalingProcesses:     flex.ExpandStringValueSet(v.(*schema.Set)),
+		}
+
+		_, err := conn.SuspendProcesses(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "suspending Auto Scaling Group (%s) scaling processes: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("enabled_metrics"); ok && v.(*schema.Set).Len() > 0 {
+		input := autoscaling.EnableMetricsCollectionInput{
+			AutoScalingGroupName: aws.String(d.Id()),
+			Granularity:          aws.String(d.Get("metrics_granularity").(string)),
+			Metrics:              flex.ExpandStringValueSet(v.(*schema.Set)),
+		}
+
+		_, err := conn.EnableMetricsCollection(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "enabling Auto Scaling Group (%s) metrics collection: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("warm_pool"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		_, err := conn.PutWarmPool(ctx, expandPutWarmPoolInput(d.Id(), v.([]any)[0].(map[string]any)))
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating Auto Scaling Warm Pool (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceGroupRead(ctx, d, meta)...)
+}

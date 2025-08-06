@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticsearch
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	elasticsearch "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainPolicyUpsert(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElasticsearchClient(ctx)
+
+	domainName := d.Get(names.AttrDomainName).(string)
+	policy, err := structure.NormalizeJsonString(d.Get("access_policies").(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+	input := &elasticsearch.UpdateElasticsearchDomainConfigInput{
+		AccessPolicies: aws.String(policy),
+		DomainName:     aws.String(domainName),
+	}
+
+	_, err = tfresource.RetryWhenIsAErrorMessageContains[*awstypes.ValidationException](ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.UpdateElasticsearchDomainConfig(ctx, input)
+		}, "A change/update is in progress")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting Elasticsearch Domain Policy (%s): %s", d.Id(), err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId("esd-policy-" + domainName)
+	}
+
+	if _, err := waitDomainConfigUpdated(ctx, conn, d.Get(names.AttrDomainName).(string), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Elasticsearch Domain (%s) Config update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDomainPolicyRead(ctx, d, meta)...)
+}

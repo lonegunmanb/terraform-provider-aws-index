@@ -1,0 +1,170 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainNameUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	domainName, domainNameID, err := domainNameParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		var operations []types.PatchOperation
+
+		if d.HasChange(names.AttrCertificateARN) {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/certificateArn"),
+				Value: aws.String(d.Get(names.AttrCertificateARN).(string)),
+			})
+		}
+
+		if d.HasChange("certificate_name") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/certificateName"),
+				Value: aws.String(d.Get("certificate_name").(string)),
+			})
+		}
+
+		if d.HasChange("endpoint_configuration.0.types") {
+			// The domain name must have an endpoint type.
+			// If attempting to remove the configuration, do nothing.
+			if v, ok := d.GetOk("endpoint_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				tfMap := v.([]any)[0].(map[string]any)
+
+				operations = append(operations, types.PatchOperation{
+					Op:    types.OpReplace,
+					Path:  aws.String("/endpointConfiguration/types/0"),
+					Value: aws.String(tfMap["types"].([]any)[0].(string)),
+				})
+			}
+		}
+
+		if d.HasChange("endpoint_configuration.0.ip_address_type") {
+			if v, ok := d.GetOk("endpoint_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				tfMap := v.([]any)[0].(map[string]any)
+
+				operations = append(operations, types.PatchOperation{
+					Op:    types.OpReplace,
+					Path:  aws.String("/endpointConfiguration/ipAddressType"),
+					Value: aws.String(tfMap[names.AttrIPAddressType].(string)),
+				})
+			}
+		}
+
+		if d.HasChange("mutual_tls_authentication") {
+			if v, ok := d.GetOk("mutual_tls_authentication"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				tfMap := v.([]any)[0].(map[string]any)
+
+				if d.HasChange("mutual_tls_authentication.0.truststore_uri") {
+					operations = append(operations, types.PatchOperation{
+						Op:    types.OpReplace,
+						Path:  aws.String("/mutualTlsAuthentication/truststoreUri"),
+						Value: aws.String(tfMap["truststore_uri"].(string)),
+					})
+				}
+
+				if d.HasChange("mutual_tls_authentication.0.truststore_version") {
+					operations = append(operations, types.PatchOperation{
+						Op:    types.OpReplace,
+						Path:  aws.String("/mutualTlsAuthentication/truststoreVersion"),
+						Value: aws.String(tfMap["truststore_version"].(string)),
+					})
+				}
+			} else {
+				// To disable mutual TLS for a custom domain name, remove the truststore from your custom domain name.
+				operations = append(operations, types.PatchOperation{
+					Op:    types.OpReplace,
+					Path:  aws.String("/mutualTlsAuthentication/truststoreUri"),
+					Value: aws.String(""),
+				})
+			}
+		}
+
+		if d.HasChange("ownership_verification_certificate_arn") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/ownershipVerificationCertificateArn"),
+				Value: aws.String(d.Get("ownership_verification_certificate_arn").(string)),
+			})
+		}
+
+		if d.HasChange(names.AttrPolicy) {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/policy"),
+				Value: aws.String(d.Get(names.AttrPolicy).(string)),
+			})
+		}
+
+		if d.HasChange("regional_certificate_arn") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/regionalCertificateArn"),
+				Value: aws.String(d.Get("regional_certificate_arn").(string)),
+			})
+		}
+
+		if d.HasChange("regional_certificate_name") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/regionalCertificateName"),
+				Value: aws.String(d.Get("regional_certificate_name").(string)),
+			})
+		}
+
+		if d.HasChange("security_policy") {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpReplace,
+				Path:  aws.String("/securityPolicy"),
+				Value: aws.String(d.Get("security_policy").(string)),
+			})
+		}
+
+		input := apigateway.UpdateDomainNameInput{
+			DomainName:      aws.String(domainName),
+			PatchOperations: operations,
+		}
+		if domainNameID != "" {
+			input.DomainNameId = aws.String(domainNameID)
+		}
+
+		_, err := conn.UpdateDomainName(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating API Gateway Domain Name (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitDomainNameUpdated(ctx, conn, domainName, domainNameID); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for API Gateway Domain Name (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceDomainNameRead(ctx, d, meta)...)
+}

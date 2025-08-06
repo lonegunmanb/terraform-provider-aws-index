@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datasync
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datasync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datasync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLocationAzureBlobCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DataSyncClient(ctx)
+
+	input := &datasync.CreateLocationAzureBlobInput{
+		AgentArns:          flex.ExpandStringValueSet(d.Get("agent_arns").(*schema.Set)),
+		AuthenticationType: awstypes.AzureBlobAuthenticationType(d.Get("authentication_type").(string)),
+		ContainerUrl:       aws.String(d.Get("container_url").(string)),
+		Tags:               getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("access_tier"); ok {
+		input.AccessTier = awstypes.AzureAccessTier(v.(string))
+	}
+
+	if v, ok := d.GetOk("blob_type"); ok {
+		input.BlobType = awstypes.AzureBlobType(v.(string))
+	}
+
+	if v, ok := d.GetOk("sas_configuration"); ok {
+		input.SasConfiguration = expandAzureBlobSasConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("subdirectory"); ok {
+		input.Subdirectory = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateLocationAzureBlob(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DataSync Location Microsoft Azure Blob Storage: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.LocationArn))
+
+	return append(diags, resourceLocationAzureBlobRead(ctx, d, meta)...)
+}

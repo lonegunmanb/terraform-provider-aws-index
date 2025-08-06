@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *continuousDeploymentPolicyResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data continuousDeploymentPolicyResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudFrontClient(ctx)
+
+	input := &cloudfront.CreateContinuousDeploymentPolicyInput{
+		ContinuousDeploymentPolicyConfig: &awstypes.ContinuousDeploymentPolicyConfig{},
+	}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, input.ContinuousDeploymentPolicyConfig)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	output, err := conn.CreateContinuousDeploymentPolicy(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError("creating CloudFront Continuous Deployment Policy", err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.ETag = fwflex.StringToFramework(ctx, output.ETag)
+	data.ID = fwflex.StringToFramework(ctx, output.ContinuousDeploymentPolicy.Id)
+	data.ARN = fwflex.StringValueToFramework(ctx, continuousDeploymentPolicyARN(ctx, r.Meta(), data.ID.ValueString()))
+	data.LastModifiedTime = fwflex.TimeToFramework(ctx, output.ContinuousDeploymentPolicy.LastModifiedTime)
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

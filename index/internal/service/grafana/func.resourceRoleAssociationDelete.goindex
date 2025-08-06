@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/grafana
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/grafana"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/grafana/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRoleAssociationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GrafanaClient(ctx)
+
+	role := awstypes.Role(d.Get(names.AttrRole).(string))
+	workspaceID := d.Get("workspace_id").(string)
+
+	updateInstructions := make([]awstypes.UpdateInstruction, 0)
+	if v, ok := d.GetOk("user_ids"); ok && v.(*schema.Set).Len() > 0 {
+		updateInstructions = populateUpdateInstructions(role, flex.ExpandStringSet(v.(*schema.Set)), awstypes.UpdateActionRevoke, awstypes.UserTypeSsoUser, updateInstructions)
+	}
+
+	if v, ok := d.GetOk("group_ids"); ok && v.(*schema.Set).Len() > 0 {
+		updateInstructions = populateUpdateInstructions(role, flex.ExpandStringSet(v.(*schema.Set)), awstypes.UpdateActionRevoke, awstypes.UserTypeSsoGroup, updateInstructions)
+	}
+
+	input := &grafana.UpdatePermissionsInput{
+		UpdateInstructionBatch: updateInstructions,
+		WorkspaceId:            aws.String(workspaceID),
+	}
+
+	log.Printf("[DEBUG] Deleting Grafana Workspace Role Association: %s", d.Id())
+	output, err := conn.UpdatePermissions(ctx, input)
+
+	if err == nil {
+		err = updatesError(output.Errors)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Grafana Workspace Role Association: %s", err)
+	}
+
+	return diags
+}

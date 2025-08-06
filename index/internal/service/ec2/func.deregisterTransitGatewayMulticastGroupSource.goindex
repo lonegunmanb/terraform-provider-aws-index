@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func deregisterTransitGatewayMulticastGroupSource(ctx context.Context, conn *ec2.Client, multicastDomainID, groupIPAddress, eniID string) error {
+	id := transitGatewayMulticastGroupSourceCreateResourceID(multicastDomainID, groupIPAddress, eniID)
+
+	log.Printf("[DEBUG] Deleting EC2 Transit Gateway Multicast Group Source: %s", id)
+	input := ec2.DeregisterTransitGatewayMulticastGroupSourcesInput{
+		GroupIpAddress:                  aws.String(groupIPAddress),
+		NetworkInterfaceIds:             []string{eniID},
+		TransitGatewayMulticastDomainId: aws.String(multicastDomainID),
+	}
+	_, err := conn.DeregisterTransitGatewayMulticastGroupSources(ctx, &input)
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidTransitGatewayMulticastDomainIdNotFound) {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("deleting EC2 Transit Gateway Multicast Group Source (%s): %w", id, err)
+	}
+
+	_, err = tfresource.RetryUntilNotFound(ctx, ec2PropagationTimeout, func() (any, error) {
+		return findTransitGatewayMulticastGroupSourceByThreePartKey(ctx, conn, multicastDomainID, groupIPAddress, eniID)
+	})
+
+	if err != nil {
+		return fmt.Errorf("waiting for EC2 Transit Gateway Multicast Group Source (%s) delete: %w", id, err)
+	}
+
+	return nil
+}

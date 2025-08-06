@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/controltower
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/controltower"
+	"github.com/aws/aws-sdk-go-v2/service/controltower/document"
+	"github.com/aws/aws-sdk-go-v2/service/controltower/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceControlDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ControlTowerClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), controlResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	targetIdentifier, controlIdentifier := parts[0], parts[1]
+
+	log.Printf("[DEBUG] Deleting ControlTower Control: %s", d.Id())
+	input := controltower.DisableControlInput{
+		ControlIdentifier: aws.String(controlIdentifier),
+		TargetIdentifier:  aws.String(targetIdentifier),
+	}
+	output, err := conn.DisableControl(ctx, &input)
+	if errs.IsA[*types.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting ControlTower Control (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitOperationSucceeded(ctx, conn, aws.ToString(output.OperationIdentifier), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ControlTower Control (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

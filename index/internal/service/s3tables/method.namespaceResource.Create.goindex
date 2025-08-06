@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3tables
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3tables"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3tables/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *namespaceResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().S3TablesClient(ctx)
+
+	var plan namespaceResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var input s3tables.CreateNamespaceInput
+	resp.Diagnostics.Append(flex.Expand(ctx, plan, &input)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	input.Namespace = []string{plan.Namespace.ValueString()}
+
+	out, err := conn.CreateNamespace(ctx, &input)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.S3Tables, create.ErrActionCreating, resNameNamespace, plan.Namespace.String(), err),
+			err.Error(),
+		)
+		return
+	}
+	if out == nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.S3Tables, create.ErrActionCreating, resNameNamespace, plan.Namespace.String(), nil),
+			errors.New("empty output").Error(),
+		)
+		return
+	}
+
+	namespace, err := findNamespace(ctx, conn, plan.TableBucketARN.ValueString(), out.Namespace[0])
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.S3Tables, create.ErrActionCreating, resNameNamespace, plan.Namespace.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, namespace, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.Namespace = types.StringValue(out.Namespace[0])
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}

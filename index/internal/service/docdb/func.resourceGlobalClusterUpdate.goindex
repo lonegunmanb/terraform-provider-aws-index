@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/docdb
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/docdb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/docdb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGlobalClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).DocDBClient(ctx)
+
+	if d.HasChange(names.AttrDeletionProtection) {
+		input := &docdb.ModifyGlobalClusterInput{
+			DeletionProtection:      aws.Bool(d.Get(names.AttrDeletionProtection).(bool)),
+			GlobalClusterIdentifier: aws.String(d.Id()),
+		}
+
+		_, err := conn.ModifyGlobalCluster(ctx, input)
+
+		if errs.IsA[*awstypes.GlobalClusterNotFoundFault](err) {
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating DocumentDB Global Cluster: %s", err)
+		}
+
+		if _, err := waitGlobalClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for DocumentDB Global Cluster (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange(names.AttrEngineVersion) {
+		engineVersion := d.Get(names.AttrEngineVersion).(string)
+
+		for _, tfMapRaw := range d.Get("global_cluster_members").(*schema.Set).List() {
+			tfMap, ok := tfMapRaw.(map[string]any)
+
+			if !ok {
+				continue
+			}
+
+			if clusterARN, ok := tfMap["db_cluster_arn"].(string); ok && clusterARN != "" {
+				cluster, err := findClusterByARN(ctx, conn, clusterARN)
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "reading DocumentDB Cluster (%s): %s", clusterARN, err)
+				}
+
+				clusterID := aws.ToString(cluster.DBClusterIdentifier)
+				input := &docdb.ModifyDBClusterInput{
+					ApplyImmediately:    aws.Bool(true),
+					DBClusterIdentifier: aws.String(clusterID),
+					EngineVersion:       aws.String(engineVersion),
+				}
+
+				_, err = tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func() (any, error) {
+					return conn.ModifyDBCluster(ctx, input)
+				}, "InvalidParameterValue", "IAM role ARN value is invalid or does not include the required permissions")
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "modifying DocumentDB Cluster (%s) engine version: %s", clusterID, err)
+				}
+
+				if _, err := waitDBClusterAvailable(ctx, conn, clusterID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendErrorf(diags, "waiting for DocumentDB Cluster (%s) update: %s", clusterID, err)
+				}
+			}
+		}
+	}
+
+	return append(diags, resourceGlobalClusterRead(ctx, d, meta)...)
+}

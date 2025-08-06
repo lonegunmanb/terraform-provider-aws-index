@@ -1,0 +1,86 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/verifiedpermissions
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/verifiedpermissions"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/verifiedpermissions/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *identitySourceResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	conn := r.Meta().VerifiedPermissionsClient(ctx)
+	var state, plan identitySourceResourceModel
+
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.Configuration.Equal(state.Configuration) || !plan.PolicyStoreID.Equal(state.PolicyStoreID) || !plan.PrincipalEntityType.Equal(state.PrincipalEntityType) {
+		input := &verifiedpermissions.UpdateIdentitySourceInput{
+			IdentitySourceId: flex.StringFromFramework(ctx, plan.ID),
+		}
+
+		response.Diagnostics.Append(flex.Expand(context.WithValue(ctx, operationType, updateOperation), plan, input)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		_, err := conn.UpdateIdentitySource(ctx, input)
+
+		if err != nil {
+			response.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionUpdating, ResNameIdentitySource, state.ID.ValueString(), err),
+				err.Error(),
+			)
+			return
+		}
+
+		// Retrieve values not included in update response.
+		out, err := findIdentitySourceByIDAndPolicyStoreID(ctx, conn, state.ID.ValueString(), state.PolicyStoreID.ValueString())
+		if err != nil {
+			response.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionUpdating, ResNameIdentitySource, plan.ID.String(), err),
+				err.Error(),
+			)
+			return
+		}
+
+		response.Diagnostics.Append(flex.Flatten(ctx, out, &plan)...)
+		configuration, d := flattenConfiguration(ctx, out.Configuration)
+		response.Diagnostics.Append(d...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+		plan.Configuration = configuration
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+}

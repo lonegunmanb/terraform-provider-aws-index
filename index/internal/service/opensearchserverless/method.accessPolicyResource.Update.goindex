@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearchserverless
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless"
+	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless/document"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *accessPolicyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().OpenSearchServerlessClient(ctx)
+
+	var plan, state accessPolicyResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.Description.Equal(state.Description) ||
+		!plan.Policy.Equal(state.Policy) {
+		input := &opensearchserverless.UpdateAccessPolicyInput{}
+
+		resp.Diagnostics.Append(flex.Expand(ctx, plan, input)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		input.ClientToken = aws.String(id.UniqueId())
+		input.PolicyVersion = state.PolicyVersion.ValueStringPointer() // use policy version from state since it can be recalculated on update
+
+		out, err := conn.UpdateAccessPolicy(ctx, input)
+		if err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("updating Security Policy (%s)", plan.Name.ValueString()), err.Error())
+			return
+		}
+
+		resp.Diagnostics.Append(flex.Flatten(ctx, out.AccessPolicyDetail, &plan)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

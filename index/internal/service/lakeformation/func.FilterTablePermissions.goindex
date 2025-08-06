@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+)
+func FilterTablePermissions(principal *string, table *awstypes.TableResource, allPermissions []awstypes.PrincipalResourcePermissions) []awstypes.PrincipalResourcePermissions {
+	// CREATE PERMS (in)     = ALL, ALTER, DELETE, DESCRIBE, DROP, INSERT, SELECT on Table, Name = (Table Name)
+	//      LIST PERMS (out) = ALL, ALTER, DELETE, DESCRIBE, DROP, INSERT         on Table, Name = (Table Name)
+	//      LIST PERMS (out) = SELECT                                             on TableWithColumns, Name = (Table Name), ColumnWildcard
+
+	// CREATE PERMS (in)       = ALL, ALTER, DELETE, DESCRIBE, DROP, INSERT, SELECT on Table, TableWildcard
+	//        LIST PERMS (out) = ALL, ALTER, DELETE, DESCRIBE, DROP, INSERT         on Table, TableWildcard, Name = ALL_TABLES
+	//        LIST PERMS (out) = SELECT                                             on TableWithColumns, Name = ALL_TABLES, ColumnWildcard
+
+	var cleanPermissions []awstypes.PrincipalResourcePermissions
+
+	for _, perm := range allPermissions {
+		if aws.ToString(principal) != aws.ToString(perm.Principal.DataLakePrincipalIdentifier) {
+			continue
+		}
+
+		if perm.Resource.TableWithColumns != nil && perm.Resource.TableWithColumns.ColumnWildcard != nil {
+			if aws.ToString(perm.Resource.TableWithColumns.Name) == aws.ToString(table.Name) || (table.TableWildcard != nil && aws.ToString(perm.Resource.TableWithColumns.Name) == TableNameAllTables) {
+				if len(perm.Permissions) > 0 && perm.Permissions[0] == awstypes.PermissionSelect {
+					cleanPermissions = append(cleanPermissions, perm)
+					continue
+				}
+
+				if len(perm.PermissionsWithGrantOption) > 0 && perm.PermissionsWithGrantOption[0] == awstypes.PermissionSelect {
+					cleanPermissions = append(cleanPermissions, perm)
+					continue
+				}
+			}
+		}
+
+		if perm.Resource.Table != nil && aws.ToString(perm.Resource.Table.DatabaseName) == aws.ToString(table.DatabaseName) {
+			if aws.ToString(perm.Resource.Table.Name) == aws.ToString(table.Name) {
+				cleanPermissions = append(cleanPermissions, perm)
+				continue
+			}
+
+			if perm.Resource.Table.TableWildcard != nil && table.TableWildcard != nil {
+				cleanPermissions = append(cleanPermissions, perm)
+				continue
+			}
+		}
+		continue
+	}
+
+	return cleanPermissions
+}

@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/macie2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/macie2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/macie2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClassificationJobRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Macie2Client(ctx)
+
+	output, err := findClassificationJobByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Macie Classification Job (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Macie Classification Job (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrCreatedAt, aws.ToTime(output.CreatedAt).Format(time.RFC3339))
+	if err = d.Set("custom_data_identifier_ids", output.CustomDataIdentifierIds); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting custom_data_identifier_ids: %s", err)
+	}
+	d.Set(names.AttrDescription, output.Description)
+	d.Set("initial_run", output.InitialRun)
+	d.Set("job_arn", output.JobArn)
+	d.Set("job_id", output.JobId)
+	jobStatus := output.JobStatus
+	if jobStatus == awstypes.JobStatusComplete || jobStatus == awstypes.JobStatusIdle || jobStatus == awstypes.JobStatusPaused {
+		jobStatus = awstypes.JobStatusRunning
+	}
+	d.Set("job_status", jobStatus)
+	d.Set("job_type", output.JobType)
+	d.Set(names.AttrName, output.Name)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(output.Name)))
+	if err = d.Set("s3_job_definition", flattenS3JobDefinition(output.S3JobDefinition)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting s3_job_definition: %s", err)
+	}
+	d.Set("sampling_percentage", output.SamplingPercentage)
+	if err = d.Set("schedule_frequency", flattenScheduleFrequency(output.ScheduleFrequency)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting schedule_frequency: %s", err)
+	}
+	if err = d.Set("user_paused_details", flattenUserPausedDetails(output.UserPausedDetails)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting user_paused_details: %s", err)
+	}
+
+	setTagsOut(ctx, output.Tags)
+
+	return diags
+}

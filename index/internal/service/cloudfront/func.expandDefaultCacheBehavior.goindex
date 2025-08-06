@@ -1,0 +1,92 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandDefaultCacheBehavior(tfMap map[string]any) *awstypes.DefaultCacheBehavior {
+	if tfMap == nil {
+		return nil
+	}
+
+	apiObject := &awstypes.DefaultCacheBehavior{
+		CachePolicyId:           aws.String(tfMap["cache_policy_id"].(string)),
+		Compress:                aws.Bool(tfMap["compress"].(bool)),
+		FieldLevelEncryptionId:  aws.String(tfMap["field_level_encryption_id"].(string)),
+		OriginRequestPolicyId:   aws.String(tfMap["origin_request_policy_id"].(string)),
+		ResponseHeadersPolicyId: aws.String(tfMap["response_headers_policy_id"].(string)),
+		TargetOriginId:          aws.String(tfMap["target_origin_id"].(string)),
+		ViewerProtocolPolicy:    awstypes.ViewerProtocolPolicy(tfMap["viewer_protocol_policy"].(string)),
+	}
+
+	if v, ok := tfMap["allowed_methods"]; ok {
+		apiObject.AllowedMethods = expandAllowedMethods(v.(*schema.Set).List())
+	}
+
+	if tfMap["cache_policy_id"].(string) == "" {
+		apiObject.MinTTL = aws.Int64(int64(tfMap["min_ttl"].(int)))
+		apiObject.MaxTTL = aws.Int64(int64(tfMap["max_ttl"].(int)))
+		apiObject.DefaultTTL = aws.Int64(int64(tfMap["default_ttl"].(int)))
+	}
+
+	if v, ok := tfMap["cached_methods"]; ok {
+		apiObject.AllowedMethods.CachedMethods = expandCachedMethods(v.(*schema.Set).List())
+	}
+
+	if v, ok := tfMap["forwarded_values"].([]any); ok && len(v) > 0 && v[0] != nil {
+		apiObject.ForwardedValues = expandForwardedValues(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["function_association"]; ok {
+		apiObject.FunctionAssociations = expandFunctionAssociations(v.(*schema.Set).List())
+	}
+
+	if v, ok := tfMap["grpc_config"].([]any); ok && len(v) > 0 && v[0] != nil {
+		apiObject.GrpcConfig = expandGRPCConfig(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["lambda_function_association"]; ok {
+		apiObject.LambdaFunctionAssociations = expandLambdaFunctionAssociations(v.(*schema.Set).List())
+	}
+
+	if v, ok := tfMap["realtime_log_config_arn"]; ok && v.(string) != "" {
+		apiObject.RealtimeLogConfigArn = aws.String(v.(string))
+	}
+
+	if v, ok := tfMap["smooth_streaming"]; ok {
+		apiObject.SmoothStreaming = aws.Bool(v.(bool))
+	}
+
+	if v, ok := tfMap["trusted_key_groups"]; ok {
+		apiObject.TrustedKeyGroups = expandTrustedKeyGroups(v.([]any))
+	} else {
+		apiObject.TrustedKeyGroups = expandTrustedKeyGroups([]any{})
+	}
+
+	if v, ok := tfMap["trusted_signers"]; ok {
+		apiObject.TrustedSigners = expandTrustedSigners(v.([]any))
+	} else {
+		apiObject.TrustedSigners = expandTrustedSigners([]any{})
+	}
+
+	return apiObject
+}

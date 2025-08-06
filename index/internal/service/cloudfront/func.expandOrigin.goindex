@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandOrigin(tfMap map[string]any) *awstypes.Origin {
+	apiObject := &awstypes.Origin{
+		DomainName: aws.String(tfMap[names.AttrDomainName].(string)),
+		Id:         aws.String(tfMap["origin_id"].(string)),
+	}
+
+	if v, ok := tfMap["connection_attempts"]; ok {
+		apiObject.ConnectionAttempts = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := tfMap["connection_timeout"]; ok {
+		apiObject.ConnectionTimeout = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := tfMap["custom_header"]; ok {
+		apiObject.CustomHeaders = expandCustomHeaders(v.(*schema.Set).List())
+	}
+
+	if v, ok := tfMap["custom_origin_config"]; ok {
+		if v := v.([]any); len(v) > 0 {
+			apiObject.CustomOriginConfig = expandCustomOriginConfig(v[0].(map[string]any))
+		}
+	}
+
+	if v, ok := tfMap["origin_access_control_id"]; ok {
+		apiObject.OriginAccessControlId = aws.String(v.(string))
+	}
+
+	if v, ok := tfMap["origin_path"]; ok {
+		apiObject.OriginPath = aws.String(v.(string))
+	}
+
+	if v, ok := tfMap["origin_shield"]; ok {
+		if v := v.([]any); len(v) > 0 {
+			apiObject.OriginShield = expandOriginShield(v[0].(map[string]any))
+		}
+	}
+
+	if v, ok := tfMap["s3_origin_config"]; ok {
+		if v := v.([]any); len(v) > 0 {
+			apiObject.S3OriginConfig = expandS3OriginConfig(v[0].(map[string]any))
+		}
+	}
+
+	if v, ok := tfMap["vpc_origin_config"]; ok {
+		if v := v.([]any); len(v) > 0 {
+			apiObject.VpcOriginConfig = expandVPCOriginConfig(v[0].(map[string]any))
+		}
+	}
+
+	// if custom, s3 and VPC origin are all missing, add an empty s3 origin
+	// One or the other must be specified, but the S3 origin can be "empty"
+	if apiObject.CustomOriginConfig == nil && apiObject.S3OriginConfig == nil && apiObject.VpcOriginConfig == nil {
+		apiObject.S3OriginConfig = &awstypes.S3OriginConfig{
+			OriginAccessIdentity: aws.String(""),
+		}
+	}
+
+	return apiObject
+}

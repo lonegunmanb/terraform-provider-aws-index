@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitDirectoryCreated(ctx context.Context, conn *directoryservice.Client, id string, timeout time.Duration) (*awstypes.DirectoryDescription, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.DirectoryStageRequested, awstypes.DirectoryStageCreating, awstypes.DirectoryStageCreated),
+		Target:  enum.Slice(awstypes.DirectoryStageActive),
+		Refresh: statusDirectoryStage(ctx, conn, id),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	// Wrap any error returned with waiting message
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("waiting for completion: %w", err)
+		}
+	}()
+
+	if output, ok := outputRaw.(*awstypes.DirectoryDescription); ok {
+		tfresource.SetLastError(err, errors.New(aws.ToString(output.StageReason)))
+
+		return output, err
+	}
+
+	return nil, err
+}

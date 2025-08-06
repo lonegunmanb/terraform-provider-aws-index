@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/chime
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/chimesdkvoice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/chimesdkvoice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceVoiceConnectorStreamingUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ChimeSDKVoiceClient(ctx)
+
+	vcId := d.Get("voice_connector_id").(string)
+
+	if d.HasChanges("data_retention", "disabled", "streaming_notification_targets", "media_insights_configuration") {
+		input := &chimesdkvoice.PutVoiceConnectorStreamingConfigurationInput{
+			VoiceConnectorId: aws.String(vcId),
+		}
+
+		config := &awstypes.StreamingConfiguration{
+			DataRetentionInHours: aws.Int32(int32(d.Get("data_retention").(int))),
+			Disabled:             aws.Bool(d.Get("disabled").(bool)),
+		}
+
+		if v, ok := d.GetOk("streaming_notification_targets"); ok && v.(*schema.Set).Len() > 0 {
+			config.StreamingNotificationTargets = expandStreamingNotificationTargets(v.(*schema.Set).List())
+		}
+
+		if v, ok := d.GetOk("media_insights_configuration"); ok && len(v.([]any)) > 0 {
+			config.MediaInsightsConfiguration = expandMediaInsightsConfiguration(v.([]any))
+		}
+
+		input.StreamingConfiguration = config
+
+		if _, err := conn.PutVoiceConnectorStreamingConfiguration(ctx, input); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Chime Voice Connector (%s) streaming configuration: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceVoiceConnectorStreamingRead(ctx, d, meta)...)
+}

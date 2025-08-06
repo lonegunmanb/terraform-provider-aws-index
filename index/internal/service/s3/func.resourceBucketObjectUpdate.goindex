@@ -1,0 +1,100 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mitchellh/go-homedir"
+)
+func resourceBucketObjectUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if hasBucketObjectContentChanges(d) {
+		return append(diags, resourceBucketObjectUpload(ctx, d, meta)...)
+	}
+
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	bucket := d.Get(names.AttrBucket).(string)
+	key := sdkv1CompatibleCleanKey(d.Get(names.AttrKey).(string))
+
+	if d.HasChange("acl") {
+		input := &s3.PutObjectAclInput{
+			ACL:    types.ObjectCannedACL(d.Get("acl").(string)),
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+		}
+
+		_, err := conn.PutObjectAcl(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "putting S3 Object (%s) ACL: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("object_lock_legal_hold_status") {
+		input := &s3.PutObjectLegalHoldInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+			LegalHold: &types.ObjectLockLegalHold{
+				Status: types.ObjectLockLegalHoldStatus(d.Get("object_lock_legal_hold_status").(string)),
+			},
+		}
+
+		_, err := conn.PutObjectLegalHold(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "putting S3 Object (%s) legal hold: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChanges("object_lock_mode", "object_lock_retain_until_date") {
+		input := &s3.PutObjectRetentionInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+			Retention: &types.ObjectLockRetention{
+				Mode:            types.ObjectLockRetentionMode(d.Get("object_lock_mode").(string)),
+				RetainUntilDate: expandObjectDate(d.Get("object_lock_retain_until_date").(string)),
+			},
+		}
+
+		// Bypass required to lower or clear retain-until date.
+		if d.HasChange("object_lock_retain_until_date") {
+			oraw, nraw := d.GetChange("object_lock_retain_until_date")
+			o, n := expandObjectDate(oraw.(string)), expandObjectDate(nraw.(string))
+
+			if n == nil || (o != nil && n.Before(*o)) {
+				input.BypassGovernanceRetention = aws.Bool(true)
+			}
+		}
+
+		_, err := conn.PutObjectRetention(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "putting S3 Object (%s) retention: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceBucketObjectRead(ctx, d, meta)...)
+}

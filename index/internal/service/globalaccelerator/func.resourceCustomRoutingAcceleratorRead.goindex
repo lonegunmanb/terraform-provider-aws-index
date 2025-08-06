@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/globalaccelerator
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/globalaccelerator"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/globalaccelerator/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCustomRoutingAcceleratorRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlobalAcceleratorClient(ctx)
+
+	accelerator, err := findCustomRoutingAcceleratorByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Global Accelerator Custom Routing Accelerator (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Global Accelerator Custom Routing Accelerator (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, accelerator.AcceleratorArn)
+	d.Set(names.AttrDNSName, accelerator.DnsName)
+	d.Set(names.AttrEnabled, accelerator.Enabled)
+	d.Set(names.AttrHostedZoneID, meta.(*conns.AWSClient).GlobalAcceleratorHostedZoneID(ctx))
+	d.Set(names.AttrIPAddressType, accelerator.IpAddressType)
+	if err := d.Set("ip_sets", flattenIPSets(accelerator.IpSets)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ip_sets: %s", err)
+	}
+	d.Set(names.AttrName, accelerator.Name)
+
+	acceleratorAttributes, err := findCustomRoutingAcceleratorAttributesByARN(ctx, conn, d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Global Accelerator Custom Routing Accelerator (%s) attributes: %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrAttributes, []any{flattenCustomRoutingAcceleratorAttributes(acceleratorAttributes)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting attributes: %s", err)
+	}
+
+	return diags
+}

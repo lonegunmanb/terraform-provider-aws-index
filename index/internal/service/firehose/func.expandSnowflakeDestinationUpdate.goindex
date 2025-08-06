@@ -1,0 +1,91 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/firehose
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/firehose"
+	"github.com/aws/aws-sdk-go-v2/service/firehose/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandSnowflakeDestinationUpdate(tfMap map[string]any) *types.SnowflakeDestinationUpdate {
+	roleARN := tfMap[names.AttrRoleARN].(string)
+	apiObject := &types.SnowflakeDestinationUpdate{
+		AccountUrl: aws.String(tfMap["account_url"].(string)),
+		BufferingHints: &types.SnowflakeBufferingHints{
+			IntervalInSeconds: aws.Int32(int32(tfMap["buffering_interval"].(int))),
+			SizeInMBs:         aws.Int32(int32(tfMap["buffering_size"].(int))),
+		},
+		Database:     aws.String(tfMap[names.AttrDatabase].(string)),
+		RetryOptions: expandSnowflakeRetryOptions(tfMap),
+		RoleARN:      aws.String(roleARN),
+		S3Update:     expandS3DestinationUpdate(tfMap["s3_configuration"].([]any)),
+		Schema:       aws.String(tfMap[names.AttrSchema].(string)),
+		Table:        aws.String(tfMap["table"].(string)),
+	}
+
+	if _, ok := tfMap["cloudwatch_logging_options"]; ok {
+		apiObject.CloudWatchLoggingOptions = expandCloudWatchLoggingOptions(tfMap)
+	}
+
+	if v, ok := tfMap["content_column_name"]; ok && v.(string) != "" {
+		apiObject.ContentColumnName = aws.String(v.(string))
+	}
+
+	if v, ok := tfMap["data_loading_option"]; ok && v.(string) != "" {
+		apiObject.DataLoadingOption = types.SnowflakeDataLoadingOption(v.(string))
+	}
+
+	if v, ok := tfMap[names.AttrPrivateKey]; ok && v.(string) != "" {
+		apiObject.PrivateKey = aws.String(v.(string))
+	}
+
+	if v, ok := tfMap["key_passphrase"]; ok && v.(string) != "" {
+		apiObject.KeyPassphrase = aws.String(v.(string))
+	}
+
+	if v, ok := tfMap["metadata_column_name"]; ok && v.(string) != "" {
+		apiObject.MetaDataColumnName = aws.String(v.(string))
+	}
+
+	if _, ok := tfMap["processing_configuration"]; ok {
+		apiObject.ProcessingConfiguration = expandProcessingConfiguration(tfMap, destinationTypeSnowflake, roleARN)
+	}
+
+	if v, ok := tfMap["s3_backup_mode"]; ok {
+		apiObject.S3BackupMode = types.SnowflakeS3BackupMode(v.(string))
+	}
+
+	if _, ok := tfMap["secrets_manager_configuration"]; ok {
+		apiObject.SecretsManagerConfiguration = expandSecretsManagerConfiguration(tfMap)
+	}
+
+	if _, ok := tfMap["snowflake_role_configuration"]; ok {
+		apiObject.SnowflakeRoleConfiguration = expandSnowflakeRoleConfiguration(tfMap)
+	}
+
+	if v, ok := tfMap["user"]; ok && v.(string) != "" {
+		apiObject.User = aws.String(v.(string))
+	}
+
+	return apiObject
+}

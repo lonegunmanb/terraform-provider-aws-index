@@ -1,0 +1,177 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OpenSearchClient(ctx)
+
+	ds, err := findDomainByName(ctx, conn, d.Get(names.AttrDomainName).(string))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] OpenSearch Domain (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading OpenSearch Domain (%s): %s", d.Id(), err)
+	}
+
+	outDescribeDomainConfig, err := conn.DescribeDomainConfig(ctx, &opensearch.DescribeDomainConfigInput{
+		DomainName: aws.String(d.Get(names.AttrDomainName).(string)),
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading OpenSearch Domain (%s): %s", d.Id(), err)
+	}
+
+	dc := outDescribeDomainConfig.DomainConfig
+
+	if ds.AccessPolicies != nil && aws.ToString(ds.AccessPolicies) != "" {
+		policies, err := verify.PolicyToSet(d.Get("access_policies").(string), aws.ToString(ds.AccessPolicies))
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading OpenSearch Domain (%s): %s", d.Id(), err)
+		}
+
+		d.Set("access_policies", policies)
+	}
+
+	options := advancedOptionsIgnoreDefault(d.Get("advanced_options").(map[string]any), flex.FlattenStringValueMap(ds.AdvancedOptions))
+	if err = d.Set("advanced_options", options); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting advanced_options %v: %s", options, err)
+	}
+
+	d.SetId(aws.ToString(ds.ARN))
+	d.Set(names.AttrARN, ds.ARN)
+	d.Set("domain_endpoint_v2_hosted_zone_id", ds.DomainEndpointV2HostedZoneId)
+	d.Set("domain_id", ds.DomainId)
+	d.Set(names.AttrDomainName, ds.DomainName)
+	d.Set(names.AttrEngineVersion, ds.EngineVersion)
+	d.Set(names.AttrIPAddressType, ds.IPAddressType)
+
+	if err := d.Set("ebs_options", flattenEBSOptions(ds.EBSOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ebs_options: %s", err)
+	}
+
+	if err := d.Set("encrypt_at_rest", flattenEncryptAtRestOptions(ds.EncryptionAtRestOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting encrypt_at_rest: %s", err)
+	}
+
+	if err := d.Set("cluster_config", flattenClusterConfig(ds.ClusterConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting cluster_config: %s", err)
+	}
+
+	if err := d.Set("cognito_options", flattenCognitoOptions(ds.CognitoOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting cognito_options: %s", err)
+	}
+
+	if err := d.Set("node_to_node_encryption", flattenNodeToNodeEncryptionOptions(ds.NodeToNodeEncryptionOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting node_to_node_encryption: %s", err)
+	}
+
+	// Populate AdvancedSecurityOptions with values returned from
+	// DescribeDomainConfig, if enabled, else use
+	// values from resource; additionally, append MasterUserOptions
+	// from resource as they are not returned from the API
+	if ds.AdvancedSecurityOptions != nil && aws.ToBool(ds.AdvancedSecurityOptions.Enabled) {
+		advSecOpts := flattenAdvancedSecurityOptions(ds.AdvancedSecurityOptions)
+		advSecOpts[0]["master_user_options"] = getMasterUserOptions(d)
+		if err := d.Set("advanced_security_options", advSecOpts); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting advanced_security_options: %s", err)
+		}
+	}
+
+	if v := dc.AutoTuneOptions; v != nil {
+		err = d.Set("auto_tune_options", []any{flattenAutoTuneOptions(v.Options)})
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading OpenSearch Domain (%s): setting auto_tune_options: %s", d.Id(), err)
+		}
+	}
+
+	if err := d.Set("snapshot_options", flattenSnapshotOptions(ds.SnapshotOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting snapshot_options: %s", err)
+	}
+
+	if err := d.Set("software_update_options", flattenSoftwareUpdateOptions(ds.SoftwareUpdateOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting software_update_options: %s", err)
+	}
+
+	if ds.VPCOptions != nil {
+		if err := d.Set("vpc_options", []any{flattenVPCDerivedInfo(ds.VPCOptions)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting vpc_options: %s", err)
+		}
+
+		endpoints := flex.FlattenStringValueMap(ds.Endpoints)
+		d.Set(names.AttrEndpoint, endpoints["vpc"])
+		d.Set("dashboard_endpoint", getDashboardEndpoint(d.Get(names.AttrEndpoint).(string)))
+		if endpoints["vpcv2"] != nil {
+			d.Set("endpoint_v2", endpoints["vpcv2"])
+			d.Set("dashboard_endpoint_v2", getDashboardEndpoint(d.Get("endpoint_v2").(string)))
+		}
+		if ds.Endpoint != nil {
+			return sdkdiag.AppendErrorf(diags, "%q: OpenSearch Domain in VPC expected to have null Endpoint value", d.Id())
+		}
+		if ds.EndpointV2 != nil {
+			return sdkdiag.AppendErrorf(diags, "%q: OpenSearch Domain in VPC expected to have null EndpointV2 value", d.Id())
+		}
+	} else {
+		if ds.Endpoint != nil {
+			d.Set(names.AttrEndpoint, ds.Endpoint)
+			d.Set("dashboard_endpoint", getDashboardEndpoint(d.Get(names.AttrEndpoint).(string)))
+		}
+		if ds.EndpointV2 != nil {
+			d.Set("endpoint_v2", ds.EndpointV2)
+			d.Set("dashboard_endpoint_v2", getDashboardEndpoint(d.Get("endpoint_v2").(string)))
+		}
+		if ds.Endpoints != nil {
+			return sdkdiag.AppendErrorf(diags, "%q: OpenSearch Domain not in VPC expected to have null Endpoints value", d.Id())
+		}
+	}
+
+	if err := d.Set("log_publishing_options", flattenLogPublishingOptions(ds.LogPublishingOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting log_publishing_options: %s", err)
+	}
+
+	if err := d.Set("domain_endpoint_options", flattenDomainEndpointOptions(ds.DomainEndpointOptions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting domain_endpoint_options: %s", err)
+	}
+
+	if ds.OffPeakWindowOptions != nil {
+		if err := d.Set("off_peak_window_options", []any{flattenOffPeakWindowOptions(ds.OffPeakWindowOptions)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting off_peak_window_options: %s", err)
+		}
+	} else {
+		d.Set("off_peak_window_options", nil)
+	}
+
+	return diags
+}

@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workspaces
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workspaces"
+	"github.com/aws/aws-sdk-go-v2/service/workspaces/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func workspacePropertyUpdate(ctx context.Context, conn *workspaces.Client, d *schema.ResourceData, key string) error {
+	input := &workspaces.ModifyWorkspacePropertiesInput{
+		WorkspaceId: aws.String(d.Id()),
+	}
+
+	switch key {
+	case "workspace_properties.0.compute_type_name":
+		input.WorkspaceProperties = &types.WorkspaceProperties{
+			ComputeTypeName: types.Compute(d.Get(key).(string)),
+		}
+	case "workspace_properties.0.root_volume_size_gib":
+		input.WorkspaceProperties = &types.WorkspaceProperties{
+			RootVolumeSizeGib: aws.Int32(int32(d.Get(key).(int))),
+		}
+	case "workspace_properties.0.running_mode":
+		input.WorkspaceProperties = &types.WorkspaceProperties{
+			RunningMode: types.RunningMode(d.Get(key).(string)),
+		}
+	case "workspace_properties.0.running_mode_auto_stop_timeout_in_minutes":
+		if d.Get("workspace_properties.0.running_mode") != string(types.RunningModeAutoStop) {
+			log.Printf("[DEBUG] Property running_mode_auto_stop_timeout_in_minutes makes sense only for AUTO_STOP running mode")
+			return nil
+		}
+
+		input.WorkspaceProperties = &types.WorkspaceProperties{
+			RunningModeAutoStopTimeoutInMinutes: aws.Int32(int32(d.Get(key).(int))),
+		}
+	case "workspace_properties.0.user_volume_size_gib":
+		input.WorkspaceProperties = &types.WorkspaceProperties{
+			UserVolumeSizeGib: aws.Int32(int32(d.Get(key).(int))),
+		}
+	}
+
+	_, err := conn.ModifyWorkspaceProperties(ctx, input)
+
+	if err != nil {
+		return fmt.Errorf("updating WorkSpaces Workspace (%s,%s): %w", d.Id(), key, err)
+	}
+
+	if _, err := waitWorkspaceUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return fmt.Errorf("waiting for WorkSpaces Workspace (%s,%s) update: %w", d.Id(), key, err)
+	}
+
+	return nil
+}

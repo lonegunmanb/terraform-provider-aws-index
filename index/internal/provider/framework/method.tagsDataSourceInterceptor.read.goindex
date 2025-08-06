@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+	"fmt"
+	"unique"
+
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/interceptors"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r tagsDataSourceInterceptor) read(ctx context.Context, opts interceptorOptions[datasource.ReadRequest, datasource.ReadResponse]) diag.Diagnostics {
+	c := opts.c
+	var diags diag.Diagnostics
+
+	if !r.Enabled() {
+		return diags
+	}
+
+	sp, serviceName, resourceName, tagsInContext, ok := interceptors.InfoFromContext(ctx, c)
+	if !ok {
+		return diags
+	}
+
+	switch request, response, when := opts.request, opts.response, opts.when; when {
+	case Before:
+		var configTags tftags.Map
+		diags.Append(request.Config.GetAttribute(ctx, path.Root(names.AttrTags), &configTags)...)
+		if diags.HasError() {
+			return diags
+		}
+
+		tags := tftags.New(ctx, configTags)
+		tagsInContext.TagsIn = option.Some(tags)
+	case After:
+		// If the R handler didn't set tags, try and read them from the service API.
+		if tagsInContext.TagsOut.IsNone() {
+			if identifier := r.GetIdentifierFramework(ctx, response.State); identifier != "" {
+				if err := r.ListTags(ctx, sp, c, identifier); err != nil {
+					diags.AddError(fmt.Sprintf("listing tags for %s %s (%s)", serviceName, resourceName, identifier), err.Error())
+					return diags
+				}
+			}
+		}
+
+		tags := tagsInContext.TagsOut.UnwrapOrDefault()
+		// Remove any provider configured ignore_tags and system tags from those returned from the service API.
+		stateTags := fwflex.FlattenFrameworkStringValueMapLegacy(ctx, tags.IgnoreSystem(sp.ServicePackageName()).IgnoreConfig(c.IgnoreTagsConfig(ctx)).Map())
+		diags.Append(response.State.SetAttribute(ctx, path.Root(names.AttrTags), tftags.NewMapFromMapValue(stateTags))...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+
+	return diags
+}

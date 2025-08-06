@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepDomainConfigurations(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	conn := client.IoTClient(ctx)
+	input := &iot.ListDomainConfigurationsInput{}
+	sweepResources := make([]sweep.Sweepable, 0)
+
+	pages := iot.NewListDomainConfigurationsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping IoT Domain Configuration sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("error listing IoT Domain Configurations (%s): %w", region, err)
+		}
+
+		for _, v := range page.DomainConfigurations {
+			name := aws.ToString(v.DomainConfigurationName)
+
+			if strings.HasPrefix(name, "iot:") {
+				log.Printf("[INFO] Skipping IoT Domain Configuration %s", name)
+				continue
+			}
+
+			output, err := findDomainConfigurationByName(ctx, conn, name)
+
+			if err != nil {
+				log.Printf("[WARN] IoT Domain Configuration (%s): %s", name, err)
+				continue
+			}
+
+			if output.DomainType == awstypes.DomainTypeAwsManaged && output.DomainConfigurationStatus == awstypes.DomainConfigurationStatusDisabled {
+				// AWS Managed Domain Configuration must be disabled for at least 7 days before it can be deleted.
+				if output.LastStatusChangeDate.After(time.Now().AddDate(0, 0, -7)) {
+					log.Printf("[INFO] Skipping IoT Domain Configuration %s", name)
+					continue
+				}
+			}
+
+			r := resourceDomainConfiguration()
+			d := r.Data(nil)
+			d.SetId(name)
+			d.Set(names.AttrStatus, output.DomainConfigurationStatus)
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+
+	if err != nil {
+		return fmt.Errorf("error sweeping IoT Domain Configurations (%s): %w", region, err)
+	}
+
+	return nil
+}

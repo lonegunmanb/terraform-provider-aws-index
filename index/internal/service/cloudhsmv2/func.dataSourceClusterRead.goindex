@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudhsmv2
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceClusterRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudHSMV2Client(ctx)
+
+	clusterID := d.Get("cluster_id").(string)
+	input := &cloudhsmv2.DescribeClustersInput{
+		Filters: map[string][]string{
+			"clusterIds": {clusterID},
+		},
+		MaxResults: aws.Int32(1),
+	}
+	if v, ok := d.GetOk("cluster_state"); ok {
+		input.Filters["states"] = []string{v.(string)}
+	}
+
+	cluster, err := findCluster(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudHSM v2 Cluster (%s): %s", clusterID, err)
+	}
+
+	d.SetId(clusterID)
+	if err := d.Set("cluster_certificates", flattenCertificates(cluster)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting cluster_certificates: %s", err)
+	}
+	d.Set("cluster_state", cluster.State)
+	d.Set("security_group_id", cluster.SecurityGroup)
+	d.Set(names.AttrSubnetIDs, tfmaps.Values(cluster.SubnetMapping))
+	d.Set(names.AttrVPCID, cluster.VpcId)
+
+	return diags
+}

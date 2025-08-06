@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMaintenanceWindowTargetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSMClient(ctx)
+
+	windowID := d.Get("window_id").(string)
+	target, err := findMaintenanceWindowTargetByTwoPartKey(ctx, conn, windowID, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SSM Maintenance Window Target %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SSM Maintenance Window Target (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrDescription, target.Description)
+	d.Set(names.AttrName, target.Name)
+	d.Set("owner_information", target.OwnerInformation)
+	d.Set(names.AttrResourceType, target.ResourceType)
+	if err := d.Set("targets", flattenTargets(target.Targets)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting targets: %s", err)
+	}
+	d.Set("window_id", target.WindowId)
+
+	return diags
+}

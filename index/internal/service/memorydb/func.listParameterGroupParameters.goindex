@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/memorydb
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/memorydb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/memorydb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func listParameterGroupParameters(ctx context.Context, conn *memorydb.Client, family, name string, userDefined map[string]string) ([]awstypes.Parameter, error) {
+	// There isn't an official API for defaults, and the mapping of family
+	// to default parameter group name is a guess.
+	defaultsFamily := "default." + strings.ReplaceAll(family, "_", "-")
+	defaults, err := findParametersByParameterGroupName(ctx, conn, defaultsFamily)
+
+	if err != nil {
+		return nil, fmt.Errorf("reading MemoryDB Parameter Group (%s) parameters: %w", defaultsFamily, err)
+	}
+
+	defaultValueByName := map[string]string{}
+	for _, v := range defaults {
+		defaultValueByName[aws.ToString(v.Name)] = aws.ToString(v.Value)
+	}
+
+	current, err := findParametersByParameterGroupName(ctx, conn, name)
+
+	if err != nil {
+		return nil, fmt.Errorf("reading MemoryDB Parameter Group (%s) parameters: %w", name, err)
+	}
+
+	var apiObjects []awstypes.Parameter
+
+	for _, v := range current {
+		name := aws.ToString(v.Name)
+		currentValue := aws.ToString(v.Value)
+		defaultValue := defaultValueByName[name]
+		_, isUserDefined := userDefined[name]
+
+		if currentValue != defaultValue || isUserDefined {
+			apiObjects = append(apiObjects, v)
+		}
+	}
+
+	return apiObjects, nil
+}

@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceNetworkInterfaceSGAttachmentDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	networkInterfaceID := d.Get(names.AttrNetworkInterfaceID).(string)
+	sgID := d.Get("security_group_id").(string)
+	mutexKey := "network_interface_sg_attachment_" + networkInterfaceID
+	conns.GlobalMutexKV.Lock(mutexKey)
+	defer conns.GlobalMutexKV.Unlock(mutexKey)
+
+	eni, err := findNetworkInterfaceByID(ctx, conn, networkInterfaceID)
+
+	if tfresource.NotFound(err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Network Interface (%s): %s", networkInterfaceID, err)
+	}
+
+	groupIDs := []string{}
+
+	for _, group := range eni.Groups {
+		groupID := aws.ToString(group.GroupId)
+
+		if groupID == sgID {
+			continue
+		}
+
+		groupIDs = append(groupIDs, groupID)
+	}
+
+	input := &ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(networkInterfaceID),
+		Groups:             groupIDs,
+	}
+
+	log.Printf("[INFO] Modifying EC2 Network Interface: %#v", input)
+	_, err = conn.ModifyNetworkInterfaceAttribute(ctx, input)
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidNetworkInterfaceIDNotFound) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "modifying EC2 Network Interface (%s): %s", networkInterfaceID, err)
+	}
+
+	return diags
+}

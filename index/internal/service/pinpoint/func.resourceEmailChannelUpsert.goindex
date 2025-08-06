@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pinpoint
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pinpoint"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/pinpoint/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEmailChannelUpsert(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).PinpointClient(ctx)
+
+	applicationId := d.Get(names.AttrApplicationID).(string)
+
+	params := &awstypes.EmailChannelRequest{}
+
+	params.Enabled = aws.Bool(d.Get(names.AttrEnabled).(bool))
+	params.FromAddress = aws.String(d.Get("from_address").(string))
+	params.Identity = aws.String(d.Get("identity").(string))
+
+	if v, ok := d.GetOk("orchestration_sending_role_arn"); ok {
+		params.OrchestrationSendingRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrRoleARN); ok {
+		params.RoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("configuration_set"); ok {
+		params.ConfigurationSet = aws.String(v.(string))
+	}
+
+	req := pinpoint.UpdateEmailChannelInput{
+		ApplicationId:       aws.String(applicationId),
+		EmailChannelRequest: params,
+	}
+
+	_, err := conn.UpdateEmailChannel(ctx, &req)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Pinpoint Email Channel for application %s: %s", applicationId, err)
+	}
+
+	d.SetId(applicationId)
+
+	return append(diags, resourceEmailChannelRead(ctx, d, meta)...)
+}

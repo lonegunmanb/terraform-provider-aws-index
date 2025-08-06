@@ -1,0 +1,180 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-cty/cty/gocty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicationGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElastiCacheClient(ctx)
+
+	rgp, err := findReplicationGroupByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] ElastiCache Replication Group (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ElastiCache Replication Group (%s): %s", d.Id(), err)
+	}
+
+	if aws.ToString(rgp.Status) == replicationGroupStatusDeleting {
+		log.Printf("[WARN] ElastiCache Replication Group (%s) is currently in the `deleting` status, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if rgp.GlobalReplicationGroupInfo != nil && rgp.GlobalReplicationGroupInfo.GlobalReplicationGroupId != nil {
+		d.Set("global_replication_group_id", rgp.GlobalReplicationGroupInfo.GlobalReplicationGroupId)
+	}
+
+	d.Set(names.AttrEngine, rgp.Engine)
+
+	switch rgp.AutomaticFailover {
+	case awstypes.AutomaticFailoverStatusDisabled, awstypes.AutomaticFailoverStatusDisabling:
+		d.Set("automatic_failover_enabled", false)
+	case awstypes.AutomaticFailoverStatusEnabled, awstypes.AutomaticFailoverStatusEnabling:
+		d.Set("automatic_failover_enabled", true)
+	default:
+		log.Printf("Unknown AutomaticFailover state %q", string(rgp.AutomaticFailover))
+	}
+
+	switch rgp.MultiAZ {
+	case awstypes.MultiAZStatusEnabled:
+		d.Set("multi_az_enabled", true)
+	case awstypes.MultiAZStatusDisabled:
+		d.Set("multi_az_enabled", false)
+	default:
+		log.Printf("Unknown MultiAZ state %q", string(rgp.MultiAZ))
+	}
+
+	d.Set(names.AttrKMSKeyID, rgp.KmsKeyId)
+	d.Set(names.AttrDescription, rgp.Description)
+	d.Set("num_cache_clusters", len(rgp.MemberClusters))
+	if err := d.Set("member_clusters", flex.FlattenStringValueSet(rgp.MemberClusters)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting member_clusters: %s", err)
+	}
+
+	d.Set("num_node_groups", len(rgp.NodeGroups))
+	if len(rgp.NodeGroups) > 0 {
+		d.Set("replicas_per_node_group", len(rgp.NodeGroups[0].NodeGroupMembers)-1)
+	}
+
+	d.Set("cluster_enabled", rgp.ClusterEnabled)
+	d.Set("cluster_mode", rgp.ClusterMode)
+	d.Set("replication_group_id", rgp.ReplicationGroupId)
+	d.Set(names.AttrARN, rgp.ARN)
+	d.Set("data_tiering_enabled", rgp.DataTiering == awstypes.DataTieringStatusEnabled)
+
+	d.Set("ip_discovery", rgp.IpDiscovery)
+	d.Set("network_type", rgp.NetworkType)
+
+	d.Set("log_delivery_configuration", flattenLogDeliveryConfigurations(rgp.LogDeliveryConfigurations))
+	d.Set("snapshot_window", rgp.SnapshotWindow)
+	d.Set("snapshot_retention_limit", rgp.SnapshotRetentionLimit)
+
+	if rgp.ConfigurationEndpoint != nil {
+		d.Set(names.AttrPort, rgp.ConfigurationEndpoint.Port)
+		d.Set("configuration_endpoint_address", rgp.ConfigurationEndpoint.Address)
+	} else if len(rgp.NodeGroups) > 0 {
+		log.Printf("[DEBUG] ElastiCache Replication Group (%s) Configuration Endpoint is nil", d.Id())
+
+		if rgp.NodeGroups[0].PrimaryEndpoint != nil {
+			log.Printf("[DEBUG] ElastiCache Replication Group (%s) Primary Endpoint is not nil", d.Id())
+			d.Set(names.AttrPort, rgp.NodeGroups[0].PrimaryEndpoint.Port)
+			d.Set("primary_endpoint_address", rgp.NodeGroups[0].PrimaryEndpoint.Address)
+		}
+
+		if rgp.NodeGroups[0].ReaderEndpoint != nil {
+			d.Set("reader_endpoint_address", rgp.NodeGroups[0].ReaderEndpoint.Address)
+		}
+	}
+
+	d.Set("user_group_ids", rgp.UserGroupIds)
+
+	// Tags cannot be read when the replication group is not Available
+	log.Printf("[DEBUG] Waiting for ElastiCache Replication Group (%s) to become available", d.Id())
+
+	const (
+		delay = 0 * time.Second
+	)
+	if _, err := waitReplicationGroupAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate), delay); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for ElastiCache Replication Group (%s) create: %s", aws.ToString(rgp.ARN), err)
+	}
+
+	log.Printf("[DEBUG] ElastiCache Replication Group (%s): Checking underlying cache clusters", d.Id())
+
+	// This section reads settings that require checking the underlying cache clusters
+	if rgp.NodeGroups != nil && len(rgp.NodeGroups[0].NodeGroupMembers) != 0 {
+		cacheCluster := rgp.NodeGroups[0].NodeGroupMembers[0]
+		input := &elasticache.DescribeCacheClustersInput{
+			CacheClusterId:    cacheCluster.CacheClusterId,
+			ShowCacheNodeInfo: aws.Bool(true),
+		}
+
+		output, err := conn.DescribeCacheClusters(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading ElastiCache Replication Group (%s): reading Cache Cluster (%s): %s", d.Id(), aws.ToString(cacheCluster.CacheClusterId), err)
+		}
+
+		if len(output.CacheClusters) == 0 {
+			return diags
+		}
+
+		c := output.CacheClusters[0]
+
+		if err := setFromCacheCluster(d, &c); err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading ElastiCache Replication Group (%s): reading Cache Cluster (%s): %s", d.Id(), aws.ToString(cacheCluster.CacheClusterId), err)
+		}
+
+		d.Set("at_rest_encryption_enabled", strconv.FormatBool(aws.ToBool(c.AtRestEncryptionEnabled)))
+		// `aws_elasticache_cluster` resource doesn't define `security_group_names`, but `aws_elasticache_replication_group` does.
+		// The value for that comes from []CacheSecurityGroupMembership which is part of CacheCluster object in AWS API.
+		// We need to set it here, as it is not set in setFromCacheCluster, and we cannot add it to that function
+		// without adding `security_group_names` property to `aws_elasticache_cluster` resource.
+		// This fixes the issue when importing `aws_elasticache_replication_group` where Terraform decides to recreate the imported cluster,
+		// because of `security_group_names` is not set and is "(known after apply)"
+		d.Set("security_group_names", flattenSecurityGroupNames(c.CacheSecurityGroups))
+		d.Set("transit_encryption_enabled", c.TransitEncryptionEnabled)
+		d.Set("transit_encryption_mode", c.TransitEncryptionMode)
+
+		if c.AuthTokenEnabled != nil && !aws.ToBool(c.AuthTokenEnabled) {
+			d.Set("auth_token", nil)
+		}
+	}
+
+	return diags
+}

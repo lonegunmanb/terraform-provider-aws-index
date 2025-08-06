@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findVPCAttribute(ctx context.Context, conn *ec2.Client, vpcID string, attribute awstypes.VpcAttributeName) (bool, error) {
+	input := ec2.DescribeVpcAttributeInput{
+		Attribute: attribute,
+		VpcId:     aws.String(vpcID),
+	}
+
+	output, err := conn.DescribeVpcAttribute(ctx, &input)
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidVPCIDNotFound) {
+		return false, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: &input,
+		}
+	}
+
+	if err != nil {
+		return false, err
+	}
+
+	if output == nil {
+		return false, tfresource.NewEmptyResultError(input)
+	}
+
+	var v *awstypes.AttributeBooleanValue
+	switch attribute {
+	case awstypes.VpcAttributeNameEnableDnsHostnames:
+		v = output.EnableDnsHostnames
+	case awstypes.VpcAttributeNameEnableDnsSupport:
+		v = output.EnableDnsSupport
+	case awstypes.VpcAttributeNameEnableNetworkAddressUsageMetrics:
+		v = output.EnableNetworkAddressUsageMetrics
+	default:
+		return false, fmt.Errorf("unsupported VPC attribute: %s", attribute)
+	}
+
+	if v == nil {
+		return false, tfresource.NewEmptyResultError(input)
+	}
+
+	return aws.ToBool(v.Value), nil
+}

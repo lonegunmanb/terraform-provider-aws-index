@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sqs
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/attrmap"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceQueueUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SQSClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		attributes, err := queueAttributeMap.ResourceDataToAPIAttributesUpdate(d)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input := &sqs.SetQueueAttributesInput{
+			Attributes: flex.ExpandStringyValueMap(attributes),
+			QueueUrl:   aws.String(d.Id()),
+		}
+
+		_, err = conn.SetQueueAttributes(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating SQS Queue (%s) attributes: %s", d.Id(), err)
+		}
+
+		if err := waitQueueAttributesPropagated(ctx, conn, d.Id(), attributes, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for SQS Queue (%s) attributes update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceQueueRead(ctx, d, meta)...)
+}

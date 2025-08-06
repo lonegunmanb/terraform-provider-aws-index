@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mitchellh/mapstructure"
+)
+func statusEnablerAccountAndResourceTypes(ctx context.Context, conn *inspector2.Client, accountIDs []string) retry.StateRefreshFunc {
+	return func() (any, string, error) {
+		st, err := AccountStatuses(ctx, conn, accountIDs)
+		if err != nil {
+			return nil, "", err
+		}
+
+		if tfslices.All(tfmaps.Values(st), accountStatusEquals(types.StatusDisabled)) {
+			return nil, "", nil
+		}
+
+		if tfslices.Any(tfmaps.Values(st), func(v AccountResourceStatus) bool {
+			if slices.Contains(pendingStates, v.Status) {
+				return true
+			}
+			if tfslices.Any(tfmaps.Values(v.ResourceStatuses), func(v types.Status) bool {
+				return slices.Contains(pendingStates, v)
+			}) {
+				return true
+			}
+			if v.Status == types.StatusEnabled && tfslices.All(tfmaps.Values(v.ResourceStatuses), tfslices.PredicateEquals(types.StatusDisabled)) {
+				return true
+			}
+			return false
+		}) {
+			return st, statusInProgress, nil
+		}
+
+		return st, statusComplete, nil
+	}
+}

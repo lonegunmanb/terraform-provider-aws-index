@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *instanceStateResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().RDSClient(ctx)
+
+	var plan instanceStateResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	instanceID := plan.Identifier.ValueString()
+
+	instance, err := waitDBInstanceAvailable(ctx, conn, instanceID, r.CreateTimeout(ctx, plan.Timeouts))
+	if err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("waiting for RDS Instance (%s)", instanceID), err.Error())
+
+		return
+	}
+
+	if err := updateInstanceState(ctx, conn, instanceID, aws.ToString(instance.DBInstanceStatus), plan.State.ValueString(), r.CreateTimeout(ctx, plan.Timeouts)); err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("waiting for RDS Instance (%s)", instanceID), err.Error())
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

@@ -1,0 +1,41 @@
+package github.com/hashicorp/terraform-provider-aws/internal/vault/helper/pgpkeys
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
+)
+func DecryptBytes(encodedCrypt, privKey string) (*bytes.Buffer, error) {
+	privKeyBytes, err := base64.StdEncoding.DecodeString(privKey)
+	if err != nil {
+		return nil, fmt.Errorf("decoding base64 private key: %w", err)
+	}
+
+	cryptBytes, err := base64.StdEncoding.DecodeString(encodedCrypt)
+	if err != nil {
+		return nil, fmt.Errorf("decoding base64 crypted bytes: %w", err)
+	}
+
+	entity, err := openpgp.ReadEntity(packet.NewReader(bytes.NewBuffer(privKeyBytes)))
+	if err != nil {
+		return nil, fmt.Errorf("parsing private key: %w", err)
+	}
+
+	entityList := &openpgp.EntityList{entity}
+	md, err := openpgp.ReadMessage(bytes.NewBuffer(cryptBytes), entityList, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting the messages: %w", err)
+	}
+
+	ptBuf := bytes.NewBuffer(nil)
+	_, err = ptBuf.ReadFrom(md.UnverifiedBody)
+
+	if err != nil {
+		return nil, fmt.Errorf("reading the messages: %w", err)
+	}
+
+	return ptBuf, nil
+}

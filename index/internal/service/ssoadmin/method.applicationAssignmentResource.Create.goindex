@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *applicationAssignmentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().SSOAdminClient(ctx)
+
+	var plan applicationAssignmentResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	applicationARN := plan.ApplicationARN.ValueString()
+	principalID := plan.PrincipalID.ValueString()
+	principalType := plan.PrincipalType.ValueString()
+
+	idParts := []string{
+		applicationARN,
+		principalID,
+		principalType,
+	}
+	id, _ := intflex.FlattenResourceId(idParts, applicationAssignmentIDPartCount, false)
+	plan.ID = types.StringValue(id)
+
+	in := &ssoadmin.CreateApplicationAssignmentInput{
+		ApplicationArn: aws.String(applicationARN),
+		PrincipalId:    aws.String(principalID),
+		PrincipalType:  awstypes.PrincipalType(principalType),
+	}
+
+	_, err := conn.CreateApplicationAssignment(ctx, in)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.SSOAdmin, create.ErrActionCreating, ResNameApplicationAssignment, plan.ApplicationARN.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}

@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (h *instanceHandler) precondition(ctx context.Context, d *schema.ResourceData) error {
+	needsPreConditions := false
+	input := &rds.ModifyDBInstanceInput{
+		ApplyImmediately:     aws.Bool(true),
+		DBInstanceIdentifier: aws.String(d.Get(names.AttrIdentifier).(string)),
+	}
+
+	// Backups must be enabled for Blue/Green Deployments. Enable them first.
+	o, n := d.GetChange("backup_retention_period")
+	if o.(int) == 0 && n.(int) > 0 {
+		needsPreConditions = true
+		input.BackupRetentionPeriod = aws.Int32(int32(d.Get("backup_retention_period").(int)))
+	}
+
+	if d.HasChange(names.AttrDeletionProtection) {
+		needsPreConditions = true
+		input.DeletionProtection = aws.Bool(d.Get(names.AttrDeletionProtection).(bool))
+	}
+
+	if needsPreConditions {
+		err := dbInstanceModify(ctx, h.conn, d.Id(), input, d.Timeout(schema.TimeoutUpdate))
+		if err != nil {
+			return fmt.Errorf("setting pre-conditions: %s", err)
+		}
+	}
+	return nil
+}

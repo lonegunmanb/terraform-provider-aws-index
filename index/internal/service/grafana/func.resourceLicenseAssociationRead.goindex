@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/grafana
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/grafana"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/grafana/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceLicenseAssociationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GrafanaClient(ctx)
+
+	workspace, err := findLicensedWorkspaceByID(ctx, conn, d.Id())
+
+	if tfresource.NotFound(err) && !d.IsNewResource() {
+		log.Printf("[WARN] Grafana License Association (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Grafana License Association (%s): %s", d.Id(), err)
+	}
+
+	if workspace.FreeTrialExpiration != nil {
+		d.Set("free_trial_expiration", workspace.FreeTrialExpiration.Format(time.RFC3339))
+	} else {
+		d.Set("free_trial_expiration", nil)
+	}
+	d.Set("grafana_token", workspace.GrafanaToken)
+	if workspace.LicenseExpiration != nil {
+		d.Set("license_expiration", workspace.LicenseExpiration.Format(time.RFC3339))
+	} else {
+		d.Set("license_expiration", nil)
+	}
+	d.Set("license_type", workspace.LicenseType)
+	d.Set("workspace_id", d.Id())
+
+	return diags
+}

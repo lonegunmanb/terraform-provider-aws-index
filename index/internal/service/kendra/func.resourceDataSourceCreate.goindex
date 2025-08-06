@@ -1,0 +1,110 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kendra
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kendra"
+	"github.com/aws/aws-sdk-go-v2/service/kendra/document"
+	"github.com/aws/aws-sdk-go-v2/service/kendra/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataSourceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).KendraClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &kendra.CreateDataSourceInput{
+		ClientToken: aws.String(id.UniqueId()),
+		IndexId:     aws.String(d.Get("index_id").(string)),
+		Name:        aws.String(name),
+		Tags:        getTagsIn(ctx),
+		Type:        types.DataSourceType(d.Get(names.AttrType).(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrConfiguration); ok {
+		configuration, err := expandDataSourceConfiguration(v.([]any))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		input.Configuration = configuration
+	}
+
+	if v, ok := d.GetOk("custom_document_enrichment_configuration"); ok {
+		input.CustomDocumentEnrichmentConfiguration = expandCustomDocumentEnrichmentConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrLanguageCode); ok {
+		input.LanguageCode = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrRoleARN); ok {
+		input.RoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrSchedule); ok {
+		input.Schedule = aws.String(v.(string))
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateDataSource(ctx, input)
+		},
+		func(err error) (bool, error) {
+			var validationException *types.ValidationException
+
+			if errors.As(err, &validationException) && (strings.Contains(validationException.ErrorMessage(), validationExceptionMessage) || strings.Contains(validationException.ErrorMessage(), validationExceptionMessageDataSourceSecrets)) {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Kendra Data Source (%s): %s", name, err)
+	}
+
+	if outputRaw == nil {
+		return sdkdiag.AppendErrorf(diags, "creating Kendra Data Source (%s): empty output", name)
+	}
+
+	output := outputRaw.(*kendra.CreateDataSourceOutput)
+
+	id := aws.ToString(output.Id)
+	indexId := d.Get("index_id").(string)
+
+	d.SetId(fmt.Sprintf("%s/%s", id, indexId))
+
+	if _, err := waitDataSourceCreated(ctx, conn, id, indexId, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Data Source (%s) creation: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDataSourceRead(ctx, d, meta)...)
+}

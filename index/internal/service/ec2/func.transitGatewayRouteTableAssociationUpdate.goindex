@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func transitGatewayRouteTableAssociationUpdate(ctx context.Context, conn *ec2.Client, transitGatewayRouteTableID, transitGatewayAttachmentID string, associate bool) error {
+	if transitGatewayRouteTableID == "" {
+		// Do nothing if no route table was specified.
+		return nil
+	}
+
+	id := transitGatewayRouteTableAssociationCreateResourceID(transitGatewayRouteTableID, transitGatewayAttachmentID)
+	_, err := findTransitGatewayRouteTableAssociationByTwoPartKey(ctx, conn, transitGatewayRouteTableID, transitGatewayAttachmentID)
+
+	if tfresource.NotFound(err) {
+		if associate {
+			input := &ec2.AssociateTransitGatewayRouteTableInput{
+				TransitGatewayAttachmentId: aws.String(transitGatewayAttachmentID),
+				TransitGatewayRouteTableId: aws.String(transitGatewayRouteTableID),
+			}
+
+			_, err := conn.AssociateTransitGatewayRouteTable(ctx, input)
+
+			if err != nil {
+				return fmt.Errorf("creating EC2 Transit Gateway Route Table Association (%s): %w", id, err)
+			}
+
+			if err := waitTransitGatewayRouteTableAssociationCreated(ctx, conn, transitGatewayRouteTableID, transitGatewayAttachmentID); err != nil {
+				return fmt.Errorf("waiting for EC2 Transit Gateway Route Table Association (%s) create: %w", id, err)
+			}
+		}
+
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("reading EC2 Transit Gateway Route Table Association (%s): %w", id, err)
+	}
+
+	if !associate {
+		// Disassociation must be done only on already associated state.
+		if err := waitTransitGatewayRouteTableAssociationCreated(ctx, conn, transitGatewayRouteTableID, transitGatewayAttachmentID); err != nil {
+			return fmt.Errorf("waiting for EC2 Transit Gateway Route Table Association (%s) create: %w", id, err)
+		}
+
+		if err := disassociateTransitGatewayRouteTable(ctx, conn, transitGatewayRouteTableID, transitGatewayAttachmentID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

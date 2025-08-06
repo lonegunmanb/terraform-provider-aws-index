@@ -1,0 +1,90 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIntegrationResponse() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceIntegrationResponsePut,
+		ReadWithoutTimeout:   resourceIntegrationResponseRead,
+		UpdateWithoutTimeout: resourceIntegrationResponsePut,
+		DeleteWithoutTimeout: resourceIntegrationResponseDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: func(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+				idParts := strings.Split(d.Id(), "/")
+				if len(idParts) != 4 || idParts[0] == "" || idParts[1] == "" || idParts[2] == "" || idParts[3] == "" {
+					return nil, fmt.Errorf("Unexpected format of ID (%q), expected REST-API-ID/RESOURCE-ID/HTTP-METHOD/STATUS-CODE", d.Id())
+				}
+				restApiID := idParts[0]
+				resourceID := idParts[1]
+				httpMethod := idParts[2]
+				statusCode := idParts[3]
+				d.Set("http_method", httpMethod)
+				d.Set(names.AttrStatusCode, statusCode)
+				d.Set(names.AttrResourceID, resourceID)
+				d.Set("rest_api_id", restApiID)
+				d.SetId(fmt.Sprintf("agir-%s-%s-%s-%s", restApiID, resourceID, httpMethod, statusCode))
+				return []*schema.ResourceData{d}, nil
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			"content_handling": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateDiagFunc: validIntegrationContentHandling(),
+			},
+			"http_method": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validHTTPMethod(),
+			},
+			names.AttrResourceID: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"response_parameters": {
+				Type:     schema.TypeMap,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				Optional: true,
+			},
+			"response_templates": {
+				Type:     schema.TypeMap,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"rest_api_id": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"selection_pattern": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			names.AttrStatusCode: {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+		},
+	}
+}

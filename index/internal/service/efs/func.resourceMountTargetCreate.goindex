@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/efs
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/efs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMountTargetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EFSClient(ctx)
+
+	// CreateMountTarget would return the same Mount Target ID
+	// to parallel requests if they both include the same AZ
+	// and we would end up managing the same MT as 2 resources.
+	// So we make it fail by calling 1 request per AZ at a time.
+	subnetID := d.Get(names.AttrSubnetID).(string)
+	az, err := getAZFromSubnetID(ctx, meta.(*conns.AWSClient).EC2Client(ctx), subnetID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Subnet (%s): %s", subnetID, err)
+	}
+
+	fsID := d.Get(names.AttrFileSystemID).(string)
+	mtKey := "efs-mt-" + fsID + "-" + az
+	conns.GlobalMutexKV.Lock(mtKey)
+	defer conns.GlobalMutexKV.Unlock(mtKey)
+
+	input := &efs.CreateMountTargetInput{
+		FileSystemId: aws.String(fsID),
+		SubnetId:     aws.String(subnetID),
+	}
+
+	if v, ok := d.GetOk(names.AttrIPAddress); ok {
+		input.IpAddress = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrSecurityGroups); ok {
+		input.SecurityGroups = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	mt, err := conn.CreateMountTarget(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EFS Mount Target (%s): %s", fsID, err)
+	}
+
+	d.SetId(aws.ToString(mt.MountTargetId))
+
+	if _, err := waitMountTargetCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EFS Mount Target (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceMountTargetRead(ctx, d, meta)...)
+}

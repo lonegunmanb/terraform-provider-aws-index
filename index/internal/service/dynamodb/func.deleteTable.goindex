@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func deleteTable(ctx context.Context, conn *dynamodb.Client, tableName string) error {
+	input := &dynamodb.DeleteTableInput{
+		TableName: aws.String(tableName),
+	}
+
+	_, err := tfresource.RetryWhen(ctx, deleteTableTimeout, func() (any, error) {
+		return conn.DeleteTable(ctx, input)
+	}, func(err error) (bool, error) {
+		// Subscriber limit exceeded: Only 10 tables can be created, updated, or deleted simultaneously
+		if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "simultaneously") {
+			return true, err
+		}
+		// This handles multiple scenarios in the DynamoDB API:
+		// 1. Updating a table immediately before deletion may return:
+		//    ResourceInUseException: Attempt to change a resource which is still in use: Table is being updated:
+		// 2. Removing a table from a DynamoDB global table may return:
+		//    ResourceInUseException: Attempt to change a resource which is still in use: Table is being deleted:
+		if errs.IsA[*awstypes.ResourceInUseException](err) {
+			return true, err
+		}
+
+		return false, err
+	})
+
+	return err
+}

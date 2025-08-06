@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceProductPortfolioAssociationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	acceptLanguage, portfolioID, productID, err := productPortfolioAssociationParseID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "could not parse ID (%s): %s", d.Id(), err)
+	}
+
+	input := &servicecatalog.DisassociateProductFromPortfolioInput{
+		PortfolioId: aws.String(portfolioID),
+		ProductId:   aws.String(productID),
+	}
+
+	if acceptLanguage != "" {
+		input.AcceptLanguage = aws.String(acceptLanguage)
+	}
+
+	_, err = conn.DisassociateProductFromPortfolio(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "disassociating Service Catalog Product from Portfolio (%s): %s", d.Id(), err)
+	}
+
+	err = waitProductPortfolioAssociationDeleted(ctx, conn, acceptLanguage, portfolioID, productID, d.Timeout(schema.TimeoutDelete))
+
+	if err != nil && !tfresource.NotFound(err) {
+		return sdkdiag.AppendErrorf(diags, "waiting for Service Catalog Product Portfolio Disassociation (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

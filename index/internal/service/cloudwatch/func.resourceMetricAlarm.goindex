@@ -1,0 +1,311 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
+import (
+	"context"
+	"errors"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMetricAlarm() *schema.Resource {
+	//lintignore:R011
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceMetricAlarmCreate,
+		ReadWithoutTimeout:   resourceMetricAlarmRead,
+		UpdateWithoutTimeout: resourceMetricAlarmUpdate,
+		DeleteWithoutTimeout: resourceMetricAlarmDelete,
+
+		SchemaVersion: 1,
+		MigrateState:  MetricAlarmMigrateState,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			"actions_enabled": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  true,
+			},
+			"alarm_actions": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+					ValidateFunc: validation.Any(
+						verify.ValidARN,
+						validEC2AutomateARN,
+					),
+				},
+			},
+			"alarm_description": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: validation.StringLenBetween(0, 1024),
+			},
+			"alarm_name": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringLenBetween(1, 255),
+			},
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"comparison_operator": {
+				Type:             schema.TypeString,
+				Required:         true,
+				ValidateDiagFunc: enum.Validate[types.ComparisonOperator](),
+			},
+			"datapoints_to_alarm": {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				ValidateFunc: validation.IntAtLeast(1),
+			},
+			"dimensions": {
+				Type:          schema.TypeMap,
+				Optional:      true,
+				Elem:          &schema.Schema{Type: schema.TypeString},
+				ConflictsWith: []string{"metric_query"},
+			},
+			"evaluate_low_sample_count_percentiles": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Computed:     true,
+				ValidateFunc: validation.StringInSlice(lowSampleCountPercentiles_Values(), true),
+			},
+			"evaluation_periods": {
+				Type:         schema.TypeInt,
+				Required:     true,
+				ValidateFunc: validation.IntAtLeast(1),
+			},
+			"extended_statistic": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ConflictsWith: []string{"statistic", "metric_query"},
+				ValidateFunc: validation.StringMatch(
+					// doesn't catch: PR with %-values provided, TM/WM/PR/TC/TS with no values provided
+					regexache.MustCompile(`^((p|(tm)|(wm)|(tc)|(ts))((\d{1,2}(\.\d{1,2})?)|(100))|(IQM)|(((TM)|(WM)|(PR)|(TC)|(TS)))\((\d+(\.\d+)?%?)?:(\d+(\.\d+)?%?)?\))$`),
+					"invalid statistic, see: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Statistics-definitions.html",
+				),
+			},
+			"insufficient_data_actions": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				MaxItems: 5,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+					ValidateFunc: validation.Any(
+						verify.ValidARN,
+						validEC2AutomateARN,
+					),
+				},
+			},
+			names.AttrMetricName: {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ConflictsWith: []string{"metric_query"},
+				ValidateFunc:  validation.StringLenBetween(1, 255),
+			},
+			"metric_query": {
+				Type:          schema.TypeSet,
+				Optional:      true,
+				ConflictsWith: []string{names.AttrMetricName},
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrAccountID: {
+							Type:         schema.TypeString,
+							Optional:     true,
+							ValidateFunc: validation.StringLenBetween(1, 255),
+						},
+						names.AttrExpression: {
+							Type:         schema.TypeString,
+							Optional:     true,
+							ValidateFunc: validation.StringLenBetween(1, 1024),
+						},
+						names.AttrID: {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.StringLenBetween(1, 255),
+						},
+						"metric": {
+							Type:     schema.TypeList,
+							MaxItems: 1,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"dimensions": {
+										Type:     schema.TypeMap,
+										Optional: true,
+										Elem:     &schema.Schema{Type: schema.TypeString},
+									},
+									names.AttrMetricName: {
+										Type:         schema.TypeString,
+										Required:     true,
+										ValidateFunc: validation.StringLenBetween(1, 255),
+									},
+									names.AttrNamespace: {
+										Type:     schema.TypeString,
+										Optional: true,
+										ValidateFunc: validation.All(
+											validation.StringLenBetween(1, 255),
+											validation.StringMatch(regexache.MustCompile(`[^:].*`), "must not contain colon characters"),
+										),
+									},
+									"period": {
+										Type:     schema.TypeInt,
+										Required: true,
+										ValidateFunc: validation.Any(
+											validation.IntInSlice([]int{1, 5, 10, 20, 30}),
+											validation.IntDivisibleBy(60),
+										),
+									},
+									"stat": {
+										Type:     schema.TypeString,
+										Required: true,
+										ValidateDiagFunc: validation.AnyDiag(
+											enum.Validate[types.Statistic](),
+											validation.ToDiagFunc(
+												validation.StringMatch(
+													// doesn't catch: PR with %-values provided, TM/WM/PR/TC/TS with no values provided
+													regexache.MustCompile(`^((p|(tm)|(wm)|(tc)|(ts))((\d{1,2}(\.\d{1,2})?)|(100))|(IQM)|(((TM)|(WM)|(PR)|(TC)|(TS)))\((\d+(\.\d+)?%?)?:(\d+(\.\d+)?%?)?\))$`),
+													"invalid statistic, see: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Statistics-definitions.html",
+												),
+											),
+										),
+									},
+									names.AttrUnit: {
+										Type:             schema.TypeString,
+										Optional:         true,
+										ValidateDiagFunc: enum.Validate[types.StandardUnit](),
+									},
+								},
+							},
+						},
+						"label": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"period": {
+							Type:     schema.TypeInt,
+							Optional: true,
+							ValidateFunc: validation.Any(
+								validation.IntInSlice([]int{1, 5, 10, 20, 30}),
+								validation.IntDivisibleBy(60),
+							),
+						},
+						"return_data": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  false,
+						},
+					},
+				},
+			},
+			names.AttrNamespace: {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ConflictsWith: []string{"metric_query"},
+				ValidateFunc: validation.All(
+					validation.StringLenBetween(1, 255),
+					validation.StringMatch(regexache.MustCompile(`[^:].*`), "must not contain colon characters"),
+				),
+			},
+			"ok_actions": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				MaxItems: 5,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+					ValidateFunc: validation.Any(
+						verify.ValidARN,
+						validEC2AutomateARN,
+					),
+				},
+			},
+			"period": {
+				Type:          schema.TypeInt,
+				Optional:      true,
+				ConflictsWith: []string{"metric_query"},
+				ValidateFunc: validation.Any(
+					validation.IntInSlice([]int{10, 20, 30}),
+					validation.IntDivisibleBy(60),
+				),
+			},
+			"statistic": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ConflictsWith:    []string{"extended_statistic", "metric_query"},
+				ValidateDiagFunc: enum.Validate[types.Statistic](),
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+			"threshold": {
+				Type:          schema.TypeFloat,
+				Optional:      true,
+				ConflictsWith: []string{"threshold_metric_id"},
+			},
+			"threshold_metric_id": {
+				Type:          schema.TypeString,
+				Optional:      true,
+				ConflictsWith: []string{"threshold"},
+				ValidateFunc:  validation.StringLenBetween(1, 255),
+			},
+			"treat_missing_data": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      missingDataMissing,
+				ValidateFunc: validation.StringInSlice(missingData_Values(), true),
+			},
+			names.AttrUnit: {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateDiagFunc: enum.Validate[types.StandardUnit](),
+			},
+		},
+
+		CustomizeDiff: customdiff.All(
+			func(_ context.Context, diff *schema.ResourceDiff, v any) error {
+				_, metricNameOk := diff.GetOk(names.AttrMetricName)
+				_, statisticOk := diff.GetOk("statistic")
+				_, extendedStatisticOk := diff.GetOk("extended_statistic")
+
+				if metricNameOk && ((!statisticOk && !extendedStatisticOk) || (statisticOk && extendedStatisticOk)) {
+					return errors.New("One of `statistic` or `extended_statistic` must be set for a cloudwatch metric alarm")
+				}
+
+				if v := diff.Get("metric_query"); v != nil {
+					for _, v := range v.(*schema.Set).List() {
+						tfMap := v.(map[string]any)
+						if v, ok := tfMap[names.AttrExpression]; ok && v.(string) != "" {
+							if v := tfMap["metric"]; v != nil {
+								if len(v.([]any)) > 0 {
+									return errors.New("No metric_query may have both `expression` and a `metric` specified")
+								}
+							}
+						}
+					}
+				}
+
+				return nil
+			},
+		),
+	}
+}

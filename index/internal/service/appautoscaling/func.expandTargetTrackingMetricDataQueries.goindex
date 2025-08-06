@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandTargetTrackingMetricDataQueries(metricDataQuerySlices []any) []awstypes.TargetTrackingMetricDataQuery {
+	if len(metricDataQuerySlices) < 1 {
+		return nil
+	}
+	metricDataQueries := make([]awstypes.TargetTrackingMetricDataQuery, len(metricDataQuerySlices))
+
+	for i := range metricDataQueries {
+		metricDataQueryFlat := metricDataQuerySlices[i].(map[string]any)
+		metricDataQuery := awstypes.TargetTrackingMetricDataQuery{
+			Id: aws.String(metricDataQueryFlat[names.AttrID].(string)),
+		}
+		if val, ok := metricDataQueryFlat["metric_stat"]; ok && len(val.([]any)) > 0 {
+			metricStatSpec := val.([]any)[0].(map[string]any)
+			metricSpec := metricStatSpec["metric"].([]any)[0].(map[string]any)
+			metric := &awstypes.TargetTrackingMetric{
+				MetricName: aws.String(metricSpec[names.AttrMetricName].(string)),
+				Namespace:  aws.String(metricSpec[names.AttrNamespace].(string)),
+			}
+			if v, ok := metricSpec["dimensions"]; ok {
+				dims := v.(*schema.Set).List()
+				dimList := make([]awstypes.TargetTrackingMetricDimension, len(dims))
+				for i := range dimList {
+					dim := dims[i].(map[string]any)
+					md := awstypes.TargetTrackingMetricDimension{
+						Name:  aws.String(dim[names.AttrName].(string)),
+						Value: aws.String(dim[names.AttrValue].(string)),
+					}
+					dimList[i] = md
+				}
+				metric.Dimensions = dimList
+			}
+			metricStat := &awstypes.TargetTrackingMetricStat{
+				Metric: metric,
+				Stat:   aws.String(metricStatSpec["stat"].(string)),
+			}
+			if v, ok := metricStatSpec[names.AttrUnit]; ok && len(v.(string)) > 0 {
+				metricStat.Unit = aws.String(v.(string))
+			}
+			metricDataQuery.MetricStat = metricStat
+		}
+		if val, ok := metricDataQueryFlat[names.AttrExpression]; ok && val.(string) != "" {
+			metricDataQuery.Expression = aws.String(val.(string))
+		}
+		if val, ok := metricDataQueryFlat["label"]; ok && val.(string) != "" {
+			metricDataQuery.Label = aws.String(val.(string))
+		}
+		if val, ok := metricDataQueryFlat["return_data"]; ok {
+			metricDataQuery.ReturnData = aws.Bool(val.(bool))
+		}
+		metricDataQueries[i] = metricDataQuery
+	}
+	return metricDataQueries
+}

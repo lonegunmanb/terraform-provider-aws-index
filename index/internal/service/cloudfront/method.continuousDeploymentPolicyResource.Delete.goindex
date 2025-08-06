@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *continuousDeploymentPolicyResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data continuousDeploymentPolicyResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudFrontClient(ctx)
+
+	id := data.ID.ValueString()
+	etag, err := cdpETag(ctx, conn, id)
+
+	if tfresource.NotFound(err) {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading CloudFront Continuous Deployment Policy (%s)", data.ID.ValueString()), err.Error())
+
+		return
+	}
+
+	input := &cloudfront.DeleteContinuousDeploymentPolicyInput{
+		Id:      aws.String(id),
+		IfMatch: aws.String(etag),
+	}
+
+	_, err = conn.DeleteContinuousDeploymentPolicy(ctx, input)
+
+	if errs.IsA[*awstypes.NoSuchContinuousDeploymentPolicy](err) {
+		return
+	}
+
+	if errs.IsA[*awstypes.PreconditionFailed](err) || errs.IsA[*awstypes.InvalidIfMatchVersion](err) {
+		etag, err = cdpETag(ctx, conn, id)
+
+		if tfresource.NotFound(err) {
+			return
+		}
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("reading CloudFront Continuous Deployment Policy (%s)", data.ID.ValueString()), err.Error())
+
+			return
+		}
+
+		input.IfMatch = aws.String(etag)
+
+		_, err = conn.DeleteContinuousDeploymentPolicy(ctx, input)
+
+		if errs.IsA[*awstypes.NoSuchContinuousDeploymentPolicy](err) {
+			return
+		}
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("deleting CloudFront Continuous Deployment Policy (%s)", data.ID.ValueString()), err.Error())
+
+		return
+	}
+}

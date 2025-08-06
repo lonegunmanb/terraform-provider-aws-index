@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3outposts
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/s3outposts"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3outposts/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3OutpostsClient(ctx)
+
+	endpoint, err := findEndpointByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] S3 Outposts Endpoint %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading S3 Outposts Endpoint (%s): %s", d.Id(), err)
+	}
+
+	d.Set("access_type", endpoint.AccessType)
+	d.Set(names.AttrARN, endpoint.EndpointArn)
+	d.Set(names.AttrCIDRBlock, endpoint.CidrBlock)
+	if endpoint.CreationTime != nil {
+		d.Set(names.AttrCreationTime, aws.ToTime(endpoint.CreationTime).Format(time.RFC3339))
+	}
+	d.Set("customer_owned_ipv4_pool", endpoint.CustomerOwnedIpv4Pool)
+	if err := d.Set("network_interfaces", flattenNetworkInterfaces(endpoint.NetworkInterfaces)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting network_interfaces: %s", err)
+	}
+	d.Set("outpost_id", endpoint.OutpostsId)
+
+	return diags
+}

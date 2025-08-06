@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/gamelift
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/gamelift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/gamelift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func diffPortSettings(oldPerms, newPerms []any) (a []awstypes.IpPermission, r []awstypes.IpPermission) {
+OUTER:
+	for i, op := range oldPerms {
+		oldPerm := op.(map[string]any)
+		for j, np := range newPerms {
+			newPerm := np.(map[string]any)
+
+			// Remove permissions which have not changed so we're not wasting
+			// API calls for removal & subseq. addition of the same ones
+			if reflect.DeepEqual(oldPerm, newPerm) {
+				oldPerms = slices.Delete(oldPerms, i, i+1)
+				newPerms = slices.Delete(newPerms, j, j+1)
+				continue OUTER
+			}
+		}
+
+		// Add what's left for revocation
+		r = append(r, *expandIPPermission(oldPerm))
+	}
+
+	for _, np := range newPerms {
+		newPerm := np.(map[string]any)
+		// Add what's left for authorization
+		a = append(a, *expandIPPermission(newPerm))
+	}
+	return
+}

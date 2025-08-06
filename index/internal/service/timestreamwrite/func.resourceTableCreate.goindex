@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/timestreamwrite
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/timestreamwrite"
+	"github.com/aws/aws-sdk-go-v2/service/timestreamwrite/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTableCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).TimestreamWriteClient(ctx)
+
+	databaseName := d.Get(names.AttrDatabaseName).(string)
+	tableName := d.Get(names.AttrTableName).(string)
+	id := tableCreateResourceID(tableName, databaseName)
+	input := &timestreamwrite.CreateTableInput{
+		DatabaseName: aws.String(databaseName),
+		TableName:    aws.String(tableName),
+		Tags:         getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("magnetic_store_write_properties"); ok && len(v.([]any)) > 0 && v.([]any) != nil {
+		input.MagneticStoreWriteProperties = expandMagneticStoreWriteProperties(v.([]any))
+	}
+
+	if v, ok := d.GetOk("retention_properties"); ok && len(v.([]any)) > 0 && v.([]any) != nil {
+		input.RetentionProperties = expandRetentionProperties(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrSchema); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Schema = expandSchema(v.([]any)[0].(map[string]any))
+	}
+
+	_, err := conn.CreateTable(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Timestream Table (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceTableRead(ctx, d, meta)...)
+}

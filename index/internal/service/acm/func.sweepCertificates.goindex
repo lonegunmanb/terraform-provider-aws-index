@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acm
+import (
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/acm"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepCertificates(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %s", err)
+	}
+	conn := client.ACMClient(ctx)
+	var sweepResources []sweep.Sweepable
+
+	input := acm.ListCertificatesInput{}
+	pages := acm.NewListCertificatesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping ACM Certificate sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("error listing ACM Certificates (%s): %w", region, err)
+		}
+
+		for _, v := range page.CertificateSummaryList {
+			arn := aws.ToString(v.CertificateArn)
+			input := acm.DescribeCertificateInput{
+				CertificateArn: aws.String(arn),
+			}
+			certificate, err := findCertificate(ctx, conn, &input)
+
+			if err != nil {
+				log.Printf("[ERROR] Reading ACM Certificate (%s): %s", arn, err)
+				continue
+			}
+
+			if n := len(certificate.InUseBy); n > 0 {
+				log.Printf("[INFO] ACM Certificate (%s) skipped, in use by, e.g., (%d tot):", arn, n)
+				m := make(map[string]string)
+				for _, iub := range certificate.InUseBy {
+					if len(iub) < 77 {
+						m[iub] = ""
+					} else {
+						m[iub[:77]] = ""
+					}
+				}
+				for k := range m {
+					log.Printf("[INFO]  %s...", k)
+				}
+				continue
+			}
+
+			r := resourceCertificate()
+			d := r.Data(nil)
+			d.SetId(arn)
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+
+	if err != nil {
+		return fmt.Errorf("error sweeping ACM Certificates (%s): %w", region, err)
+	}
+
+	return nil
+}

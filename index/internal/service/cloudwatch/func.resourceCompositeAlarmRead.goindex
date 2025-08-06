@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCompositeAlarmRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudWatchClient(ctx)
+
+	alarm, err := findCompositeAlarmByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudWatch Composite Alarm %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudWatch Composite Alarm (%s): %s", d.Id(), err)
+	}
+
+	d.Set("actions_enabled", alarm.ActionsEnabled)
+	if alarm.ActionsSuppressor != nil {
+		if err := d.Set("actions_suppressor", []any{flattenActionsSuppressor(alarm)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting actions_suppressor: %s", err)
+		}
+	} else {
+		d.Set("actions_suppressor", nil)
+	}
+	d.Set("alarm_actions", alarm.AlarmActions)
+	d.Set("alarm_description", alarm.AlarmDescription)
+	d.Set("alarm_name", alarm.AlarmName)
+	d.Set("alarm_rule", alarm.AlarmRule)
+	d.Set(names.AttrARN, alarm.AlarmArn)
+	d.Set("insufficient_data_actions", alarm.InsufficientDataActions)
+	d.Set("ok_actions", alarm.OKActions)
+
+	return diags
+}

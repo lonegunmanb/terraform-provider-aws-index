@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	input := &sagemaker.CreateDomainInput{
+		DomainName:           aws.String(d.Get(names.AttrDomainName).(string)),
+		AuthMode:             awstypes.AuthMode(d.Get("auth_mode").(string)),
+		VpcId:                aws.String(d.Get(names.AttrVPCID).(string)),
+		AppNetworkAccessType: awstypes.AppNetworkAccessType(d.Get("app_network_access_type").(string)),
+		SubnetIds:            flex.ExpandStringValueSet(d.Get(names.AttrSubnetIDs).(*schema.Set)),
+		DefaultUserSettings:  expandUserSettings(d.Get("default_user_settings").([]any)),
+		Tags:                 getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("app_security_group_management"); ok && rstudioDomainEnabled(d.Get("domain_settings").([]any)) {
+		input.AppSecurityGroupManagement = awstypes.AppSecurityGroupManagement(v.(string))
+	}
+
+	if v, ok := d.GetOk("domain_settings"); ok && len(v.([]any)) > 0 {
+		input.DomainSettings = expandDomainSettings(v.([]any))
+	}
+
+	if v, ok := d.GetOk("default_space_settings"); ok && len(v.([]any)) > 0 {
+		input.DefaultSpaceSettings = expanDefaultSpaceSettings(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		input.KmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("tag_propagation"); ok {
+		input.TagPropagation = awstypes.TagPropagation(v.(string))
+	}
+
+	log.Printf("[DEBUG] SageMaker AI Domain create config: %#v", *input)
+	output, err := conn.CreateDomain(ctx, input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Domain: %s", err)
+	}
+
+	domainID := aws.ToString(output.DomainId)
+	d.SetId(domainID)
+
+	if err := waitDomainInService(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Domain (%s): waiting for completion: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDomainRead(ctx, d, meta)...)
+}

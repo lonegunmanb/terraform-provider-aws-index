@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/xray
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/xray"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepSamplingRules(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.XRayClient(ctx)
+
+	var sweepResources []sweep.Sweepable
+	r := resourceSamplingRule()
+
+	pages := xray.NewGetSamplingRulesPaginator(conn, &xray.GetSamplingRulesInput{})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.SamplingRuleRecords {
+			if aws.ToString(v.SamplingRule.RuleName) == "Default" {
+				tflog.Debug(ctx, "Skipping resource", map[string]any{
+					"skip_reason": `Cannot delete "Default"`,
+					names.AttrARN: aws.ToString(v.SamplingRule.RuleARN),
+				})
+				continue
+			}
+			d := r.Data(nil)
+			d.SetId(aws.ToString(v.SamplingRule.RuleName))
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	return sweepResources, nil
+}

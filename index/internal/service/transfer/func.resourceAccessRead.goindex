@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/transfer
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/transfer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/transfer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAccessRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).TransferClient(ctx)
+
+	serverID, externalID, err := accessParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	access, err := findAccessByTwoPartKey(ctx, conn, serverID, externalID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Transfer Access (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Transfer Access (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrExternalID, access.ExternalId)
+	d.Set("home_directory", access.HomeDirectory)
+	if err := d.Set("home_directory_mappings", flattenHomeDirectoryMapEntries(access.HomeDirectoryMappings)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting home_directory_mappings: %s", err)
+	}
+	d.Set("home_directory_type", access.HomeDirectoryType)
+	policyToSet, err := verify.PolicyToSet(d.Get(names.AttrPolicy).(string), aws.ToString(access.Policy))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+	d.Set(names.AttrPolicy, policyToSet)
+	if err := d.Set("posix_profile", flattenPOSIXProfile(access.PosixProfile)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting posix_profile: %s", err)
+	}
+	// Role is currently not returned via the API.
+	// d.Set("role", access.Role)
+	d.Set("server_id", serverID)
+
+	return diags
+}

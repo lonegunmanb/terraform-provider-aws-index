@@ -1,0 +1,160 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourcePolicyDocument() *schema.Resource {
+	return &schema.Resource{
+		ReadWithoutTimeout: dataSourcePolicyDocumentRead,
+
+		SchemaFunc: func() map[string]*schema.Schema {
+			principalsSchema := func() *schema.Schema {
+				return &schema.Schema{
+					Type:     schema.TypeSet,
+					Optional: true,
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"identifiers": {
+								Type:     schema.TypeSet,
+								Required: true,
+								Elem: &schema.Schema{
+									Type: schema.TypeString,
+								},
+							},
+							names.AttrType: {
+								Type:     schema.TypeString,
+								Required: true,
+							},
+						},
+					},
+				}
+			}
+			setOfStringSchema := func() *schema.Schema {
+				return &schema.Schema{
+					Type:     schema.TypeSet,
+					Optional: true,
+					Elem: &schema.Schema{
+						Type: schema.TypeString,
+					},
+				}
+			}
+
+			return map[string]*schema.Schema{
+				names.AttrJSON: {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+				"minified_json": {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+				// https://github.com/hashicorp/terraform-provider-aws/issues/31637.
+				"override_json": {
+					Type:         schema.TypeString,
+					Optional:     true,
+					ValidateFunc: validation.StringIsEmpty,
+					Deprecated: "override_json is deprecated. This argument is retained only for " +
+						"backward compatibility with previous versions of this data source.",
+				},
+				"override_policy_documents": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Elem: &schema.Schema{
+						Type:         schema.TypeString,
+						ValidateFunc: validation.StringIsJSON,
+					},
+				},
+				"policy_id": {
+					Type:     schema.TypeString,
+					Optional: true,
+				},
+				// https://github.com/hashicorp/terraform-provider-aws/issues/31637.
+				"source_json": {
+					Type:         schema.TypeString,
+					Optional:     true,
+					ValidateFunc: validation.StringIsEmpty,
+					Deprecated: "source_json is deprecated. This argument is retained only for " +
+						"backward compatibility with previous versions of this data source.",
+				},
+				"source_policy_documents": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Elem: &schema.Schema{
+						Type:         schema.TypeString,
+						ValidateFunc: validation.StringIsJSON,
+					},
+				},
+				"statement": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							names.AttrActions: setOfStringSchema(),
+							names.AttrCondition: {
+								Type:     schema.TypeSet,
+								Optional: true,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"test": {
+											Type:     schema.TypeString,
+											Required: true,
+										},
+										names.AttrValues: {
+											Type:     schema.TypeList,
+											Required: true,
+											Elem: &schema.Schema{
+												Type: schema.TypeString,
+											},
+										},
+										"variable": {
+											Type:     schema.TypeString,
+											Required: true,
+										},
+									},
+								},
+							},
+							"effect": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								Default:      "Allow",
+								ValidateFunc: validation.StringInSlice([]string{"Allow", "Deny"}, false),
+							},
+							"not_actions":       setOfStringSchema(),
+							"not_principals":    principalsSchema(),
+							"not_resources":     setOfStringSchema(),
+							"principals":        principalsSchema(),
+							names.AttrResources: setOfStringSchema(),
+							"sid": {
+								// Because policy documents are widely used outside IAM, we don't enforce
+								// IAM validation rules requiring alphanumeric and no spaces.
+								Type:     schema.TypeString,
+								Optional: true,
+							},
+						},
+					},
+				},
+				names.AttrVersion: {
+					Type:     schema.TypeString,
+					Optional: true,
+					Default:  "2012-10-17",
+					ValidateFunc: validation.StringInSlice([]string{
+						"2008-10-17",
+						"2012-10-17",
+					}, false),
+				},
+			}
+		},
+	}
+}

@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTableExportRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	desc, err := findTableExportByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] DynamoDB Table Export (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DynamoDB Table Export (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, desc.ExportArn)
+	d.Set("billed_size_in_bytes", desc.BilledSizeBytes)
+	if desc.EndTime != nil {
+		d.Set("end_time", aws.ToTime(desc.EndTime).Format(time.RFC3339))
+	}
+	d.Set("export_format", desc.ExportFormat)
+	d.Set("export_status", desc.ExportStatus)
+	if desc.ExportTime != nil {
+		d.Set("export_time", aws.ToTime(desc.ExportTime).Format(time.RFC3339))
+	}
+	d.Set("export_type", desc.ExportType)
+	d.Set("incremental_export_specification", flattenIncrementalExportSpecification(desc.IncrementalExportSpecification))
+	d.Set("item_count", desc.ItemCount)
+	d.Set("manifest_files_s3_key", desc.ExportManifest)
+	d.Set(names.AttrS3Bucket, desc.S3Bucket)
+	d.Set("s3_bucket_owner", desc.S3BucketOwner)
+	d.Set("s3_prefix", desc.S3Prefix)
+	d.Set("s3_sse_algorithm", desc.S3SseAlgorithm)
+	d.Set("s3_sse_kms_key_id", desc.S3SseKmsKeyId)
+	if desc.StartTime != nil {
+		d.Set(names.AttrStartTime, aws.ToTime(desc.StartTime).Format(time.RFC3339))
+	}
+	d.Set("table_arn", desc.TableArn)
+
+	return diags
+}

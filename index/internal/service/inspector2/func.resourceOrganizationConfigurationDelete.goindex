@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceOrganizationConfigurationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Inspector2Client(ctx)
+
+	conns.GlobalMutexKV.Lock(orgConfigMutex)
+	defer conns.GlobalMutexKV.Unlock(orgConfigMutex)
+
+	log.Printf("[DEBUG] Deleting Inspector2 Organization Configuration: %s", d.Id())
+	autoEnable := &awstypes.AutoEnable{
+		Ec2:        aws.Bool(false),
+		Ecr:        aws.Bool(false),
+		Lambda:     aws.Bool(false),
+		LambdaCode: aws.Bool(false),
+	}
+	_, err := conn.UpdateOrganizationConfiguration(ctx, &inspector2.UpdateOrganizationConfigurationInput{
+		AutoEnable: autoEnable,
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Inspector2 Organization Configuration (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitOrganizationConfigurationUpdated(ctx, conn, autoEnable, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Inspector2 Organization Configuration (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

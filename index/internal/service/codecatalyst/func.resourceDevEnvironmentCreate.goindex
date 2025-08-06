@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codecatalyst
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codecatalyst"
+	"github.com/aws/aws-sdk-go-v2/service/codecatalyst/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDevEnvironmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).CodeCatalystClient(ctx)
+	storage := expandPersistentStorageConfiguration(d.Get("persistent_storage").([]any)[0].(map[string]any))
+	instanceType := types.InstanceType(d.Get(names.AttrInstanceType).(string))
+	in := &codecatalyst.CreateDevEnvironmentInput{
+		ProjectName:       aws.String(d.Get("project_name").(string)),
+		SpaceName:         aws.String(d.Get("space_name").(string)),
+		PersistentStorage: storage,
+		InstanceType:      instanceType,
+	}
+
+	if v, ok := d.GetOk("inactivity_timeout_minutes"); ok {
+		in.InactivityTimeoutMinutes = int32(v.(int))
+	}
+
+	if v, ok := d.GetOk(names.AttrAlias); ok {
+		in.Alias = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("ides"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		in.Ides = expandIdesConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("repositories"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		in.Repositories = expandRepositorysInput(v.([]any))
+	}
+
+	out, err := conn.CreateDevEnvironment(ctx, in)
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.CodeCatalyst, create.ErrActionCreating, ResNameDevEnvironment, d.Id(), err)
+	}
+
+	if out == nil {
+		return create.AppendDiagError(diags, names.CodeCatalyst, create.ErrActionCreating, ResNameDevEnvironment, d.Id(), errors.New("empty output"))
+	}
+
+	d.SetId(aws.ToString(out.Id))
+
+	if _, err := waitDevEnvironmentCreated(ctx, conn, d.Id(), out.SpaceName, out.ProjectName, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return create.AppendDiagError(diags, names.CodeCatalyst, create.ErrActionWaitingForCreation, ResNameDevEnvironment, d.Id(), err)
+	}
+
+	return append(diags, resourceDevEnvironmentRead(ctx, d, meta)...)
+}

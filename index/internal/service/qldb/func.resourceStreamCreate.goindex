@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/qldb
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/qldb"
+	"github.com/aws/aws-sdk-go-v2/service/qldb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStreamCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QLDBClient(ctx)
+
+	ledgerName := d.Get("ledger_name").(string)
+	name := d.Get("stream_name").(string)
+	input := &qldb.StreamJournalToKinesisInput{
+		LedgerName: aws.String(ledgerName),
+		RoleArn:    aws.String(d.Get(names.AttrRoleARN).(string)),
+		StreamName: aws.String(name),
+		Tags:       getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("exclusive_end_time"); ok {
+		v, _ := time.Parse(time.RFC3339, v.(string))
+		input.ExclusiveEndTime = aws.Time(v)
+	}
+
+	if v, ok := d.GetOk("inclusive_start_time"); ok {
+		v, _ := time.Parse(time.RFC3339, v.(string))
+		input.InclusiveStartTime = aws.Time(v)
+	}
+
+	if v, ok := d.GetOk("kinesis_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.KinesisConfiguration = expandKinesisConfiguration(v.([]any)[0].(map[string]any))
+	}
+
+	output, err := conn.StreamJournalToKinesis(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating QLDB Stream (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.StreamId))
+
+	if _, err := waitStreamCreated(ctx, conn, ledgerName, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for QLDB Stream (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceStreamRead(ctx, d, meta)...)
+}

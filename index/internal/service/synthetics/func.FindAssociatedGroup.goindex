@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/synthetics
+import (
+	"context"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/synthetics"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/synthetics/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func FindAssociatedGroup(ctx context.Context, conn *synthetics.Client, canaryArn string, groupName string) (*awstypes.GroupSummary, error) {
+	input := &synthetics.ListAssociatedGroupsInput{
+		ResourceArn: aws.String(canaryArn),
+	}
+	out, err := conn.ListAssociatedGroups(ctx, input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if out == nil || out.Groups == nil || len(out.Groups) == 0 {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	var group awstypes.GroupSummary
+	for _, groupSummary := range out.Groups {
+		if aws.ToString(groupSummary.Name) == groupName {
+			group = groupSummary
+		}
+	}
+
+	if group == (awstypes.GroupSummary{}) {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	return &group, nil
+}

@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kendra
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceExperienceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).KendraClient(ctx)
+
+	experienceID := d.Get("experience_id").(string)
+	indexID := d.Get("index_id").(string)
+
+	resp, err := FindExperienceByID(ctx, conn, experienceID, indexID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Kendra Experience (%s): %s", experienceID, err)
+	}
+
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "kendra",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("index/%s/experience/%s", indexID, experienceID),
+	}.String()
+	d.Set(names.AttrARN, arn)
+	d.Set(names.AttrCreatedAt, aws.ToTime(resp.CreatedAt).Format(time.RFC3339))
+	d.Set(names.AttrDescription, resp.Description)
+	d.Set("error_message", resp.ErrorMessage)
+	d.Set("experience_id", resp.Id)
+	d.Set("index_id", resp.IndexId)
+	d.Set(names.AttrName, resp.Name)
+	d.Set(names.AttrRoleARN, resp.RoleArn)
+	d.Set(names.AttrStatus, resp.Status)
+	d.Set("updated_at", aws.ToTime(resp.UpdatedAt).Format(time.RFC3339))
+
+	if err := d.Set(names.AttrConfiguration, flattenConfiguration(resp.Configuration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting configuration argument: %s", err)
+	}
+
+	if err := d.Set(names.AttrEndpoints, flattenEndpoints(resp.Endpoints)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting endpoints argument: %s", err)
+	}
+
+	d.SetId(fmt.Sprintf("%s/%s", experienceID, indexID))
+
+	return diags
+}

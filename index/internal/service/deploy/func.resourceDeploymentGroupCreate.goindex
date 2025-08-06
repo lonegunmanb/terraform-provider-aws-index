@@ -1,0 +1,122 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/deploy
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/codedeploy"
+	"github.com/aws/aws-sdk-go-v2/service/codedeploy/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDeploymentGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DeployClient(ctx)
+
+	applicationName := d.Get("app_name").(string)
+	deploymentGroupName := d.Get("deployment_group_name").(string)
+	serviceRoleArn := d.Get(names.AttrServiceRoleARN).(string)
+	input := &codedeploy.CreateDeploymentGroupInput{
+		ApplicationName:     aws.String(applicationName),
+		DeploymentGroupName: aws.String(deploymentGroupName),
+		ServiceRoleArn:      aws.String(serviceRoleArn),
+		Tags:                getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("alarm_configuration"); ok {
+		input.AlarmConfiguration = expandAlarmConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("auto_rollback_configuration"); ok {
+		input.AutoRollbackConfiguration = expandAutoRollbackConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("autoscaling_groups"); ok {
+		input.AutoScalingGroups = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("blue_green_deployment_config"); ok {
+		input.BlueGreenDeploymentConfiguration = expandBlueGreenDeploymentConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("deployment_style"); ok {
+		input.DeploymentStyle = expandDeploymentStyle(v.([]any))
+	}
+
+	if v, ok := d.GetOk("deployment_config_name"); ok {
+		input.DeploymentConfigName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("ec2_tag_set"); ok {
+		input.Ec2TagSet = expandEC2TagSet(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("ec2_tag_filter"); ok {
+		input.Ec2TagFilters = expandEC2TagFilters(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("ecs_service"); ok {
+		input.EcsServices = expandECSServices(v.([]any))
+	}
+
+	if v, ok := d.GetOk("load_balancer_info"); ok {
+		input.LoadBalancerInfo = expandLoadBalancerInfo(v.([]any))
+	}
+
+	if v, ok := d.GetOk("on_premises_instance_tag_filter"); ok {
+		input.OnPremisesInstanceTagFilters = expandTagFilters(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("outdated_instances_strategy"); ok {
+		input.OutdatedInstancesStrategy = types.OutdatedInstancesStrategy(v.(string))
+	}
+
+	if v, ok := d.GetOk("termination_hook_enabled"); ok {
+		input.TerminationHookEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("trigger_configuration"); ok {
+		input.TriggerConfigurations = expandTriggerConfigs(v.(*schema.Set).List())
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, 5*time.Minute,
+		func() (any, error) {
+			return conn.CreateDeploymentGroup(ctx, input)
+		},
+		func(err error) (bool, error) {
+			if errs.IsA[*types.InvalidRoleException](err) {
+				return true, err
+			}
+
+			if errs.IsAErrorMessageContains[*types.InvalidTriggerConfigException](err, "Topic ARN") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CodeDeploy Deployment Group (%s): %s", deploymentGroupName, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*codedeploy.CreateDeploymentGroupOutput).DeploymentGroupId))
+
+	return append(diags, resourceDeploymentGroupRead(ctx, d, meta)...)
+}

@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafregional
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafregional"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafregional/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func diffSizeConstraints(oldS, newS []any) []awstypes.SizeConstraintSetUpdate {
+	updates := make([]awstypes.SizeConstraintSetUpdate, 0)
+
+	for _, os := range oldS {
+		constraint := os.(map[string]any)
+
+		if idx, contains := sliceContainsMap(newS, constraint); contains {
+			newS = slices.Delete(newS, idx, idx+1)
+			continue
+		}
+
+		updates = append(updates, awstypes.SizeConstraintSetUpdate{
+			Action: awstypes.ChangeActionDelete,
+			SizeConstraint: &awstypes.SizeConstraint{
+				FieldToMatch:       expandFieldToMatch(constraint["field_to_match"].([]any)[0].(map[string]any)),
+				ComparisonOperator: awstypes.ComparisonOperator(constraint["comparison_operator"].(string)),
+				Size:               int64(constraint[names.AttrSize].(int)),
+				TextTransformation: awstypes.TextTransformation(constraint["text_transformation"].(string)),
+			},
+		})
+	}
+
+	for _, ns := range newS {
+		constraint := ns.(map[string]any)
+
+		updates = append(updates, awstypes.SizeConstraintSetUpdate{
+			Action: awstypes.ChangeActionInsert,
+			SizeConstraint: &awstypes.SizeConstraint{
+				FieldToMatch:       expandFieldToMatch(constraint["field_to_match"].([]any)[0].(map[string]any)),
+				ComparisonOperator: awstypes.ComparisonOperator(constraint["comparison_operator"].(string)),
+				Size:               int64(constraint[names.AttrSize].(int)),
+				TextTransformation: awstypes.TextTransformation(constraint["text_transformation"].(string)),
+			},
+		})
+	}
+	return updates
+}

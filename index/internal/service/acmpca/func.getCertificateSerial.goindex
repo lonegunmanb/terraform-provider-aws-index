@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acmpca
+import (
+	"context"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"log"
+	"math/big"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"golang.org/x/crypto/cryptobyte"
+	cryptobyte_asn1 "golang.org/x/crypto/cryptobyte/asn1"
+)
+func getCertificateSerial(der []byte) (*big.Int, error) {
+	malformedCertificateErr := errors.New("malformed certificate")
+	input := cryptobyte.String(der)
+	if !input.ReadASN1Element(&input, cryptobyte_asn1.SEQUENCE) {
+		return nil, malformedCertificateErr
+	}
+	if !input.ReadASN1(&input, cryptobyte_asn1.SEQUENCE) {
+		return nil, malformedCertificateErr
+	}
+
+	var tbs cryptobyte.String
+	if !input.ReadASN1Element(&tbs, cryptobyte_asn1.SEQUENCE) {
+		return nil, malformedCertificateErr
+	}
+	if !tbs.ReadASN1(&tbs, cryptobyte_asn1.SEQUENCE) {
+		return nil, malformedCertificateErr
+	}
+
+	var version int
+	if !tbs.ReadOptionalASN1Integer(&version, cryptobyte_asn1.Tag(0).Constructed().ContextSpecific(), 0) {
+		return nil, errors.New("malformed certificate version")
+	}
+
+	serial := new(big.Int)
+	if !tbs.ReadASN1Integer(serial) {
+		return nil, errors.New("malformed certificate serial number")
+	}
+
+	return serial, nil
+}

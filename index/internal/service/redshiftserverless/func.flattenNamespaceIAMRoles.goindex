@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshiftserverless
+import (
+	"context"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenNamespaceIAMRoles(iamRoles []string) []string {
+	var tfList []string
+
+	for _, iamRole := range iamRoles {
+		if arn.IsARN(iamRole) {
+			tfList = append(tfList, iamRole)
+			continue
+		}
+
+		// e.g. "IamRole(applyStatus=in-sync, iamRoleArn=arn:aws:iam::123456789012:role/service-role/test)"
+		if m := reIAMRole.FindStringSubmatch(iamRole); len(m) > 0 {
+			var key string
+			s := m[1]
+			for s != "" {
+				key, s, _ = strings.Cut(s, ",")
+				key = strings.TrimSpace(key)
+				if key == "" {
+					continue
+				}
+				key, value, _ := strings.Cut(key, "=")
+				if key == "iamRoleArn" {
+					tfList = append(tfList, value)
+					break
+				}
+			}
+
+			continue
+		}
+	}
+
+	return tfList
+}

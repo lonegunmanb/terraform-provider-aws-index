@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTagOptionResourceAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	input := &servicecatalog.AssociateTagOptionWithResourceInput{
+		ResourceId:  aws.String(d.Get(names.AttrResourceID).(string)),
+		TagOptionId: aws.String(d.Get("tag_option_id").(string)),
+	}
+
+	var output *servicecatalog.AssociateTagOptionWithResourceOutput
+	err := retry.RetryContext(ctx, d.Timeout(schema.TimeoutCreate), func() *retry.RetryError {
+		var err error
+
+		output, err = conn.AssociateTagOptionWithResource(ctx, input)
+
+		if errs.IsAErrorMessageContains[*awstypes.InvalidParametersException](err, "profile does not exist") {
+			return retry.RetryableError(err)
+		}
+
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		output, err = conn.AssociateTagOptionWithResource(ctx, input)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "associating Service Catalog Tag Option with Resource: %s", err)
+	}
+
+	if output == nil {
+		return sdkdiag.AppendErrorf(diags, "creating Service Catalog Tag Option Resource Association: empty response")
+	}
+
+	d.SetId(tagOptionResourceAssociationID(d.Get("tag_option_id").(string), d.Get(names.AttrResourceID).(string)))
+
+	return append(diags, resourceTagOptionResourceAssociationRead(ctx, d, meta)...)
+}

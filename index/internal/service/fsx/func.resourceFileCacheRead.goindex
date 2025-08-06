@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFileCacheRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	filecache, err := findFileCacheByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] FSx FileCache (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading FSx for Lustre File Cache (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, filecache.ResourceARN)
+	dataRepositoryAssociationIDs := filecache.DataRepositoryAssociationIds
+	d.Set("data_repository_association_ids", dataRepositoryAssociationIDs)
+	d.Set(names.AttrDNSName, filecache.DNSName)
+	d.Set("file_cache_id", filecache.FileCacheId)
+	d.Set("file_cache_type", filecache.FileCacheType)
+	d.Set("file_cache_type_version", filecache.FileCacheTypeVersion)
+	d.Set(names.AttrKMSKeyID, filecache.KmsKeyId)
+	if err := d.Set("lustre_configuration", flattenFileCacheLustreConfiguration(filecache.LustreConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting lustre_configuration: %s", err)
+	}
+	d.Set("network_interface_ids", filecache.NetworkInterfaceIds)
+	d.Set(names.AttrOwnerID, filecache.OwnerId)
+	d.Set("storage_capacity", filecache.StorageCapacity)
+	d.Set(names.AttrSubnetIDs, filecache.SubnetIds)
+	d.Set(names.AttrVPCID, filecache.VpcId)
+
+	dataRepositoryAssociations, err := findDataRepositoryAssociationsByIDs(ctx, conn, dataRepositoryAssociationIDs)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading FSx for Lustre  Data Repository Associations: %s", err)
+	}
+
+	defaultTagsConfig := meta.(*conns.AWSClient).DefaultTagsConfig(ctx)
+	ignoreTagsConfig := meta.(*conns.AWSClient).IgnoreTagsConfig(ctx)
+	if err := d.Set("data_repository_association", flattenDataRepositoryAssociations(ctx, dataRepositoryAssociations, defaultTagsConfig, ignoreTagsConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting data_repository_association: %s", err)
+	}
+
+	return diags
+}

@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elb
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePolicyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBClient(ctx)
+
+	lbName := d.Get("load_balancer_name").(string)
+	policyName := d.Get("policy_name").(string)
+	id := policyCreateResourceID(lbName, policyName)
+	input := &elasticloadbalancing.CreateLoadBalancerPolicyInput{
+		LoadBalancerName: aws.String(lbName),
+		PolicyName:       aws.String(policyName),
+		PolicyTypeName:   aws.String(d.Get("policy_type_name").(string)),
+	}
+
+	if v, ok := d.GetOk("policy_attribute"); ok && v.(*schema.Set).Len() > 0 {
+		input.PolicyAttributes = expandPolicyAttributes(v.(*schema.Set).List())
+	}
+
+	_, err := conn.CreateLoadBalancerPolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating ELB Classic Load Balancer Policy (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourcePolicyRead(ctx, d, meta)...)
+}

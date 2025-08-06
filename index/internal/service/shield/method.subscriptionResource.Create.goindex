@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/shield
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/service/shield"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/shield/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *subscriptionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().ShieldClient(ctx)
+
+	var plan subscriptionResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.ID = types.StringValue(r.Meta().AccountID(ctx))
+
+	if plan.AutoRenew.Equal(types.StringValue(string(awstypes.AutoRenewDisabled))) {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Shield, create.ErrActionCreating, ResNameSubscription, plan.ID.String(), nil),
+			errors.New("subscription auto_renew flag cannot be changed earlier than 30 days before subscription end and later than 1 day before subscription end").Error(),
+		)
+		return
+	}
+
+	in := &shield.CreateSubscriptionInput{}
+	_, err := conn.CreateSubscription(ctx, in)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Shield, create.ErrActionCreating, ResNameSubscription, plan.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}

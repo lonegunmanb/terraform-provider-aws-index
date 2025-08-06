@@ -1,0 +1,190 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"strconv"
+
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func bucketLifeCycleConfigurationSchemaV0(ctx context.Context) schema.Schema {
+	return schema.Schema{
+		Version: 0,
+		Attributes: map[string]schema.Attribute{
+			names.AttrBucket: schema.StringAttribute{
+				Required: true,
+			},
+			names.AttrExpectedBucketOwner: schema.StringAttribute{
+				Optional: true,
+			},
+			names.AttrID: framework.IDAttribute(),
+			"transition_default_minimum_object_size": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.TransitionDefaultMinimumObjectSize](),
+				Optional:   true,
+				Computed:   true,
+			},
+		},
+		Blocks: map[string]schema.Block{
+			names.AttrRule: schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[lifecycleRuleModelV0](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrID: schema.StringAttribute{
+							Required: true,
+						},
+						names.AttrPrefix: schema.StringAttribute{
+							Optional: true,
+						},
+						names.AttrStatus: schema.StringAttribute{
+							Required: true,
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"abort_incomplete_multipart_upload": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[abortIncompleteMultipartUploadModelV0](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"days_after_initiation": schema.Int64Attribute{
+										Optional: true,
+									},
+								},
+							},
+						},
+						"expiration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[lifecycleExpirationModelV0](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"date": schema.StringAttribute{
+										Optional: true,
+									},
+									"days": schema.Int64Attribute{
+										Optional: true,
+										Computed: true,
+										Default:  int64default.StaticInt64(0),
+									},
+									"expired_object_delete_marker": schema.BoolAttribute{
+										Optional: true,
+										Computed: true,
+									},
+								},
+							},
+						},
+						names.AttrFilter: schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[lifecycleRuleFilterModelV0](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"object_size_greater_than": schema.StringAttribute{
+										Optional: true,
+									},
+									"object_size_less_than": schema.StringAttribute{
+										Optional: true,
+									},
+									names.AttrPrefix: schema.StringAttribute{
+										Optional: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"and": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[lifecycleRuleAndOperatorModelV0](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"object_size_greater_than": schema.Int64Attribute{
+													Optional: true,
+												},
+												"object_size_less_than": schema.Int64Attribute{
+													Optional: true,
+												},
+												names.AttrPrefix: schema.StringAttribute{
+													Optional: true,
+												},
+												names.AttrTags: schema.MapAttribute{
+													ElementType: types.StringType,
+													Optional:    true,
+												},
+											},
+										},
+									},
+									"tag": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[tagModel](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrKey: schema.StringAttribute{
+													Required: true,
+												},
+												names.AttrValue: schema.StringAttribute{
+													Required: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"noncurrent_version_expiration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[noncurrentVersionExpirationModelV0](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"newer_noncurrent_versions": schema.StringAttribute{
+										Optional: true,
+									},
+									"noncurrent_days": schema.Int64Attribute{
+										Optional: true,
+									},
+								},
+							},
+						},
+						"noncurrent_version_transition": schema.SetNestedBlock{
+							CustomType: fwtypes.NewSetNestedObjectTypeOf[noncurrentVersionTransitionModelV0](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"newer_noncurrent_versions": schema.StringAttribute{
+										Optional: true,
+									},
+									"noncurrent_days": schema.Int64Attribute{
+										Optional: true,
+									},
+									names.AttrStorageClass: schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.TransitionStorageClass](),
+										Required:   true,
+									},
+								},
+							},
+						},
+						"transition": schema.SetNestedBlock{
+							CustomType: fwtypes.NewSetNestedObjectTypeOf[transitionModelV0](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"date": schema.StringAttribute{
+										Optional: true,
+									},
+									"days": schema.Int64Attribute{
+										Optional: true,
+									},
+									names.AttrStorageClass: schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.TransitionStorageClass](),
+										Required:   true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+			}),
+		},
+	}
+}

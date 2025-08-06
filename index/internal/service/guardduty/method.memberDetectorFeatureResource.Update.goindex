@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *memberDetectorFeatureResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var data memberDetectorFeatureResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().GuardDutyClient(ctx)
+
+	input := guardduty.UpdateMemberDetectorsInput{
+		AccountIds: fwflex.StringSliceValueFromFramework(ctx, data.AccountID),
+		DetectorId: fwflex.StringFromFramework(ctx, data.DetectorID),
+		Features: []awstypes.MemberFeaturesConfiguration{
+			{
+				Name:   data.Name.ValueEnum(),
+				Status: data.Status.ValueEnum(),
+			},
+		},
+	}
+
+	if !data.AdditionalConfiguration.IsNull() {
+		response.Diagnostics.Append(fwflex.Expand(ctx, data.AdditionalConfiguration, &input.Features[0].AdditionalConfiguration)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	if err := updateMemberDetectors(ctx, conn, &input); err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("updating GuardDuty Member Detector Feature (%s/%s/%s)", data.DetectorID.ValueString(), data.AccountID.ValueString(), data.Name.ValueString()), err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

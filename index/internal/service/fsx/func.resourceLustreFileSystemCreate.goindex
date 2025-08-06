@@ -1,0 +1,188 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLustreFileSystemCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	inputC := &fsx.CreateFileSystemInput{
+		ClientRequestToken: aws.String(id.UniqueId()),
+		FileSystemType:     awstypes.FileSystemTypeLustre,
+		LustreConfiguration: &awstypes.CreateFileSystemLustreConfiguration{
+			DeploymentType: awstypes.LustreDeploymentType(d.Get("deployment_type").(string)),
+		},
+		StorageType: awstypes.StorageType(d.Get(names.AttrStorageType).(string)),
+		SubnetIds:   flex.ExpandStringValueList(d.Get(names.AttrSubnetIDs).([]any)),
+		Tags:        getTagsIn(ctx),
+	}
+	inputB := &fsx.CreateFileSystemFromBackupInput{
+		ClientRequestToken: aws.String(id.UniqueId()),
+		LustreConfiguration: &awstypes.CreateFileSystemLustreConfiguration{
+			DeploymentType: awstypes.LustreDeploymentType(d.Get("deployment_type").(string)),
+		},
+		StorageType: awstypes.StorageType(d.Get(names.AttrStorageType).(string)),
+		SubnetIds:   flex.ExpandStringValueList(d.Get(names.AttrSubnetIDs).([]any)),
+		Tags:        getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("auto_import_policy"); ok {
+		inputC.LustreConfiguration.AutoImportPolicy = awstypes.AutoImportPolicyType(v.(string))
+		inputB.LustreConfiguration.AutoImportPolicy = awstypes.AutoImportPolicyType(v.(string))
+	}
+
+	if v, ok := d.GetOk("automatic_backup_retention_days"); ok {
+		inputC.LustreConfiguration.AutomaticBackupRetentionDays = aws.Int32(int32(v.(int)))
+		inputB.LustreConfiguration.AutomaticBackupRetentionDays = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("copy_tags_to_backups"); ok {
+		inputC.LustreConfiguration.CopyTagsToBackups = aws.Bool(v.(bool))
+		inputB.LustreConfiguration.CopyTagsToBackups = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("daily_automatic_backup_start_time"); ok {
+		inputC.LustreConfiguration.DailyAutomaticBackupStartTime = aws.String(v.(string))
+		inputB.LustreConfiguration.DailyAutomaticBackupStartTime = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("data_compression_type"); ok {
+		inputC.LustreConfiguration.DataCompressionType = awstypes.DataCompressionType(v.(string))
+		inputB.LustreConfiguration.DataCompressionType = awstypes.DataCompressionType(v.(string))
+	}
+
+	if v, ok := d.GetOk("data_read_cache_configuration"); ok {
+		inputC.LustreConfiguration.DataReadCacheConfiguration = expandLustreReadCacheConfiguration(v.([]any))
+		inputB.LustreConfiguration.DataReadCacheConfiguration = expandLustreReadCacheConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("drive_cache_type"); ok {
+		inputC.LustreConfiguration.DriveCacheType = awstypes.DriveCacheType(v.(string))
+		inputB.LustreConfiguration.DriveCacheType = awstypes.DriveCacheType(v.(string))
+	}
+
+	if v, ok := d.GetOk("efa_enabled"); ok {
+		inputC.LustreConfiguration.EfaEnabled = aws.Bool(v.(bool))
+		inputB.LustreConfiguration.EfaEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("export_path"); ok {
+		inputC.LustreConfiguration.ExportPath = aws.String(v.(string))
+		inputB.LustreConfiguration.ExportPath = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("file_system_type_version"); ok {
+		inputC.FileSystemTypeVersion = aws.String(v.(string))
+		inputB.FileSystemTypeVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("import_path"); ok {
+		inputC.LustreConfiguration.ImportPath = aws.String(v.(string))
+		inputB.LustreConfiguration.ImportPath = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("imported_file_chunk_size"); ok {
+		inputC.LustreConfiguration.ImportedFileChunkSize = aws.Int32(int32(v.(int)))
+		inputB.LustreConfiguration.ImportedFileChunkSize = aws.Int32(int32(v.(int)))
+	}
+
+	// Applicable only for TypePersistent1 and TypePersistent2.
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		inputC.KmsKeyId = aws.String(v.(string))
+		inputB.KmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("log_configuration"); ok && len(v.([]any)) > 0 {
+		inputC.LustreConfiguration.LogConfiguration = expandLustreLogCreateConfiguration(v.([]any))
+		inputB.LustreConfiguration.LogConfiguration = expandLustreLogCreateConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("metadata_configuration"); ok && len(v.([]any)) > 0 {
+		inputC.LustreConfiguration.MetadataConfiguration = expandLustreMetadataCreateConfiguration(v.([]any))
+		inputB.LustreConfiguration.MetadataConfiguration = expandLustreMetadataCreateConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("per_unit_storage_throughput"); ok {
+		inputC.LustreConfiguration.PerUnitStorageThroughput = aws.Int32(int32(v.(int)))
+		inputB.LustreConfiguration.PerUnitStorageThroughput = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("root_squash_configuration"); ok && len(v.([]any)) > 0 {
+		inputC.LustreConfiguration.RootSquashConfiguration = expandLustreRootSquashConfiguration(v.([]any))
+		inputB.LustreConfiguration.RootSquashConfiguration = expandLustreRootSquashConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrSecurityGroupIDs); ok {
+		inputC.SecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+		inputB.SecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("storage_capacity"); ok {
+		inputC.StorageCapacity = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("throughput_capacity"); ok {
+		inputC.LustreConfiguration.ThroughputCapacity = aws.Int32(int32(v.(int)))
+		inputB.LustreConfiguration.ThroughputCapacity = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("weekly_maintenance_start_time"); ok {
+		inputC.LustreConfiguration.WeeklyMaintenanceStartTime = aws.String(v.(string))
+		inputB.LustreConfiguration.WeeklyMaintenanceStartTime = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("backup_id"); ok {
+		backupID := v.(string)
+		inputB.BackupId = aws.String(backupID)
+
+		output, err := conn.CreateFileSystemFromBackup(ctx, inputB)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating FSx for Lustre File System from backup (%s): %s", backupID, err)
+		}
+
+		d.SetId(aws.ToString(output.FileSystem.FileSystemId))
+	} else {
+		output, err := conn.CreateFileSystem(ctx, inputC)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating FSx for Lustre File System: %s", err)
+		}
+
+		d.SetId(aws.ToString(output.FileSystem.FileSystemId))
+	}
+
+	if _, err := waitFileSystemCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for FSx for Lustre File System (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceLustreFileSystemRead(ctx, d, meta)...)
+}

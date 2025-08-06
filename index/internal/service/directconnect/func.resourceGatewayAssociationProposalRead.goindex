@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceGatewayAssociationProposalRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+	// First attempt to find by proposal ID.
+	output, err := findGatewayAssociationProposalByID(ctx, conn, d.Id())
+
+	if tfresource.NotFound(err) {
+		// Attempt to find an existing association.
+		directConnectGatewayID := d.Get("dx_gateway_id").(string)
+		associatedGatewayID := d.Get("associated_gateway_id").(string)
+
+		output, err := findGatewayAssociationByGatewayIDAndAssociatedGatewayID(ctx, conn, directConnectGatewayID, associatedGatewayID)
+
+		if !d.IsNewResource() && tfresource.NotFound(err) {
+			log.Printf("[WARN] Direct Connect Gateway Association Proposal (%s) not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Direct Connect Gateway Association (%s/%s): %s", directConnectGatewayID, associatedGatewayID, err)
+		}
+
+		// Once accepted, AWS will delete the proposal after after some time (days?).
+		// In this case we don't need to create a new proposal, use metadata from the association
+		// to artificially populate the missing proposal in state as if it was still there.
+		log.Printf("[INFO] Direct Connect Gateway Association Proposal (%s) has reached end-of-life and has been removed by AWS", d.Id())
+
+		if err := d.Set("allowed_prefixes", flattenRouteFilterPrefixes(output.AllowedPrefixesToDirectConnectGateway)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting allowed_prefixes: %s", err)
+		}
+
+		d.Set("associated_gateway_id", output.AssociatedGateway.Id)
+		d.Set("associated_gateway_owner_account_id", output.AssociatedGateway.OwnerAccount)
+		d.Set("associated_gateway_type", output.AssociatedGateway.Type)
+		d.Set("dx_gateway_id", output.DirectConnectGatewayId)
+		d.Set("dx_gateway_owner_account_id", output.DirectConnectGatewayOwnerAccount)
+	} else if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Direct Connect Gateway Association Proposal (%s): %s", d.Id(), err)
+	} else {
+		if err := d.Set("allowed_prefixes", flattenRouteFilterPrefixes(output.RequestedAllowedPrefixesToDirectConnectGateway)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting allowed_prefixes: %s", err)
+		}
+
+		d.Set("associated_gateway_id", output.AssociatedGateway.Id)
+		d.Set("associated_gateway_owner_account_id", output.AssociatedGateway.OwnerAccount)
+		d.Set("associated_gateway_type", output.AssociatedGateway.Type)
+		d.Set("dx_gateway_id", output.DirectConnectGatewayId)
+		d.Set("dx_gateway_owner_account_id", output.DirectConnectGatewayOwnerAccount)
+	}
+
+	return diags
+}

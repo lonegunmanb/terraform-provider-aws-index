@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53profiles
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53profiles"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53profiles/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceAssociationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().Route53ProfilesClient(ctx)
+
+	var state resourceAssociationResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	input := &route53profiles.AssociateResourceToProfileInput{
+		Name: state.Name.ValueStringPointer(),
+	}
+	resp.Diagnostics.Append(flex.Expand(ctx, state, input)...)
+
+	out, err := conn.AssociateResourceToProfile(ctx, input)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Route53Profiles, create.ErrActionCreating, ResNameResourceAssociation, state.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+	if out == nil || out.ProfileResourceAssociation == nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Route53Profiles, create.ErrActionCreating, ResNameResourceAssociation, state.Name.String(), nil),
+			errors.New("empty output").Error(),
+		)
+		return
+	}
+
+	state.ID = flex.StringToFramework(ctx, out.ProfileResourceAssociation.Id)
+
+	createTimeout := r.CreateTimeout(ctx, state.Timeouts)
+	resourceAssociation, err := waitResourceAssociationCreated(ctx, conn, state.ID.ValueString(), createTimeout)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Route53Profiles, create.ErrActionWaitingForCreation, ResNameResourceAssociation, state.Name.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, resourceAssociation, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+}

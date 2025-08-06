@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDeliveryChannelPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConfigServiceClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &configservice.PutDeliveryChannelInput{
+		DeliveryChannel: &types.DeliveryChannel{
+			Name:         aws.String(name),
+			S3BucketName: aws.String(d.Get(names.AttrS3BucketName).(string)),
+		},
+	}
+
+	if v, ok := d.GetOk(names.AttrS3KeyPrefix); ok {
+		input.DeliveryChannel.S3KeyPrefix = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("s3_kms_key_arn"); ok {
+		input.DeliveryChannel.S3KmsKeyArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("snapshot_delivery_properties"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+
+		if v, ok := tfMap["delivery_frequency"]; ok {
+			input.DeliveryChannel.ConfigSnapshotDeliveryProperties = &types.ConfigSnapshotDeliveryProperties{
+				DeliveryFrequency: types.MaximumExecutionFrequency(v.(string)),
+			}
+		}
+	}
+
+	if v, ok := d.GetOk(names.AttrSNSTopicARN); ok {
+		input.DeliveryChannel.SnsTopicARN = aws.String(v.(string))
+	}
+
+	_, err := tfresource.RetryWhenIsA[*types.InsufficientDeliveryPolicyException](ctx, propagationTimeout, func() (any, error) {
+		return conn.PutDeliveryChannel(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting ConfigService Delivery Channel (%s): %s", name, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(name)
+	}
+
+	return append(diags, resourceDeliveryChannelRead(ctx, d, meta)...)
+}

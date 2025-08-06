@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceOrganizationConfigurationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Inspector2Client(ctx)
+
+	autoEnable := expandAutoEnable(d.Get("auto_enable").([]any)[0].(map[string]any))
+	input := &inspector2.UpdateOrganizationConfigurationInput{
+		AutoEnable: autoEnable,
+	}
+
+	conns.GlobalMutexKV.Lock(orgConfigMutex)
+	defer conns.GlobalMutexKV.Unlock(orgConfigMutex)
+
+	_, err := conn.UpdateOrganizationConfiguration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Inspector2 Organization Configuration (%s): %s", d.Id(), err)
+	}
+
+	timeout := d.Timeout(schema.TimeoutUpdate)
+	if d.IsNewResource() {
+		timeout = d.Timeout(schema.TimeoutCreate)
+	}
+
+	if _, err := waitOrganizationConfigurationUpdated(ctx, conn, autoEnable, timeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Inspector2 Organization Configuration (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceOrganizationConfigurationRead(ctx, d, meta)...)
+}

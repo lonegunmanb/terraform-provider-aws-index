@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSchedulePut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+
+	name := d.Get("scheduled_action_name").(string)
+	input := &autoscaling.PutScheduledUpdateGroupActionInput{
+		AutoScalingGroupName: aws.String(d.Get("autoscaling_group_name").(string)),
+		ScheduledActionName:  aws.String(name),
+	}
+
+	if v, ok := d.GetOk("end_time"); ok {
+		v, _ := time.Parse(ScheduleTimeLayout, v.(string))
+
+		input.EndTime = aws.Time(v)
+	}
+
+	if v, ok := d.GetOk("recurrence"); ok {
+		input.Recurrence = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrStartTime); ok {
+		v, _ := time.Parse(ScheduleTimeLayout, v.(string))
+
+		input.StartTime = aws.Time(v)
+	}
+
+	if v, ok := d.GetOk("time_zone"); ok {
+		input.TimeZone = aws.String(v.(string))
+	}
+
+	// Scheduled actions don't need to set all three size parameters. For example,
+	// you may want to change the min or max without also forcing an immediate
+	// resize by changing a desired_capacity that may have changed due to other
+	// autoscaling rules. Since Terraform doesn't have a great pattern for
+	// differentiating between 0 and unset fields, we accept "-1" to mean "don't
+	// include this parameter in the action".
+	minSize := int32(d.Get("min_size").(int))
+	maxSize := int32(d.Get("max_size").(int))
+	desiredCapacity := int32(d.Get("desired_capacity").(int))
+	if minSize != -1 {
+		input.MinSize = aws.Int32(minSize)
+	}
+	if maxSize != -1 {
+		input.MaxSize = aws.Int32(maxSize)
+	}
+	if desiredCapacity != -1 {
+		input.DesiredCapacity = aws.Int32(desiredCapacity)
+	}
+
+	_, err := conn.PutScheduledUpdateGroupAction(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting Auto Scaling Scheduled Action (%s): %s", name, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(name)
+	}
+
+	return append(diags, resourceScheduleRead(ctx, d, meta)...)
+}

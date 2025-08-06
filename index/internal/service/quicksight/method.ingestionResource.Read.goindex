@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *ingestionResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	conn := r.Meta().QuickSightClient(ctx)
+
+	var state ingestionResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	awsAccountID, dataSetID, ingestionID, err := ingestionParseResourceID(state.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.QuickSight, create.ErrActionReading, resNameIngestion, state.ID.String(), nil),
+			err.Error(),
+		)
+		return
+	}
+
+	out, err := findIngestionByThreePartKey(ctx, conn, awsAccountID, dataSetID, ingestionID)
+	if tfresource.NotFound(err) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.QuickSight, create.ErrActionSetting, resNameIngestion, state.ID.String(), nil),
+			err.Error(),
+		)
+		return
+	}
+
+	state.ARN = flex.StringToFramework(ctx, out.Arn)
+	state.IngestionID = flex.StringToFramework(ctx, out.IngestionId)
+	state.IngestionStatus = flex.StringValueToFramework(ctx, out.IngestionStatus)
+	state.AWSAccountID = flex.StringValueToFramework(ctx, awsAccountID)
+	state.DataSetID = flex.StringValueToFramework(ctx, dataSetID)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}

@@ -1,0 +1,104 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceONTAPFileSystemCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	input := &fsx.CreateFileSystemInput{
+		ClientRequestToken: aws.String(id.UniqueId()),
+		FileSystemType:     awstypes.FileSystemTypeOntap,
+		OntapConfiguration: &awstypes.CreateFileSystemOntapConfiguration{
+			AutomaticBackupRetentionDays: aws.Int32(int32(d.Get("automatic_backup_retention_days").(int))),
+			DeploymentType:               awstypes.OntapDeploymentType(d.Get("deployment_type").(string)),
+			PreferredSubnetId:            aws.String(d.Get("preferred_subnet_id").(string)),
+		},
+		StorageCapacity: aws.Int32(int32(d.Get("storage_capacity").(int))),
+		StorageType:     awstypes.StorageType(d.Get(names.AttrStorageType).(string)),
+		SubnetIds:       flex.ExpandStringValueList(d.Get(names.AttrSubnetIDs).([]any)),
+		Tags:            getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("daily_automatic_backup_start_time"); ok {
+		input.OntapConfiguration.DailyAutomaticBackupStartTime = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("disk_iops_configuration"); ok {
+		input.OntapConfiguration.DiskIopsConfiguration = expandOntapFileDiskIopsConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("endpoint_ip_address_range"); ok {
+		input.OntapConfiguration.EndpointIpAddressRange = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("fsx_admin_password"); ok {
+		input.OntapConfiguration.FsxAdminPassword = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("ha_pairs"); ok {
+		v := int32(v.(int))
+		input.OntapConfiguration.HAPairs = aws.Int32(v)
+
+		if v > 0 {
+			if v, ok := d.GetOk("throughput_capacity_per_ha_pair"); ok {
+				input.OntapConfiguration.ThroughputCapacityPerHAPair = aws.Int32(int32(v.(int)))
+			}
+		}
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		input.KmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("route_table_ids"); ok {
+		input.OntapConfiguration.RouteTableIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk(names.AttrSecurityGroupIDs); ok {
+		input.SecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("throughput_capacity"); ok {
+		input.OntapConfiguration.ThroughputCapacity = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("weekly_maintenance_start_time"); ok {
+		input.OntapConfiguration.WeeklyMaintenanceStartTime = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateFileSystem(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating FSx for NetApp ONTAP File System: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.FileSystem.FileSystemId))
+
+	if _, err := waitFileSystemCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for FSx for NetApp ONTAP File System (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceONTAPFileSystemRead(ctx, d, meta)...)
+}

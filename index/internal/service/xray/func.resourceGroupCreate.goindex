@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/xray
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/xray"
+	"github.com/aws/aws-sdk-go-v2/service/xray/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGroupCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).XRayClient(ctx)
+
+	name := d.Get(names.AttrGroupName).(string)
+	input := xray.CreateGroupInput{
+		GroupName:        aws.String(name),
+		FilterExpression: aws.String(d.Get("filter_expression").(string)),
+		Tags:             getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("insights_configuration"); ok {
+		input.InsightsConfiguration = expandInsightsConfig(v.([]any))
+	}
+
+	output, err := conn.CreateGroup(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating XRay Group (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Group.GroupARN))
+
+	return append(diags, resourceGroupRead(ctx, d, meta)...)
+}

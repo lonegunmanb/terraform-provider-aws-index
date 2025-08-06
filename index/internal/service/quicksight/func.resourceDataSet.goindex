@@ -1,0 +1,91 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataSet() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceDataSetCreate,
+		ReadWithoutTimeout:   resourceDataSetRead,
+		UpdateWithoutTimeout: resourceDataSetUpdate,
+		DeleteWithoutTimeout: resourceDataSetDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		SchemaFunc: func() map[string]*schema.Schema {
+			return map[string]*schema.Schema{
+				names.AttrARN: {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+				names.AttrAWSAccountID: {
+					Type:         schema.TypeString,
+					Optional:     true,
+					Computed:     true,
+					ForceNew:     true,
+					ValidateFunc: verify.ValidAccountID,
+				},
+				"column_groups":                 quicksightschema.DataSetColumnGroupsSchema(),
+				"column_level_permission_rules": quicksightschema.DataSetColumnLevelPermissionRulesSchema(),
+				"data_set_id": {
+					Type:     schema.TypeString,
+					Required: true,
+					ForceNew: true,
+				},
+				"data_set_usage_configuration": quicksightschema.DataSetUsageConfigurationSchema(),
+				"field_folders":                quicksightschema.DataSetFieldFoldersSchema(),
+				"import_mode": {
+					Type:             schema.TypeString,
+					Required:         true,
+					ValidateDiagFunc: enum.Validate[awstypes.DataSetImportMode](),
+				},
+				"logical_table_map": quicksightschema.DataSetLogicalTableMapSchema(),
+				names.AttrName: {
+					Type:         schema.TypeString,
+					Required:     true,
+					ValidateFunc: validation.StringLenBetween(1, 128),
+				},
+				"output_columns":                         quicksightschema.DataSetOutputColumnsSchema(),
+				names.AttrPermissions:                    quicksightschema.PermissionsSchema(),
+				"physical_table_map":                     quicksightschema.DataSetPhysicalTableMapSchema(),
+				"row_level_permission_data_set":          quicksightschema.DataSetRowLevelPermissionDataSetSchema(),
+				"row_level_permission_tag_configuration": quicksightschema.DataSetRowLevelPermissionTagConfigurationSchema(),
+				"refresh_properties":                     quicksightschema.DataSetRefreshPropertiesSchema(),
+				names.AttrTags:                           tftags.TagsSchema(),
+				names.AttrTagsAll:                        tftags.TagsSchemaComputed(),
+			}
+		},
+
+		CustomizeDiff: customdiff.All(
+			func(_ context.Context, diff *schema.ResourceDiff, _ any) error {
+				mode := diff.Get("import_mode").(string)
+				if v, ok := diff.Get("refresh_properties").([]any); ok && v != nil && len(v) > 0 && mode == "DIRECT_QUERY" {
+					return fmt.Errorf("refresh_properties cannot be set when import_mode is 'DIRECT_QUERY'")
+				}
+				return nil
+			},
+		),
+	}
+}

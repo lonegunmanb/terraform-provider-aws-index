@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/identitystore
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore/document"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IdentityStoreClient(ctx)
+
+	identityStoreID, groupID, err := groupParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &identitystore.UpdateGroupInput{
+		GroupId:         aws.String(groupID),
+		IdentityStoreId: aws.String(identityStoreID),
+	}
+
+	if d.HasChange(names.AttrDescription) {
+		input.Operations = append(input.Operations, types.AttributeOperation{
+			AttributePath:  aws.String(names.AttrDescription),
+			AttributeValue: document.NewLazyDocument(d.Get(names.AttrDescription).(string)),
+		})
+	}
+
+	if d.HasChange(names.AttrDisplayName) {
+		input.Operations = append(input.Operations, types.AttributeOperation{
+			AttributePath:  aws.String("displayName"),
+			AttributeValue: document.NewLazyDocument(d.Get(names.AttrDisplayName).(string)),
+		})
+	}
+
+	_, err = conn.UpdateGroup(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating IdentityStore Group (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceGroupRead(ctx, d, meta)...)
+}

@@ -1,0 +1,102 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"fmt"
+	"log"
+	"reflect"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAccessKeyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	username := d.Get("user").(string)
+
+	request := &iam.CreateAccessKeyInput{
+		UserName: aws.String(username),
+	}
+
+	createResp, err := conn.CreateAccessKey(ctx, request)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating IAM Access Key (%s): %s", username, err)
+	}
+
+	d.SetId(aws.ToString(createResp.AccessKey.AccessKeyId))
+
+	if createResp.AccessKey == nil || createResp.AccessKey.SecretAccessKey == nil {
+		return sdkdiag.AppendErrorf(diags, "CreateAccessKey response did not contain a Secret Access Key as expected")
+	}
+
+	sesSMTPPasswordV4, err := sesSMTPPasswordFromSecretKeySigV4(createResp.AccessKey.SecretAccessKey, meta.(*conns.AWSClient).Region(ctx))
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "getting SES SigV4 SMTP Password from Secret Access Key: %s", err)
+	}
+
+	if v, ok := d.GetOk("pgp_key"); ok {
+		pgpKey := v.(string)
+		encryptionKey, err := retrieveGPGKey(pgpKey)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating IAM Access Key (%s): %s", username, err)
+		}
+		fingerprint, encrypted, err := encryptValue(encryptionKey, *createResp.AccessKey.SecretAccessKey, "IAM Access Key Secret")
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating IAM Access Key (%s): %s", username, err)
+		}
+
+		d.Set("key_fingerprint", fingerprint)
+		d.Set("encrypted_secret", encrypted)
+
+		_, encrypted, err = encryptValue(encryptionKey, sesSMTPPasswordV4, "SES SMTP password")
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating IAM Access Key (%s): %s", username, err)
+		}
+
+		d.Set("encrypted_ses_smtp_password_v4", encrypted)
+	} else {
+		d.Set("secret", createResp.AccessKey.SecretAccessKey)
+
+		d.Set("ses_smtp_password_v4", sesSMTPPasswordV4)
+	}
+
+	if v, ok := d.GetOk(names.AttrStatus); ok && v.(string) == string(awstypes.StatusTypeInactive) {
+		input := &iam.UpdateAccessKeyInput{
+			AccessKeyId: aws.String(d.Id()),
+			Status:      awstypes.StatusTypeInactive,
+			UserName:    aws.String(d.Get("user").(string)),
+		}
+
+		_, err := conn.UpdateAccessKey(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "deactivating IAM Access Key (%s): %s", d.Id(), err)
+		}
+
+		createResp.AccessKey.Status = awstypes.StatusTypeInactive
+	}
+
+	resourceAccessKeyReadResult(d, &awstypes.AccessKeyMetadata{
+		AccessKeyId: createResp.AccessKey.AccessKeyId,
+		CreateDate:  createResp.AccessKey.CreateDate,
+		Status:      createResp.AccessKey.Status,
+		UserName:    createResp.AccessKey.UserName,
+	})
+
+	return diags
+}

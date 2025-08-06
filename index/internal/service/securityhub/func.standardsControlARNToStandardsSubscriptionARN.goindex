@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/securityhub
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func standardsControlARNToStandardsSubscriptionARN(inputARN string) (string, error) {
+	const (
+		resourceSeparator = "/"
+		service           = "securityhub"
+	)
+	parsedARN, err := arn.Parse(inputARN)
+	if err != nil {
+		return "", fmt.Errorf("parsing ARN (%s): %w", inputARN, err)
+	}
+
+	if actual, expected := parsedARN.Service, service; actual != expected {
+		return "", fmt.Errorf("expected service %s in ARN (%s), got: %s", expected, inputARN, actual)
+	}
+
+	inputResourceParts := strings.Split(parsedARN.Resource, resourceSeparator)
+
+	if actual, expected := len(inputResourceParts), 3; actual < expected {
+		return "", fmt.Errorf("expected at least %d resource parts in ARN (%s), got: %d", expected, inputARN, actual)
+	}
+
+	outputResourceParts := append([]string{"subscription"}, inputResourceParts[1:len(inputResourceParts)-1]...)
+	outputARN := arn.ARN{
+		Partition: parsedARN.Partition,
+		Service:   parsedARN.Service,
+		Region:    parsedARN.Region,
+		AccountID: parsedARN.AccountID,
+		Resource:  strings.Join(outputResourceParts, resourceSeparator),
+	}.String()
+
+	return outputARN, nil
+}

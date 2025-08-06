@@ -1,0 +1,118 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexv2models
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelsv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelsv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *intentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().LexV2ModelsClient(ctx)
+
+	var old, new IntentResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &new)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	change := false
+	if !new.ClosingSetting.Equal(old.ClosingSetting) {
+		change = true
+	}
+	if !new.ConfirmationSetting.Equal(old.ConfirmationSetting) {
+		change = true
+	}
+	if !new.Description.Equal(old.Description) {
+		change = true
+	}
+	if !new.DialogCodeHook.Equal(old.DialogCodeHook) {
+		change = true
+	}
+	if !new.FulfillmentCodeHook.Equal(old.FulfillmentCodeHook) {
+		change = true
+	}
+	if !new.InitialResponseSetting.Equal(old.InitialResponseSetting) {
+		change = true
+	}
+	if !new.InputContext.Equal(old.InputContext) {
+		change = true
+	}
+	if !new.KendraConfiguration.Equal(old.KendraConfiguration) {
+		change = true
+	}
+	if !new.Name.Equal(old.Name) {
+		change = true
+	}
+	if !new.OutputContext.Equal(old.OutputContext) {
+		change = true
+	}
+	if !new.ParentIntentSignature.Equal(old.ParentIntentSignature) {
+		change = true
+	}
+	if !new.SampleUtterance.Equal(old.SampleUtterance) {
+		change = true
+	}
+	if !new.SlotPriority.Equal(old.SlotPriority) {
+		change = true
+	}
+
+	if !change {
+		return
+	}
+
+	input := &lexmodelsv2.UpdateIntentInput{}
+	resp.Diagnostics.Append(flex.Expand(ctx, &new, input, intentFlexOpt)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	_, err := conn.UpdateIntent(ctx, input)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LexV2Models, create.ErrActionUpdating, ResNameIntent, new.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	_, err = waitIntentNormal(ctx, conn, new.IntentID.ValueString(), new.BotID.ValueString(), new.BotVersion.ValueString(), new.LocaleID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts))
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.LexV2Models, create.ErrActionWaitingForUpdate, ResNameIntent, new.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &new)...)
+}

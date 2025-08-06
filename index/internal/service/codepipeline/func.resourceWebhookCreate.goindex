@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codepipeline
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codepipeline"
+	"github.com/aws/aws-sdk-go-v2/service/codepipeline/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWebhookCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodePipelineClient(ctx)
+
+	authType := types.WebhookAuthenticationType(d.Get("authentication").(string))
+	name := d.Get(names.AttrName).(string)
+	input := &codepipeline.PutWebhookInput{
+		Tags: getTagsIn(ctx),
+		Webhook: &types.WebhookDefinition{
+			Authentication: authType,
+			// "missing required field, PutWebhookInput.Webhook.AuthenticationConfiguration".
+			AuthenticationConfiguration: &types.WebhookAuthConfiguration{},
+			Filters:                     expandWebhookFilterRules(d.Get(names.AttrFilter).(*schema.Set)),
+			Name:                        aws.String(name),
+			TargetAction:                aws.String(d.Get("target_action").(string)),
+			TargetPipeline:              aws.String(d.Get("target_pipeline").(string)),
+		},
+	}
+
+	if v, ok := d.GetOk("authentication_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Webhook.AuthenticationConfiguration = expandWebhookAuthConfiguration(authType, v.([]any)[0].(map[string]any))
+	}
+
+	output, err := conn.PutWebhook(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CodePipeline Webhook (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Webhook.Arn))
+
+	return append(diags, resourceWebhookRead(ctx, d, meta)...)
+}

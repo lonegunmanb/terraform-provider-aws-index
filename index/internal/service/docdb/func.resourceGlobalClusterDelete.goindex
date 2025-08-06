@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/docdb
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/docdb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/docdb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGlobalClusterDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).DocDBClient(ctx)
+
+	// Remove any members from the global cluster.
+	for _, tfMapRaw := range d.Get("global_cluster_members").(*schema.Set).List() {
+		tfMap, ok := tfMapRaw.(map[string]any)
+
+		if !ok {
+			continue
+		}
+
+		if clusterARN, ok := tfMap["db_cluster_arn"].(string); ok && clusterARN != "" {
+			if err := removeClusterFromGlobalCluster(ctx, conn, clusterARN, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	log.Printf("[DEBUG] Deleting DocumentDB Global Cluster: %s", d.Id())
+
+	_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidGlobalClusterStateFault](ctx, d.Timeout(schema.TimeoutDelete), func() (any, error) {
+		return conn.DeleteGlobalCluster(ctx, &docdb.DeleteGlobalClusterInput{
+			GlobalClusterIdentifier: aws.String(d.Id()),
+		})
+	}, "is not empty")
+
+	if errs.IsA[*awstypes.GlobalClusterNotFoundFault](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting DocumentDB Global Cluster (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitGlobalClusterDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DocumentDB Global Cluster (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/waf
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/waf"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/waf/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRateBasedRuleDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFClient(ctx)
+
+	if oldPredicates := d.Get("predicates").(*schema.Set).List(); len(oldPredicates) > 0 {
+		noPredicates := []any{}
+		rateLimit := d.Get("rate_limit")
+		if err := updateRateBasedRule(ctx, conn, d.Id(), oldPredicates, noPredicates, rateLimit); err != nil && !errs.IsA[*awstypes.WAFNonexistentItemException](err) && !errs.IsA[*awstypes.WAFNonexistentContainerException](err) {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	log.Printf("[INFO] Deleting WAF Rate Based Rule: %s", d.Id())
+	_, err := newRetryer(conn).RetryWithToken(ctx, func(token *string) (any, error) {
+		input := &waf.DeleteRateBasedRuleInput{
+			ChangeToken: token,
+			RuleId:      aws.String(d.Id()),
+		}
+
+		return conn.DeleteRateBasedRule(ctx, input)
+	})
+
+	if errs.IsA[*awstypes.WAFNonexistentItemException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting WAF Rate Based Rule (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

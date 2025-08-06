@@ -1,0 +1,100 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepInternetGateways(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %s", err)
+	}
+	conn := client.EC2Client(ctx)
+
+	defaultVPCID := ""
+	describeVpcsInput := ec2.DescribeVpcsInput{
+		Filters: []awstypes.Filter{
+			{
+				Name:   aws.String("isDefault"),
+				Values: []string{"true"},
+			},
+		},
+	}
+
+	describeVpcsOutput, err := conn.DescribeVpcs(ctx, &describeVpcsInput)
+
+	if err != nil {
+		return fmt.Errorf("error describing VPCs: %w", err)
+	}
+
+	if describeVpcsOutput != nil && len(describeVpcsOutput.Vpcs) == 1 {
+		defaultVPCID = aws.ToString(describeVpcsOutput.Vpcs[0].VpcId)
+	}
+
+	input := ec2.DescribeInternetGatewaysInput{}
+	var sweepResources []sweep.Sweepable
+
+	pages := ec2.NewDescribeInternetGatewaysPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping EC2 Internet Gateway sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("error listing EC2 Internet Gateways (%s): %w", region, err)
+		}
+
+		for _, internetGateway := range page.InternetGateways {
+			internetGatewayID := aws.ToString(internetGateway.InternetGatewayId)
+			isDefaultVPCInternetGateway := false
+
+			for _, attachment := range internetGateway.Attachments {
+				if aws.ToString(attachment.VpcId) == defaultVPCID {
+					isDefaultVPCInternetGateway = true
+					break
+				}
+			}
+
+			if isDefaultVPCInternetGateway {
+				log.Printf("[DEBUG] Skipping Default VPC Internet Gateway: %s", internetGatewayID)
+				continue
+			}
+
+			r := resourceInternetGateway()
+			d := r.Data(nil)
+			d.SetId(internetGatewayID)
+			if len(internetGateway.Attachments) > 0 {
+				d.Set(names.AttrVPCID, internetGateway.Attachments[0].VpcId)
+			}
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+
+	if err != nil {
+		return fmt.Errorf("error sweeping EC2 Internet Gateways (%s): %w", region, err)
+	}
+
+	return nil
+}

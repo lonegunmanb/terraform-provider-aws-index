@@ -1,0 +1,199 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticsearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	elasticsearch "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticsearchservice/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElasticsearchClient(ctx)
+
+	// The API doesn't check for duplicate names
+	// so w/out this check Create would act as upsert
+	// and might cause duplicate domain to appear in state.
+	name := d.Get(names.AttrDomainName).(string)
+	_, err := findDomainByName(ctx, conn, name)
+
+	if err == nil {
+		return sdkdiag.AppendErrorf(diags, "Elasticsearch Domain (%s) already exists", name)
+	}
+
+	input := &elasticsearch.CreateElasticsearchDomainInput{
+		DomainName:           aws.String(name),
+		ElasticsearchVersion: aws.String(d.Get("elasticsearch_version").(string)),
+		TagList:              getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("access_policies"); ok {
+		policy, err := structure.NormalizeJsonString(v.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.AccessPolicies = aws.String(policy)
+	}
+
+	if v, ok := d.GetOk("advanced_options"); ok {
+		input.AdvancedOptions = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("advanced_security_options"); ok {
+		input.AdvancedSecurityOptions = expandAdvancedSecurityOptions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("auto_tune_options"); ok && len(v.([]any)) > 0 {
+		input.AutoTuneOptions = expandAutoTuneOptionsInput(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("cluster_config"); ok {
+		if v := v.([]any); len(v) == 1 {
+			if v[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside cluster_config")
+			}
+
+			input.ElasticsearchClusterConfig = expandElasticsearchClusterConfig(v[0].(map[string]any))
+		}
+	}
+
+	if v, ok := d.GetOk("cognito_options"); ok {
+		input.CognitoOptions = expandCognitoOptions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("domain_endpoint_options"); ok {
+		input.DomainEndpointOptions = expandDomainEndpointOptions(v.([]any))
+	}
+
+	if v, ok := d.GetOk("ebs_options"); ok {
+		if v := v.([]any); len(v) == 1 {
+			if v[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside ebs_options")
+			}
+
+			input.EBSOptions = expandEBSOptions(v[0].(map[string]any))
+		}
+	}
+
+	if v, ok := d.GetOk("encrypt_at_rest"); ok {
+		if v := v.([]any); len(v) == 1 {
+			if v[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside encrypt_at_rest")
+			}
+
+			input.EncryptionAtRestOptions = expandEncryptAtRestOptions(v[0].(map[string]any))
+		}
+	}
+
+	if v, ok := d.GetOk("log_publishing_options"); ok {
+		input.LogPublishingOptions = expandLogPublishingOptions(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("node_to_node_encryption"); ok {
+		if v := v.([]any); len(v) == 1 {
+			if v[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside node_to_node_encryption")
+			}
+
+			input.NodeToNodeEncryptionOptions = expandNodeToNodeEncryptionOptions(v[0].(map[string]any))
+		}
+	}
+
+	if v, ok := d.GetOk("snapshot_options"); ok {
+		if v := v.([]any); len(v) == 1 {
+			if v[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside snapshot_options")
+			}
+
+			tfMap := v[0].(map[string]any)
+
+			input.SnapshotOptions = &awstypes.SnapshotOptions{
+				AutomatedSnapshotStartHour: aws.Int32(int32(tfMap["automated_snapshot_start_hour"].(int))),
+			}
+		}
+	}
+
+	if v, ok := d.GetOk("vpc_options"); ok {
+		if v := v.([]any); len(v) == 1 {
+			if v[0] == nil {
+				return sdkdiag.AppendErrorf(diags, "At least one field is expected inside vpc_options")
+			}
+
+			input.VPCOptions = expandVPCOptions(v[0].(map[string]any))
+		}
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateElasticsearchDomain(ctx, input)
+		},
+		func(err error) (bool, error) {
+			if errs.IsAErrorMessageContains[*awstypes.InvalidTypeException](err, "Error setting policy") ||
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "enable a service-linked role to give Amazon ES permissions") ||
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "Domain is still being deleted") ||
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "Amazon Elasticsearch must be allowed to use the passed role") ||
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "The passed role has not propagated yet") ||
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "Authentication error") ||
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "Unauthorized Operation: Elasticsearch must be authorised to describe") ||
+				errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "The passed role must authorize Amazon Elasticsearch to describe") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Elasticsearch Domain (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*elasticsearch.CreateElasticsearchDomainOutput).DomainStatus.ARN))
+
+	if _, err := waitDomainCreated(ctx, conn, name, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Elasticsearch Domain (%s) create: %s", d.Id(), err)
+	}
+
+	if v, ok := d.GetOk("auto_tune_options"); ok && len(v.([]any)) > 0 {
+		input := &elasticsearch.UpdateElasticsearchDomainConfigInput{
+			AutoTuneOptions: expandAutoTuneOptions(v.([]any)[0].(map[string]any)),
+			DomainName:      aws.String(name),
+		}
+
+		_, err = conn.UpdateElasticsearchDomainConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Elasticsearch Domain (%s) Config: %s", d.Id(), err)
+		}
+
+		if _, err := waitDomainConfigUpdated(ctx, conn, name, d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Elasticsearch Domain (%s) Config update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceDomainRead(ctx, d, meta)...)
+}

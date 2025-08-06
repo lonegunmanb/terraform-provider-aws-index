@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func disassociateCustomerGateway(ctx context.Context, conn *networkmanager.Client, globalNetworkID, customerGatewayARN string, timeout time.Duration) error {
+	id := customerGatewayAssociationCreateResourceID(globalNetworkID, customerGatewayARN)
+
+	log.Printf("[DEBUG] Deleting Network Manager Customer Gateway Association: %s", id)
+	_, err := conn.DisassociateCustomerGateway(ctx, &networkmanager.DisassociateCustomerGatewayInput{
+		CustomerGatewayArn: aws.String(customerGatewayARN),
+		GlobalNetworkId:    aws.String(globalNetworkID),
+	})
+
+	if globalNetworkIDNotFoundError(err) || errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("deleting Network Manager Customer Gateway Association (%s): %w", id, err)
+	}
+
+	if _, err := waitCustomerGatewayAssociationDeleted(ctx, conn, globalNetworkID, customerGatewayARN, timeout); err != nil {
+		return fmt.Errorf("waiting for Network Manager Customer Gateway Association (%s) delete: %w", id, err)
+	}
+
+	return nil
+}

@@ -1,0 +1,104 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDirectoryCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DSClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	var creator directoryCreator
+	switch directoryType := awstypes.DirectoryType(d.Get(names.AttrType).(string)); directoryType {
+	case awstypes.DirectoryTypeAdConnector:
+		creator = adConnectorCreator{}
+
+	case awstypes.DirectoryTypeMicrosoftAd:
+		creator = microsoftADCreator{}
+
+	case awstypes.DirectoryTypeSimpleAd:
+		creator = simpleADCreator{}
+	}
+
+	// Sometimes creating a directory will return `Failed`, especially when multiple directories are being
+	// created concurrently. Retry creation in that case.
+	// When it fails, it will typically be within the first few minutes of creation, so there is no need
+	// to wait for deletion.
+	err := tfresource.Retry(ctx, d.Timeout(schema.TimeoutCreate), func() *retry.RetryError {
+		if err := creator.Create(ctx, conn, name, d); err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		if _, err := waitDirectoryCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+			if use, ok := errs.As[*retry.UnexpectedStateError](err); ok {
+				if use.State == string(awstypes.DirectoryStageFailed) {
+					tflog.Info(ctx, "retrying failed Directory creation", map[string]any{
+						"directory_id":       d.Id(),
+						names.AttrDomainName: name,
+					})
+					input := directoryservice.DeleteDirectoryInput{
+						DirectoryId: aws.String(d.Id()),
+					}
+					_, deleteErr := conn.DeleteDirectory(ctx, &input)
+
+					if deleteErr != nil {
+						diags = append(diags, errs.NewWarningDiagnostic(
+							"Unable to Delete Failed Directory",
+							fmt.Sprintf("While creating the Directory Service Directory %q, an attempt failed. Deleting the failed Directory failed: %s", name, deleteErr),
+						))
+					}
+
+					return retry.RetryableError(err)
+				}
+			}
+
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	}, tfresource.WithPollInterval(1*time.Minute))
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, fmt.Errorf("creating Directory Service %s Directory (%s): %w", creator.TypeName(), name, err))
+	}
+
+	if v, ok := d.GetOk(names.AttrAlias); ok {
+		if err := createAlias(ctx, conn, d.Id(), v.(string)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if v, ok := d.GetOk("desired_number_of_domain_controllers"); ok {
+		if err := updateNumberOfDomainControllers(ctx, conn, d.Id(), v.(int), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if _, ok := d.GetOk("enable_sso"); ok {
+		if err := enableSSO(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceDirectoryRead(ctx, d, meta)...)
+}

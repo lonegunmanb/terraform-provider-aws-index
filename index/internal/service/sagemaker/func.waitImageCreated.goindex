@@ -1,0 +1,33 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitImageCreated(ctx context.Context, conn *sagemaker.Client, name string) error {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.ImageStatusCreating, awstypes.ImageStatusUpdating),
+		Target:  enum.Slice(awstypes.ImageStatusCreated),
+		Refresh: statusImage(ctx, conn, name),
+		Timeout: imageCreatedTimeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*sagemaker.DescribeImageOutput); ok {
+		if status, reason := output.ImageStatus, aws.ToString(output.FailureReason); (status == awstypes.ImageStatusCreateFailed || status == awstypes.ImageStatusUpdateFailed) && reason != "" {
+			tfresource.SetLastError(err, errors.New(reason))
+		}
+
+		return err
+	}
+
+	return err
+}

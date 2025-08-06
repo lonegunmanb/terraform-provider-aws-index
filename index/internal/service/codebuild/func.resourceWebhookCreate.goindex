@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codebuild
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWebhookCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeBuildClient(ctx)
+
+	projectName := d.Get("project_name").(string)
+	input := codebuild.CreateWebhookInput{
+		ProjectName: aws.String(projectName),
+	}
+
+	if v, ok := d.GetOk("branch_filter"); ok {
+		input.BranchFilter = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("build_type"); ok {
+		input.BuildType = types.WebhookBuildType(v.(string))
+	}
+
+	if v, ok := d.GetOk("filter_group"); ok && v.(*schema.Set).Len() > 0 {
+		input.FilterGroups = expandWebhookFilterGroups(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("manual_creation"); ok {
+		input.ManualCreation = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("scope_configuration"); ok && len(v.([]any)) > 0 {
+		input.ScopeConfiguration = expandScopeConfiguration(v.([]any))
+	}
+
+	output, err := conn.CreateWebhook(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CodeBuild Webhook (%s): %s", projectName, err)
+	}
+
+	d.SetId(projectName)
+	// Secret is only returned on create.
+	d.Set("secret", output.Webhook.Secret)
+
+	return append(diags, resourceWebhookRead(ctx, d, meta)...)
+}

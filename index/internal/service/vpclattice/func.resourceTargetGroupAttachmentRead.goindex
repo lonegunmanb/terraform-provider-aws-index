@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/vpclattice
+import (
+	"context"
+	"errors"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/vpclattice"
+	"github.com/aws/aws-sdk-go-v2/service/vpclattice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTargetGroupAttachmentRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).VPCLatticeClient(ctx)
+
+	// Can't use targetGroupAttachmentParseResourceID as targetID ALB ARN includes '/'.
+	targetGroupID := d.Get("target_group_identifier").(string)
+	target := expandTarget(d.Get(names.AttrTarget).([]any)[0].(map[string]any))
+	targetID := aws.ToString(target.Id)
+	targetPort := aws.ToInt32(target.Port)
+	output, err := findTargetByThreePartKey(ctx, conn, targetGroupID, targetID, targetPort)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] VPC Lattice Target Group Attachment (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading VPC Lattice Target Group Attachment (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrTarget, []any{flattenTargetSummary(output)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting target: %s", err)
+	}
+	d.Set("target_group_identifier", targetGroupID)
+
+	return diags
+}

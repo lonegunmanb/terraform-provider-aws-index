@@ -1,0 +1,120 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAttachmentAccepterRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	var attachment *awstypes.Attachment
+	switch attachmentType := awstypes.AttachmentType(d.Get("attachment_type").(string)); attachmentType {
+	case awstypes.AttachmentTypeVpc:
+		vpcAttachment, err := findVPCAttachmentByID(ctx, conn, d.Id())
+
+		if !d.IsNewResource() && tfresource.NotFound(err) {
+			log.Printf("[WARN] Network Manager VPC Attachment %s not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager VPC Attachment (%s): %s", d.Id(), err)
+		}
+
+		attachment = vpcAttachment.Attachment
+		d.Set("edge_location", attachment.EdgeLocation)
+		d.Set("edge_locations", nil)
+
+	case awstypes.AttachmentTypeSiteToSiteVpn:
+		vpnAttachment, err := findSiteToSiteVPNAttachmentByID(ctx, conn, d.Id())
+
+		if !d.IsNewResource() && tfresource.NotFound(err) {
+			log.Printf("[WARN] Network Manager Site To Site VPN Attachment %s not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager Site To Site VPN Attachment (%s): %s", d.Id(), err)
+		}
+
+		attachment = vpnAttachment.Attachment
+		d.Set("edge_location", attachment.EdgeLocation)
+		d.Set("edge_locations", nil)
+
+	case awstypes.AttachmentTypeConnect:
+		connectAttachment, err := findConnectAttachmentByID(ctx, conn, d.Id())
+
+		if !d.IsNewResource() && tfresource.NotFound(err) {
+			log.Printf("[WARN] Network Manager Connect Attachment %s not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager Connect Attachment (%s): %s", d.Id(), err)
+		}
+
+		attachment = connectAttachment.Attachment
+		d.Set("edge_location", attachment.EdgeLocation)
+		d.Set("edge_locations", nil)
+
+	case awstypes.AttachmentTypeTransitGatewayRouteTable:
+		tgwAttachment, err := findTransitGatewayRouteTableAttachmentByID(ctx, conn, d.Id())
+
+		if !d.IsNewResource() && tfresource.NotFound(err) {
+			log.Printf("[WARN] Network Manager Transit Gateway Route Table Attachment %s not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager Transit Gateway Route Table Attachment (%s): %s", d.Id(), err)
+		}
+
+		attachment = tgwAttachment.Attachment
+		d.Set("edge_location", attachment.EdgeLocation)
+		d.Set("edge_locations", nil)
+
+	case awstypes.AttachmentTypeDirectConnectGateway:
+		dxgwAttachment, err := findDirectConnectGatewayAttachmentByID(ctx, conn, d.Id())
+
+		if !d.IsNewResource() && tfresource.NotFound(err) {
+			log.Printf("[WARN] Network Manager Direct Connect Gateway Attachment %s not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager Direct Connect Gateway Attachment (%s): %s", d.Id(), err)
+		}
+
+		attachment = dxgwAttachment.Attachment
+		d.Set("edge_location", nil)
+		d.Set("edge_locations", attachment.EdgeLocations)
+	}
+
+	d.Set("attachment_policy_rule_number", attachment.AttachmentPolicyRuleNumber)
+	d.Set("core_network_arn", attachment.CoreNetworkArn)
+	d.Set("core_network_id", attachment.CoreNetworkId)
+	d.Set(names.AttrOwnerAccountID, attachment.OwnerAccountId)
+	d.Set(names.AttrResourceARN, attachment.ResourceArn)
+	d.Set("segment_name", attachment.SegmentName)
+	d.Set(names.AttrState, attachment.State)
+
+	return diags
+}

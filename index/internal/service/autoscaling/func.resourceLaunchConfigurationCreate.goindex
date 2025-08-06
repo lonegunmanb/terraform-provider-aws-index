@@ -1,0 +1,141 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLaunchConfigurationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	autoscalingconn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+	ec2conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	lcName := create.Name(d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string))
+	input := autoscaling.CreateLaunchConfigurationInput{
+		EbsOptimized:            aws.Bool(d.Get("ebs_optimized").(bool)),
+		ImageId:                 aws.String(d.Get("image_id").(string)),
+		InstanceType:            aws.String(d.Get(names.AttrInstanceType).(string)),
+		LaunchConfigurationName: aws.String(lcName),
+	}
+
+	associatePublicIPAddress := d.GetRawConfig().GetAttr("associate_public_ip_address")
+	if associatePublicIPAddress.IsKnown() && !associatePublicIPAddress.IsNull() {
+		input.AssociatePublicIpAddress = aws.Bool(associatePublicIPAddress.True())
+	}
+
+	if v, ok := d.GetOk("iam_instance_profile"); ok {
+		input.IamInstanceProfile = aws.String(v.(string))
+	}
+
+	input.InstanceMonitoring = &awstypes.InstanceMonitoring{
+		Enabled: aws.Bool(d.Get("enable_monitoring").(bool)),
+	}
+
+	if v, ok := d.GetOk("key_name"); ok {
+		input.KeyName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("metadata_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.MetadataOptions = expandInstanceMetadataOptions(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("placement_tenancy"); ok {
+		input.PlacementTenancy = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrSecurityGroups); ok && v.(*schema.Set).Len() > 0 {
+		input.SecurityGroups = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("spot_price"); ok {
+		input.SpotPrice = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("user_data"); ok {
+		input.UserData = flex.StringValueToBase64String(v.(string))
+	} else if v, ok := d.GetOk("user_data_base64"); ok {
+		input.UserData = aws.String(v.(string))
+	}
+
+	// We'll use this to detect if we're declaring it incorrectly as an ebs_block_device.
+	rootDeviceName, err := findImageRootDeviceName(ctx, ec2conn, d.Get("image_id").(string))
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Auto Scaling Launch Configuration (%s): %s", lcName, err)
+	}
+
+	var blockDeviceMappings []awstypes.BlockDeviceMapping
+
+	if v, ok := d.GetOk("ebs_block_device"); ok && v.(*schema.Set).Len() > 0 {
+		v := expandBlockDeviceMappings(v.(*schema.Set).List(), expandBlockDeviceMappingForEBSBlockDevice)
+
+		for _, v := range v {
+			if aws.ToString(v.DeviceName) == rootDeviceName {
+				return sdkdiag.AppendErrorf(diags, "root device (%s) declared as an 'ebs_block_device'. Use 'root_block_device' argument.", rootDeviceName)
+			}
+		}
+
+		blockDeviceMappings = append(blockDeviceMappings, v...)
+	}
+
+	if v, ok := d.GetOk("ephemeral_block_device"); ok && v.(*schema.Set).Len() > 0 {
+		v := expandBlockDeviceMappings(v.(*schema.Set).List(), expandBlockDeviceMappingForEphemeralBlockDevice)
+
+		blockDeviceMappings = append(blockDeviceMappings, v...)
+	}
+
+	if v, ok := d.GetOk("root_block_device"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		v := expandBlockDeviceMappingForRootBlockDevice(v.([]any)[0].(map[string]any))
+		v.DeviceName = aws.String(rootDeviceName)
+
+		blockDeviceMappings = append(blockDeviceMappings, v)
+	}
+
+	if len(blockDeviceMappings) > 0 {
+		input.BlockDeviceMappings = blockDeviceMappings
+	}
+
+	// IAM profiles can take ~10 seconds to propagate in AWS:
+	// http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#launch-instance-with-role-console
+	_, err = tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return autoscalingconn.CreateLaunchConfiguration(ctx, &input)
+		},
+		func(err error) (bool, error) {
+			if tfawserr.ErrMessageContains(err, errCodeValidationError, "Invalid IamInstanceProfile") ||
+				tfawserr.ErrMessageContains(err, errCodeValidationError, "You are not authorized to perform this operation") {
+				return true, err
+			}
+
+			return false, err
+		})
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Auto Scaling Launch Configuration (%s): %s", lcName, err)
+	}
+
+	d.SetId(lcName)
+
+	return append(diags, resourceLaunchConfigurationRead(ctx, d, meta)...)
+}

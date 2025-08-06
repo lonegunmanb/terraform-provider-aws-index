@@ -1,0 +1,288 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenVirtualNodeSpec(spec *awstypes.VirtualNodeSpec) []any {
+	if spec == nil {
+		return []any{}
+	}
+
+	mSpec := map[string]any{}
+
+	if backends := spec.Backends; backends != nil {
+		vBackends := []any{}
+
+		for _, backend := range backends {
+			mBackend := map[string]any{}
+
+			switch v := backend.(type) {
+			case *awstypes.BackendMemberVirtualService:
+				mVirtualService := map[string]any{
+					"client_policy":        flattenClientPolicy(v.Value.ClientPolicy),
+					"virtual_service_name": aws.ToString(v.Value.VirtualServiceName),
+				}
+
+				mBackend["virtual_service"] = []any{mVirtualService}
+			}
+
+			vBackends = append(vBackends, mBackend)
+		}
+
+		mSpec["backend"] = vBackends
+	}
+
+	if backendDefaults := spec.BackendDefaults; backendDefaults != nil {
+		mBackendDefaults := map[string]any{
+			"client_policy": flattenClientPolicy(backendDefaults.ClientPolicy),
+		}
+
+		mSpec["backend_defaults"] = []any{mBackendDefaults}
+	}
+
+	if len(spec.Listeners) > 0 {
+		var mListeners []any
+		// Per schema definition, set at most 1 Listener
+		for _, listener := range spec.Listeners {
+			mListener := map[string]any{}
+
+			if connectionPool := listener.ConnectionPool; connectionPool != nil {
+				mConnectionPool := map[string]any{}
+
+				switch v := connectionPool.(type) {
+				case *awstypes.VirtualNodeConnectionPoolMemberGrpc:
+					mGrpcConnectionPool := map[string]any{
+						"max_requests": aws.ToInt32(v.Value.MaxRequests),
+					}
+					mConnectionPool["grpc"] = []any{mGrpcConnectionPool}
+				case *awstypes.VirtualNodeConnectionPoolMemberHttp:
+					mHttpConnectionPool := map[string]any{
+						"max_connections":      aws.ToInt32(v.Value.MaxConnections),
+						"max_pending_requests": aws.ToInt32(v.Value.MaxPendingRequests),
+					}
+					mConnectionPool["http"] = []any{mHttpConnectionPool}
+				case *awstypes.VirtualNodeConnectionPoolMemberHttp2:
+					mHttp2ConnectionPool := map[string]any{
+						"max_requests": aws.ToInt32(v.Value.MaxRequests),
+					}
+					mConnectionPool["http2"] = []any{mHttp2ConnectionPool}
+				case *awstypes.VirtualNodeConnectionPoolMemberTcp:
+					mTcpConnectionPool := map[string]any{
+						"max_connections": aws.ToInt32(v.Value.MaxConnections),
+					}
+					mConnectionPool["tcp"] = []any{mTcpConnectionPool}
+				}
+
+				mListener["connection_pool"] = []any{mConnectionPool}
+			}
+
+			if healthCheck := listener.HealthCheck; healthCheck != nil {
+				mHealthCheck := map[string]any{
+					"healthy_threshold":   aws.ToInt32(healthCheck.HealthyThreshold),
+					"interval_millis":     aws.ToInt64(healthCheck.IntervalMillis),
+					names.AttrPath:        aws.ToString(healthCheck.Path),
+					names.AttrPort:        aws.ToInt32(healthCheck.Port),
+					names.AttrProtocol:    healthCheck.Protocol,
+					"timeout_millis":      aws.ToInt64(healthCheck.TimeoutMillis),
+					"unhealthy_threshold": aws.ToInt32(healthCheck.UnhealthyThreshold),
+				}
+				mListener[names.AttrHealthCheck] = []any{mHealthCheck}
+			}
+
+			if outlierDetection := listener.OutlierDetection; outlierDetection != nil {
+				mOutlierDetection := map[string]any{
+					"base_ejection_duration": flattenDuration(outlierDetection.BaseEjectionDuration),
+					names.AttrInterval:       flattenDuration(outlierDetection.Interval),
+					"max_ejection_percent":   aws.ToInt32(outlierDetection.MaxEjectionPercent),
+					"max_server_errors":      aws.ToInt64(outlierDetection.MaxServerErrors),
+				}
+				mListener["outlier_detection"] = []any{mOutlierDetection}
+			}
+
+			if portMapping := listener.PortMapping; portMapping != nil {
+				mPortMapping := map[string]any{
+					names.AttrPort:     aws.ToInt32(portMapping.Port),
+					names.AttrProtocol: portMapping.Protocol,
+				}
+				mListener["port_mapping"] = []any{mPortMapping}
+			}
+
+			if listenerTimeout := listener.Timeout; listenerTimeout != nil {
+				mListenerTimeout := map[string]any{}
+
+				switch v := listenerTimeout.(type) {
+				case *awstypes.ListenerTimeoutMemberGrpc:
+					mListenerTimeout["grpc"] = flattenGRPCTimeout(&v.Value)
+				case *awstypes.ListenerTimeoutMemberHttp:
+					mListenerTimeout["http"] = flattenHTTPTimeout(&v.Value)
+				case *awstypes.ListenerTimeoutMemberHttp2:
+					mListenerTimeout["http2"] = flattenHTTPTimeout(&v.Value)
+				case *awstypes.ListenerTimeoutMemberTcp:
+					mListenerTimeout["tcp"] = flattenTCPTimeout(&v.Value)
+				}
+
+				mListener[names.AttrTimeout] = []any{mListenerTimeout}
+			}
+
+			if tls := listener.Tls; tls != nil {
+				mTls := map[string]any{
+					names.AttrMode: tls.Mode,
+				}
+
+				if certificate := tls.Certificate; certificate != nil {
+					mCertificate := map[string]any{}
+
+					switch v := certificate.(type) {
+					case *awstypes.ListenerTlsCertificateMemberAcm:
+						mAcm := map[string]any{
+							names.AttrCertificateARN: aws.ToString(v.Value.CertificateArn),
+						}
+
+						mCertificate["acm"] = []any{mAcm}
+					case *awstypes.ListenerTlsCertificateMemberFile:
+						mFile := map[string]any{
+							names.AttrCertificateChain: aws.ToString(v.Value.CertificateChain),
+							names.AttrPrivateKey:       aws.ToString(v.Value.PrivateKey),
+						}
+
+						mCertificate["file"] = []any{mFile}
+					case *awstypes.ListenerTlsCertificateMemberSds:
+						mSds := map[string]any{
+							"secret_name": aws.ToString(v.Value.SecretName),
+						}
+
+						mCertificate["sds"] = []any{mSds}
+					}
+
+					mTls[names.AttrCertificate] = []any{mCertificate}
+				}
+
+				if validation := tls.Validation; validation != nil {
+					mValidation := map[string]any{}
+
+					if subjectAlternativeNames := validation.SubjectAlternativeNames; subjectAlternativeNames != nil {
+						mSubjectAlternativeNames := map[string]any{}
+
+						if match := subjectAlternativeNames.Match; match != nil {
+							mMatch := map[string]any{
+								"exact": match.Exact,
+							}
+
+							mSubjectAlternativeNames["match"] = []any{mMatch}
+						}
+
+						mValidation["subject_alternative_names"] = []any{mSubjectAlternativeNames}
+					}
+
+					if trust := validation.Trust; trust != nil {
+						mTrust := map[string]any{}
+
+						switch v := trust.(type) {
+						case *awstypes.ListenerTlsValidationContextTrustMemberFile:
+							mFile := map[string]any{
+								names.AttrCertificateChain: aws.ToString(v.Value.CertificateChain),
+							}
+
+							mTrust["file"] = []any{mFile}
+						case *awstypes.ListenerTlsValidationContextTrustMemberSds:
+							mSds := map[string]any{
+								"secret_name": aws.ToString(v.Value.SecretName),
+							}
+
+							mTrust["sds"] = []any{mSds}
+						}
+
+						mValidation["trust"] = []any{mTrust}
+					}
+
+					mTls["validation"] = []any{mValidation}
+				}
+
+				mListener["tls"] = []any{mTls}
+			}
+			mListeners = append(mListeners, mListener)
+		}
+		mSpec["listener"] = mListeners
+	}
+
+	if logging := spec.Logging; logging != nil {
+		mLogging := map[string]any{}
+
+		if accessLog := logging.AccessLog; accessLog != nil {
+			mAccessLog := map[string]any{}
+
+			switch v := accessLog.(type) {
+			case *awstypes.AccessLogMemberFile:
+				mFile := map[string]any{}
+
+				if format := v.Value.Format; format != nil {
+					mFormat := map[string]any{}
+
+					switch v := format.(type) {
+					case *awstypes.LoggingFormatMemberJson:
+						vJsons := []any{}
+
+						for _, j := range v.Value {
+							mJson := map[string]any{
+								names.AttrKey:   aws.ToString(j.Key),
+								names.AttrValue: aws.ToString(j.Value),
+							}
+
+							vJsons = append(vJsons, mJson)
+						}
+
+						mFormat[names.AttrJSON] = vJsons
+					case *awstypes.LoggingFormatMemberText:
+						mFormat["text"] = v.Value
+					}
+
+					mFile[names.AttrFormat] = []any{mFormat}
+				}
+
+				mFile[names.AttrPath] = aws.ToString(v.Value.Path)
+
+				mAccessLog["file"] = []any{mFile}
+			}
+
+			mLogging["access_log"] = []any{mAccessLog}
+		}
+
+		mSpec["logging"] = []any{mLogging}
+	}
+
+	if serviceDiscovery := spec.ServiceDiscovery; serviceDiscovery != nil {
+		mServiceDiscovery := map[string]any{}
+
+		switch v := serviceDiscovery.(type) {
+		case *awstypes.ServiceDiscoveryMemberAwsCloudMap:
+			vAttributes := map[string]any{}
+
+			for _, attribute := range v.Value.Attributes {
+				vAttributes[aws.ToString(attribute.Key)] = aws.ToString(attribute.Value)
+			}
+
+			mServiceDiscovery["aws_cloud_map"] = []any{
+				map[string]any{
+					names.AttrAttributes:  vAttributes,
+					"namespace_name":      aws.ToString(v.Value.NamespaceName),
+					names.AttrServiceName: aws.ToString(v.Value.ServiceName),
+				},
+			}
+		case *awstypes.ServiceDiscoveryMemberDns:
+			mServiceDiscovery["dns"] = []any{
+				map[string]any{
+					"hostname":      aws.ToString(v.Value.Hostname),
+					"ip_preference": v.Value.IpPreference,
+					"response_type": v.Value.ResponseType,
+				},
+			}
+		}
+
+		mSpec["service_discovery"] = []any{mServiceDiscovery}
+	}
+
+	return []any{mSpec}
+}

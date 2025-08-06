@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	erschema "github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/resourceattribute"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r resourceDefaultRegionInterceptor) modifyPlan(ctx context.Context, opts interceptorOptions[resource.ModifyPlanRequest, resource.ModifyPlanResponse]) diag.Diagnostics {
+	c := opts.c
+	var diags diag.Diagnostics
+
+	switch request, response, when := opts.request, opts.response, opts.when; when {
+	case Before:
+		// If the entire plan is null, the resource is planned for destruction.
+		if request.Plan.Raw.IsNull() {
+			return diags
+		}
+
+		var target types.String
+		diags.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrRegion), &target)...)
+		if diags.HasError() {
+			return diags
+		}
+
+		if target.IsNull() || target.IsUnknown() {
+			// Set the region to the provider's configured region
+			diags.Append(response.Plan.SetAttribute(ctx, path.Root(names.AttrRegion), c.AwsConfig(ctx).Region)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	}
+
+	return diags
+}

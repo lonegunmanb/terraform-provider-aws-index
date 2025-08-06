@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/detective
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/detective"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/detective/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMemberCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).DetectiveClient(ctx)
+
+	accountID := d.Get(names.AttrAccountID).(string)
+	graphARN := d.Get("graph_arn").(string)
+	id := memberCreateResourceID(graphARN, accountID)
+	input := &detective.CreateMembersInput{
+		Accounts: []awstypes.Account{{
+			AccountId:    aws.String(accountID),
+			EmailAddress: aws.String(d.Get("email_address").(string)),
+		}},
+		GraphArn: aws.String(graphARN),
+	}
+
+	if v := d.Get("disable_email_notification").(bool); v {
+		input.DisableEmailNotification = v
+	}
+
+	if v, ok := d.GetOk(names.AttrMessage); ok {
+		input.Message = aws.String(v.(string))
+	}
+
+	_, err := tfresource.RetryWhenIsA[*awstypes.InternalServerException](ctx, d.Timeout(schema.TimeoutCreate), func() (any, error) {
+		return conn.CreateMembers(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Detective Member (%s): %s", id, err)
+	}
+
+	if _, err := waitMemberInvited(ctx, conn, graphARN, accountID); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Detective Member (%s) invited: %s", d.Id(), err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceMemberRead(ctx, d, meta)...)
+}

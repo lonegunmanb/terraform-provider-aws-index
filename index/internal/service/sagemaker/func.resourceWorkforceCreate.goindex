@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkforceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	name := d.Get("workforce_name").(string)
+	input := &sagemaker.CreateWorkforceInput{
+		WorkforceName: aws.String(name),
+	}
+
+	if v, ok := d.GetOk("cognito_config"); ok {
+		input.CognitoConfig = expandWorkforceCognitoConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("oidc_config"); ok {
+		input.OidcConfig = expandWorkforceOIDCConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("source_ip_config"); ok {
+		input.SourceIpConfig = expandWorkforceSourceIPConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk("workforce_vpc_config"); ok {
+		input.WorkforceVpcConfig = expandWorkforceVPCConfig(v.([]any))
+	}
+
+	_, err := conn.CreateWorkforce(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Workforce (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if err := waitWorkforceActive(ctx, conn, name); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for SageMaker AI Workforce (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceWorkforceRead(ctx, d, meta)...)
+}

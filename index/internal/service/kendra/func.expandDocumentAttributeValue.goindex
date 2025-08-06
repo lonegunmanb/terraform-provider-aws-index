@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kendra
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kendra"
+	"github.com/aws/aws-sdk-go-v2/service/kendra/document"
+	"github.com/aws/aws-sdk-go-v2/service/kendra/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandDocumentAttributeValue(tfList []any) *types.DocumentAttributeValue {
+	if len(tfList) == 0 || tfList[0] == nil {
+		return nil
+	}
+
+	tfMap, ok := tfList[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	apiObject := &types.DocumentAttributeValue{}
+
+	// Only one of these values can be set at a time
+	if v, ok := tfMap["date_value"].(string); ok && v != "" {
+		// A date expressed as an ISO 8601 string.
+		timeValue, _ := time.Parse(ISO8601UTC, v)
+		apiObject.DateValue = aws.Time(timeValue)
+	} else if v, ok := tfMap["string_value"].(string); ok && v != "" {
+		apiObject.StringValue = aws.String(v)
+	} else if v, ok := tfMap["string_list_value"]; ok && v.(*schema.Set).Len() > 0 {
+		apiObject.StringListValue = flex.ExpandStringValueSet(v.(*schema.Set))
+	} else if v, ok := tfMap["long_value"]; ok {
+		// When no value was passed it was interpreted as a 0 leading to errors if other values like DateValue, StringValue, StringListValue were defined
+		// ValidationException: DocumentAttributeValue can only have 1 non-null field, but given value for key <> has too many non-null fields.
+		// hence check this as the last else if
+		apiObject.LongValue = aws.Int64(int64(v.(int)))
+	}
+
+	return apiObject
+}

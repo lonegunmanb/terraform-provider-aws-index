@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/signer
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/signer"
+	"github.com/aws/aws-sdk-go-v2/service/signer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSigningJobCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SignerClient(ctx)
+	profileName := d.Get("profile_name")
+	source := d.Get(names.AttrSource).([]any)
+	destination := d.Get(names.AttrDestination).([]any)
+
+	startSigningJobInput := &signer.StartSigningJobInput{
+		ProfileName: aws.String(profileName.(string)),
+		Source:      expandSigningJobSource(source),
+		Destination: expandSigningJobDestination(destination),
+	}
+
+	log.Printf("[DEBUG] Starting Signer Signing Job using profile name %q.", profileName)
+	startSigningJobOutput, err := conn.StartSigningJob(ctx, startSigningJobInput)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Signing Job: %s", err)
+	}
+
+	jobId := aws.ToString(startSigningJobOutput.JobId)
+
+	ignoreSigningJobFailure := d.Get("ignore_signing_job_failure").(bool)
+	log.Printf("[DEBUG] Waiting for Signer Signing Job ID (%s) to complete.", jobId)
+
+	waitInput := &signer.DescribeSigningJobInput{
+		JobId: aws.String(jobId),
+	}
+	waiter := signer.NewSuccessfulSigningJobWaiter(conn)
+	waitTime := 5 * time.Minute
+	err = waiter.Wait(ctx, waitInput, waitTime)
+
+	if err != nil {
+		var rnr *types.ResourceNotFoundException
+		if !errors.As(err, &rnr) || !ignoreSigningJobFailure {
+			return sdkdiag.AppendErrorf(diags, "creating Signing Job: waiting for completion: %s", err)
+		}
+	}
+
+	d.SetId(jobId)
+
+	return append(diags, resourceSigningJobRead(ctx, d, meta)...)
+}

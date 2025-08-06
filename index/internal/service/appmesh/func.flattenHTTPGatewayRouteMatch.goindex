@@ -1,0 +1,123 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appmesh"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenHTTPGatewayRouteMatch(routeMatch *awstypes.HttpGatewayRouteMatch) []any {
+	if routeMatch == nil {
+		return []any{}
+	}
+
+	mRouteMatch := map[string]any{}
+
+	if routeMatch.Port != nil {
+		mRouteMatch[names.AttrPort] = aws.ToInt32(routeMatch.Port)
+	}
+
+	if routeMatch.Prefix != nil {
+		mRouteMatch[names.AttrPrefix] = aws.ToString(routeMatch.Prefix)
+	}
+
+	vHeaders := []any{}
+
+	for _, header := range routeMatch.Headers {
+		mHeader := map[string]any{
+			"invert":       aws.ToBool(header.Invert),
+			names.AttrName: aws.ToString(header.Name),
+		}
+
+		mMatch := map[string]any{}
+
+		if match := header.Match; match != nil {
+			switch v := match.(type) {
+			case *awstypes.HeaderMatchMethodMemberExact:
+				mMatch["exact"] = v.Value
+			case *awstypes.HeaderMatchMethodMemberPrefix:
+				mMatch[names.AttrPrefix] = v.Value
+			case *awstypes.HeaderMatchMethodMemberRegex:
+				mMatch["regex"] = v.Value
+			case *awstypes.HeaderMatchMethodMemberSuffix:
+				mMatch["suffix"] = v.Value
+			case *awstypes.HeaderMatchMethodMemberRange:
+				mRange := map[string]any{
+					"end":   aws.ToInt64(v.Value.End),
+					"start": aws.ToInt64(v.Value.Start),
+				}
+				mMatch["range"] = []any{mRange}
+			}
+
+			mHeader["match"] = []any{mMatch}
+		}
+
+		vHeaders = append(vHeaders, mHeader)
+	}
+
+	mRouteMatch[names.AttrHeader] = vHeaders
+
+	if hostname := routeMatch.Hostname; hostname != nil {
+		mHostname := map[string]any{}
+
+		if hostname.Exact != nil {
+			mHostname["exact"] = aws.ToString(hostname.Exact)
+		}
+		if hostname.Suffix != nil {
+			mHostname["suffix"] = aws.ToString(hostname.Suffix)
+		}
+
+		mRouteMatch["hostname"] = []any{mHostname}
+	}
+
+	if path := routeMatch.Path; path != nil {
+		mPath := map[string]any{}
+
+		if path.Exact != nil {
+			mPath["exact"] = aws.ToString(path.Exact)
+		}
+		if path.Regex != nil {
+			mPath["regex"] = aws.ToString(path.Regex)
+		}
+
+		mRouteMatch[names.AttrPath] = []any{mPath}
+	}
+
+	vQueryParameters := []any{}
+
+	for _, queryParameter := range routeMatch.QueryParameters {
+		mQueryParameter := map[string]any{
+			names.AttrName: aws.ToString(queryParameter.Name),
+		}
+
+		if match := queryParameter.Match; match != nil {
+			mMatch := map[string]any{
+				"exact": aws.ToString(match.Exact),
+			}
+
+			mQueryParameter["match"] = []any{mMatch}
+		}
+
+		vQueryParameters = append(vQueryParameters, mQueryParameter)
+	}
+
+	mRouteMatch["query_parameter"] = vQueryParameters
+
+	return []any{mRouteMatch}
+}

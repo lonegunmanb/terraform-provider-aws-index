@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findTag(ctx context.Context, conn *autoscaling.Client, identifier, resourceType, key string, optFns ...func(*autoscaling.Options)) (*tftags.TagData, error) {
+	input := autoscaling.DescribeTagsInput{
+		Filters: []awstypes.Filter{
+			{
+				Name:   aws.String("auto-scaling-group"),
+				Values: []string{identifier},
+			},
+			{
+				Name:   aws.String(names.AttrKey),
+				Values: []string{key},
+			},
+		},
+	}
+
+	output, err := conn.DescribeTags(ctx, &input, optFns...)
+
+	if err != nil {
+		return nil, err
+	}
+
+	listTags := KeyValueTags(ctx, output.Tags, identifier, resourceType)
+
+	if !listTags.KeyExists(key) {
+		return nil, tfresource.NewEmptyResultError(nil)
+	}
+
+	return listTags.KeyTagData(key), nil
+}

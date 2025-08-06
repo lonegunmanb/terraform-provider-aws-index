@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appstream
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appstream"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appstream/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppStreamClient(ctx)
+
+	userName, authType := d.Get(names.AttrUserName).(string), awstypes.AuthenticationType(d.Get("authentication_type").(string))
+	id := userCreateResourceID(userName, authType)
+	input := appstream.CreateUserInput{
+		AuthenticationType: authType,
+		UserName:           aws.String(userName),
+	}
+
+	if v, ok := d.GetOk("first_name"); ok {
+		input.FirstName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("last_name"); ok {
+		input.LastName = aws.String(v.(string))
+	}
+
+	if !d.Get("send_email_notification").(bool) {
+		input.MessageAction = awstypes.MessageActionSuppress
+	}
+
+	_, err := conn.CreateUser(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating AppStream User (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	const (
+		timeout = 4 * time.Minute
+	)
+	_, err = tfresource.RetryWhenNotFound(ctx, timeout, func() (any, error) {
+		return findUserByTwoPartKey(ctx, conn, userName, authType)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for AppStream User (%s) create: %s", id, err)
+	}
+
+	if !d.Get(names.AttrEnabled).(bool) {
+		if err := disableUser(ctx, conn, userName, authType); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceUserRead(ctx, d, meta)...)
+}

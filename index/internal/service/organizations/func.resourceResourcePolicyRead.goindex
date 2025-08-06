@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/organizations
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/organizations"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourcePolicyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OrganizationsClient(ctx)
+
+	policy, err := findResourcePolicy(ctx, conn)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Organizations Resource Policy %s not found, removing from state", d.Id())
+		d.SetId("")
+		return nil
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Organizations Resource Policy (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, policy.ResourcePolicySummary.Arn)
+	if policyToSet, err := verify.PolicyToSet(d.Get(names.AttrContent).(string), aws.ToString(policy.Content)); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	} else {
+		d.Set(names.AttrContent, policyToSet)
+	}
+
+	return diags
+}

@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMlflowTrackingServerCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	name := d.Get("tracking_server_name").(string)
+	input := sagemaker.CreateMlflowTrackingServerInput{
+		ArtifactStoreUri:           aws.String(d.Get("artifact_store_uri").(string)),
+		AutomaticModelRegistration: aws.Bool(d.Get("automatic_model_registration").(bool)),
+		RoleArn:                    aws.String(d.Get(names.AttrRoleARN).(string)),
+		Tags:                       getTagsIn(ctx),
+		TrackingServerName:         aws.String(name),
+		TrackingServerSize:         awstypes.TrackingServerSize(d.Get("tracking_server_size").(string)),
+	}
+
+	if v, ok := d.GetOk("mlflow_version"); ok {
+		input.MlflowVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("weekly_maintenance_window_start"); ok {
+		input.WeeklyMaintenanceWindowStart = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateMlflowTrackingServer(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Mlflow Tracking Server (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if _, err := waitMlflowTrackingServerCreated(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for SageMaker AI Mlflow Tracking Server (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceMlflowTrackingServerRead(ctx, d, meta)...)
+}

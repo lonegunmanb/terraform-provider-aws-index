@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAddonRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EKSClient(ctx)
+
+	clusterName, addonName, err := AddonParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	addon, err := findAddonByTwoPartKey(ctx, conn, clusterName, addonName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EKS Add-On (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EKS Add-On (%s): %s", d.Id(), err)
+	}
+
+	d.Set("addon_name", addon.AddonName)
+	d.Set("addon_version", addon.AddonVersion)
+	d.Set(names.AttrARN, addon.AddonArn)
+	d.Set(names.AttrClusterName, addon.ClusterName)
+	d.Set("configuration_values", addon.ConfigurationValues)
+	d.Set(names.AttrCreatedAt, aws.ToTime(addon.CreatedAt).Format(time.RFC3339))
+	d.Set("modified_at", aws.ToTime(addon.ModifiedAt).Format(time.RFC3339))
+	flatPIAs, err := flattenAddonPodIdentityAssociations(ctx, addon.PodIdentityAssociations, clusterName, meta)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "flattening pod_identity_association: %s", err)
+	}
+	if err := d.Set("pod_identity_association", flatPIAs); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting pod_identity_association: %s", err)
+	}
+	d.Set("service_account_role_arn", addon.ServiceAccountRoleArn)
+
+	setTagsOut(ctx, addon.Tags)
+
+	return diags
+}

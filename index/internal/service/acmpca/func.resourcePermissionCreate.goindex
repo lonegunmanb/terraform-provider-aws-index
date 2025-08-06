@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acmpca
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ACMPCAClient(ctx)
+
+	caARN := d.Get("certificate_authority_arn").(string)
+	principal := d.Get(names.AttrPrincipal).(string)
+	sourceAccount := d.Get("source_account").(string)
+	id, err := flex.FlattenResourceId([]string{caARN, principal, sourceAccount}, permissionResourceIDPartCount, true)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := acmpca.CreatePermissionInput{
+		Actions:                 expandPermissionActions(d.Get(names.AttrActions).(*schema.Set)),
+		CertificateAuthorityArn: aws.String(caARN),
+		Principal:               aws.String(principal),
+	}
+
+	if sourceAccount != "" {
+		input.SourceAccount = aws.String(sourceAccount)
+	}
+
+	if _, err := conn.CreatePermission(ctx, &input); err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating ACM PCA Permission (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourcePermissionRead(ctx, d, meta)...)
+}

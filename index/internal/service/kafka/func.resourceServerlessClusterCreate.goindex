@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kafka
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kafka"
+	"github.com/aws/aws-sdk-go-v2/service/kafka/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceServerlessClusterCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KafkaClient(ctx)
+
+	name := d.Get(names.AttrClusterName).(string)
+	input := &kafka.CreateClusterV2Input{
+		ClusterName: aws.String(name),
+		Serverless: &types.ServerlessRequest{
+			ClientAuthentication: expandServerlessClientAuthentication(d.Get("client_authentication").([]any)[0].(map[string]any)),
+			VpcConfigs:           expandVpcConfigs(d.Get(names.AttrVPCConfig).([]any)),
+		},
+		Tags: getTagsIn(ctx),
+	}
+
+	output, err := conn.CreateClusterV2(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating MSK Serverless Cluster (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.ClusterArn))
+
+	if _, err := waitClusterCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for MSK Serverless Cluster (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceServerlessClusterRead(ctx, d, meta)...)
+}

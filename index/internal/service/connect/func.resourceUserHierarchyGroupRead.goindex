@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserHierarchyGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID, userHierarchyGroupID, err := userHierarchyGroupParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	hierarchyGroup, err := findUserHierarchyGroupByTwoPartKey(ctx, conn, instanceID, userHierarchyGroupID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Connect User Hierarchy Group (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Connect User Hierarchy Group (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, hierarchyGroup.Arn)
+	d.Set("hierarchy_group_id", hierarchyGroup.Id)
+	if err := d.Set("hierarchy_path", flattenHierarchyPath(hierarchyGroup.HierarchyPath)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting hierarchy_path: %s", err)
+	}
+	d.Set(names.AttrInstanceID, instanceID)
+	d.Set("level_id", hierarchyGroup.LevelId)
+	d.Set(names.AttrName, hierarchyGroup.Name)
+
+	setTagsOut(ctx, hierarchyGroup.Tags)
+
+	return diags
+}

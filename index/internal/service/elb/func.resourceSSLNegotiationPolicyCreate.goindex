@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSSLNegotiationPolicyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBClient(ctx)
+
+	lbName := d.Get("load_balancer").(string)
+	lbPort := int32(d.Get("lb_port").(int))
+	policyName := d.Get(names.AttrName).(string)
+	id := sslNegotiationPolicyCreateResourceID(lbName, lbPort, policyName)
+
+	{
+		input := elasticloadbalancing.CreateLoadBalancerPolicyInput{
+			LoadBalancerName: aws.String(lbName),
+			PolicyName:       aws.String(policyName),
+			PolicyTypeName:   aws.String("SSLNegotiationPolicyType"),
+		}
+
+		if v, ok := d.GetOk("attribute"); ok && v.(*schema.Set).Len() > 0 {
+			input.PolicyAttributes = expandPolicyAttributes(v.(*schema.Set).List())
+		}
+
+		_, err := conn.CreateLoadBalancerPolicy(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating ELB Classic SSL Negotiation Policy (%s): %s", id, err)
+		}
+	}
+
+	{
+		input := elasticloadbalancing.SetLoadBalancerPoliciesOfListenerInput{
+			LoadBalancerName: aws.String(lbName),
+			LoadBalancerPort: lbPort,
+			PolicyNames:      []string{policyName},
+		}
+
+		_, err := conn.SetLoadBalancerPoliciesOfListener(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting ELB Classic SSL Negotiation Policy (%s): %s", id, err)
+		}
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceSSLNegotiationPolicyRead(ctx, d, meta)...)
+}

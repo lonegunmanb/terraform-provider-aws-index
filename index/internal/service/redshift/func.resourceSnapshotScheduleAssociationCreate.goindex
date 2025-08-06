@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSnapshotScheduleAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	clusterIdentifier := d.Get(names.AttrClusterIdentifier).(string)
+	scheduleIdentifier := d.Get("schedule_identifier").(string)
+	id := SnapshotScheduleAssociationCreateResourceID(clusterIdentifier, scheduleIdentifier)
+	input := &redshift.ModifyClusterSnapshotScheduleInput{
+		ClusterIdentifier:    aws.String(clusterIdentifier),
+		ScheduleIdentifier:   aws.String(scheduleIdentifier),
+		DisassociateSchedule: aws.Bool(false),
+	}
+
+	_, err := conn.ModifyClusterSnapshotSchedule(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Redshift Snapshot Schedule Association (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitSnapshotScheduleAssociationCreated(ctx, conn, clusterIdentifier, scheduleIdentifier); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Redshift Snapshot Schedule Association (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceSnapshotScheduleAssociationRead(ctx, d, meta)...)
+}

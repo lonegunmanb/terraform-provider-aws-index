@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceThingTypeCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &iot.CreateThingTypeInput{
+		Tags:          getTagsIn(ctx),
+		ThingTypeName: aws.String(name),
+	}
+
+	if v, ok := d.GetOk(names.AttrProperties); ok {
+		configs := v.([]any)
+		if config, ok := configs[0].(map[string]any); ok && config != nil {
+			input.ThingTypeProperties = expandThingTypeProperties(config)
+		}
+	}
+
+	out, err := conn.CreateThingType(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating IoT Thing Type (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(out.ThingTypeName))
+
+	if v := d.Get("deprecated").(bool); v {
+		input := &iot.DeprecateThingTypeInput{
+			ThingTypeName: aws.String(d.Id()),
+			UndoDeprecate: false,
+		}
+
+		_, err := conn.DeprecateThingType(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "deprecating IoT Thing Type (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceThingTypeRead(ctx, d, meta)...)
+}

@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/qldb
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/qldb"
+	"github.com/aws/aws-sdk-go-v2/service/qldb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findStreamByTwoPartKey(ctx context.Context, conn *qldb.Client, ledgerName, streamID string) (*types.JournalKinesisStreamDescription, error) {
+	input := &qldb.DescribeJournalKinesisStreamInput{
+		LedgerName: aws.String(ledgerName),
+		StreamId:   aws.String(streamID),
+	}
+
+	output, err := findJournalKinesisStream(ctx, conn, input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// See https://docs.aws.amazon.com/qldb/latest/developerguide/streams.create.html#streams.create.states.
+	switch status := output.Status; status {
+	case types.StreamStatusCompleted, types.StreamStatusCanceled, types.StreamStatusFailed:
+		return nil, &retry.NotFoundError{
+			Message:     string(status),
+			LastRequest: input,
+		}
+	}
+
+	return output, nil
+}

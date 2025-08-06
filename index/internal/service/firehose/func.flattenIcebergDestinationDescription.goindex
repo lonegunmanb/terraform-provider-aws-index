@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/firehose
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/firehose"
+	"github.com/aws/aws-sdk-go-v2/service/firehose/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenIcebergDestinationDescription(apiObject *types.IcebergDestinationDescription) []any {
+	if apiObject == nil {
+		return []any{}
+	}
+
+	tfMap := map[string]any{
+		"catalog_arn":      aws.ToString(apiObject.CatalogConfiguration.CatalogARN),
+		"s3_configuration": flattenS3DestinationDescription(apiObject.S3DestinationDescription),
+		names.AttrRoleARN:  aws.ToString(apiObject.RoleARN),
+	}
+
+	if apiObject.BufferingHints != nil {
+		tfMap["buffering_interval"] = int(aws.ToInt32(apiObject.BufferingHints.IntervalInSeconds))
+		tfMap["buffering_size"] = int(aws.ToInt32(apiObject.BufferingHints.SizeInMBs))
+	}
+
+	if apiObject.CloudWatchLoggingOptions != nil {
+		tfMap["cloudwatch_logging_options"] = flattenCloudWatchLoggingOptions(apiObject.CloudWatchLoggingOptions)
+	}
+
+	if apiObject.DestinationTableConfigurationList != nil {
+		tableConfigurations := make([]map[string]any, 0, len(apiObject.DestinationTableConfigurationList))
+		for _, table := range apiObject.DestinationTableConfigurationList {
+			tableConfigurations = append(tableConfigurations, map[string]any{
+				names.AttrDatabaseName:   aws.ToString(table.DestinationDatabaseName),
+				names.AttrTableName:      aws.ToString(table.DestinationTableName),
+				"s3_error_output_prefix": table.S3ErrorOutputPrefix,
+				"unique_keys":            table.UniqueKeys,
+			})
+		}
+		tfMap["destination_table_configuration"] = tableConfigurations
+	}
+
+	if apiObject.ProcessingConfiguration != nil {
+		tfMap["processing_configuration"] = flattenProcessingConfiguration(apiObject.ProcessingConfiguration, destinationTypeIceberg, aws.ToString(apiObject.RoleARN))
+	}
+
+	if apiObject.RetryOptions != nil {
+		tfMap["retry_duration"] = int(aws.ToInt32(apiObject.RetryOptions.DurationInSeconds))
+	}
+
+	if apiObject.S3BackupMode != "" {
+		tfMap["s3_backup_mode"] = apiObject.S3BackupMode
+	}
+
+	return []any{tfMap}
+}

@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/dns
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"unicode"
+
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+)
+func normalizeCasingAndEscapeCodes(input string) string {
+	var output strings.Builder
+	br := bufio.NewReader(strings.NewReader(input))
+
+	for {
+		ch, _, err := br.ReadRune()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return ""
+		}
+
+		switch {
+		case ch >= 'A' && ch <= 'Z':
+			output.WriteRune(unicode.ToLower(ch))
+		case ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'z' || ch == '-' || ch == '.' || ch == '_':
+			output.WriteRune(ch)
+		case ch == '\\':
+			const (
+				lenOctalCode = 3
+			)
+			if bytes, err := br.Peek(lenOctalCode); err == nil && tfslices.All(bytes, func(b byte) bool {
+				return b >= '0' && b <= '7' // Octal.
+			}) {
+				output.WriteRune(ch)
+				output.WriteString(string(bytes))
+				_, _ = br.Discard(lenOctalCode)
+				continue
+			}
+			fallthrough
+		default:
+			// Three-digit octal code.
+			fmt.Fprintf(&output, "\\%03o", ch)
+		}
+	}
+
+	return output.String()
+}

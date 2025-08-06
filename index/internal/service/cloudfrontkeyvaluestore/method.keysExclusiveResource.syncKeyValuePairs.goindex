@@ -1,0 +1,109 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfrontkeyvaluestore
+import (
+	"context"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfrontkeyvaluestore"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfrontkeyvaluestore/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *keysExclusiveResource) syncKeyValuePairs(ctx context.Context, plan *keysExclusiveResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := r.Meta().CloudFrontKeyValueStoreClient(ctx)
+	kvsARN := plan.KvsARN.ValueString()
+
+	// Making key changes the etag of the key value store.
+	// Use a mutex serialize actions
+	mutexKey := kvsARN
+	conns.GlobalMutexKV.Lock(mutexKey)
+	defer conns.GlobalMutexKV.Unlock(mutexKey)
+
+	kvs, have, err := FindResourceKeyValuePairsForKeyValueStore(ctx, conn, kvsARN)
+	if err != nil {
+		diags.AddError(
+			create.ProblemStandardMessage(names.CloudFrontKeyValueStore, create.ErrActionReading, ResNameKeyValueStore, kvsARN, err),
+			err.Error(),
+		)
+		return diags
+	}
+
+	var want []awstypes.ListKeysResponseListItem
+	diags.Append(flex.Expand(ctx, plan.ResourceKeyValuePair, &want)...)
+	if diags.HasError() {
+		return diags
+	}
+
+	put, del, _ := intflex.DiffSlices(have, want, resourceKeyValuePairEqual)
+
+	// We need to perform a batched operation in the event of many Key Value Pairs
+	// to stay within AWS service limits
+	//
+	// https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cloudfront-limits.html#limits-keyvaluestores
+	batchSize := int(plan.MaximumBatchSize.ValueInt64())
+	etag := kvs.ETag
+	totalSizeInBytes := kvs.TotalSizeInBytes
+
+	for chunk := range slices.Chunk(expandPutKeyRequestListItem(put), batchSize) {
+		input := cloudfrontkeyvaluestore.UpdateKeysInput{
+			KvsARN:  aws.String(kvsARN),
+			IfMatch: etag,
+			Puts:    chunk,
+		}
+
+		out, err := conn.UpdateKeys(ctx, &input)
+		if err != nil {
+			diags.AddError(
+				create.ProblemStandardMessage(names.CloudFrontKeyValueStore, create.ErrActionSynchronizing, ResNameKeysExclusive, kvsARN, err),
+				err.Error(),
+			)
+			return diags
+		}
+		etag = out.ETag
+		totalSizeInBytes = out.TotalSizeInBytes
+	}
+
+	for chunk := range slices.Chunk(expandDeleteKeyRequestListItem(del), batchSize) {
+		input := cloudfrontkeyvaluestore.UpdateKeysInput{
+			KvsARN:  aws.String(kvsARN),
+			IfMatch: etag,
+			Deletes: chunk,
+		}
+
+		out, err := conn.UpdateKeys(ctx, &input)
+		if err != nil {
+			diags.AddError(
+				create.ProblemStandardMessage(names.CloudFrontKeyValueStore, create.ErrActionSynchronizing, ResNameKeysExclusive, kvsARN, err),
+				err.Error(),
+			)
+			return diags
+		}
+		etag = out.ETag
+		totalSizeInBytes = out.TotalSizeInBytes
+	}
+
+	plan.TotalSizeInBytes = flex.Int64ToFramework(ctx, totalSizeInBytes)
+
+	return diags
+}

@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func putAndExecuteCoreNetworkPolicy(ctx context.Context, conn *networkmanager.Client, coreNetworkId, policyDocument string) error {
+	document, err := structure.NormalizeJsonString(policyDocument)
+
+	if err != nil {
+		return fmt.Errorf("decoding Network Manager Core Network (%s) policy document: %s", coreNetworkId, err)
+	}
+
+	output, err := conn.PutCoreNetworkPolicy(ctx, &networkmanager.PutCoreNetworkPolicyInput{
+		ClientToken:    aws.String(id.UniqueId()),
+		CoreNetworkId:  aws.String(coreNetworkId),
+		PolicyDocument: aws.String(document),
+	})
+
+	if err != nil {
+		return fmt.Errorf("putting Network Manager Core Network (%s) policy: %s", coreNetworkId, err)
+	}
+
+	policyVersionID := output.CoreNetworkPolicy.PolicyVersionId
+
+	if _, err := waitCoreNetworkPolicyCreated(ctx, conn, coreNetworkId, policyVersionID, waitCoreNetworkPolicyCreatedTimeInMinutes*time.Minute); err != nil {
+		return fmt.Errorf("waiting for Network Manager Core Network Policy from Core Network (%s) create: %s", coreNetworkId, err)
+	}
+
+	_, err = conn.ExecuteCoreNetworkChangeSet(ctx, &networkmanager.ExecuteCoreNetworkChangeSetInput{
+		CoreNetworkId:   aws.String(coreNetworkId),
+		PolicyVersionId: policyVersionID,
+	})
+	if err != nil {
+		return fmt.Errorf("executing Network Manager Core Network (%s) change set (%d): %s", coreNetworkId, policyVersionID, err)
+	}
+
+	return nil
+}

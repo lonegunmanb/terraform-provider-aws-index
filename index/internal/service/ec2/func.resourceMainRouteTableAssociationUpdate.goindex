@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMainRouteTableAssociationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	routeTableID := d.Get("route_table_id").(string)
+	input := &ec2.ReplaceRouteTableAssociationInput{
+		AssociationId: aws.String(d.Id()),
+		RouteTableId:  aws.String(routeTableID),
+	}
+
+	output, err := conn.ReplaceRouteTableAssociation(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Main Route Table Association (%s): %s", routeTableID, err)
+	}
+
+	// This whole thing with the resource ID being changed on update seems unsustainable.
+	// Keeping it here for backwards compatibility...
+	d.SetId(aws.ToString(output.NewAssociationId))
+
+	log.Printf("[DEBUG] Waiting for Main Route Table Association (%s) update", d.Id())
+	if _, err := waitRouteTableAssociationUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Main Route Table Association (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceMainRouteTableAssociationRead(ctx, d, meta)...)
+}

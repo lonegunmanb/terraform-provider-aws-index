@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRiskConfigurationPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	userPoolID := d.Get(names.AttrUserPoolID).(string)
+	id := userPoolID
+	input := &cognitoidentityprovider.SetRiskConfigurationInput{
+		UserPoolId: aws.String(userPoolID),
+	}
+
+	if v, ok := d.GetOk(names.AttrClientID); ok {
+		v := v.(string)
+		input.ClientId = aws.String(v)
+		id = userPoolID + riskConfigurationResourceIDSeparator + v
+	}
+
+	if v, ok := d.GetOk("account_takeover_risk_configuration"); ok && len(v.([]any)) > 0 {
+		input.AccountTakeoverRiskConfiguration = expandAccountTakeoverRiskConfigurationType(v.([]any))
+	}
+
+	if v, ok := d.GetOk("compromised_credentials_risk_configuration"); ok && len(v.([]any)) > 0 {
+		input.CompromisedCredentialsRiskConfiguration = expandCompromisedCredentialsRiskConfigurationType(v.([]any))
+	}
+
+	if v, ok := d.GetOk("risk_exception_configuration"); ok && len(v.([]any)) > 0 {
+		input.RiskExceptionConfiguration = expandRiskExceptionConfigurationType(v.([]any))
+	}
+
+	_, err := conn.SetRiskConfiguration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting Cognito Risk Configuration (%s): %s", id, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(id)
+	}
+
+	return append(diags, resourceRiskConfigurationRead(ctx, d, meta)...)
+}

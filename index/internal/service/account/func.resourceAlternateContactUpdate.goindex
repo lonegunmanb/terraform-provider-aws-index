@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/account
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/account"
+	"github.com/aws/aws-sdk-go-v2/service/account/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAlternateContactUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AccountClient(ctx)
+
+	accountID, contactType, err := alternateContactParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	email := d.Get("email_address").(string)
+	name := d.Get(names.AttrName).(string)
+	phone := d.Get("phone_number").(string)
+	title := d.Get("title").(string)
+	input := account.PutAlternateContactInput{
+		AlternateContactType: types.AlternateContactType(contactType),
+		EmailAddress:         aws.String(email),
+		Name:                 aws.String(name),
+		PhoneNumber:          aws.String(phone),
+		Title:                aws.String(title),
+	}
+
+	if accountID != "" {
+		input.AccountId = aws.String(accountID)
+	}
+
+	_, err = conn.PutAlternateContact(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Account Alternate Contact (%s): %s", d.Id(), err)
+	}
+
+	if _, err := retry.Operation(func(ctx context.Context) (*types.AlternateContact, error) {
+		return findAlternateContactByTwoPartKey(ctx, conn, accountID, contactType)
+	}).If(func(v *types.AlternateContact, err error) (bool, error) {
+		if err != nil {
+			return false, err
+		}
+
+		equal := email == aws.ToString(v.EmailAddress) && name == aws.ToString(v.Name) && phone == aws.ToString(v.PhoneNumber) && title == aws.ToString(v.Title)
+
+		return !equal, nil
+	}).Run(ctx, d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Account Alternate Contact (%s) update: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceAlternateContactRead(ctx, d, meta)...)
+}

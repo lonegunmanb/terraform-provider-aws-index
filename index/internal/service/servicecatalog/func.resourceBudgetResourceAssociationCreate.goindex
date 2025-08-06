@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBudgetResourceAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	input := &servicecatalog.AssociateBudgetWithResourceInput{
+		BudgetName: aws.String(d.Get("budget_name").(string)),
+		ResourceId: aws.String(d.Get(names.AttrResourceID).(string)),
+	}
+
+	var output *servicecatalog.AssociateBudgetWithResourceOutput
+	err := retry.RetryContext(ctx, d.Timeout(schema.TimeoutCreate), func() *retry.RetryError {
+		var err error
+
+		output, err = conn.AssociateBudgetWithResource(ctx, input)
+
+		if errs.IsAErrorMessageContains[*awstypes.InvalidParametersException](err, "profile does not exist") {
+			return retry.RetryableError(err)
+		}
+
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		output, err = conn.AssociateBudgetWithResource(ctx, input)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "associating Service Catalog Budget with Resource: %s", err)
+	}
+
+	if output == nil {
+		return sdkdiag.AppendErrorf(diags, "creating Service Catalog Budget Resource Association: empty response")
+	}
+
+	d.SetId(budgetResourceAssociationID(d.Get("budget_name").(string), d.Get(names.AttrResourceID).(string)))
+
+	return append(diags, resourceBudgetResourceAssociationRead(ctx, d, meta)...)
+}

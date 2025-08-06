@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/docdb
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/docdb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/docdb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSubnetGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DocDBClient(ctx)
+
+	subnetGroup, err := findDBSubnetGroupByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] DocumentDB Subnet Group (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DocumentDB Subnet Group (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, subnetGroup.DBSubnetGroupArn)
+	d.Set(names.AttrDescription, subnetGroup.DBSubnetGroupDescription)
+	d.Set(names.AttrName, subnetGroup.DBSubnetGroupName)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(subnetGroup.DBSubnetGroupName)))
+	var subnetIDs []string
+	for _, v := range subnetGroup.Subnets {
+		subnetIDs = append(subnetIDs, aws.ToString(v.SubnetIdentifier))
+	}
+	d.Set(names.AttrSubnetIDs, subnetIDs)
+
+	return diags
+}

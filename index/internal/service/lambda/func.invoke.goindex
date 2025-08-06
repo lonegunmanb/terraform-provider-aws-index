@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"crypto/md5"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func invoke(ctx context.Context, conn *lambda.Client, d *schema.ResourceData, action invocationAction) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	functionName := d.Get("function_name").(string)
+	qualifier := d.Get("qualifier").(string)
+	payload, err := buildInput(d, action)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "Lambda Invocation (%s) input transformation failed for input (%s): %s", d.Id(), d.Get("input").(string), err)
+	}
+
+	input := &lambda.InvokeInput{
+		FunctionName:   aws.String(functionName),
+		InvocationType: awstypes.InvocationTypeRequestResponse,
+		Payload:        payload,
+		Qualifier:      aws.String(qualifier),
+	}
+
+	output, err := conn.Invoke(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "invoking Lambda Function (%s): %s", functionName, err)
+	}
+
+	if output.FunctionError != nil {
+		return sdkdiag.AppendErrorf(diags, "invoking Lambda Function (%s): %s", functionName, string(output.Payload))
+	}
+
+	d.SetId(fmt.Sprintf("%s_%s_%x", functionName, qualifier, md5.Sum(payload)))
+	d.Set("result", string(output.Payload))
+
+	return diags
+}

@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appfabric
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appfabric"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appfabric/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *appAuthorizationConnectionResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data appAuthorizationConnectionResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().AppFabricClient(ctx)
+
+	input := &appfabric.ConnectAppAuthorizationInput{}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	input.AppBundleIdentifier = fwflex.StringFromFramework(ctx, data.AppBundleARN)
+	input.AppAuthorizationIdentifier = fwflex.StringFromFramework(ctx, data.AppAuthorizationARN)
+
+	_, err := conn.ConnectAppAuthorization(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating AppFabric App Authorization (%s) Connection", data.AppAuthorizationARN.ValueString()), err.Error())
+
+		return
+	}
+
+	id, err := data.setID()
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("flattening resource ID AppFabric App Authorization (%s) Connection", data.AppAuthorizationARN.ValueString()), err.Error())
+		return
+	}
+	data.ID = types.StringValue(id)
+
+	appAuthorization, err := waitConnectAppAuthorizationCreated(ctx, conn, data.AppAuthorizationARN.ValueString(), data.AppBundleARN.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
+
+	if err != nil {
+		response.State.SetAttribute(ctx, path.Root(names.AttrID), data.ID) // Set 'id' so as to taint the resource.
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for AppFabric App Authorization Connection (%s) create", data.ID.ValueString()), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.App = fwflex.StringToFramework(ctx, appAuthorization.App)
+
+	var tenant tenantModel
+	response.Diagnostics.Append(fwflex.Flatten(ctx, appAuthorization.Tenant, &tenant)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	data.Tenant = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &tenant)
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

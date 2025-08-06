@@ -1,0 +1,30 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+)
+func waitReplicaSSEUpdated(ctx context.Context, conn *dynamodb.Client, region, tableName string, timeout time.Duration) (*awstypes.TableDescription, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.SSEStatusDisabling, awstypes.SSEStatusEnabling, awstypes.SSEStatusUpdating),
+		Target:  enum.Slice(awstypes.SSEStatusDisabled, awstypes.SSEStatusEnabled),
+		Refresh: statusSSE(ctx, conn, tableName, func(o *dynamodb.Options) {
+			o.Region = region
+		}),
+		Timeout:                   max(updateTableTimeout, timeout),
+		ContinuousTargetOccurence: 2,
+		Delay:                     30 * time.Second,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.TableDescription); ok {
+		return output, err
+	}
+
+	return nil, err
+}

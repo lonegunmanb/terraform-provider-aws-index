@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pinpoint
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pinpoint"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/pinpoint/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAppRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).PinpointClient(ctx)
+
+	app, err := findAppByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Pinpoint App (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Pinpoint App (%s): %s", d.Id(), err)
+	}
+
+	settings, err := findAppSettingsByID(ctx, conn, d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Pinpoint App (%s) settings: %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrApplicationID, app.Id)
+	d.Set(names.AttrARN, app.Arn)
+	if err := d.Set("campaign_hook", flattenCampaignHook(settings.CampaignHook)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting campaign_hook: %s", err)
+	}
+	if err := d.Set("limits", flattenCampaignLimits(settings.Limits)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting limits: %s", err)
+	}
+	d.Set(names.AttrName, app.Name)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(app.Name)))
+	if err := d.Set("quiet_time", flattenQuietTime(settings.QuietTime)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting quiet_time: %s", err)
+	}
+
+	return diags
+}

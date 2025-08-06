@@ -1,0 +1,86 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProductUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	input := &servicecatalog.UpdateProductInput{
+		Id: aws.String(d.Id()),
+	}
+
+	if v, ok := d.GetOk("accept_language"); ok {
+		input.AcceptLanguage = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("distributor"); ok {
+		input.Distributor = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrName); ok {
+		input.Name = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrOwner); ok {
+		input.Owner = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("support_description"); ok {
+		input.SupportDescription = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("support_email"); ok {
+		input.SupportEmail = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("support_url"); ok {
+		input.SupportUrl = aws.String(v.(string))
+	}
+
+	if d.HasChange(names.AttrTagsAll) {
+		o, n := d.GetChange(names.AttrTagsAll)
+		oldTags := tftags.New(ctx, o)
+		newTags := tftags.New(ctx, n)
+
+		if removedTags := oldTags.Removed(newTags).IgnoreSystem(names.ServiceCatalog); len(removedTags) > 0 {
+			input.RemoveTags = removedTags.Keys()
+		}
+
+		if updatedTags := oldTags.Updated(newTags).IgnoreSystem(names.ServiceCatalog); len(updatedTags) > 0 {
+			input.AddTags = svcTags(updatedTags)
+		}
+	}
+
+	_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidParametersException](ctx, d.Timeout(schema.TimeoutUpdate), func() (any, error) {
+		return conn.UpdateProduct(ctx, input)
+	}, "profile does not exist")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Service Catalog Product (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceProductRead(ctx, d, meta)...)
+}

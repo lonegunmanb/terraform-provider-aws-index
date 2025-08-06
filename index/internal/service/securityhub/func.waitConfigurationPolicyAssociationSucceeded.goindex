@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/securityhub
+import (
+	"context"
+	"errors"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitConfigurationPolicyAssociationSucceeded(ctx context.Context, conn *securityhub.Client, id string, timeout time.Duration) (*securityhub.GetConfigurationPolicyAssociationOutput, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(types.ConfigurationPolicyAssociationStatusPending),
+		Target:  enum.Slice(types.ConfigurationPolicyAssociationStatusSuccess),
+		Refresh: statusConfigurationPolicyAssociation(ctx, conn, id),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if tfresource.TimedOut(err) {
+		log.Printf("[WARN] Security Hub Configuration Policy Association (%s) still in PENDING state. It can take up to 24 hours for the status to change from PENDING to SUCCESS or FAILURE", id)
+		// We try to wait until SUCCESS state is reached but don't error if still in PENDING state.
+		// We must attempt to wait/retry in order for Policy Disassociations to take effect
+		return findConfigurationPolicyAssociationByID(ctx, conn, id)
+	}
+
+	if output, ok := outputRaw.(*securityhub.GetConfigurationPolicyAssociationOutput); ok {
+		tfresource.SetLastError(err, errors.New(aws.ToString(output.AssociationStatusMessage)))
+
+		return output, err
+	}
+
+	return nil, err
+}

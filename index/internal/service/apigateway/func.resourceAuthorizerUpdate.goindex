@@ -1,0 +1,116 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAuthorizerUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	operations := make([]types.PatchOperation, 0)
+
+	if d.HasChange("authorizer_uri") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/authorizerUri"),
+			Value: aws.String(d.Get("authorizer_uri").(string)),
+		})
+	}
+	if d.HasChange("identity_source") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/identitySource"),
+			Value: aws.String(d.Get("identity_source").(string)),
+		})
+	}
+	if d.HasChange(names.AttrName) {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/name"),
+			Value: aws.String(d.Get(names.AttrName).(string)),
+		})
+	}
+	if d.HasChange(names.AttrType) {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/type"),
+			Value: aws.String(d.Get(names.AttrType).(string)),
+		})
+	}
+	if d.HasChange("authorizer_credentials") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/authorizerCredentials"),
+			Value: aws.String(d.Get("authorizer_credentials").(string)),
+		})
+	}
+	if d.HasChange("authorizer_result_ttl_in_seconds") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/authorizerResultTtlInSeconds"),
+			Value: aws.String(strconv.Itoa(d.Get("authorizer_result_ttl_in_seconds").(int))),
+		})
+	}
+	if d.HasChange("identity_validation_expression") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/identityValidationExpression"),
+			Value: aws.String(d.Get("identity_validation_expression").(string)),
+		})
+	}
+	if d.HasChange("provider_arns") {
+		old, new := d.GetChange("provider_arns")
+		os := old.(*schema.Set)
+		ns := new.(*schema.Set)
+		// providerARNs can't be empty, so add first and then remove
+		additionList := ns.Difference(os)
+		for _, v := range additionList.List() {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpAdd,
+				Path:  aws.String("/providerARNs"),
+				Value: aws.String(v.(string)),
+			})
+		}
+		removalList := os.Difference(ns)
+		for _, v := range removalList.List() {
+			operations = append(operations, types.PatchOperation{
+				Op:    types.OpRemove,
+				Path:  aws.String("/providerARNs"),
+				Value: aws.String(v.(string)),
+			})
+		}
+	}
+
+	input := apigateway.UpdateAuthorizerInput{
+		AuthorizerId:    aws.String(d.Id()),
+		PatchOperations: operations,
+		RestApiId:       aws.String(d.Get("rest_api_id").(string)),
+	}
+
+	_, err := conn.UpdateAuthorizer(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating API Gateway Authorizer (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceAuthorizerRead(ctx, d, meta)...)
+}

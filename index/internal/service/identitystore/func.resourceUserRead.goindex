@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/identitystore
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore/document"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IdentityStoreClient(ctx)
+
+	identityStoreID, userID, err := userParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	out, err := findUserByTwoPartKey(ctx, conn, identityStoreID, userID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] IdentityStore User (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading IdentityStore User (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("addresses", flattenAddresses(out.Addresses)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting addresses: %s", err)
+	}
+	d.Set(names.AttrDisplayName, out.DisplayName)
+	if err := d.Set("emails", flattenEmails(out.Emails)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting emails: %s", err)
+	}
+	if err := d.Set("external_ids", flattenExternalIDs(out.ExternalIds)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting external_ids: %s", err)
+	}
+	d.Set("identity_store_id", out.IdentityStoreId)
+	d.Set("locale", out.Locale)
+	if err := d.Set(names.AttrName, []any{flattenName(out.Name)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting name: %s", err)
+	}
+	d.Set("nickname", out.NickName)
+	if err := d.Set("phone_numbers", flattenPhoneNumbers(out.PhoneNumbers)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting phone_numbers: %s", err)
+	}
+	d.Set("preferred_language", out.PreferredLanguage)
+	d.Set("profile_url", out.ProfileUrl)
+	d.Set("timezone", out.Timezone)
+	d.Set("title", out.Title)
+	d.Set("user_id", out.UserId)
+	d.Set(names.AttrUserName, out.UserName)
+	d.Set("user_type", out.UserType)
+
+	return diags
+}

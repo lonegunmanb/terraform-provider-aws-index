@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findTagOptionResourceAssociations(ctx context.Context, conn *servicecatalog.Client, tagOptionID, resourceID string) ([]awstypes.ResourceDetail, error) {
+	input := &servicecatalog.ListResourcesForTagOptionInput{
+		TagOptionId: aws.String(tagOptionID),
+	}
+
+	var result []awstypes.ResourceDetail
+
+	pages := servicecatalog.NewListResourcesForTagOptionPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: input,
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, detail := range page.ResourceDetails {
+			if aws.ToString(detail.Id) == resourceID {
+				result = append(result, detail)
+			}
+		}
+	}
+
+	return result, nil
+}

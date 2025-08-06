@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dax
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dax"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dax/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceParameterGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DAXClient(ctx)
+
+	describeGroupInput := dax.DescribeParameterGroupsInput{
+		ParameterGroupNames: []string{d.Id()},
+	}
+	resp, err := conn.DescribeParameterGroups(ctx, &describeGroupInput)
+
+	if errs.IsA[*awstypes.ParameterGroupNotFoundFault](err) {
+		log.Printf("[WARN] DAX ParameterGroup %q not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DAX Parameter Group (%s): %s", d.Id(), err)
+	}
+
+	if len(resp.ParameterGroups) == 0 {
+		log.Printf("[WARN] DAX ParameterGroup %q not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	pg := resp.ParameterGroups[0]
+
+	describeParametersInput := dax.DescribeParametersInput{
+		ParameterGroupName: aws.String(d.Id()),
+	}
+	paramresp, err := conn.DescribeParameters(ctx, &describeParametersInput)
+
+	if errs.IsA[*awstypes.ParameterGroupNotFoundFault](err) {
+		log.Printf("[WARN] DAX ParameterGroup %q not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DAX Parameter Group (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrName, pg.ParameterGroupName)
+	desc := pg.Description
+	// default description is " "
+	if desc != nil && aws.ToString(desc) == " " {
+		*desc = ""
+	}
+	d.Set(names.AttrDescription, desc)
+	d.Set(names.AttrParameters, flattenParameterGroupParameters(paramresp.Parameters))
+	return diags
+}

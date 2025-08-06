@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mq
+import (
+	"context"
+	"encoding/base64"
+	"log"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mq"
+	"github.com/aws/aws-sdk-go-v2/service/mq/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).MQClient(ctx)
+
+	configuration, err := findConfigurationByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] MQ Configuration (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading MQ Configuration (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, configuration.Arn)
+	d.Set("authentication_strategy", configuration.AuthenticationStrategy)
+	d.Set(names.AttrDescription, configuration.LatestRevision.Description)
+	d.Set("engine_type", configuration.EngineType)
+	d.Set(names.AttrEngineVersion, configuration.EngineVersion)
+	d.Set("latest_revision", configuration.LatestRevision.Revision)
+	d.Set(names.AttrName, configuration.Name)
+
+	revision := strconv.FormatInt(int64(aws.ToInt32(configuration.LatestRevision.Revision)), 10)
+	configurationRevision, err := conn.DescribeConfigurationRevision(ctx, &mq.DescribeConfigurationRevisionInput{
+		ConfigurationId:       aws.String(d.Id()),
+		ConfigurationRevision: aws.String(revision),
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading MQ Configuration (%s) revision (%s): %s", d.Id(), revision, err)
+	}
+
+	data, err := base64.StdEncoding.DecodeString(aws.ToString(configurationRevision.Data))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "base64 decoding: %s", err)
+	}
+
+	d.Set("data", string(data))
+
+	setTagsOut(ctx, configuration.Tags)
+
+	return diags
+}

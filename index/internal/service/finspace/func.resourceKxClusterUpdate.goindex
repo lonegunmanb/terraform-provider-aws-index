@@ -1,0 +1,97 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/finspace
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/finspace"
+	"github.com/aws/aws-sdk-go-v2/service/finspace/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceKxClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FinSpaceClient(ctx)
+
+	updateDb := false
+	updateCode := false
+
+	CodeConfigIn := &finspace.UpdateKxClusterCodeConfigurationInput{
+		EnvironmentId: aws.String(d.Get("environment_id").(string)),
+		ClusterName:   aws.String(d.Get(names.AttrName).(string)),
+	}
+
+	DatabaseConfigIn := &finspace.UpdateKxClusterDatabasesInput{
+		EnvironmentId: aws.String(d.Get("environment_id").(string)),
+		ClusterName:   aws.String(d.Get(names.AttrName).(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDatabase); ok && len(v.([]any)) > 0 && d.HasChanges(names.AttrDatabase) {
+		DatabaseConfigIn.Databases = expandDatabases(d.Get(names.AttrDatabase).([]any))
+		updateDb = true
+	}
+
+	if v, ok := d.GetOk("code"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil && d.HasChanges("code") {
+		CodeConfigIn.Code = expandCode(v.([]any))
+		updateCode = true
+	}
+
+	if v, ok := d.GetOk("initialization_script"); ok {
+		CodeConfigIn.Code = expandCode(d.Get("code").([]any))
+		if d.HasChanges("initialization_script") {
+			CodeConfigIn.InitializationScript = aws.String(v.(string))
+			updateCode = true
+		} else {
+			CodeConfigIn.InitializationScript = aws.String(d.Get("initialization_script").(string))
+		}
+	}
+
+	if v, ok := d.GetOk("command_line_arguments"); ok && len(v.(map[string]any)) > 0 {
+		CodeConfigIn.Code = expandCode(d.Get("code").([]any))
+		if d.HasChanges("command_line_arguments") {
+			CodeConfigIn.CommandLineArguments = expandCommandLineArguments(v.(map[string]any))
+			updateCode = true
+		} else {
+			CodeConfigIn.CommandLineArguments = expandCommandLineArguments(
+				d.Get("command_line_arguments").(map[string]any))
+		}
+	}
+
+	if updateDb {
+		log.Printf("[DEBUG] Updating FinSpace KxClusterDatabases (%s): %#v", d.Id(), DatabaseConfigIn)
+		if _, err := conn.UpdateKxClusterDatabases(ctx, DatabaseConfigIn); err != nil {
+			return create.AppendDiagError(diags, names.FinSpace, create.ErrActionUpdating, ResNameKxCluster, d.Id(), err)
+		}
+		if _, err := waitKxClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return create.AppendDiagError(diags, names.FinSpace, create.ErrActionUpdating, ResNameKxCluster, d.Id(), err)
+		}
+	}
+
+	if updateCode {
+		log.Printf("[DEBUG] Updating FinSpace KxClusterCodeConfiguration (%s): %#v", d.Id(), CodeConfigIn)
+		if _, err := conn.UpdateKxClusterCodeConfiguration(ctx, CodeConfigIn); err != nil {
+			return create.AppendDiagError(diags, names.FinSpace, create.ErrActionUpdating, ResNameKxCluster, d.Id(), err)
+		}
+		if _, err := waitKxClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return create.AppendDiagError(diags, names.FinSpace, create.ErrActionUpdating, ResNameKxCluster, d.Id(), err)
+		}
+	}
+
+	if !updateCode && !updateDb {
+		return diags
+	}
+	return append(diags, resourceKxClusterRead(ctx, d, meta)...)
+}

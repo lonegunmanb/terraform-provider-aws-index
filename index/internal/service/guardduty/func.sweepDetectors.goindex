@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepDetectors(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+
+	conn := client.GuardDutyClient(ctx)
+	input := &guardduty.ListDetectorsInput{}
+	var sweeperErrs *multierror.Error
+
+	pages := guardduty.NewListDetectorsPaginator(conn, input)
+
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping GuardDuty Detector sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("error retrieving GuardDuty Detectors: %w", err)
+		}
+
+		for _, detectorID := range page.DetectorIds {
+			input := &guardduty.DeleteDetectorInput{
+				DetectorId: &detectorID,
+			}
+
+			log.Printf("[INFO] Deleting GuardDuty Detector: %s", detectorID)
+			_, err := conn.DeleteDetector(ctx, input)
+			if tfawserr.ErrCodeContains(err, "AccessDenied") {
+				log.Printf("[WARN] Skipping GuardDuty Detector (%s): %s", detectorID, err)
+				continue
+			}
+			if err != nil {
+				sweeperErr := fmt.Errorf("error deleting GuardDuty Detector (%s): %w", detectorID, err)
+				log.Printf("[ERROR] %s", sweeperErr)
+				sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+			}
+		}
+	}
+
+	return sweeperErrs.ErrorOrNil()
+}

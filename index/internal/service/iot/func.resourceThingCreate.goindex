@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iot
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iot"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceThingCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IoTClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &iot.CreateThingInput{
+		ThingName: aws.String(name),
+	}
+
+	if v, ok := d.GetOk(names.AttrAttributes); ok && len(v.(map[string]any)) > 0 {
+		input.AttributePayload = &awstypes.AttributePayload{
+			Attributes: flex.ExpandStringValueMap(v.(map[string]any)),
+		}
+	}
+
+	if v, ok := d.GetOk("thing_type_name"); ok {
+		input.ThingTypeName = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateThing(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating IoT Thing (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.ThingName))
+
+	return append(diags, resourceThingRead(ctx, d, meta)...)
+}

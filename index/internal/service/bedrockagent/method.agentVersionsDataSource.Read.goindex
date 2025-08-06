@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagent
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagent"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagent/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *agentVersionsDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	conn := d.Meta().BedrockAgentClient(ctx)
+
+	var data agentVersionsDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	paginator := bedrockagent.NewListAgentVersionsPaginator(conn, &bedrockagent.ListAgentVersionsInput{
+		AgentId: data.AgentID.ValueStringPointer(),
+	})
+
+	var out bedrockagent.ListAgentVersionsOutput
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+
+		if err != nil {
+			resp.Diagnostics.AddError("reading Bedrock Agent Agent Versions", err.Error())
+
+			return
+		}
+
+		if page != nil && len(page.AgentVersionSummaries) > 0 {
+			out.AgentVersionSummaries = append(out.AgentVersionSummaries, page.AgentVersionSummaries...)
+		}
+	}
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, out, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}

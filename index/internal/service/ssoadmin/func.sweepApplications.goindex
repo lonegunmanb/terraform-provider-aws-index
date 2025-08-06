@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepApplications(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	conn := client.SSOAdminClient(ctx)
+	var sweepResources []sweep.Sweepable
+
+	accessDenied := regexache.MustCompile(`AccessDeniedException: .+ is not authorized to perform:`)
+
+	// Need to Read the SSO Instance first; assumes the first instance returned
+	// is where the permission sets exist as AWS SSO currently supports only 1 instance
+	ds := dataSourceInstances()
+	dsData := ds.Data(nil)
+
+	if err := sdk.ReadResource(ctx, ds, dsData, client); err != nil {
+		if accessDenied.MatchString(err.Error()) {
+			log.Printf("[WARN] Skipping SSO Application sweep for %s: %s", region, err)
+			return nil
+		}
+		return err
+	}
+
+	if v, ok := dsData.GetOk(names.AttrARNs); ok && len(v.([]any)) > 0 {
+		instanceARN := v.([]any)[0].(string)
+		input := ssoadmin.ListApplicationsInput{
+			InstanceArn: aws.String(instanceARN),
+		}
+
+		paginator := ssoadmin.NewListApplicationsPaginator(conn, &input)
+		for paginator.HasMorePages() {
+			page, err := paginator.NextPage(ctx)
+			if awsv2.SkipSweepError(err) {
+				log.Printf("[WARN] Skipping SSO Applications sweep for %s: %s", region, err)
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("error listing SSO Applications: %w", err)
+			}
+
+			for _, application := range page.Applications {
+				applicationARN := aws.ToString(application.ApplicationArn)
+				log.Printf("[INFO] Deleting SSO Application: %s", applicationARN)
+
+				sweepResources = append(sweepResources, framework.NewSweepResource(newApplicationResource, client, framework.NewAttribute("application_arn", applicationARN)))
+			}
+		}
+	}
+
+	if err := sweep.SweepOrchestrator(ctx, sweepResources); err != nil {
+		return fmt.Errorf("error sweeping SSO Applications: %w", err)
+	}
+
+	return nil
+}

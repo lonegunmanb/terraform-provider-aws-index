@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
+
+	functionName := d.Get("function_name").(string)
+	statementID := create.Name(d.Get("statement_id").(string), d.Get("statement_id_prefix").(string))
+
+	// There is a bug in the API (reported and acknowledged by AWS)
+	// which causes some permissions to be ignored when API calls are sent in parallel
+	// We work around this bug via mutex
+	conns.GlobalMutexKV.Lock(functionName)
+	defer conns.GlobalMutexKV.Unlock(functionName)
+
+	input := &lambda.AddPermissionInput{
+		Action:       aws.String(d.Get(names.AttrAction).(string)),
+		FunctionName: aws.String(functionName),
+		Principal:    aws.String(d.Get(names.AttrPrincipal).(string)),
+		StatementId:  aws.String(statementID),
+	}
+
+	if v, ok := d.GetOk("event_source_token"); ok {
+		input.EventSourceToken = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("function_url_auth_type"); ok {
+		input.FunctionUrlAuthType = awstypes.FunctionUrlAuthType(v.(string))
+	}
+
+	if v, ok := d.GetOk("principal_org_id"); ok {
+		input.PrincipalOrgID = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("qualifier"); ok {
+		input.Qualifier = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("source_account"); ok {
+		input.SourceAccount = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("source_arn"); ok {
+		input.SourceArn = aws.String(v.(string))
+	}
+
+	// Retry for IAM and Lambda eventual consistency.
+	_, err := tfresource.RetryWhenIsOneOf2[*awstypes.ResourceConflictException, *awstypes.ResourceNotFoundException](ctx, lambdaPropagationTimeout,
+		func() (any, error) {
+			return conn.AddPermission(ctx, input)
+		})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "adding Lambda Permission (%s/%s): %s", functionName, statementID, err)
+	}
+
+	d.SetId(statementID)
+
+	return append(diags, resourcePermissionRead(ctx, d, meta)...)
+}

@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"slices"
+
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func Diff(ctx context.Context, plan, state any, options ...ChangeOption) (*Results, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	opts := NewChangeOptions(options...)
+
+	planValue, stateValue := dereferencePointer(reflect.ValueOf(plan)), dereferencePointer(reflect.ValueOf(state))
+	planType, stateType := planValue.Type(), stateValue.Type()
+	var ignoredFields []string
+	result := Results{}
+
+	if planType != stateType {
+		diags.AddError(
+			"Type mismatch between plan and state",
+			fmt.Sprintf("plan type: %s, state type: %s", planType.String(), stateType.String()),
+		)
+		return &result, diags
+	}
+
+	var hasChanges bool
+	for field := range tfreflect.ExportedStructFields(planValue.Type()) {
+		fieldName := field.Name
+
+		if shouldSkipField(fieldName, opts.IgnoredFields) {
+			ignoredFields = append(ignoredFields, fieldName)
+			continue
+		}
+
+		if !implementsAttrValue(planValue.FieldByIndex(field.Index)) || !implementsAttrValue(stateValue.FieldByIndex(field.Index)) {
+			continue
+		}
+
+		planFieldValue := planValue.FieldByIndex(field.Index).Interface().(attr.Value)
+		stateFieldValue := stateValue.FieldByIndex(field.Index).Interface().(attr.Value)
+
+		if !planFieldValue.Type(ctx).Equal(stateFieldValue.Type(ctx)) {
+			continue
+		}
+
+		if planFieldValue.IsUnknown() {
+			continue
+		}
+
+		if !planFieldValue.Equal(stateFieldValue) {
+			hasChanges = true
+		} else {
+			ignoredFields = append(ignoredFields, fieldName)
+		}
+	}
+
+	result.hasChanges = hasChanges
+	result.ignoredFieldNames = ignoredFields
+
+	return &result, diags
+}

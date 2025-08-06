@@ -1,0 +1,111 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDashboardUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID, dashboardID, err := dashboardParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChangesExcept(names.AttrPermissions, names.AttrTags, names.AttrTagsAll) {
+		inputUD := &quicksight.UpdateDashboardInput{
+			AwsAccountId:       aws.String(awsAccountID),
+			DashboardId:        aws.String(dashboardID),
+			Name:               aws.String(d.Get(names.AttrName).(string)),
+			VersionDescription: aws.String(d.Get("version_description").(string)),
+		}
+
+		if v, ok := d.GetOk("dashboard_publish_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			inputUD.DashboardPublishOptions = quicksightschema.ExpandDashboardPublishOptions(d.Get("dashboard_publish_options").([]any))
+		}
+
+		if v, ok := d.GetOk("source_entity"); ok {
+			inputUD.SourceEntity = quicksightschema.ExpandDashboardSourceEntity(v.([]any))
+		} else {
+			inputUD.Definition = quicksightschema.ExpandDashboardDefinition(d.Get("definition").([]any))
+		}
+
+		if v, ok := d.GetOk(names.AttrParameters); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			inputUD.Parameters = quicksightschema.ExpandParameters(d.Get(names.AttrParameters).([]any))
+		}
+
+		output, err := conn.UpdateDashboard(ctx, inputUD)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QuickSight Dashboard (%s): %s", d.Id(), err)
+		}
+
+		updatedVersionNumber := versionFromDashboardARN(aws.ToString(output.VersionArn))
+
+		if _, err := waitDashboardUpdated(ctx, conn, awsAccountID, dashboardID, updatedVersionNumber, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for QuickSight Dashboard (%s) update: %s", d.Id(), err)
+		}
+
+		inputUDPV := &quicksight.UpdateDashboardPublishedVersionInput{
+			AwsAccountId:  aws.String(awsAccountID),
+			DashboardId:   aws.String(dashboardID),
+			VersionNumber: aws.Int64(updatedVersionNumber),
+		}
+
+		_, err = conn.UpdateDashboardPublishedVersion(ctx, inputUDPV)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QuickSight Dashboard (%s) published version: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange(names.AttrPermissions) {
+		o, n := d.GetChange(names.AttrPermissions)
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+		toGrant, toRevoke := quicksightschema.DiffPermissions(os.List(), ns.List())
+
+		input := &quicksight.UpdateDashboardPermissionsInput{
+			AwsAccountId: aws.String(awsAccountID),
+			DashboardId:  aws.String(dashboardID),
+		}
+
+		if len(toGrant) > 0 {
+			input.GrantPermissions = toGrant
+		}
+
+		if len(toRevoke) > 0 {
+			input.RevokePermissions = toRevoke
+		}
+
+		_, err = conn.UpdateDashboardPermissions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QuickSight Dashboard (%s) permissions: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceDashboardRead(ctx, d, meta)...)
+}

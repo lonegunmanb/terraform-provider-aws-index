@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceProductPortfolioAssociationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
+
+	acceptLanguage, portfolioID, productID, err := productPortfolioAssociationParseID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "could not parse ID (%s): %s", d.Id(), err)
+	}
+
+	output, err := waitProductPortfolioAssociationReady(ctx, conn, acceptLanguage, portfolioID, productID, d.Timeout(schema.TimeoutRead))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Service Catalog Product Portfolio Association (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "describing Service Catalog Product Portfolio Association (%s): %s", d.Id(), err)
+	}
+
+	if output == nil {
+		return sdkdiag.AppendErrorf(diags, "getting Service Catalog Product Portfolio Association (%s): empty response", d.Id())
+	}
+
+	d.Set("accept_language", acceptLanguage)
+	d.Set("portfolio_id", output.Id)
+	d.Set("product_id", productID)
+	d.Set("source_portfolio_id", d.Get("source_portfolio_id").(string))
+
+	return diags
+}

@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/devicefarm
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/devicefarm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/devicefarm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDevicePoolUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DeviceFarmClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &devicefarm.UpdateDevicePoolInput{
+			Arn: aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrName) {
+			input.Name = aws.String(d.Get(names.AttrName).(string))
+		}
+
+		if d.HasChange(names.AttrDescription) {
+			input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		}
+
+		if d.HasChange(names.AttrRule) {
+			input.Rules = expandDevicePoolRules(d.Get(names.AttrRule).(*schema.Set))
+		}
+
+		if d.HasChange("max_devices") {
+			if v, ok := d.GetOk("max_devices"); ok {
+				input.MaxDevices = aws.Int32(int32(v.(int)))
+			} else {
+				input.ClearMaxDevices = aws.Bool(true)
+			}
+		}
+
+		_, err := conn.UpdateDevicePool(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating DeviceFarm Device Pool (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceDevicePoolRead(ctx, d, meta)...)
+}

@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearchserverless
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless"
+	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless/document"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *lifecyclePolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().OpenSearchServerlessClient(ctx)
+
+	var plan lifecyclePolicyResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in := &opensearchserverless.CreateLifecyclePolicyInput{}
+
+	resp.Diagnostics.Append(flex.Expand(ctx, plan, in)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	in.ClientToken = aws.String(id.UniqueId())
+
+	out, err := conn.CreateLifecyclePolicy(ctx, in)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionCreating, ResNameLifecyclePolicy, plan.Name.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+	if out == nil || out.LifecyclePolicyDetail == nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionCreating, ResNameLifecyclePolicy, plan.Name.ValueString(), nil),
+			errors.New("empty output").Error(),
+		)
+		return
+	}
+
+	state := plan
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, out.LifecyclePolicyDetail, &state)...)
+
+	state.ID = flex.StringToFramework(ctx, out.LifecyclePolicyDetail.Name)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}

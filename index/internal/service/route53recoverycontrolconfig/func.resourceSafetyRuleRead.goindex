@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53recoverycontrolconfig
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	r53rcc "github.com/aws/aws-sdk-go-v2/service/route53recoverycontrolconfig"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53recoverycontrolconfig/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSafetyRuleRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53RecoveryControlConfigClient(ctx)
+
+	output, err := findSafetyRuleByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Route53 Recovery Control Config Safety Rule (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "describing Route53 Recovery Control Config Safety Rule: %s", err)
+	}
+
+	if output.AssertionRule != nil {
+		result := output.AssertionRule
+		d.Set(names.AttrARN, result.SafetyRuleArn)
+		d.Set("control_panel_arn", result.ControlPanelArn)
+		d.Set(names.AttrName, result.Name)
+		d.Set(names.AttrStatus, result.Status)
+		d.Set("wait_period_ms", result.WaitPeriodMs)
+
+		if err := d.Set("asserted_controls", flex.FlattenStringValueList(result.AssertedControls)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting asserted_controls: %s", err)
+		}
+
+		if result.RuleConfig != nil {
+			d.Set("rule_config", []any{flattenRuleConfig(result.RuleConfig)})
+		} else {
+			d.Set("rule_config", nil)
+		}
+
+		return diags
+	}
+
+	if output.GatingRule != nil {
+		result := output.GatingRule
+		d.Set(names.AttrARN, result.SafetyRuleArn)
+		d.Set("control_panel_arn", result.ControlPanelArn)
+		d.Set(names.AttrName, result.Name)
+		d.Set(names.AttrStatus, result.Status)
+		d.Set("wait_period_ms", result.WaitPeriodMs)
+
+		if err := d.Set("gating_controls", flex.FlattenStringValueList(result.GatingControls)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting gating_controls: %s", err)
+		}
+
+		if err := d.Set("target_controls", flex.FlattenStringValueList(result.TargetControls)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting target_controls: %s", err)
+		}
+
+		if result.RuleConfig != nil {
+			d.Set("rule_config", []any{flattenRuleConfig(result.RuleConfig)})
+		} else {
+			d.Set("rule_config", nil)
+		}
+	}
+
+	return diags
+}

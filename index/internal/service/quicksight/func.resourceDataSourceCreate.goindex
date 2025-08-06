@@ -1,0 +1,92 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataSourceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID := meta.(*conns.AWSClient).AccountID(ctx)
+	if v, ok := d.GetOk(names.AttrAWSAccountID); ok {
+		awsAccountID = v.(string)
+	}
+	dataSourceID := d.Get("data_source_id").(string)
+	id := dataSourceCreateResourceID(awsAccountID, dataSourceID)
+	input := &quicksight.CreateDataSourceInput{
+		AwsAccountId:         aws.String(awsAccountID),
+		DataSourceId:         aws.String(dataSourceID),
+		DataSourceParameters: quicksightschema.ExpandDataSourceParameters(d.Get(names.AttrParameters).([]any)),
+		Name:                 aws.String(d.Get(names.AttrName).(string)),
+		Tags:                 getTagsIn(ctx),
+		Type:                 awstypes.DataSourceType(d.Get(names.AttrType).(string)),
+	}
+
+	if v, ok := d.GetOk("credentials"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Credentials = quicksightschema.ExpandDataSourceCredentials(v.([]any))
+	}
+
+	if v, ok := d.GetOk("permission"); ok && v.(*schema.Set).Len() != 0 {
+		input.Permissions = quicksightschema.ExpandResourcePermissions(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("ssl_properties"); ok && len(v.([]any)) != 0 && v.([]any)[0] != nil {
+		input.SslProperties = quicksightschema.ExpandSSLProperties(v.([]any))
+	}
+
+	if v, ok := d.GetOk("vpc_connection_properties"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.VpcConnectionProperties = quicksightschema.ExpandVPCConnectionProperties(v.([]any))
+	}
+
+	outputRaw, err := tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateDataSource(ctx, input)
+		},
+		func(err error) (bool, error) {
+			var accessDeniedException *awstypes.AccessDeniedException
+
+			if errors.As(err, &accessDeniedException) && (strings.Contains(accessDeniedException.ErrorMessage(), accessDeniedExceptionAssumeRoleMessage) || strings.Contains(accessDeniedException.ErrorMessage(), accessDeniedExceptionInsufficientPermissionsMessage)) {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating QuickSight Data Source (%s): %s", id, err)
+	}
+
+	if outputRaw == nil {
+		return sdkdiag.AppendErrorf(diags, "creating QuickSight Data Source (%s): empty output", id)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitDataSourceCreated(ctx, conn, awsAccountID, dataSourceID); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting from QuickSight Data Source (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDataSourceRead(ctx, d, meta)...)
+}

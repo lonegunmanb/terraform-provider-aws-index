@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sns
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/attrmap"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePlatformApplicationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SNSClient(ctx)
+
+	// There is no SNS Describe/GetPlatformApplication to fetch attributes like name and platform
+	// We will use the ID, which should be a platform application ARN, to:
+	//  * Validate its an appropriate ARN on import
+	//  * Parse out the name and platform
+	arn, name, platform, err := parsePlatformApplicationResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	attributes, err := findPlatformApplicationAttributesByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SNS Platform Application (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SNS Platform Application (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, arn)
+	d.Set(names.AttrName, name)
+	d.Set("platform", platform)
+
+	err = platformApplicationAttributeMap.APIAttributesToResourceData(attributes, d)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	return diags
+}

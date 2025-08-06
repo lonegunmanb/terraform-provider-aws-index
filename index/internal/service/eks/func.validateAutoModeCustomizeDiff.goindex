@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func validateAutoModeCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ any) error {
+	if d.HasChanges("compute_config", "kubernetes_network_config", "storage_config") {
+		computeConfig := expandComputeConfigRequest(d.Get("compute_config").([]any))
+		kubernetesNetworkConfig := expandKubernetesNetworkConfigRequest(d.Get("kubernetes_network_config").([]any))
+		storageConfig := expandStorageConfigRequest(d.Get("storage_config").([]any))
+
+		computeConfigEnabled := computeConfig != nil && computeConfig.Enabled != nil && aws.ToBool(computeConfig.Enabled)
+		kubernetesNetworkConfigEnabled := kubernetesNetworkConfig != nil && kubernetesNetworkConfig.ElasticLoadBalancing != nil && kubernetesNetworkConfig.ElasticLoadBalancing.Enabled != nil && aws.ToBool(kubernetesNetworkConfig.ElasticLoadBalancing.Enabled)
+		storageConfigEnabled := storageConfig != nil && storageConfig.BlockStorage != nil && storageConfig.BlockStorage.Enabled != nil && aws.ToBool(storageConfig.BlockStorage.Enabled)
+
+		if computeConfigEnabled != kubernetesNetworkConfigEnabled || computeConfigEnabled != storageConfigEnabled {
+			return errors.New("compute_config.enabled, kubernetes_networking_config.elastic_load_balancing.enabled, and storage_config.block_storage.enabled must all be set to either true or false")
+		}
+	}
+
+	return nil
+}

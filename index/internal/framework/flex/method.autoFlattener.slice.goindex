@@ -1,0 +1,173 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	smithyjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	"github.com/shopspring/decimal"
+)
+func (flattener autoFlattener) slice(ctx context.Context, sourcePath path.Path, vFrom reflect.Value, targetPath path.Path, tTo attr.Type, vTo reflect.Value, fieldOpts fieldOpts) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	switch tSliceElem := vFrom.Type().Elem(); tSliceElem.Kind() {
+	case reflect.Int32, reflect.Int64:
+		switch tTo := tTo.(type) {
+		case basetypes.ListTypable:
+			//
+			// []int32 or []int64 -> types.List(OfInt64).
+			//
+			diags.Append(flattener.sliceOfPrimtiveToList(ctx, vFrom, tTo, vTo, types.Int64Type, newInt64ValueFromReflectValue, fieldOpts)...)
+			return diags
+
+		case basetypes.SetTypable:
+			//
+			// []int32 or []int64 -> types.Set(OfInt64).
+			//
+			diags.Append(flattener.sliceOfPrimitiveToSet(ctx, vFrom, tTo, vTo, types.Int64Type, newInt64ValueFromReflectValue, fieldOpts)...)
+			return diags
+		}
+
+	case reflect.String:
+		var elementType attr.Type = types.StringType
+		attrValueFromReflectValue := newStringValueFromReflectValue
+		if tTo, ok := tTo.(attr.TypeWithElementType); ok {
+			if tElem, ok := tTo.ElementType().(basetypes.StringTypable); ok {
+				//
+				// []stringy -> types.List/Set(OfStringEnum).
+				//
+				elementType = tElem
+				attrValueFromReflectValue = func(val reflect.Value) (attr.Value, diag.Diagnostics) {
+					return tElem.ValueFromString(ctx, types.StringValue(val.String()))
+				}
+			}
+		}
+
+		switch tTo := tTo.(type) {
+		case basetypes.ListTypable:
+			//
+			// []string -> types.List(OfString).
+			//
+			diags.Append(flattener.sliceOfPrimtiveToList(ctx, vFrom, tTo, vTo, elementType, attrValueFromReflectValue, fieldOpts)...)
+			return diags
+
+		case basetypes.SetTypable:
+			//
+			// []string -> types.Set(OfString).
+			//
+			diags.Append(flattener.sliceOfPrimitiveToSet(ctx, vFrom, tTo, vTo, elementType, attrValueFromReflectValue, fieldOpts)...)
+			return diags
+		}
+
+	case reflect.Uint8:
+		switch tTo := tTo.(type) {
+		case basetypes.StringTypable:
+			//
+			// []byte (or []uint8) -> types.String.
+			//
+			vFrom = reflect.ValueOf(string(vFrom.Bytes()))
+			diags.Append(flattener.string(ctx, vFrom, false, tTo, vTo, fieldOpts)...)
+			return diags
+		}
+
+	case reflect.Pointer:
+		switch tSliceElem.Elem().Kind() {
+		case reflect.Int32:
+			switch tTo := tTo.(type) {
+			case basetypes.ListTypable:
+				//
+				// []*int32 -> types.List(OfInt64).
+				//
+				diags.Append(flattener.sliceOfPrimtiveToList(ctx, vFrom, tTo, vTo, types.Int64Type, newInt64ValueFromReflectPointerValue, fieldOpts)...)
+				return diags
+
+			case basetypes.SetTypable:
+				//
+				// []*int32 -> types.Set(OfInt64).
+				//
+				diags.Append(flattener.sliceOfPrimitiveToSet(ctx, vFrom, tTo, vTo, types.Int64Type, newInt64ValueFromReflectPointerValue, fieldOpts)...)
+				return diags
+			}
+
+		case reflect.Int64:
+			switch tTo := tTo.(type) {
+			case basetypes.ListTypable:
+				//
+				// []*int64 -> types.List(OfInt64).
+				//
+				diags.Append(flattener.sliceOfPrimtiveToList(ctx, vFrom, tTo, vTo, types.Int64Type, newInt64ValueFromReflectPointerValue, fieldOpts)...)
+				return diags
+
+			case basetypes.SetTypable:
+				//
+				// []*int64 -> types.Set(OfInt64).
+				//
+				diags.Append(flattener.sliceOfPrimitiveToSet(ctx, vFrom, tTo, vTo, types.Int64Type, newInt64ValueFromReflectPointerValue, fieldOpts)...)
+				return diags
+			}
+
+		case reflect.String:
+			switch tTo := tTo.(type) {
+			case basetypes.ListTypable:
+				//
+				// []*string -> types.List(OfString).
+				//
+				diags.Append(flattener.sliceOfPrimtiveToList(ctx, vFrom, tTo, vTo, types.StringType, newStringValueFromReflectPointerValue, fieldOpts)...)
+				return diags
+
+			case basetypes.SetTypable:
+				//
+				// []*string -> types.Set(OfString).
+				//
+				diags.Append(flattener.sliceOfPrimitiveToSet(ctx, vFrom, tTo, vTo, types.StringType, newStringValueFromReflectPointerValue, fieldOpts)...)
+				return diags
+			}
+
+		case reflect.Struct:
+			if tTo, ok := tTo.(fwtypes.NestedObjectCollectionType); ok {
+				//
+				// []*struct -> types.List(OfObject).
+				//
+				diags.Append(flattener.sliceOfStructToNestedObjectCollection(ctx, sourcePath, vFrom, targetPath, tTo, vTo, fieldOpts)...)
+				return diags
+			}
+		}
+
+	case reflect.Struct:
+		if tTo, ok := tTo.(fwtypes.NestedObjectCollectionType); ok {
+			//
+			// []struct -> types.List(OfObject).
+			//
+			diags.Append(flattener.sliceOfStructToNestedObjectCollection(ctx, sourcePath, vFrom, targetPath, tTo, vTo, fieldOpts)...)
+			return diags
+		}
+
+	case reflect.Interface:
+		if tTo, ok := tTo.(fwtypes.NestedObjectCollectionType); ok {
+			//
+			// []interface -> types.List(OfObject).
+			//
+			diags.Append(flattener.sliceOfStructToNestedObjectCollection(ctx, sourcePath, vFrom, targetPath, tTo, vTo, fieldOpts)...)
+			return diags
+		}
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "AutoFlex Flatten; incompatible types", map[string]any{
+		"from": vFrom.Kind(),
+		"to":   tTo,
+	})
+
+	return diags
+}

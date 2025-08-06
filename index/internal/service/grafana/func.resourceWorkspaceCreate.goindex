@@ -1,0 +1,101 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/grafana
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/grafana"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/grafana/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkspaceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GrafanaClient(ctx)
+
+	input := &grafana.CreateWorkspaceInput{
+		AccountAccessType:       awstypes.AccountAccessType(d.Get("account_access_type").(string)),
+		AuthenticationProviders: flex.ExpandStringyValueList[awstypes.AuthenticationProviderTypes](d.Get("authentication_providers").([]any)),
+		ClientToken:             aws.String(id.UniqueId()),
+		PermissionType:          awstypes.PermissionType(d.Get("permission_type").(string)),
+		Tags:                    getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrConfiguration); ok {
+		input.Configuration = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("data_sources"); ok {
+		input.WorkspaceDataSources = flex.ExpandStringyValueList[awstypes.DataSourceType](v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.WorkspaceDescription = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("grafana_version"); ok {
+		input.GrafanaVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrName); ok {
+		input.WorkspaceName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("network_access_control"); ok {
+		input.NetworkAccessControl = expandNetworkAccessControl(v.([]any))
+	}
+
+	if v, ok := d.GetOk("notification_destinations"); ok {
+		input.WorkspaceNotificationDestinations = flex.ExpandStringyValueList[awstypes.NotificationDestinationType](v.([]any))
+	}
+
+	if v, ok := d.GetOk("organization_role_name"); ok {
+		input.OrganizationRoleName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("organizational_units"); ok {
+		input.WorkspaceOrganizationalUnits = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrRoleARN); ok {
+		input.WorkspaceRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("stack_set_name"); ok {
+		input.StackSetName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrVPCConfiguration); ok {
+		input.VpcConfiguration = expandVPCConfiguration(v.([]any))
+	}
+
+	output, err := conn.CreateWorkspace(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Grafana Workspace: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.Workspace.Id))
+
+	if _, err := waitWorkspaceCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Grafana Workspace (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceWorkspaceRead(ctx, d, meta)...)
+}

@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceContributorInsightsCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	tableName := d.Get(names.AttrTableName).(string)
+	input := &dynamodb.UpdateContributorInsightsInput{
+		ContributorInsightsAction: awstypes.ContributorInsightsActionEnable,
+		TableName:                 aws.String(tableName),
+	}
+
+	var indexName string
+	if v, ok := d.GetOk("index_name"); ok {
+		indexName = v.(string)
+		input.IndexName = aws.String(indexName)
+	}
+
+	_, err := conn.UpdateContributorInsights(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DynamoDB Contributor Insights for table (%s): %s", tableName, err)
+	}
+
+	d.SetId(contributorInsightsCreateResourceID(tableName, indexName, meta.(*conns.AWSClient).AccountID(ctx)))
+
+	if _, err := waitContributorInsightsCreated(ctx, conn, tableName, indexName, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DynamoDB Contributor Insights (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceContributorInsightsRead(ctx, d, meta)...)
+}

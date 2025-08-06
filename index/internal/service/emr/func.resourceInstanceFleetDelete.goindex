@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceFleetDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	// AWS EMR Instance Fleet does not support DELETE; resizing cluster to zero before removing from state.
+	log.Printf("[DEBUG] Deleting EMR Instance Fleet: %s", d.Id())
+	_, err := conn.ModifyInstanceFleet(ctx, &emr.ModifyInstanceFleetInput{
+		ClusterId: aws.String(d.Get("cluster_id").(string)),
+		InstanceFleet: &awstypes.InstanceFleetModifyConfig{
+			InstanceFleetId:        aws.String(d.Id()),
+			TargetOnDemandCapacity: aws.Int32(0),
+			TargetSpotCapacity:     aws.Int32(0),
+		},
+	})
+
+	// Ignore certain errors that indicate the fleet is already (being) deleted
+	if errs.IsAErrorMessageContains[*awstypes.InvalidRequestException](err, "instance fleet may only be modified when the cluster is running or waiting") {
+		return diags
+	}
+	if errs.IsAErrorMessageContains[*awstypes.InvalidRequestException](err, "A job flow that is shutting down, terminated, or finished may not be modified") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting EMR Instance Fleet (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

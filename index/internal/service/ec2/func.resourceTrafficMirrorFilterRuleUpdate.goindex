@@ -1,0 +1,101 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTrafficMirrorFilterRuleUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	input := &ec2.ModifyTrafficMirrorFilterRuleInput{
+		TrafficMirrorFilterRuleId: aws.String(d.Id()),
+	}
+
+	var removeFields []awstypes.TrafficMirrorFilterRuleField
+
+	if d.HasChange(names.AttrDescription) {
+		if v := d.Get(names.AttrDescription).(string); v != "" {
+			input.Description = aws.String(v)
+		} else {
+			removeFields = append(removeFields, awstypes.TrafficMirrorFilterRuleFieldDescription)
+		}
+	}
+
+	if d.HasChange("destination_cidr_block") {
+		input.DestinationCidrBlock = aws.String(d.Get("destination_cidr_block").(string))
+	}
+
+	if d.HasChange("destination_port_range") {
+		if v, ok := d.GetOk("destination_port_range"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.DestinationPortRange = expandTrafficMirrorPortRangeRequest(v.([]any)[0].(map[string]any))
+			// Modify request that adds port range seems to fail if protocol is not set in the request.
+			input.Protocol = aws.Int32(int32(d.Get(names.AttrProtocol).(int)))
+		} else {
+			removeFields = append(removeFields, awstypes.TrafficMirrorFilterRuleFieldDestinationPortRange)
+		}
+	}
+
+	if d.HasChange(names.AttrProtocol) {
+		if v := d.Get(names.AttrProtocol).(int); v != 0 {
+			input.Protocol = aws.Int32(int32(v))
+		} else {
+			removeFields = append(removeFields, awstypes.TrafficMirrorFilterRuleFieldProtocol)
+		}
+	}
+
+	if d.HasChange("rule_action") {
+		input.RuleAction = awstypes.TrafficMirrorRuleAction(d.Get("rule_action").(string))
+	}
+
+	if d.HasChange("rule_number") {
+		input.RuleNumber = aws.Int32(int32(d.Get("rule_number").(int)))
+	}
+
+	if d.HasChange("source_cidr_block") {
+		input.SourceCidrBlock = aws.String(d.Get("source_cidr_block").(string))
+	}
+
+	if d.HasChange("source_port_range") {
+		if v, ok := d.GetOk("source_port_range"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.SourcePortRange = expandTrafficMirrorPortRangeRequest(v.([]any)[0].(map[string]any))
+			// Modify request that adds port range seems to fail if protocol is not set in the request.
+			input.Protocol = aws.Int32(int32(d.Get(names.AttrProtocol).(int)))
+		} else {
+			removeFields = append(removeFields, awstypes.TrafficMirrorFilterRuleFieldSourcePortRange)
+		}
+	}
+
+	if d.HasChange("traffic_direction") {
+		input.TrafficDirection = awstypes.TrafficDirection(d.Get("traffic_direction").(string))
+	}
+
+	if len(removeFields) > 0 {
+		input.RemoveFields = removeFields
+	}
+
+	_, err := conn.ModifyTrafficMirrorFilterRule(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating EC2 Traffic Mirror Filter Rule (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceTrafficMirrorFilterRuleRead(ctx, d, meta)...)
+}

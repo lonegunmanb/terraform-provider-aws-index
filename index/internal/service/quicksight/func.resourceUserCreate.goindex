@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID := meta.(*conns.AWSClient).AccountID(ctx)
+	if v, ok := d.GetOk(names.AttrAWSAccountID); ok {
+		awsAccountID = v.(string)
+	}
+	email := d.Get(names.AttrEmail).(string)
+	namespace := d.Get(names.AttrNamespace).(string)
+	input := &quicksight.RegisterUserInput{
+		AwsAccountId: aws.String(awsAccountID),
+		Email:        aws.String(email),
+		IdentityType: awstypes.IdentityType(d.Get("identity_type").(string)),
+		Namespace:    aws.String(namespace),
+		UserRole:     awstypes.UserRole(d.Get("user_role").(string)),
+	}
+
+	if v, ok := d.GetOk("iam_arn"); ok {
+		input.IamArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("session_name"); ok {
+		input.SessionName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrUserName); ok {
+		input.UserName = aws.String(v.(string))
+	}
+
+	output, err := conn.RegisterUser(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "registering QuickSight User (%s): %s", email, err)
+	}
+
+	d.SetId(userCreateResourceID(awsAccountID, namespace, aws.ToString(output.User.UserName)))
+
+	if awstypes.IdentityType(d.Get("identity_type").(string)) == awstypes.IdentityTypeQuicksight {
+		userInvitationUrl := aws.ToString(output.UserInvitationUrl)
+		d.Set("user_invitation_url", userInvitationUrl)
+	}
+
+	return append(diags, resourceUserRead(ctx, d, meta)...)
+}

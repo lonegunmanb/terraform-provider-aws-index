@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/securityhub
+import (
+	"context"
+	"errors"
+	"log"
+	"math"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub"
+	"github.com/aws/aws-sdk-go-v2/service/securityhub/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfigurationPolicyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SecurityHubClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &securityhub.CreateConfigurationPolicyInput{
+		Name: aws.String(name),
+	}
+
+	if v, ok := d.GetOk("configuration_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		policy := expandPolicyMemberSecurityHub(v.([]any)[0].(map[string]any))
+		if err := validatePolicyMemberSecurityHub(policy); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		input.ConfigurationPolicy = policy
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateConfigurationPolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Security Hub Configuration Policy (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Id))
+
+	return append(diags, resourceConfigurationPolicyRead(ctx, d, meta)...)
+}

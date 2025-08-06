@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscalingplans
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscalingplans"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscalingplans/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceScalingPlanCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AutoScalingPlansClient(ctx)
+
+	scalingPlanName := d.Get(names.AttrName).(string)
+	input := autoscalingplans.CreateScalingPlanInput{
+		ApplicationSource:   expandApplicationSource(d.Get("application_source").([]any)),
+		ScalingInstructions: expandScalingInstructions(d.Get("scaling_instruction").(*schema.Set)),
+		ScalingPlanName:     aws.String(scalingPlanName),
+	}
+
+	output, err := conn.CreateScalingPlan(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Auto Scaling Scaling Plan (%s): %s", scalingPlanName, err)
+	}
+
+	scalingPlanVersion := int(aws.ToInt64(output.ScalingPlanVersion))
+	d.SetId(scalingPlanCreateResourceID(scalingPlanName, scalingPlanVersion))
+	d.Set("scaling_plan_version", scalingPlanVersion)
+
+	_, err = waitScalingPlanCreated(ctx, conn, scalingPlanName, scalingPlanVersion)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Scaling Plan (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceScalingPlanRead(ctx, d, meta)...)
+}

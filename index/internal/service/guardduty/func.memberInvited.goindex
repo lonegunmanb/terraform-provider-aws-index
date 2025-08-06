@@ -1,0 +1,39 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func memberInvited(out *guardduty.GetMembersOutput, accountID string) (bool, error) {
+	if out == nil || len(out.Members) == 0 {
+		return true, fmt.Errorf("reading GuardDuty Member %q: member missing from response", accountID)
+	}
+
+	member := out.Members[0]
+	status := aws.ToString(member.RelationshipStatus)
+
+	if status == "Disabled" || status == "Enabled" || status == "Invited" {
+		return false, nil
+	}
+
+	if status == "Created" || status == "EmailVerificationInProgress" {
+		return true, fmt.Errorf("Expected member to be invited but was in state: %s", status)
+	}
+
+	return false, fmt.Errorf("inviting GuardDuty Member %q: invalid status: %s", accountID, status)
+}

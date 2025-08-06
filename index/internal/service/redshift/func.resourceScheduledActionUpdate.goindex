@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceScheduledActionUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	input := &redshift.ModifyScheduledActionInput{
+		ScheduledActionName: aws.String(d.Get(names.AttrName).(string)),
+	}
+
+	if d.HasChange(names.AttrDescription) {
+		input.ScheduledActionDescription = aws.String(d.Get(names.AttrDescription).(string))
+	}
+
+	if d.HasChange("enable") {
+		input.Enable = aws.Bool(d.Get("enable").(bool))
+	}
+
+	if hasChange, v := d.HasChange("end_time"), d.Get("end_time").(string); hasChange && v != "" {
+		t, _ := time.Parse(time.RFC3339, v)
+
+		input.EndTime = aws.Time(t)
+	}
+
+	if d.HasChange("iam_role") {
+		input.IamRole = aws.String(d.Get("iam_role").(string))
+	}
+
+	if d.HasChange(names.AttrSchedule) {
+		input.Schedule = aws.String(d.Get(names.AttrSchedule).(string))
+	}
+
+	if hasChange, v := d.HasChange(names.AttrStartTime), d.Get(names.AttrStartTime).(string); hasChange && v != "" {
+		t, _ := time.Parse(time.RFC3339, v)
+
+		input.StartTime = aws.Time(t)
+	}
+
+	if d.HasChange("target_action") {
+		input.TargetAction = expandScheduledActionType(d.Get("target_action").([]any)[0].(map[string]any))
+	}
+
+	log.Printf("[DEBUG] Updating Redshift Scheduled Action: %#v", input)
+	_, err := conn.ModifyScheduledAction(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Redshift Scheduled Action (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

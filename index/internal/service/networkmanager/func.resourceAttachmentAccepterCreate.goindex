@@ -1,0 +1,127 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAttachmentAccepterCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	var state awstypes.AttachmentState
+	attachmentID := d.Get("attachment_id").(string)
+	attachmentType := awstypes.AttachmentType(d.Get("attachment_type").(string))
+
+	switch attachmentType {
+	case awstypes.AttachmentTypeVpc:
+		vpcAttachment, err := findVPCAttachmentByID(ctx, conn, attachmentID)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager VPC Attachment (%s): %s", attachmentID, err)
+		}
+
+		state = vpcAttachment.Attachment.State
+
+		d.SetId(attachmentID)
+
+	case awstypes.AttachmentTypeSiteToSiteVpn:
+		vpnAttachment, err := findSiteToSiteVPNAttachmentByID(ctx, conn, attachmentID)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager Site To Site VPN Attachment (%s): %s", attachmentID, err)
+		}
+
+		state = vpnAttachment.Attachment.State
+
+		d.SetId(attachmentID)
+
+	case awstypes.AttachmentTypeConnect:
+		connectAttachment, err := findConnectAttachmentByID(ctx, conn, attachmentID)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager Connect Attachment (%s): %s", attachmentID, err)
+		}
+
+		state = connectAttachment.Attachment.State
+
+		d.SetId(attachmentID)
+
+	case awstypes.AttachmentTypeTransitGatewayRouteTable:
+		tgwAttachment, err := findTransitGatewayRouteTableAttachmentByID(ctx, conn, attachmentID)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager Transit Gateway Route Table Attachment (%s): %s", attachmentID, err)
+		}
+
+		state = tgwAttachment.Attachment.State
+
+		d.SetId(attachmentID)
+
+	case awstypes.AttachmentTypeDirectConnectGateway:
+		dxgwAttachment, err := findDirectConnectGatewayAttachmentByID(ctx, conn, attachmentID)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Network Manager Direct Connect Gateway Attachment (%s): %s", attachmentID, err)
+		}
+
+		state = dxgwAttachment.Attachment.State
+
+		d.SetId(attachmentID)
+
+	default:
+		return sdkdiag.AppendErrorf(diags, "unsupported Network Manager Attachment type: %s", attachmentType)
+	}
+
+	if state == awstypes.AttachmentStatePendingAttachmentAcceptance || state == awstypes.AttachmentStatePendingTagAcceptance {
+		input := &networkmanager.AcceptAttachmentInput{
+			AttachmentId: aws.String(attachmentID),
+		}
+
+		_, err := conn.AcceptAttachment(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "accepting Network Manager Attachment (%s): %s", attachmentID, err)
+		}
+
+		switch attachmentType {
+		case awstypes.AttachmentTypeVpc:
+			if _, err := waitVPCAttachmentAvailable(ctx, conn, attachmentID, d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Network Manager VPC Attachment (%s) to be attached: %s", attachmentID, err)
+			}
+
+		case awstypes.AttachmentTypeSiteToSiteVpn:
+			if _, err := waitSiteToSiteVPNAttachmentAvailable(ctx, conn, attachmentID, d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Site To Site VPN Attachment (%s) create: %s", attachmentID, err)
+			}
+
+		case awstypes.AttachmentTypeConnect:
+			if _, err := waitConnectAttachmentAvailable(ctx, conn, attachmentID, d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Connect Attachment (%s) create: %s", attachmentID, err)
+			}
+
+		case awstypes.AttachmentTypeTransitGatewayRouteTable:
+			if _, err := waitTransitGatewayRouteTableAttachmentAvailable(ctx, conn, attachmentID, d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Transit Gateway Route Table Attachment (%s) create: %s", attachmentID, err)
+			}
+
+		case awstypes.AttachmentTypeDirectConnectGateway:
+			if _, err := waitDirectConnectGatewayAttachmentAvailable(ctx, conn, attachmentID, d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Direct Connect Gateway Attachment (%s) create: %s", attachmentID, err)
+			}
+		}
+	}
+
+	return append(diags, resourceAttachmentAccepterRead(ctx, d, meta)...)
+}

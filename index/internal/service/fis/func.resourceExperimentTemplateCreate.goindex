@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fis
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fis"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fis/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceExperimentTemplateCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FISClient(ctx)
+
+	input := fis.CreateExperimentTemplateInput{
+		Actions:          expandExperimentTemplateActions(d.Get(names.AttrAction).(*schema.Set)),
+		ClientToken:      aws.String(sdkid.UniqueId()),
+		Description:      aws.String(d.Get(names.AttrDescription).(string)),
+		LogConfiguration: expandExperimentTemplateLogConfiguration(d.Get("log_configuration").([]any)),
+		RoleArn:          aws.String(d.Get(names.AttrRoleARN).(string)),
+		StopConditions:   expandExperimentTemplateStopConditions(d.Get("stop_condition").(*schema.Set)),
+		Tags:             getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("experiment_options"); ok {
+		input.ExperimentOptions = expandCreateExperimentTemplateExperimentOptionsInput(v.([]any))
+	}
+
+	if v, ok := d.GetOk("experiment_report_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.ExperimentReportConfiguration = expandCreateExperimentTemplateReportConfigurationInput(v.([]any)[0].(map[string]any))
+	}
+
+	if targets, err := expandExperimentTemplateTargets(d.Get(names.AttrTarget).(*schema.Set)); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	} else {
+		input.Targets = targets
+	}
+
+	output, err := conn.CreateExperimentTemplate(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating FIS Experiment Template: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.ExperimentTemplate.Id))
+
+	return append(diags, resourceExperimentTemplateRead(ctx, d, meta)...)
+}

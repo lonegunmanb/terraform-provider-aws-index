@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func parameterChanges(o, n any) (remove, addOrUpdate []*awstypes.ParameterNameValue) {
+	if o == nil {
+		o = new(schema.Set)
+	}
+	if n == nil {
+		n = new(schema.Set)
+	}
+	os := o.(*schema.Set)
+	ns := n.(*schema.Set)
+
+	om := make(map[string]*awstypes.ParameterNameValue, os.Len())
+	for _, raw := range os.List() {
+		param := raw.(map[string]any)
+		om[param[names.AttrName].(string)] = expandParameter(param)
+	}
+	nm := make(map[string]*awstypes.ParameterNameValue, len(addOrUpdate))
+	for _, raw := range ns.List() {
+		param := raw.(map[string]any)
+		nm[param[names.AttrName].(string)] = expandParameter(param)
+	}
+
+	// Remove: key is in old, but not in new
+	remove = make([]*awstypes.ParameterNameValue, 0, os.Len())
+	for k := range om {
+		if _, ok := nm[k]; !ok {
+			remove = append(remove, om[k])
+		}
+	}
+
+	// Add or Update: key is in new, but not in old or has changed value
+	addOrUpdate = make([]*awstypes.ParameterNameValue, 0, ns.Len())
+	for k, nv := range nm {
+		ov, ok := om[k]
+		if !ok || ok && (aws.ToString(nv.ParameterValue) != aws.ToString(ov.ParameterValue)) {
+			addOrUpdate = append(addOrUpdate, nm[k])
+		}
+	}
+
+	return remove, addOrUpdate
+}

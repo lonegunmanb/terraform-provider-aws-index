@@ -1,0 +1,124 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTriggerCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	triggerType := d.Get(names.AttrType).(string)
+	input := &glue.CreateTriggerInput{
+		Actions:         expandActions(d.Get(names.AttrActions).([]any)),
+		Name:            aws.String(name),
+		Tags:            getTagsIn(ctx),
+		Type:            awstypes.TriggerType(triggerType),
+		StartOnCreation: d.Get("start_on_creation").(bool),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("event_batching_condition"); ok {
+		input.EventBatchingCondition = expandEventBatchingCondition(v.([]any))
+	}
+
+	if v, ok := d.GetOk("predicate"); ok {
+		input.Predicate = expandPredicate(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrSchedule); ok {
+		input.Schedule = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("workflow_name"); ok {
+		input.WorkflowName = aws.String(v.(string))
+	}
+
+	if d.Get(names.AttrEnabled).(bool) && triggerType != string(awstypes.TriggerTypeOnDemand) {
+		start := true
+
+		if triggerType == string(awstypes.TriggerTypeEvent) {
+			start = false
+		}
+
+		input.StartOnCreation = start
+	}
+
+	if v, ok := d.GetOk("workflow_name"); ok {
+		input.WorkflowName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("start_on_creation"); ok {
+		input.StartOnCreation = v.(bool)
+	}
+
+	log.Printf("[DEBUG] Creating Glue Trigger: %+v", input)
+	err := retry.RetryContext(ctx, propagationTimeout, func() *retry.RetryError {
+		_, err := conn.CreateTrigger(ctx, input)
+		if err != nil {
+			// Retry IAM propagation errors
+			if errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "Service is unable to assume provided role") {
+				return retry.RetryableError(err)
+			}
+			// Retry concurrent workflow modification errors
+			if errs.IsAErrorMessageContains[*awstypes.ConcurrentModificationException](err, "was modified while adding trigger") {
+				return retry.RetryableError(err)
+			}
+
+			return retry.NonRetryableError(err)
+		}
+		return nil
+	})
+	if tfresource.TimedOut(err) {
+		_, err = conn.CreateTrigger(ctx, input)
+	}
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Glue Trigger (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	log.Printf("[DEBUG] Waiting for Glue Trigger (%s) to create", d.Id())
+	if _, err := waitTriggerCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		if errs.IsA[*awstypes.EntityNotFoundException](err) {
+			return diags
+		}
+		return sdkdiag.AppendErrorf(diags, "waiting for Glue Trigger (%s) to be Created: %s", d.Id(), err)
+	}
+
+	if d.Get(names.AttrEnabled).(bool) && triggerType == string(awstypes.TriggerTypeOnDemand) {
+		input := &glue.StartTriggerInput{
+			Name: aws.String(d.Id()),
+		}
+
+		log.Printf("[DEBUG] Starting Glue Trigger: %+v", input)
+		_, err := conn.StartTrigger(ctx, input)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "starting Glue Trigger (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceTriggerRead(ctx, d, meta)...)
+}

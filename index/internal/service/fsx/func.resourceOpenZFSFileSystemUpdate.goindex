@@ -1,0 +1,131 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceOpenZFSFileSystemUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	if d.HasChangesExcept(
+		"delete_options",
+		"final_backup_tags",
+		"skip_final_backup",
+		names.AttrTags,
+		names.AttrTagsAll,
+	) {
+		input := &fsx.UpdateFileSystemInput{
+			ClientRequestToken:   aws.String(id.UniqueId()),
+			FileSystemId:         aws.String(d.Id()),
+			OpenZFSConfiguration: &awstypes.UpdateFileSystemOpenZFSConfiguration{},
+		}
+
+		if d.HasChange("automatic_backup_retention_days") {
+			input.OpenZFSConfiguration.AutomaticBackupRetentionDays = aws.Int32(int32(d.Get("automatic_backup_retention_days").(int)))
+		}
+
+		if d.HasChange("copy_tags_to_backups") {
+			input.OpenZFSConfiguration.CopyTagsToBackups = aws.Bool(d.Get("copy_tags_to_backups").(bool))
+		}
+
+		if d.HasChange("copy_tags_to_volumes") {
+			input.OpenZFSConfiguration.CopyTagsToVolumes = aws.Bool(d.Get("copy_tags_to_volumes").(bool))
+		}
+
+		if d.HasChange("daily_automatic_backup_start_time") {
+			input.OpenZFSConfiguration.DailyAutomaticBackupStartTime = aws.String(d.Get("daily_automatic_backup_start_time").(string))
+		}
+
+		if d.HasChange("disk_iops_configuration") {
+			input.OpenZFSConfiguration.DiskIopsConfiguration = expandDiskIopsConfiguration(d.Get("disk_iops_configuration").([]any))
+		}
+
+		if d.HasChange("route_table_ids") {
+			o, n := d.GetChange("route_table_ids")
+			os, ns := o.(*schema.Set), n.(*schema.Set)
+			add, del := flex.ExpandStringValueSet(ns.Difference(os)), flex.ExpandStringValueSet(os.Difference(ns))
+
+			if len(add) > 0 {
+				input.OpenZFSConfiguration.AddRouteTableIds = add
+			}
+			if len(del) > 0 {
+				input.OpenZFSConfiguration.RemoveRouteTableIds = del
+			}
+		}
+
+		if d.HasChange("storage_capacity") {
+			input.StorageCapacity = aws.Int32(int32(d.Get("storage_capacity").(int)))
+		}
+
+		if d.HasChange("throughput_capacity") {
+			input.OpenZFSConfiguration.ThroughputCapacity = aws.Int32(int32(d.Get("throughput_capacity").(int)))
+		}
+
+		if d.HasChange("weekly_maintenance_start_time") {
+			input.OpenZFSConfiguration.WeeklyMaintenanceStartTime = aws.String(d.Get("weekly_maintenance_start_time").(string))
+		}
+
+		startTime := time.Now()
+		_, err := conn.UpdateFileSystem(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating FSx for OpenZFS File System (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitFileSystemUpdated(ctx, conn, d.Id(), startTime, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for FSx for OpenZFS File System (%s) update: %s", d.Id(), err)
+		}
+
+		if _, err := waitFileSystemAdministrativeActionCompleted(ctx, conn, d.Id(), awstypes.AdministrativeActionTypeFileSystemUpdate, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for FSx for OpenZFS File System (%s) administrative action (%s) complete: %s", d.Id(), awstypes.AdministrativeActionTypeFileSystemUpdate, err)
+		}
+
+		if d.HasChange("root_volume_configuration") {
+			rootVolumeID := d.Get("root_volume_id").(string)
+			input := &fsx.UpdateVolumeInput{
+				ClientRequestToken:   aws.String(id.UniqueId()),
+				OpenZFSConfiguration: expandUpdateOpenZFSVolumeConfiguration(d.Get("root_volume_configuration").([]any)),
+				VolumeId:             aws.String(rootVolumeID),
+			}
+
+			startTime := time.Now()
+			_, err := conn.UpdateVolume(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating FSx for OpenZFS Root Volume (%s): %s", rootVolumeID, err)
+			}
+
+			if _, err := waitVolumeUpdated(ctx, conn, rootVolumeID, startTime, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for FSx for OpenZFS Root Volume (%s) update: %s", rootVolumeID, err)
+			}
+
+			if _, err := waitVolumeAdministrativeActionCompleted(ctx, conn, rootVolumeID, awstypes.AdministrativeActionTypeVolumeUpdate, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for FSx for OpenZFS Volume (%s) administrative action (%s) complete: %s", rootVolumeID, awstypes.AdministrativeActionTypeVolumeUpdate, err)
+			}
+		}
+	}
+
+	return append(diags, resourceOpenZFSFileSystemRead(ctx, d, meta)...)
+}

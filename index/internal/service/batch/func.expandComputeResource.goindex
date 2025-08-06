@@ -1,0 +1,114 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/batch
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/batch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandComputeResource(ctx context.Context, tfMap map[string]any) *awstypes.ComputeResource {
+	if tfMap == nil {
+		return nil
+	}
+
+	var computeResourceType string
+
+	if v, ok := tfMap[names.AttrType].(string); ok && v != "" {
+		computeResourceType = v
+	}
+
+	apiObject := &awstypes.ComputeResource{}
+
+	if v, ok := tfMap["allocation_strategy"].(string); ok && v != "" {
+		apiObject.AllocationStrategy = awstypes.CRAllocationStrategy(v)
+	}
+
+	if v, ok := tfMap["bid_percentage"].(int); ok && v != 0 {
+		apiObject.BidPercentage = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["desired_vcpus"].(int); ok && v != 0 {
+		apiObject.DesiredvCpus = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["ec2_configuration"].([]any); ok && len(v) > 0 {
+		apiObject.Ec2Configuration = expandEC2Configurations(v)
+	}
+
+	if v, ok := tfMap["ec2_key_pair"].(string); ok && v != "" {
+		apiObject.Ec2KeyPair = aws.String(v)
+	}
+
+	if v, ok := tfMap["image_id"].(string); ok && v != "" {
+		apiObject.ImageId = aws.String(v)
+	}
+
+	if v, ok := tfMap["instance_role"].(string); ok && v != "" {
+		apiObject.InstanceRole = aws.String(v)
+	}
+
+	if v, ok := tfMap[names.AttrInstanceType].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.InstanceTypes = flex.ExpandStringValueSet(v)
+	}
+
+	if v, ok := tfMap[names.AttrLaunchTemplate].([]any); ok && len(v) > 0 && v[0] != nil {
+		apiObject.LaunchTemplate = expandLaunchTemplateSpecification(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["max_vcpus"].(int); ok && v != 0 {
+		apiObject.MaxvCpus = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["min_vcpus"].(int); ok && v != 0 {
+		apiObject.MinvCpus = aws.Int32(int32(v))
+	} else if computeResourceType := strings.ToUpper(computeResourceType); computeResourceType == string(awstypes.CRTypeEc2) || computeResourceType == string(awstypes.CRTypeSpot) {
+		apiObject.MinvCpus = aws.Int32(0)
+	}
+
+	if v, ok := tfMap["placement_group"].(string); ok && v != "" {
+		apiObject.PlacementGroup = aws.String(v)
+	}
+
+	if v, ok := tfMap[names.AttrSecurityGroupIDs].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.SecurityGroupIds = flex.ExpandStringValueSet(v)
+	}
+
+	if v, ok := tfMap["spot_iam_fleet_role"].(string); ok && v != "" {
+		apiObject.SpotIamFleetRole = aws.String(v)
+	}
+
+	if v, ok := tfMap[names.AttrSubnets].(*schema.Set); ok && v.Len() > 0 {
+		apiObject.Subnets = flex.ExpandStringValueSet(v)
+	}
+
+	if v, ok := tfMap[names.AttrTags].(map[string]any); ok && len(v) > 0 {
+		apiObject.Tags = svcTags(tftags.New(ctx, v).IgnoreAWS())
+	}
+
+	if computeResourceType != "" {
+		apiObject.Type = awstypes.CRType(computeResourceType)
+	}
+
+	return apiObject
+}

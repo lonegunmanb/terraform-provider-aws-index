@@ -1,0 +1,138 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dataexchange
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dataexchange"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dataexchange/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *eventActionResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN: framework.ARNAttributeComputedOnly(),
+			names.AttrCreatedAt: schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrID: framework.IDAttribute(),
+			"updated_at": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+		},
+		Blocks: map[string]schema.Block{
+			names.AttrAction: schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[actionModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"export_revision_to_s3": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[autoExportRevisionToS3RequestDetailsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"encryption": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[actionS3Encryption](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrKMSKeyARN: schema.StringAttribute{
+													CustomType: fwtypes.ARNType,
+													Optional:   true,
+													Validators: []validator.String{
+														validators.ARN(),
+													},
+												},
+												names.AttrType: schema.StringAttribute{
+													Optional:   true,
+													CustomType: fwtypes.StringEnumType[awstypes.ServerSideEncryptionTypes](),
+												},
+											},
+										},
+									},
+									"revision_destination": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[autoExportRevisionDestinationEntryModel](ctx),
+										Validators: []validator.List{
+											listvalidator.IsRequired(),
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrBucket: schema.StringAttribute{
+													Required: true,
+												},
+												"key_pattern": schema.StringAttribute{
+													Optional: true,
+													Computed: true,
+													Default:  stringdefault.StaticString("${Revision.CreatedAt}/${Asset.Name}"),
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"event": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[eventModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"revision_published": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[revisionPublishedModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"data_set_id": schema.StringAttribute{
+										Required: true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.RequiresReplace(),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

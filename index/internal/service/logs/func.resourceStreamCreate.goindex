@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/logs
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStreamCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LogsClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &cloudwatchlogs.CreateLogStreamInput{
+		LogGroupName:  aws.String(d.Get(names.AttrLogGroupName).(string)),
+		LogStreamName: aws.String(name),
+	}
+
+	_, err := conn.CreateLogStream(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudWatch Logs Log Stream (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	_, err = tfresource.RetryWhenNotFound(ctx, propagationTimeout, func() (any, error) {
+		return findLogStreamByTwoPartKey(ctx, conn, d.Get(names.AttrLogGroupName).(string), d.Id())
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for CloudWatch Logs Log Stream (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceStreamRead(ctx, d, meta)...)
+}

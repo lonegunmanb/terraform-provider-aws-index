@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHubUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		modifyOpts := &sagemaker.UpdateHubInput{
+			HubName: aws.String(d.Id()),
+		}
+
+		if d.HasChange("hub_description") {
+			modifyOpts.HubDescription = aws.String(d.Get("hub_description").(string))
+		}
+
+		if d.HasChange("hub_display_name") {
+			modifyOpts.HubDisplayName = aws.String(d.Get("hub_display_name").(string))
+		}
+
+		if d.HasChange("hub_search_keywords") {
+			modifyOpts.HubSearchKeywords = flex.ExpandStringValueSet(d.Get("hub_search_keywords").(*schema.Set))
+		}
+
+		if _, err := conn.UpdateHub(ctx, modifyOpts); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating SageMaker AI Hub (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitHubUpdated(ctx, conn, d.Id()); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for SageMaker AI Hub (%s) to be updated: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceHubRead(ctx, d, meta)...)
+}

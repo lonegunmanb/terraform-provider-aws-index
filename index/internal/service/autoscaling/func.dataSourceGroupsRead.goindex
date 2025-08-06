@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceGroupsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+
+	input := &autoscaling.DescribeAutoScalingGroupsInput{}
+
+	if v, ok := d.GetOk(names.AttrNames); ok && len(v.([]any)) > 0 {
+		input.AutoScalingGroupNames = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrFilter); ok {
+		input.Filters = buildFiltersDataSource(v.(*schema.Set))
+	}
+
+	groups, err := findGroups(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Auto Scaling Groups: %s", err)
+	}
+
+	var arns, nms []string
+
+	for _, group := range groups {
+		arns = append(arns, aws.ToString(group.AutoScalingGroupARN))
+		nms = append(nms, aws.ToString(group.AutoScalingGroupName))
+	}
+
+	slices.Sort(arns)
+	slices.Sort(nms)
+
+	d.SetId(meta.(*conns.AWSClient).Region(ctx))
+	d.Set(names.AttrARNs, arns)
+	d.Set(names.AttrNames, nms)
+
+	return diags
+}

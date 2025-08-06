@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVPCEndpointSecurityGroupAssociationDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	vpcEndpointID := d.Get(names.AttrVPCEndpointID).(string)
+	securityGroupID := d.Get("security_group_id").(string)
+	replaceDefaultAssociation := d.Get("replace_default_association").(bool)
+
+	if replaceDefaultAssociation {
+		vpcEndpoint, err := findVPCEndpointByID(ctx, conn, vpcEndpointID)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading VPC Endpoint (%s): %s", vpcEndpointID, err)
+		}
+
+		vpcID := aws.ToString(vpcEndpoint.VpcId)
+
+		defaultSecurityGroup, err := findVPCDefaultSecurityGroup(ctx, conn, vpcID)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading EC2 VPC (%s) default Security Group: %s", vpcID, err)
+		}
+
+		// Add back the VPC endpoint/default security group association.
+		err = createVPCEndpointSecurityGroupAssociation(ctx, conn, vpcEndpointID, aws.ToString(defaultSecurityGroup.GroupId))
+
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if err := deleteVPCEndpointSecurityGroupAssociation(ctx, conn, vpcEndpointID, securityGroupID); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+	return diags
+}

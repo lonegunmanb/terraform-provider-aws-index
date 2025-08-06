@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepIdentityProvidersConfig(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	conn := client.EKSClient(ctx)
+	input := &eks.ListClustersInput{}
+	var sweeperErrs *multierror.Error
+	sweepResources := make([]sweep.Sweepable, 0)
+
+	pages := eks.NewListClustersPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping EKS Identity Provider Config sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error listing EKS Clusters (%s): %w", region, err))
+			break
+		}
+
+		for _, clusterName := range page.Clusters {
+			input := &eks.ListIdentityProviderConfigsInput{
+				ClusterName: aws.String(clusterName),
+			}
+
+			pages := eks.NewListIdentityProviderConfigsPaginator(conn, input)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+
+				if awsv2.SkipSweepError(err) {
+					break
+				}
+
+				// There are EKS clusters that are listed (and are in the AWS Console) but can't be found.
+				// ¯\_(ツ)_/¯
+				if errs.IsA[*types.ResourceNotFoundException](err) {
+					break
+				}
+
+				if err != nil {
+					sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error listing EKS Identity Provider Configs (%s): %w", region, err))
+					break
+				}
+
+				for _, v := range page.IdentityProviderConfigs {
+					r := resourceIdentityProviderConfig()
+					d := r.Data(nil)
+					d.SetId(IdentityProviderConfigCreateResourceID(clusterName, aws.ToString(v.Name)))
+
+					sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+				}
+			}
+		}
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+
+	if err != nil {
+		sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error sweeping EKS Identity Provider Configs (%s): %w", region, err))
+	}
+
+	return sweeperErrs.ErrorOrNil()
+}

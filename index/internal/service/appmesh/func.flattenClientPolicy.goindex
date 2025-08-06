@@ -1,0 +1,95 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenClientPolicy(clientPolicy *awstypes.ClientPolicy) []any {
+	if clientPolicy == nil {
+		return []any{}
+	}
+
+	mClientPolicy := map[string]any{}
+
+	if tls := clientPolicy.Tls; tls != nil {
+		mTls := map[string]any{
+			"enforce": aws.ToBool(tls.Enforce),
+			"ports":   flex.FlattenInt32ValueSet(tls.Ports),
+		}
+
+		if certificate := tls.Certificate; certificate != nil {
+			mCertificate := map[string]any{}
+
+			switch v := certificate.(type) {
+			case *awstypes.ClientTlsCertificateMemberFile:
+				mFile := map[string]any{
+					names.AttrCertificateChain: aws.ToString(v.Value.CertificateChain),
+					names.AttrPrivateKey:       aws.ToString(v.Value.PrivateKey),
+				}
+
+				mCertificate["file"] = []any{mFile}
+			case *awstypes.ClientTlsCertificateMemberSds:
+				mSds := map[string]any{
+					"secret_name": aws.ToString(v.Value.SecretName),
+				}
+
+				mCertificate["sds"] = []any{mSds}
+			}
+
+			mTls[names.AttrCertificate] = []any{mCertificate}
+		}
+
+		if validation := tls.Validation; validation != nil {
+			mValidation := map[string]any{}
+
+			if subjectAlternativeNames := validation.SubjectAlternativeNames; subjectAlternativeNames != nil {
+				mSubjectAlternativeNames := map[string]any{}
+
+				if match := subjectAlternativeNames.Match; match != nil {
+					mMatch := map[string]any{
+						"exact": match.Exact,
+					}
+
+					mSubjectAlternativeNames["match"] = []any{mMatch}
+				}
+
+				mValidation["subject_alternative_names"] = []any{mSubjectAlternativeNames}
+			}
+
+			if trust := validation.Trust; trust != nil {
+				mTrust := map[string]any{}
+
+				switch v := trust.(type) {
+				case *awstypes.TlsValidationContextTrustMemberAcm:
+					mAcm := map[string]any{
+						"certificate_authority_arns": v.Value.CertificateAuthorityArns,
+					}
+
+					mTrust["acm"] = []any{mAcm}
+				case *awstypes.TlsValidationContextTrustMemberFile:
+					mFile := map[string]any{
+						names.AttrCertificateChain: aws.ToString(v.Value.CertificateChain),
+					}
+
+					mTrust["file"] = []any{mFile}
+				case *awstypes.TlsValidationContextTrustMemberSds:
+					mSds := map[string]any{
+						"secret_name": aws.ToString(v.Value.SecretName),
+					}
+
+					mTrust["sds"] = []any{mSds}
+				}
+
+				mValidation["trust"] = []any{mTrust}
+			}
+
+			mTls["validation"] = []any{mValidation}
+		}
+
+		mClientPolicy["tls"] = []any{mTls}
+	}
+
+	return []any{mClientPolicy}
+}

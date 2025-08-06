@@ -1,0 +1,90 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elasticloadbalancingv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandRefreshPreferences(tfMap map[string]any) *awstypes.RefreshPreferences {
+	if tfMap == nil {
+		return nil
+	}
+
+	apiObject := &awstypes.RefreshPreferences{}
+
+	if v, ok := tfMap["alarm_specification"].([]any); ok && len(v) > 0 {
+		apiObject.AlarmSpecification = expandAlarmSpecification(v[0].(map[string]any))
+	}
+
+	if v, ok := tfMap["auto_rollback"].(bool); ok {
+		apiObject.AutoRollback = aws.Bool(v)
+	}
+
+	if v, ok := tfMap["checkpoint_delay"].(string); ok {
+		if v, null, _ := nullable.Int(v).ValueInt32(); !null {
+			apiObject.CheckpointDelay = aws.Int32(v)
+		}
+	}
+
+	if v, ok := tfMap["checkpoint_percentages"].([]any); ok && len(v) > 0 {
+		apiObject.CheckpointPercentages = flex.ExpandInt32ValueList(v)
+	}
+
+	if v, ok := tfMap["instance_warmup"].(string); ok {
+		if v, null, _ := nullable.Int(v).ValueInt32(); !null {
+			apiObject.InstanceWarmup = aws.Int32(v)
+		}
+	}
+
+	if v, ok := tfMap["max_healthy_percentage"].(int); ok {
+		apiObject.MaxHealthyPercentage = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["min_healthy_percentage"].(int); ok {
+		apiObject.MinHealthyPercentage = aws.Int32(int32(v))
+	}
+
+	if v, ok := tfMap["scale_in_protected_instances"].(string); ok {
+		apiObject.ScaleInProtectedInstances = awstypes.ScaleInProtectedInstances(v)
+	}
+
+	if v, ok := tfMap["skip_matching"].(bool); ok {
+		apiObject.SkipMatching = aws.Bool(v)
+	}
+
+	if v, ok := tfMap["standby_instances"].(string); ok {
+		apiObject.StandbyInstances = awstypes.StandbyInstances(v)
+	}
+
+	return apiObject
+}

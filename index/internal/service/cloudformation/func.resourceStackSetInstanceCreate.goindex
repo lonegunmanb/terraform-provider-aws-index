@@ -1,0 +1,105 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStackSetInstanceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	region := meta.(*conns.AWSClient).Region(ctx)
+	if v, ok := d.GetOk("stack_set_instance_region"); ok {
+		region = v.(string)
+	} else if v, ok := d.GetOk(names.AttrRegion); ok {
+		region = v.(string)
+	}
+
+	stackSetName := d.Get("stack_set_name").(string)
+	input := &cloudformation.CreateStackInstancesInput{
+		Regions:      []string{region},
+		StackSetName: aws.String(stackSetName),
+	}
+
+	accountID := meta.(*conns.AWSClient).AccountID(ctx)
+	if v, ok := d.GetOk(names.AttrAccountID); ok {
+		accountID = v.(string)
+	}
+	// accountOrOrgID will either be account_id or a slash-delimited list of
+	// organizational_unit_id's from the deployment_targets argument. This
+	// is composed with stack_set_name and region to form the resources ID.
+	accountOrOrgID := accountID
+
+	if v, ok := d.GetOk("deployment_targets"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		dt := expandDeploymentTargets(v.([]any))
+		if len(dt.OrganizationalUnitIds) > 0 {
+			accountOrOrgID = strings.Join(dt.OrganizationalUnitIds, "/")
+		}
+		input.DeploymentTargets = dt
+	} else {
+		d.Set(names.AttrAccountID, accountID)
+		input.Accounts = []string{accountID}
+	}
+
+	callAs := d.Get("call_as").(string)
+	if v, ok := d.GetOk("call_as"); ok {
+		input.CallAs = awstypes.CallAs(v.(string))
+	}
+
+	if v, ok := d.GetOk("parameter_overrides"); ok {
+		input.ParameterOverrides = expandParameters(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("operation_preferences"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.OperationPreferences = expandOperationPreferences(v.([]any)[0].(map[string]any))
+	}
+
+	id, err := flex.FlattenResourceId([]string{stackSetName, accountOrOrgID, region}, stackSetInstanceResourceIDPartCount, false)
+	if err != nil {
+		return create.AppendDiagError(diags, names.CloudFormation, create.ErrActionFlatteningResourceId, ResNameStackSetInstance, id, err)
+	}
+
+	output, err := tfresource.RetryGWhen(ctx, propagationTimeout,
+		func() (*cloudformation.CreateStackInstancesOutput, error) {
+			input.OperationId = aws.String(sdkid.UniqueId())
+
+			return conn.CreateStackInstances(ctx, input)
+		},
+		isRetryableIAMPropagationErr,
+	)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudFormation StackSet (%s) Instance: %s", stackSetName, err)
+	}
+
+	d.SetId(id)
+
+	_, err = waitStackSetOperationSucceeded(ctx, conn, stackSetName, aws.ToString(output.OperationId), callAs, d.Timeout(schema.TimeoutCreate))
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudFormation StackSet (%s) Instance: waiting for completion: %s", stackSetName, err)
+	}
+
+	return append(diags, resourceStackSetInstanceRead(ctx, d, meta)...)
+}

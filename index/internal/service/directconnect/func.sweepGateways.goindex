@@ -1,0 +1,98 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepGateways(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	input := &directconnect.DescribeDirectConnectGatewaysInput{}
+	conn := client.DirectConnectClient(ctx)
+	sweepResources := make([]sweep.Sweepable, 0)
+
+	err = describeDirectConnectGatewaysPages(ctx, conn, input, func(page *directconnect.DescribeDirectConnectGatewaysOutput, lastPage bool) bool {
+		if page == nil {
+			return !lastPage
+		}
+
+		for _, v := range page.DirectConnectGateways {
+			directConnectGatewayID := aws.ToString(v.DirectConnectGatewayId)
+
+			if state := v.DirectConnectGatewayState; state != awstypes.DirectConnectGatewayStateAvailable {
+				log.Printf("[INFO] Skipping Direct Connect Gateway (%s): DirectConnectGatewayState=%s", directConnectGatewayID, state)
+				continue
+			}
+
+			input := &directconnect.DescribeDirectConnectGatewayAssociationsInput{
+				DirectConnectGatewayId: aws.String(directConnectGatewayID),
+			}
+
+			var associations bool
+
+			err := describeDirectConnectGatewayAssociationsPages(ctx, conn, input, func(page *directconnect.DescribeDirectConnectGatewayAssociationsOutput, lastPage bool) bool {
+				if page == nil {
+					return !lastPage
+				}
+
+				// If associations still remain, its likely that our region is not the home
+				// region of those associations and the previous sweepers skipped them.
+				// When we hit this condition, we skip trying to delete the gateway as it
+				// will go from deleting -> available after a few minutes and timeout.
+				if len(page.DirectConnectGatewayAssociations) > 0 {
+					associations = true
+
+					return false
+				}
+
+				return !lastPage
+			})
+
+			if err != nil {
+				continue
+			}
+
+			if associations {
+				log.Printf("[INFO] Skipping Direct Connect Gateway with remaining associations: %s", directConnectGatewayID)
+				continue
+			}
+
+			r := resourceGateway()
+			d := r.Data(nil)
+			d.SetId(directConnectGatewayID)
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+
+		return !lastPage
+	})
+
+	if awsv2.SkipSweepError(err) {
+		log.Printf("[WARN] Skipping Direct Connect Gateway sweep for %s: %s", region, err)
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("error listing Direct Connect Gateways (%s): %w", region, err)
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+
+	if err != nil {
+		return fmt.Errorf("error sweeping Direct Connect Gateways (%s): %w", region, err)
+	}
+
+	return nil
+}

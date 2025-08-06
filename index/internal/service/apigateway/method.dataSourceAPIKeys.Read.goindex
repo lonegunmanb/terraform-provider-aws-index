@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *dataSourceAPIKeys) Read(ctx context.Context, request datasource.ReadRequest, response *datasource.ReadResponse) {
+	var data dataSourceAPIKeysModel
+
+	response.Diagnostics.Append(request.Config.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	data.ID = flex.StringValueToFramework(ctx, d.Meta().Region(ctx))
+
+	conn := d.Meta().APIGatewayClient(ctx)
+	input := apigateway.GetApiKeysInput{
+		IncludeValues: flex.BoolFromFramework(ctx, data.IncludeValues),
+		CustomerId:    flex.StringFromFramework(ctx, data.CustomerID),
+	}
+
+	items, err := findAPIKeys(ctx, conn, &input)
+
+	if err != nil {
+		response.Diagnostics.AddError("reading API Gateway API Keys", err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(flex.Flatten(ctx, items, &data.Items)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

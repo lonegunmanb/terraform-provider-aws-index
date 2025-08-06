@@ -1,0 +1,97 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/deploy
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/codedeploy"
+	"github.com/aws/aws-sdk-go-v2/service/codedeploy/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDeploymentGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DeployClient(ctx)
+
+	group, err := findDeploymentGroupByTwoPartKey(ctx, conn, d.Get("app_name").(string), d.Get("deployment_group_name").(string))
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CodeDeploy Deployment Group (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CodeDeploy Deployment Group (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("alarm_configuration", flattenAlarmConfiguration(group.AlarmConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting alarm_configuration: %s", err)
+	}
+	appName := aws.ToString(group.ApplicationName)
+	groupName := aws.ToString(group.DeploymentGroupName)
+	d.Set("app_name", appName)
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "codedeploy",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("deploymentgroup:%s/%s", appName, groupName),
+	}.String()
+	d.Set(names.AttrARN, arn)
+	if err := d.Set("auto_rollback_configuration", flattenAutoRollbackConfiguration(group.AutoRollbackConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting auto_rollback_configuration: %s", err)
+	}
+	d.Set("autoscaling_groups", tfslices.ApplyToAll(group.AutoScalingGroups, func(v types.AutoScalingGroup) string {
+		return aws.ToString(v.Name)
+	}))
+	if err := d.Set("blue_green_deployment_config", flattenBlueGreenDeploymentConfiguration(group.BlueGreenDeploymentConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting blue_green_deployment_config: %s", err)
+	}
+	d.Set("compute_platform", group.ComputePlatform)
+	d.Set("deployment_config_name", group.DeploymentConfigName)
+	d.Set("deployment_group_id", group.DeploymentGroupId)
+	d.Set("deployment_group_name", group.DeploymentGroupName)
+	if err := d.Set("deployment_style", flattenDeploymentStyle(group.DeploymentStyle)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting deployment_style: %s", err)
+	}
+	if err := d.Set("ec2_tag_filter", flattenEC2TagFilters(group.Ec2TagFilters)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ec2_tag_filter: %s", err)
+	}
+	if err := d.Set("ec2_tag_set", flattenEC2TagSet(group.Ec2TagSet)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ec2_tag_set: %s", err)
+	}
+	if err := d.Set("ecs_service", flattenECSServices(group.EcsServices)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ecs_service: %s", err)
+	}
+	if err := d.Set("load_balancer_info", flattenLoadBalancerInfo(group.LoadBalancerInfo)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting load_balancer_info: %s", err)
+	}
+	if err := d.Set("on_premises_instance_tag_filter", flattenTagFilters(group.OnPremisesInstanceTagFilters)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting on_premises_instance_tag_filter: %s", err)
+	}
+	d.Set("outdated_instances_strategy", group.OutdatedInstancesStrategy)
+	d.Set(names.AttrServiceRoleARN, group.ServiceRoleArn)
+	d.Set("termination_hook_enabled", group.TerminationHookEnabled)
+	if err := d.Set("trigger_configuration", flattenTriggerConfigs(group.TriggerConfigurations)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting trigger_configuration: %s", err)
+	}
+
+	return diags
+}

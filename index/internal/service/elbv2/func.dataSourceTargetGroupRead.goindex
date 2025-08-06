@@ -1,0 +1,107 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceTargetGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBV2Client(ctx)
+	ignoreTagsConfig := meta.(*conns.AWSClient).IgnoreTagsConfig(ctx)
+	tagsToMatch := tftags.New(ctx, d.Get(names.AttrTags).(map[string]any)).IgnoreAWS().IgnoreConfig(ignoreTagsConfig)
+
+	input := &elasticloadbalancingv2.DescribeTargetGroupsInput{}
+
+	if v, ok := d.GetOk(names.AttrARN); ok {
+		input.TargetGroupArns = []string{v.(string)}
+	} else if v, ok := d.GetOk(names.AttrName); ok {
+		input.Names = []string{v.(string)}
+	}
+
+	results, err := findTargetGroups(ctx, conn, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ELBv2 Target Groups: %s", err)
+	}
+
+	if len(tagsToMatch) > 0 {
+		var targetGroups []awstypes.TargetGroup
+
+		for _, targetGroup := range results {
+			arn := aws.ToString(targetGroup.TargetGroupArn)
+			tags, err := listTags(ctx, conn, arn)
+
+			if errs.IsA[*awstypes.TargetGroupNotFoundException](err) {
+				continue
+			}
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "listing tags for ELBv2 Target Group (%s): %s", arn, err)
+			}
+
+			if !tags.ContainsAll(tagsToMatch) {
+				continue
+			}
+
+			targetGroups = append(targetGroups, targetGroup)
+		}
+
+		results = targetGroups
+	}
+
+	if len(results) != 1 {
+		return sdkdiag.AppendErrorf(diags, "Search returned %d results, please revise so only one is returned", len(results))
+	}
+
+	targetGroup := results[0]
+	d.SetId(aws.ToString(targetGroup.TargetGroupArn))
+	d.Set(names.AttrARN, targetGroup.TargetGroupArn)
+	d.Set("arn_suffix", TargetGroupSuffixFromARN(targetGroup.TargetGroupArn))
+	d.Set("load_balancer_arns", flex.FlattenStringValueSet(targetGroup.LoadBalancerArns))
+	d.Set(names.AttrName, targetGroup.TargetGroupName)
+	d.Set("target_type", targetGroup.TargetType)
+
+	if err := d.Set(names.AttrHealthCheck, flattenTargetGroupHealthCheck(&targetGroup)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting health_check: %s", err)
+	}
+	d.Set(names.AttrName, targetGroup.TargetGroupName)
+	targetType := targetGroup.TargetType
+	d.Set("target_type", targetType)
+
+	var protocol awstypes.ProtocolEnum
+	if targetType != awstypes.TargetTypeEnumLambda {
+		d.Set(names.AttrPort, targetGroup.Port)
+		protocol = targetGroup.Protocol
+		d.Set(names.AttrProtocol, protocol)
+		d.Set(names.AttrVPCID, targetGroup.VpcId)
+	}
+	switch targetGroup.Protocol {
+	case awstypes.ProtocolEnumHttp, awstypes.ProtocolEnumHttps:
+		d.Set("protocol_version", targetGroup.ProtocolVersion)
+	}
+
+	attributes, err := findTargetGroupAttributesByARN(ctx, conn, d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ELBv2 Target Group (%s) attributes: %s", d.Id(), err)
+	}
+
+	if err := d.Set("stickiness", []any{flattenTargetGroupStickinessAttributes(attributes, protocol)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting stickiness: %s", err)
+	}
+
+	targetGroupAttributes.flatten(d, targetType, attributes)
+
+	return diags
+}

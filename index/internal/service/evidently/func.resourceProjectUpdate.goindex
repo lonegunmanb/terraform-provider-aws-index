@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/evidently
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/evidently"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/evidently/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProjectUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EvidentlyClient(ctx)
+
+	// Project has 2 update APIs
+	// UpdateProjectWithContext: Updates the description of an existing project.
+	// UpdateProjectDataDeliveryWithContext: Updates the data storage options for this project.
+
+	if d.HasChanges(names.AttrDescription) {
+		_, err := conn.UpdateProject(ctx, &evidently.UpdateProjectInput{
+			Description: aws.String(d.Get(names.AttrDescription).(string)),
+			Project:     aws.String(d.Id()),
+		})
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudWatch Evidently Project (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitProjectUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for CloudWatch Evidently Project (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("data_delivery") {
+		input := &evidently.UpdateProjectDataDeliveryInput{
+			Project: aws.String(d.Id()),
+		}
+
+		dataDelivery := d.Get("data_delivery").([]any)
+
+		tfMap, ok := dataDelivery[0].(map[string]any)
+
+		if !ok {
+			return sdkdiag.AppendErrorf(diags, "updating Project (%s)", d.Id())
+		}
+
+		// You can't specify both cloudWatchLogs and s3Destination in the same operation.
+		if v, ok := tfMap[names.AttrCloudWatchLogs]; ok && len(v.([]any)) > 0 {
+			input.CloudWatchLogs = expandCloudWatchLogs(v.([]any))
+		}
+
+		if v, ok := tfMap["s3_destination"]; ok && len(v.([]any)) > 0 {
+			input.S3Destination = expandS3Destination(v.([]any))
+		}
+
+		_, err := conn.UpdateProjectDataDelivery(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudWatch Evidently Project (%s) data delivery: %s", d.Id(), err)
+		}
+
+		if _, err := waitProjectUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for CloudWatch Evidently Project (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceProjectRead(ctx, d, meta)...)
+}

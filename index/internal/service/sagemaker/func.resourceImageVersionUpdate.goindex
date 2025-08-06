@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceImageVersionUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	name := d.Get("image_name").(string)
+	version := d.Get(names.AttrVersion).(int)
+
+	input := sagemaker.UpdateImageVersionInput{
+		ImageName: aws.String(name),
+		Version:   aws.Int32(int32(version)),
+	}
+
+	if d.HasChange("horovod") {
+		input.Horovod = aws.Bool(d.Get("horovod").(bool))
+	}
+
+	if d.HasChange("job_type") {
+		input.JobType = awstypes.JobType(d.Get("job_type").(string))
+	}
+
+	if d.HasChange("processor") {
+		input.Processor = awstypes.Processor(d.Get("processor").(string))
+	}
+
+	if d.HasChange("release_notes") {
+		input.ReleaseNotes = aws.String(d.Get("release_notes").(string))
+	}
+
+	if d.HasChange("vendor_guidance") {
+		input.VendorGuidance = awstypes.VendorGuidance(d.Get("vendor_guidance").(string))
+	}
+
+	if d.HasChange("ml_framework") {
+		input.MLFramework = aws.String(d.Get("ml_framework").(string))
+	}
+
+	if d.HasChange("programming_lang") {
+		input.ProgrammingLang = aws.String(d.Get("programming_lang").(string))
+	}
+
+	if d.HasChange("aliases") {
+		// For UpdateImageVersion, we need to use AliasesToAdd and AliasesToDelete
+		// instead of Aliases directly
+		o, n := d.GetChange("aliases")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+		add, del := flex.ExpandStringValueSet(ns.Difference(os)), flex.ExpandStringValueSet(os.Difference(ns))
+
+		if len(add) > 0 {
+			input.AliasesToAdd = add
+		}
+		if len(del) > 0 {
+			input.AliasesToDelete = del
+		}
+	}
+
+	if _, err := conn.UpdateImageVersion(ctx, &input); err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating SageMaker AI Image Version (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceImageVersionRead(ctx, d, meta)...)
+}

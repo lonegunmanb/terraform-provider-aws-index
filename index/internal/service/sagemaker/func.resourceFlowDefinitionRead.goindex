@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFlowDefinitionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	flowDefinition, err := findFlowDefinitionByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SageMaker AI Flow Definition (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SageMaker AI Flow Definition (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, flowDefinition.FlowDefinitionArn)
+	d.Set(names.AttrRoleARN, flowDefinition.RoleArn)
+	d.Set("flow_definition_name", flowDefinition.FlowDefinitionName)
+
+	if err := d.Set("human_loop_activation_config", flattenFlowDefinitionHumanLoopActivationConfig(flowDefinition.HumanLoopActivationConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting human_loop_activation_config: %s", err)
+	}
+
+	if err := d.Set("human_loop_config", flattenFlowDefinitionHumanLoopConfig(flowDefinition.HumanLoopConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting human_loop_config: %s", err)
+	}
+
+	if err := d.Set("human_loop_request_source", flattenFlowDefinitionHumanLoopRequestSource(flowDefinition.HumanLoopRequestSource)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting human_loop_request_source: %s", err)
+	}
+
+	if err := d.Set("output_config", flattenFlowDefinitionOutputConfig(flowDefinition.OutputConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting output_config: %s", err)
+	}
+
+	return diags
+}

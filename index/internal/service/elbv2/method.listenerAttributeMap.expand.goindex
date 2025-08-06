@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (m listenerAttributeMap) expand(d *schema.ResourceData, listenerType awstypes.ProtocolEnum, update bool) []awstypes.ListenerAttribute {
+	var apiObjects []awstypes.ListenerAttribute
+
+	for tfAttributeName, attributeInfo := range m {
+		if update {
+			if !d.HasChange(tfAttributeName) {
+				// Skip if an update and the attribute hasn't changed.
+				continue
+			}
+		} else {
+			if v := d.GetRawConfig().GetAttr(tfAttributeName); !v.IsKnown() || v.IsNull() {
+				// Skip if a create and the attribute isn't configured.
+				continue
+			}
+		}
+
+		// Not all attributes are supported on all listener types.
+		if !slices.Contains(attributeInfo.listenerTypesSupported, listenerType) {
+			continue
+		}
+
+		switch v, t, k := d.Get(tfAttributeName), attributeInfo.tfType, aws.String(attributeInfo.apiAttributeKey); t {
+		case schema.TypeBool:
+			v := v.(bool)
+			apiObjects = append(apiObjects, awstypes.ListenerAttribute{
+				Key:   k,
+				Value: flex.BoolValueToString(v),
+			})
+		case schema.TypeInt:
+			if v := v.(int); v != 0 {
+				apiObjects = append(apiObjects, awstypes.ListenerAttribute{
+					Key:   k,
+					Value: flex.IntValueToString(v),
+				})
+			}
+		case schema.TypeString:
+			if v := v.(string); v != "" {
+				apiObjects = append(apiObjects, awstypes.ListenerAttribute{
+					Key:   k,
+					Value: aws.String(v),
+				})
+			}
+		}
+	}
+
+	return apiObjects
+}

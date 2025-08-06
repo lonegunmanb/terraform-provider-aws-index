@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (e *invocationEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRequest, resp *ephemeral.OpenResponse) {
+	conn := e.Meta().LambdaClient(ctx)
+	data := invocationEphemeralResourceModel{}
+
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	input := &lambda.InvokeInput{
+		InvocationType: awstypes.InvocationTypeRequestResponse,
+	}
+	resp.Diagnostics.Append(flex.Expand(ctx, data, input)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if input.FunctionName == nil {
+		data.Result = types.StringValue("")
+		resp.Diagnostics.Append(resp.Result.Set(ctx, &data)...)
+		return
+	}
+
+	output, err := conn.Invoke(ctx, input)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Lambda, create.ErrActionOpening, ResNameInvocation, data.FunctionName.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	if output.FunctionError != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Lambda, create.ErrActionOpening, ResNameInvocation, data.FunctionName.String(), errors.New(aws.ToString(output.FunctionError))),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(flex.Flatten(ctx, output, &data)...)
+	data.Result = flex.StringValueToFramework(ctx, string(output.Payload))
+	resp.Diagnostics.Append(resp.Result.Set(ctx, &data)...)
+}

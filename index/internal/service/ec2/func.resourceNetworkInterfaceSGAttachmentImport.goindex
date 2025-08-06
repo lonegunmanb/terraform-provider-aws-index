@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceNetworkInterfaceSGAttachmentImport(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+	parts := strings.Split(d.Id(), "_")
+	if len(parts) != 2 {
+		return []*schema.ResourceData{}, fmt.Errorf("Unexpected format for import: %s. Please use '<NetworkInterfaceId>_<SecurityGroupID>", d.Id())
+	}
+
+	networkInterfaceID := parts[0]
+	securityGroupID := parts[1]
+
+	log.Printf("[DEBUG] Importing network interface security group association, Interface: %s, Security Group: %s", networkInterfaceID, securityGroupID)
+
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	networkInterface, err := findNetworkInterfaceByID(ctx, conn, networkInterfaceID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var associationID string
+
+	for _, attachedSecurityGroup := range networkInterface.Groups {
+		if aws.ToString(attachedSecurityGroup.GroupId) == securityGroupID {
+			d.Set("security_group_id", securityGroupID)
+			associationID = securityGroupID + "_" + networkInterfaceID
+
+			break
+		}
+	}
+
+	if associationID == "" {
+		return nil, fmt.Errorf("Security Group %s is not attached to Network Interface %s", securityGroupID, networkInterfaceID)
+	}
+
+	d.SetId(associationID)
+	d.Set(names.AttrNetworkInterfaceID, networkInterfaceID)
+
+	return []*schema.ResourceData{d}, nil
+}

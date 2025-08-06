@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDatabaseRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	// Some Operations can complete before the Database enters the Available state. Added a waiter to make sure the Database is available before continuing.
+	// This is to support importing a resource that is not in a ready state.
+	database, err := waitDatabaseModified(ctx, conn, aws.String(d.Id()))
+
+	if !d.IsNewResource() && IsANotFoundError(err) {
+		log.Printf("[WARN] Lightsail Relational Database (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Lightsail Relational Database (%s): %s", d.Id(), err)
+	}
+
+	rd := database.RelationalDatabase
+
+	d.Set(names.AttrARN, rd.Arn)
+	d.Set(names.AttrAvailabilityZone, rd.Location.AvailabilityZone)
+	d.Set("backup_retention_enabled", rd.BackupRetentionEnabled)
+	d.Set("blueprint_id", rd.RelationalDatabaseBlueprintId)
+	d.Set("bundle_id", rd.RelationalDatabaseBundleId)
+	d.Set("ca_certificate_identifier", rd.CaCertificateIdentifier)
+	d.Set("cpu_count", rd.Hardware.CpuCount)
+	d.Set(names.AttrCreatedAt, rd.CreatedAt.Format(time.RFC3339))
+	d.Set("disk_size", rd.Hardware.DiskSizeInGb)
+	d.Set(names.AttrEngine, rd.Engine)
+	d.Set(names.AttrEngineVersion, rd.EngineVersion)
+	d.Set("master_database_name", rd.MasterDatabaseName)
+	d.Set("master_endpoint_address", rd.MasterEndpoint.Address)
+	d.Set("master_endpoint_port", rd.MasterEndpoint.Port)
+	d.Set("master_username", rd.MasterUsername)
+	d.Set("preferred_backup_window", rd.PreferredBackupWindow)
+	d.Set(names.AttrPreferredMaintenanceWindow, rd.PreferredMaintenanceWindow)
+	d.Set(names.AttrPubliclyAccessible, rd.PubliclyAccessible)
+	d.Set("ram_size", rd.Hardware.RamSizeInGb)
+	d.Set("relational_database_name", rd.Name)
+	d.Set("secondary_availability_zone", rd.SecondaryAvailabilityZone)
+	d.Set("support_code", rd.SupportCode)
+
+	setTagsOut(ctx, rd.Tags)
+
+	return diags
+}

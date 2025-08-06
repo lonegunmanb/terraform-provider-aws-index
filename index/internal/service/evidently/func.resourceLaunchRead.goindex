@@ -1,0 +1,79 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/evidently
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/evidently"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/evidently/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLaunchRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EvidentlyClient(ctx)
+
+	launchName, projectNameOrARN, err := LaunchParseID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	launch, err := FindLaunchWithProjectNameorARN(ctx, conn, launchName, projectNameOrARN)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudWatch Evidently Launch (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudWatch Evidently Launch (%s) for Project (%s): %s", launchName, projectNameOrARN, err)
+	}
+
+	if err := d.Set("execution", flattenExecution(launch.Execution)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting execution: %s", err)
+	}
+
+	if err := d.Set("groups", flattenGroups(launch.Groups)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting groups: %s", err)
+	}
+
+	if err := d.Set("metric_monitors", flattenMetricMonitors(launch.MetricMonitors)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting metric_monitors: %s", err)
+	}
+
+	if err := d.Set("scheduled_splits_config", flattenScheduledSplitsDefinition(launch.ScheduledSplitsDefinition)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting scheduled_splits_config: %s", err)
+	}
+
+	d.Set(names.AttrARN, launch.Arn)
+	d.Set(names.AttrCreatedTime, aws.ToTime(launch.CreatedTime).Format(time.RFC3339))
+	d.Set(names.AttrDescription, launch.Description)
+	d.Set(names.AttrLastUpdatedTime, aws.ToTime(launch.LastUpdatedTime).Format(time.RFC3339))
+	d.Set(names.AttrName, launch.Name)
+	d.Set("project", launch.Project)
+	d.Set("randomization_salt", launch.RandomizationSalt)
+	d.Set(names.AttrStatus, launch.Status)
+	d.Set(names.AttrStatusReason, launch.StatusReason)
+	d.Set(names.AttrType, launch.Type)
+
+	setTagsOut(ctx, launch.Tags)
+
+	return diags
+}

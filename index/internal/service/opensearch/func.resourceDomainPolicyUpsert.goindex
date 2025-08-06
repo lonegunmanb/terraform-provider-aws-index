@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainPolicyUpsert(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OpenSearchClient(ctx)
+	domainName := d.Get(names.AttrDomainName).(string)
+
+	policy, err := structure.NormalizeJsonString(d.Get("access_policies").(string))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "policy (%s) is invalid JSON: %s", policy, err)
+	}
+
+	_, err = tfresource.RetryWhenIsAErrorMessageContains[*awstypes.ValidationException](ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.UpdateDomainConfig(ctx, &opensearch.UpdateDomainConfigInput{
+				DomainName:     aws.String(domainName),
+				AccessPolicies: aws.String(policy),
+			})
+		}, "A change/update is in progress")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating OpenSearch Domain Policy (%s): %s", d.Id(), err)
+	}
+
+	d.SetId("esd-policy-" + domainName)
+
+	if err := waitForDomainUpdate(ctx, conn, d.Get(names.AttrDomainName).(string), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating OpenSearch Domain Policy (%s): waiting for completion: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDomainPolicyRead(ctx, d, meta)...)
+}

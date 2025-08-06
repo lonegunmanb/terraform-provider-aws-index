@@ -1,0 +1,119 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/transfer
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/transfer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/transfer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAccess() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceAccessCreate,
+		ReadWithoutTimeout:   resourceAccessRead,
+		UpdateWithoutTimeout: resourceAccessUpdate,
+		DeleteWithoutTimeout: resourceAccessDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Schema: map[string]*schema.Schema{
+			names.AttrExternalID: {
+				Type:         schema.TypeString,
+				Required:     true,
+				ValidateFunc: validation.StringLenBetween(1, 256),
+			},
+			"home_directory": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: validation.StringLenBetween(0, 1024),
+			},
+			"home_directory_mappings": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 50,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"entry": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.StringLenBetween(0, 1024),
+						},
+						names.AttrTarget: {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.StringLenBetween(0, 1024),
+						},
+					},
+				},
+			},
+			"home_directory_type": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          awstypes.HomeDirectoryTypePath,
+				ValidateDiagFunc: enum.Validate[awstypes.HomeDirectoryType](),
+			},
+			names.AttrPolicy: {
+				Type:                  schema.TypeString,
+				Optional:              true,
+				ValidateFunc:          verify.ValidIAMPolicyJSON,
+				DiffSuppressFunc:      verify.SuppressEquivalentPolicyDiffs,
+				DiffSuppressOnRefresh: true,
+				StateFunc: func(v any) string {
+					json, _ := structure.NormalizeJsonString(v)
+					return json
+				},
+			},
+			"posix_profile": {
+				Type:     schema.TypeList,
+				MaxItems: 1,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"gid": {
+							Type:     schema.TypeInt,
+							Required: true,
+						},
+						"secondary_gids": {
+							Type:     schema.TypeSet,
+							Elem:     &schema.Schema{Type: schema.TypeInt},
+							Optional: true,
+						},
+						"uid": {
+							Type:     schema.TypeInt,
+							Required: true,
+						},
+					},
+				},
+			},
+			names.AttrRole: {
+				Type: schema.TypeString,
+				// Although Role is required in the API it is not currently returned on Read.
+				// Required:     true,
+				Optional:     true,
+				ValidateFunc: verify.ValidARN,
+			},
+			"server_id": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validServerID,
+			},
+		},
+	}
+}

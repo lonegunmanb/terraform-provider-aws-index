@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acmpca
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ACMPCAClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), permissionResourceIDPartCount, true)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	caARN, principal, sourceAccount := parts[0], parts[1], parts[2]
+	permission, err := findPermissionByThreePartKey(ctx, conn, caARN, principal, sourceAccount)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] ACM PCA Permission (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ACM PCA Permission (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrActions, flattenPermissionActions(permission.Actions))
+	d.Set("certificate_authority_arn", permission.CertificateAuthorityArn)
+	d.Set(names.AttrPolicy, permission.Policy)
+	d.Set(names.AttrPrincipal, permission.Principal)
+	d.Set("source_account", permission.SourceAccount)
+
+	return diags
+}

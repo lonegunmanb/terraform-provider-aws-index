@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53resolver
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/route53resolver"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53resolver/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findResolverDNSSECConfigByID(ctx context.Context, conn *route53resolver.Client, id string) (*awstypes.ResolverDnssecConfig, error) {
+	input := &route53resolver.ListResolverDnssecConfigsInput{}
+
+	// GetResolverDnssecConfig does not support query by ID.
+	pages := route53resolver.NewListResolverDnssecConfigsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, &retry.NotFoundError{
+				LastError:   err,
+				LastRequest: input,
+			}
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.ResolverDnssecConfigs {
+			if aws.ToString(v.Id) == id {
+				if validationStatus := v.ValidationStatus; validationStatus == awstypes.ResolverDNSSECValidationStatusDisabled {
+					return nil, &retry.NotFoundError{
+						Message:     string(validationStatus),
+						LastRequest: input,
+					}
+				}
+				return &v, nil
+			}
+		}
+	}
+
+	return nil, tfresource.NewEmptyResultError(input)
+}

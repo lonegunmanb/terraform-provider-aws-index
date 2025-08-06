@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCertificateCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DMSClient(ctx)
+
+	certificateID := d.Get("certificate_id").(string)
+	input := &dms.ImportCertificateInput{
+		CertificateIdentifier: aws.String(certificateID),
+		Tags:                  getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("certificate_pem"); ok {
+		input.CertificatePem = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("certificate_wallet"); ok {
+		v, err := itypes.Base64Decode(v.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		input.CertificateWallet = v
+	}
+
+	_, err := conn.ImportCertificate(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DMS Certificate (%s): %s", certificateID, err)
+	}
+
+	d.SetId(certificateID)
+
+	return append(diags, resourceCertificateRead(ctx, d, meta)...)
+}

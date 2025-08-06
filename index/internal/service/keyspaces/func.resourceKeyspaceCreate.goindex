@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/keyspaces
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/keyspaces"
+	"github.com/aws/aws-sdk-go-v2/service/keyspaces/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceKeyspaceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KeyspacesClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &keyspaces.CreateKeyspaceInput{
+		KeyspaceName: aws.String(name),
+		Tags:         getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("replication_specification"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		tfMap := v.([]any)[0].(map[string]any)
+		input.ReplicationSpecification = &types.ReplicationSpecification{
+			ReplicationStrategy: types.Rs(tfMap["replication_strategy"].(string)),
+		}
+
+		if v, ok := tfMap["region_list"].(*schema.Set); ok && v.Len() > 0 {
+			input.ReplicationSpecification.RegionList = flex.ExpandStringValueSet(v)
+		}
+	}
+
+	_, err := conn.CreateKeyspace(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Keyspaces Keyspace (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	_, err = tfresource.RetryWhenNotFound(ctx, d.Timeout(schema.TimeoutCreate), func() (any, error) {
+		return findKeyspaceByName(ctx, conn, d.Id())
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Keyspaces Keyspace (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceKeyspaceRead(ctx, d, meta)...)
+}

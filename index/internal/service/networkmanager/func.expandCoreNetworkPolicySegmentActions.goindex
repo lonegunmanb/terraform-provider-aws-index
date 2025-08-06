@@ -1,0 +1,140 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandCoreNetworkPolicySegmentActions(tfList []any) ([]*coreNetworkPolicySegmentAction, error) {
+	apiObjects := make([]*coreNetworkPolicySegmentAction, 0)
+
+	for i, tfMapRaw := range tfList {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		apiObject := &coreNetworkPolicySegmentAction{}
+
+		action := tfMap[names.AttrAction].(string)
+		apiObject.Action = action
+		switch action {
+		case "share":
+			if v, ok := tfMap["segment"]; ok {
+				apiObject.Segment = v.(string)
+			}
+
+			if v, ok := tfMap[names.AttrMode]; ok {
+				apiObject.Mode = v.(string)
+			}
+
+			var shareWith, shareWithExcept any
+
+			if v := tfMap["share_with"].(*schema.Set).List(); len(v) > 0 {
+				shareWith = coreNetworkPolicyExpandStringList(v)
+				apiObject.ShareWith = shareWith
+			}
+
+			if v := tfMap["share_with_except"].(*schema.Set).List(); len(v) > 0 {
+				shareWithExcept = coreNetworkPolicyExpandStringList(v)
+				apiObject.ShareWithExcept = shareWithExcept
+			}
+
+			if (shareWith != nil && shareWithExcept != nil) || (shareWith == nil && shareWithExcept == nil) {
+				return nil, fmt.Errorf(`you must specify only 1 of "share_with" or "share_with_except". See segment_actions[%d]`, i)
+			}
+
+		case "create-route":
+			if v, ok := tfMap["segment"]; ok {
+				apiObject.Segment = v.(string)
+			}
+
+			if v := tfMap[names.AttrMode]; v != "" {
+				return nil, fmt.Errorf(`you cannot specify "mode" if action = "create-route". See segment_actions[%d]`, i)
+			}
+
+			if v := tfMap["destination_cidr_blocks"].(*schema.Set).List(); len(v) > 0 {
+				apiObject.DestinationCidrBlocks = coreNetworkPolicyExpandStringList(v)
+			}
+
+			if v := tfMap["destinations"].(*schema.Set).List(); len(v) > 0 {
+				apiObject.Destinations = coreNetworkPolicyExpandStringList(v)
+			}
+
+			if v, ok := tfMap[names.AttrDescription]; ok {
+				apiObject.Description = v.(string)
+			}
+
+		case "send-via", "send-to":
+			if v, ok := tfMap["segment"]; ok {
+				apiObject.Segment = v.(string)
+			}
+
+			if v, ok := tfMap[names.AttrMode]; ok {
+				apiObject.Mode = v.(string)
+			}
+
+			if v, ok := tfMap["when_sent_to"].([]any); ok && len(v) > 0 && v[0] != nil {
+				apiObject.WhenSentTo = &coreNetworkPolicySegmentActionWhenSentTo{}
+
+				tfMap := v[0].(map[string]any)
+
+				if v := tfMap["segments"].(*schema.Set).List(); len(v) > 0 {
+					apiObject.WhenSentTo.Segments = coreNetworkPolicyExpandStringList(v)
+				}
+			}
+
+			if v, ok := tfMap["via"].([]any); ok && len(v) > 0 && v[0] != nil {
+				apiObject.Via = &coreNetworkPolicySegmentActionVia{}
+
+				tfMap := v[0].(map[string]any)
+
+				if v := tfMap["network_function_groups"].(*schema.Set).List(); len(v) > 0 {
+					apiObject.Via.NetworkFunctionGroups = coreNetworkPolicyExpandStringList(v)
+				}
+
+				if v, ok := tfMap["with_edge_override"].([]any); ok && len(v) > 0 {
+					apiObjects := []*coreNetworkPolicySegmentActionViaEdgeOverride{}
+
+					for _, tfMapRaw := range v {
+						tfMap := tfMapRaw.(map[string]any)
+						apiObject := &coreNetworkPolicySegmentActionViaEdgeOverride{}
+
+						if v := tfMap["edge_sets"].(*schema.Set).List(); len(v) > 0 {
+							var edgeSets [][]string
+							for _, esRaw := range v {
+								es := esRaw.(*schema.Set)
+								edgeSets = append(edgeSets, flex.ExpandStringValueSet(es))
+							}
+							apiObject.EdgeSets = edgeSets
+						}
+
+						if v, ok := tfMap["use_edge_location"]; ok && v != "" {
+							apiObject.UseEdgeLocation = v.(string)
+						} else if v, ok := tfMap["use_edge"]; ok {
+							apiObject.UseEdgeLocation = v.(string)
+						}
+
+						apiObjects = append(apiObjects, apiObject)
+					}
+
+					apiObject.Via.WithEdgeOverrides = apiObjects
+				}
+			}
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects, nil
+}

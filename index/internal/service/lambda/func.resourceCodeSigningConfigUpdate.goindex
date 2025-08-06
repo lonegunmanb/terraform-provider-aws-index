@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCodeSigningConfigUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &lambda.UpdateCodeSigningConfigInput{
+			CodeSigningConfigArn: aws.String(d.Id()),
+		}
+
+		if d.HasChange("allowed_publishers") {
+			input.AllowedPublishers = expandAllowedPublishers(d.Get("allowed_publishers").([]any))
+		}
+
+		if d.HasChange(names.AttrDescription) {
+			input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		}
+
+		if d.HasChange("policies") {
+			if v, ok := d.GetOk("policies"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				tfMap := v.([]any)[0].(map[string]any)
+				input.CodeSigningPolicies = &awstypes.CodeSigningPolicies{
+					UntrustedArtifactOnDeployment: awstypes.CodeSigningPolicy(tfMap["untrusted_artifact_on_deployment"].(string)),
+				}
+			}
+		}
+
+		_, err := conn.UpdateCodeSigningConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Lambda Code Signing Config (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceCodeSigningConfigRead(ctx, d, meta)...)
+}

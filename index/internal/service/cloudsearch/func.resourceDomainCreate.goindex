@@ -1,0 +1,105 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudsearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudsearch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudsearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudSearchClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &cloudsearch.CreateDomainInput{
+		DomainName: aws.String(name),
+	}
+	_, err := conn.CreateDomain(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CloudSearch Domain (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if v, ok := d.GetOk("scaling_parameters"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input := &cloudsearch.UpdateScalingParametersInput{
+			DomainName:        aws.String(d.Id()),
+			ScalingParameters: expandScalingParameters(v.([]any)[0].(map[string]any)),
+		}
+
+		_, err := conn.UpdateScalingParameters(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudSearch Domain (%s) scaling parameters: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("multi_az"); ok {
+		input := &cloudsearch.UpdateAvailabilityOptionsInput{
+			DomainName: aws.String(d.Id()),
+			MultiAZ:    aws.Bool(v.(bool)),
+		}
+
+		_, err := conn.UpdateAvailabilityOptions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudSearch Domain (%s) availability options: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("endpoint_options"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input := &cloudsearch.UpdateDomainEndpointOptionsInput{
+			DomainEndpointOptions: expandDomainEndpointOptions(v.([]any)[0].(map[string]any)),
+			DomainName:            aws.String(d.Id()),
+		}
+
+		_, err := conn.UpdateDomainEndpointOptions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating CloudSearch Domain (%s) endpoint options: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("index_field"); ok && v.(*schema.Set).Len() > 0 {
+		err := defineIndexFields(ctx, conn, d.Id(), v.(*schema.Set).List())
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating CloudSearch Domain (%s): %s", name, err)
+		}
+
+		input := &cloudsearch.IndexDocumentsInput{
+			DomainName: aws.String(d.Id()),
+		}
+
+		_, err = conn.IndexDocuments(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "indexing CloudSearch Domain (%s) documents: %s", d.Id(), err)
+		}
+	}
+
+	// TODO: Status.RequiresIndexDocuments = true?
+
+	if _, err := waitDomainActive(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for CloudSearch Domain (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDomainRead(ctx, d, meta)...)
+}

@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/athena
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePreparedStatementCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AthenaClient(ctx)
+
+	workGroupName, statementName := d.Get("workgroup").(string), d.Get(names.AttrName).(string)
+	id := preparedStatementCreateResourceID(workGroupName, statementName)
+	input := &athena.CreatePreparedStatementInput{
+		QueryStatement: aws.String(d.Get("query_statement").(string)),
+		StatementName:  aws.String(statementName),
+		WorkGroup:      aws.String(workGroupName),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	_, err := conn.CreatePreparedStatement(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Athena Prepared Statement (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourcePreparedStatementRead(ctx, d, meta)...)
+}

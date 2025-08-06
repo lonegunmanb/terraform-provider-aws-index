@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/identitystore
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore/document"
+	"github.com/aws/aws-sdk-go-v2/service/identitystore/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IdentityStoreClient(ctx)
+
+	identityStoreID := d.Get("identity_store_id").(string)
+	username := d.Get(names.AttrUserName).(string)
+	input := &identitystore.CreateUserInput{
+		DisplayName:     aws.String(d.Get(names.AttrDisplayName).(string)),
+		IdentityStoreId: aws.String(identityStoreID),
+		UserName:        aws.String(username),
+	}
+
+	if v, ok := d.GetOk("addresses"); ok && len(v.([]any)) > 0 {
+		input.Addresses = expandAddresses(v.([]any))
+	}
+
+	if v, ok := d.GetOk("emails"); ok && len(v.([]any)) > 0 {
+		input.Emails = expandEmails(v.([]any))
+	}
+
+	if v, ok := d.GetOk("locale"); ok {
+		input.Locale = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrName); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Name = expandName(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("phone_numbers"); ok && len(v.([]any)) > 0 {
+		input.PhoneNumbers = expandPhoneNumbers(v.([]any))
+	}
+
+	if v, ok := d.GetOk("nickname"); ok {
+		input.NickName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("preferred_language"); ok {
+		input.PreferredLanguage = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("profile_url"); ok {
+		input.ProfileUrl = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("timezone"); ok {
+		input.Timezone = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("title"); ok {
+		input.Title = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("user_type"); ok {
+		input.UserType = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateUser(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating IdentityStore User (%s): %s", username, err)
+	}
+
+	d.SetId(userCreateResourceID(identityStoreID, aws.ToString(output.UserId)))
+
+	return append(diags, resourceUserRead(ctx, d, meta)...)
+}

@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/chime
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/chimesdkvoice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/chimesdkvoice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceVoiceConnectorTerminationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ChimeSDKVoiceClient(ctx)
+
+	if d.HasChanges("calling_regions", "cidr_allow_list", "disabled", "cps_limit", "default_phone_number") {
+		termination := &awstypes.Termination{
+			CallingRegions:  flex.ExpandStringValueSet(d.Get("calling_regions").(*schema.Set)),
+			CidrAllowedList: flex.ExpandStringValueSet(d.Get("cidr_allow_list").(*schema.Set)),
+			CpsLimit:        aws.Int32(int32(d.Get("cps_limit").(int))),
+		}
+
+		if v, ok := d.GetOk("default_phone_number"); ok {
+			termination.DefaultPhoneNumber = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("disabled"); ok {
+			termination.Disabled = aws.Bool(v.(bool))
+		}
+
+		input := &chimesdkvoice.PutVoiceConnectorTerminationInput{
+			VoiceConnectorId: aws.String(d.Id()),
+			Termination:      termination,
+		}
+
+		_, err := conn.PutVoiceConnectorTermination(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Chime Voice Connector (%s) termination: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceVoiceConnectorTerminationRead(ctx, d, meta)...)
+}

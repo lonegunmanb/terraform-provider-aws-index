@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataRepositoryAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	input := &fsx.CreateDataRepositoryAssociationInput{
+		ClientRequestToken: aws.String(id.UniqueId()),
+		DataRepositoryPath: aws.String(d.Get("data_repository_path").(string)),
+		FileSystemId:       aws.String(d.Get(names.AttrFileSystemID).(string)),
+		FileSystemPath:     aws.String(d.Get("file_system_path").(string)),
+		Tags:               getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("batch_import_meta_data_on_create"); ok {
+		input.BatchImportMetaDataOnCreate = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("imported_file_chunk_size"); ok {
+		input.ImportedFileChunkSize = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("s3"); ok {
+		input.S3 = expandDataRepositoryAssociationS3(v.([]any))
+	}
+
+	output, err := conn.CreateDataRepositoryAssociation(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating FSx for Lustre Data Repository Association: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.Association.AssociationId))
+
+	if _, err := waitDataRepositoryAssociationCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for FSx for Lustre Data Repository Association (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceDataRepositoryAssociationRead(ctx, d, meta)...)
+}

@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	endpointConfig, err := findEndpointConfigByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] SageMaker AI Endpoint Configuration (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading SageMaker AI Endpoint Configuration (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, endpointConfig.EndpointConfigArn)
+	d.Set(names.AttrName, endpointConfig.EndpointConfigName)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(endpointConfig.EndpointConfigName)))
+	d.Set(names.AttrKMSKeyARN, endpointConfig.KmsKeyId)
+
+	if err := d.Set("production_variants", flattenProductionVariants(endpointConfig.ProductionVariants)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting production_variants for SageMaker AI Endpoint Configuration (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("shadow_production_variants", flattenProductionVariants(endpointConfig.ShadowProductionVariants)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting shadow_production_variants for SageMaker AI Endpoint Configuration (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("data_capture_config", flattenDataCaptureConfig(endpointConfig.DataCaptureConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting data_capture_config for SageMaker AI Endpoint Configuration (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("async_inference_config", flattenEndpointConfigAsyncInferenceConfig(endpointConfig.AsyncInferenceConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting async_inference_config for SageMaker AI Endpoint Configuration (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

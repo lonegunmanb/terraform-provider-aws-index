@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datasync
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datasync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datasync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLocationFSxLustreFileSystemRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DataSyncClient(ctx)
+
+	output, err := findLocationFSxLustreByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] DataSync Location FSx for Lustre File System (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DataSync Location FSx for Lustre File System (%s): %s", d.Id(), err)
+	}
+
+	uri := aws.ToString(output.LocationUri)
+	subdirectory, err := subdirectoryFromLocationURI(uri)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set(names.AttrARN, output.LocationArn)
+	d.Set(names.AttrCreationTime, output.CreationTime.Format(time.RFC3339))
+	d.Set("fsx_filesystem_arn", d.Get("fsx_filesystem_arn"))
+	d.Set("security_group_arns", output.SecurityGroupArns)
+	d.Set("subdirectory", subdirectory)
+	d.Set(names.AttrURI, output.LocationUri)
+
+	return diags
+}

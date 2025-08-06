@@ -1,0 +1,163 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceQueueUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID, queueID, err := queueParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	// Queue has 6 update APIs
+	// UpdateQueueHoursOfOperationWithContext: Updates the hours_of_operation_id of a queue.
+	// UpdateQueueMaxContactsWithContext: Updates the max_contacts of a queue.
+	// UpdateQueueNameWithContext: Updates the name and description of a queue.
+	// UpdateQueueOutboundCallerConfigWithContext: Updates the outbound_caller_config of a queue.
+	// UpdateQueueStatusWithContext: Updates the status of a queue. Valid Values: ENABLED | DISABLED
+	// AssociateQueueQuickConnectsWithContext: Associates a set of quick connects with a queue. There is also DisassociateQueueQuickConnectsWithContext
+
+	// updates to hours_of_operation_id
+	if d.HasChange("hours_of_operation_id") {
+		input := &connect.UpdateQueueHoursOfOperationInput{
+			HoursOfOperationId: aws.String(d.Get("hours_of_operation_id").(string)),
+			InstanceId:         aws.String(instanceID),
+			QueueId:            aws.String(queueID),
+		}
+
+		_, err = conn.UpdateQueueHoursOfOperation(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Queue (%s) HoursOfOperation: %s", d.Id(), err)
+		}
+	}
+
+	// updates to max_contacts
+	if d.HasChange("max_contacts") {
+		input := &connect.UpdateQueueMaxContactsInput{
+			InstanceId:  aws.String(instanceID),
+			MaxContacts: aws.Int32(int32(d.Get("max_contacts").(int))),
+			QueueId:     aws.String(queueID),
+		}
+
+		_, err = conn.UpdateQueueMaxContacts(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Queue (%s) MaxContacts: %s", d.Id(), err)
+		}
+	}
+
+	// updates to name and/or description
+	if d.HasChanges(names.AttrName, names.AttrDescription) {
+		input := &connect.UpdateQueueNameInput{
+			Description: aws.String(d.Get(names.AttrDescription).(string)),
+			InstanceId:  aws.String(instanceID),
+			Name:        aws.String(d.Get(names.AttrName).(string)),
+			QueueId:     aws.String(queueID),
+		}
+
+		_, err = conn.UpdateQueueName(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Queue (%s) Name: %s", d.Id(), err)
+		}
+	}
+
+	// updates to outbound_caller_config
+	if d.HasChange("outbound_caller_config") {
+		input := &connect.UpdateQueueOutboundCallerConfigInput{
+			InstanceId:           aws.String(instanceID),
+			OutboundCallerConfig: expandOutboundCallerConfig(d.Get("outbound_caller_config").([]any)),
+			QueueId:              aws.String(queueID),
+		}
+
+		_, err = conn.UpdateQueueOutboundCallerConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Queue (%s) OutboundCallerConfig: %s", d.Id(), err)
+		}
+	}
+
+	// updates to status
+	if d.HasChange(names.AttrStatus) {
+		input := &connect.UpdateQueueStatusInput{
+			InstanceId: aws.String(instanceID),
+			QueueId:    aws.String(queueID),
+			Status:     awstypes.QueueStatus(d.Get(names.AttrStatus).(string)),
+		}
+
+		_, err = conn.UpdateQueueStatus(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Connect Queue (%s) Status: %s", d.Id(), err)
+		}
+	}
+
+	// updates to quick_connect_ids
+	if d.HasChange("quick_connect_ids") {
+		o, n := d.GetChange("quick_connect_ids")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+		add, del := flex.ExpandStringValueSet(ns.Difference(os)), flex.ExpandStringValueSet(os.Difference(ns))
+
+		// API only supports adding or removing 50 at a time.
+		const batchSize = 50
+
+		if len(add) > 0 {
+			for chunk := range slices.Chunk(add, batchSize) {
+				input := &connect.AssociateQueueQuickConnectsInput{
+					InstanceId:      aws.String(instanceID),
+					QueueId:         aws.String(queueID),
+					QuickConnectIds: chunk,
+				}
+
+				_, err = conn.AssociateQueueQuickConnects(ctx, input)
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "associating Connect Queue (%s) Quick Connects: %s", d.Id(), err)
+				}
+			}
+		}
+
+		if len(del) > 0 {
+			for chunk := range slices.Chunk(del, batchSize) {
+				input := &connect.DisassociateQueueQuickConnectsInput{
+					InstanceId:      aws.String(instanceID),
+					QueueId:         aws.String(queueID),
+					QuickConnectIds: chunk,
+				}
+
+				_, err = conn.DisassociateQueueQuickConnects(ctx, input)
+
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "disassociating Connect Queue (%s) Quick Connects: %s", d.Id(), err)
+				}
+			}
+		}
+	}
+
+	return append(diags, resourceQueueRead(ctx, d, meta)...)
+}

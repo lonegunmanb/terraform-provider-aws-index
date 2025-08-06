@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kinesisvideo
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesisvideo"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kinesisvideo/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStreamDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KinesisVideoClient(ctx)
+
+	log.Printf("[DEBUG] Deleting Kinesis Video Stream: %s", d.Id())
+	_, err := conn.DeleteStream(ctx, &kinesisvideo.DeleteStreamInput{
+		CurrentVersion: aws.String(d.Get(names.AttrVersion).(string)),
+		StreamARN:      aws.String(d.Id()),
+	})
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Kinesis Video Stream (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitStreamDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Kinesis Video Stream (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

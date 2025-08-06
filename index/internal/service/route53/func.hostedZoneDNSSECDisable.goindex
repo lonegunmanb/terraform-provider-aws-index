@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func hostedZoneDNSSECDisable(ctx context.Context, conn *route53.Client, hostedZoneID string, waitTimeout time.Duration) error {
+	input := &route53.DisableHostedZoneDNSSECInput{
+		HostedZoneId: aws.String(hostedZoneID),
+	}
+
+	const (
+		timeout = 5 * time.Minute
+	)
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.KeySigningKeyInParentDSRecord](ctx, timeout, func() (any, error) {
+		return conn.DisableHostedZoneDNSSEC(ctx, input)
+	})
+
+	if err != nil {
+		return fmt.Errorf("disabling Route 53 Hosted Zone DNSSEC (%s): %w", hostedZoneID, err)
+	}
+
+	if output := outputRaw.(*route53.DisableHostedZoneDNSSECOutput); output.ChangeInfo != nil {
+		if _, err := waitChangeInsync(ctx, conn, aws.ToString(output.ChangeInfo.Id), waitTimeout); err != nil {
+			return fmt.Errorf("waiting for Route 53 Hosted Zone DNSSEC (%s) synchronize: %w", hostedZoneID, err)
+		}
+	}
+
+	return nil
+}

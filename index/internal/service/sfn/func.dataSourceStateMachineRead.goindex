@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sfn
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceStateMachineRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SFNClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	output, err := findStateByARN(ctx, conn, name)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "listing Step Functions State Machines: %s", err)
+	}
+
+	if n := len(output); n == 0 {
+		return sdkdiag.AppendErrorf(diags, "no Step Functions State Machines matched")
+	} else if n > 1 {
+		return sdkdiag.AppendErrorf(diags, "%d Step Functions State Machines matched; use additional constraints to reduce matches to a single State Machine", n)
+	}
+
+	out, err := findStateMachineByARN(ctx, conn, aws.ToString(output[0].StateMachineArn))
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Step Functions State Machine (%s): %s", aws.ToString(output[0].StateMachineArn), err)
+	}
+
+	d.SetId(aws.ToString(out.StateMachineArn))
+	d.Set(names.AttrARN, out.StateMachineArn)
+	d.Set(names.AttrCreationDate, out.CreationDate.Format(time.RFC3339))
+	d.Set(names.AttrDescription, out.Description)
+	d.Set("definition", out.Definition)
+	d.Set(names.AttrName, out.Name)
+	d.Set(names.AttrRoleARN, out.RoleArn)
+	d.Set("revision_id", out.RevisionId)
+	d.Set(names.AttrStatus, out.Status)
+
+	return diags
+}

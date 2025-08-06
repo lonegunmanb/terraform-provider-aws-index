@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datasync
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datasync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datasync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTaskRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DataSyncClient(ctx)
+
+	output, err := findTaskByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] DataSync Task (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DataSync Task (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, output.TaskArn)
+	d.Set(names.AttrCloudWatchLogGroupARN, output.CloudWatchLogGroupArn)
+	d.Set("destination_location_arn", output.DestinationLocationArn)
+	if err := d.Set("excludes", flattenFilterRules(output.Excludes)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting excludes: %s", err)
+	}
+	if err := d.Set("includes", flattenFilterRules(output.Includes)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting includes: %s", err)
+	}
+	d.Set(names.AttrName, output.Name)
+	if err := d.Set("options", flattenOptions(output.Options)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting options: %s", err)
+	}
+	if err := d.Set(names.AttrSchedule, flattenTaskSchedule(output.Schedule)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting schedule: %s", err)
+	}
+	d.Set("task_mode", output.TaskMode)
+	if err := d.Set("task_report_config", flattenTaskReportConfig(output.TaskReportConfig)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting task_report_config: %s", err)
+	}
+	d.Set("source_location_arn", output.SourceLocationArn)
+
+	return diags
+}

@@ -1,0 +1,115 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudhsmv2
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2"
+	"github.com/aws/aws-sdk-go-v2/service/cloudhsmv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCluster() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceClusterCreate,
+		ReadWithoutTimeout:   resourceClusterRead,
+		UpdateWithoutTimeout: resourceClusterUpdate,
+		DeleteWithoutTimeout: resourceClusterDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(120 * time.Minute),
+			Update: schema.DefaultTimeout(120 * time.Minute),
+			Delete: schema.DefaultTimeout(120 * time.Minute),
+		},
+
+		Schema: map[string]*schema.Schema{
+			"cluster_certificates": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"aws_hardware_certificate": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"cluster_certificate": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"cluster_csr": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"hsm_certificate": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"manufacturer_hardware_certificate": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+					},
+				},
+			},
+			"cluster_id": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"cluster_state": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"hsm_type": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringInSlice([]string{"hsm1.medium", "hsm2m.medium"}, false),
+			},
+			names.AttrMode: {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ForceNew:         true,
+				ValidateDiagFunc: enum.Validate[types.ClusterMode](),
+			},
+			"security_group_id": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"source_backup_identifier": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+			names.AttrSubnetIDs: {
+				Type:     schema.TypeSet,
+				Required: true,
+				ForceNew: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+			names.AttrVPCID: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+		},
+	}
+}

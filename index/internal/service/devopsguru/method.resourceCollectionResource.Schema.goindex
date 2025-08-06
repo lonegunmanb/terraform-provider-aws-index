@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/devopsguru
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/service/devopsguru"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/devopsguru/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceCollectionResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrID: framework.IDAttribute(),
+			names.AttrType: schema.StringAttribute{
+				Required:   true,
+				CustomType: fwtypes.StringEnumType[awstypes.ResourceCollectionType](),
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"cloudformation": schema.ListNestedBlock{
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				CustomType: fwtypes.NewListNestedObjectTypeOf[cloudformationData](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"stack_names": schema.ListAttribute{
+							Required:    true,
+							CustomType:  fwtypes.ListOfStringType,
+							ElementType: types.StringType,
+							PlanModifiers: []planmodifier.List{
+								listplanmodifier.RequiresReplace(),
+							},
+						},
+					},
+				},
+			},
+			names.AttrTags: schema.ListNestedBlock{
+				// Attempting to specify multiple app boundary keys will result in a ValidationException
+				//
+				//   ValidationException: Multiple app boundary keys are not supported
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				CustomType: fwtypes.NewListNestedObjectTypeOf[tagsData](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"app_boundary_key": schema.StringAttribute{
+							Required: true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+						"tag_values": schema.ListAttribute{
+							Required:    true,
+							CustomType:  fwtypes.ListOfStringType,
+							ElementType: types.StringType,
+							PlanModifiers: []planmodifier.List{
+								listplanmodifier.RequiresReplace(),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSharedDirectoryAccepterCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DSClient(ctx)
+
+	sharedDirectoryID := d.Get("shared_directory_id").(string)
+	input := &directoryservice.AcceptSharedDirectoryInput{
+		SharedDirectoryId: aws.String(sharedDirectoryID),
+	}
+
+	output, err := conn.AcceptSharedDirectory(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "accepting Directory Service Shared Directory (%s): %s", sharedDirectoryID, err)
+	}
+
+	d.SetId(sharedDirectoryID)
+	d.Set("notes", output.SharedDirectory.ShareNotes) // only available in response to create
+
+	if _, err := waitSharedDirectoryAccepted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Directory Service Shared Directory (%s) accept: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceSharedDirectoryAccepterRead(ctx, d, meta)...)
+}

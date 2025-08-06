@@ -1,0 +1,103 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUser() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceUserCreate,
+		ReadWithoutTimeout:   resourceUserRead,
+		UpdateWithoutTimeout: resourceUserUpdate,
+		DeleteWithoutTimeout: resourceUserDelete,
+
+		SchemaFunc: func() map[string]*schema.Schema {
+			return map[string]*schema.Schema{
+				names.AttrARN: {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+				names.AttrAWSAccountID: {
+					Type:     schema.TypeString,
+					Optional: true,
+					Computed: true,
+					ForceNew: true,
+				},
+				names.AttrEmail: {
+					Type:     schema.TypeString,
+					Required: true,
+					ForceNew: true,
+				},
+				"iam_arn": {
+					Type:     schema.TypeString,
+					Optional: true,
+					ForceNew: true,
+				},
+				"identity_type": {
+					Type:     schema.TypeString,
+					Required: true,
+					ForceNew: true,
+					// TODO ValidateDiagFunc: enum.Validate[awstypes.IdentityType](),
+					ValidateFunc: validation.StringInSlice(enum.Slice(
+						awstypes.IdentityTypeIam,
+						awstypes.IdentityTypeQuicksight,
+					), false),
+				},
+				names.AttrNamespace: {
+					Type:     schema.TypeString,
+					Optional: true,
+					ForceNew: true,
+					Default:  defaultUserNamespace,
+					ValidateFunc: validation.All(
+						validation.StringLenBetween(1, 63),
+						validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_.-]*$`), "must contain only alphanumeric characters, hyphens, underscores, and periods"),
+					),
+				},
+				"session_name": {
+					Type:     schema.TypeString,
+					Optional: true,
+					ForceNew: true,
+				},
+				"user_invitation_url": {
+					Type:     schema.TypeString,
+					Computed: true,
+				},
+				names.AttrUserName: {
+					Type:         schema.TypeString,
+					Optional:     true,
+					ValidateFunc: validation.NoZeroValues,
+				},
+				"user_role": {
+					Type:     schema.TypeString,
+					Required: true,
+					ForceNew: true,
+					// TODO ValidateDiagFunc: enum.Validate[awstypes.UserRole](),
+					ValidateFunc: validation.StringInSlice(enum.Slice(
+						awstypes.UserRoleReader,
+						awstypes.UserRoleAuthor,
+						awstypes.UserRoleAdmin,
+						awstypes.UserRoleReaderPro,
+						awstypes.UserRoleAuthorPro,
+						awstypes.UserRoleAdminPro,
+					), false),
+				},
+			}
+		},
+	}
+}

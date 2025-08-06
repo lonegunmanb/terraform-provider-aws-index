@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fis
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/fis"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fis/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceExperimentTemplateUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).FISClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := fis.UpdateExperimentTemplateInput{
+			Id: aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrAction) {
+			input.Actions = expandExperimentTemplateActionsForUpdate(d.Get(names.AttrAction).(*schema.Set))
+		}
+
+		if d.HasChange(names.AttrDescription) {
+			input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		}
+
+		if d.HasChange("experiment_options") {
+			input.ExperimentOptions = expandUpdateExperimentTemplateExperimentOptionsInput(d.Get("experiment_options").([]any))
+		}
+
+		if d.HasChange("experiment_report_configuration") {
+			if v, ok := d.GetOk("experiment_report_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.ExperimentReportConfiguration = expandUpdateExperimentTemplateReportConfigurationInput(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("log_configuration") {
+			config := expandExperimentTemplateLogConfigurationForUpdate(d.Get("log_configuration").([]any))
+			input.LogConfiguration = config
+		}
+
+		if d.HasChange(names.AttrRoleARN) {
+			input.RoleArn = aws.String(d.Get(names.AttrRoleARN).(string))
+		}
+
+		if d.HasChange("stop_condition") {
+			input.StopConditions = expandExperimentTemplateStopConditionsForUpdate(d.Get("stop_condition").(*schema.Set))
+		}
+
+		if d.HasChange(names.AttrTarget) {
+			if targets, err := expandExperimentTemplateTargetsForUpdate(d.Get(names.AttrTarget).(*schema.Set)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			} else {
+				input.Targets = targets
+			}
+		}
+
+		_, err := conn.UpdateExperimentTemplate(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating FIS Experiment Template (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceExperimentTemplateRead(ctx, d, meta)...)
+}

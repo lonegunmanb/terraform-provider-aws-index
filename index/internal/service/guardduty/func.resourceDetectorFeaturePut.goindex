@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/guardduty"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDetectorFeaturePut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GuardDutyClient(ctx)
+
+	detectorID, name := d.Get("detector_id").(string), d.Get(names.AttrName).(string)
+	feature := awstypes.DetectorFeatureConfiguration{
+		Name:   awstypes.DetectorFeature(name),
+		Status: awstypes.FeatureStatus(d.Get(names.AttrStatus).(string)),
+	}
+
+	if v, ok := d.GetOk("additional_configuration"); ok && len(v.([]any)) > 0 {
+		feature.AdditionalConfiguration = expandDetectorAdditionalConfigurations(v.([]any))
+	}
+
+	input := &guardduty.UpdateDetectorInput{
+		DetectorId: aws.String(detectorID),
+		Features:   []awstypes.DetectorFeatureConfiguration{feature},
+	}
+
+	_, err := conn.UpdateDetector(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating GuardDuty Detector (%s) Feature (%s): %s", detectorID, name, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(detectorFeatureCreateResourceID(detectorID, name))
+	}
+
+	return append(diags, resourceDetectorFeatureRead(ctx, d, meta)...)
+}

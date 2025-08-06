@@ -1,0 +1,222 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EKSClient(ctx)
+
+	// Do any version update first.
+	if d.HasChange(names.AttrVersion) {
+		input := &eks.UpdateClusterVersionInput{
+			Name:    aws.String(d.Id()),
+			Version: aws.String(d.Get(names.AttrVersion).(string)),
+		}
+
+		if v, ok := d.GetOk("force_update_version"); ok {
+			input.Force = v.(bool)
+		}
+
+		output, err := conn.UpdateClusterVersion(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) version: %s", d.Id(), err)
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+
+		if _, err := waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) version update (%s): %s", d.Id(), updateID, err)
+		}
+	}
+
+	if d.HasChange("access_config") {
+		if v, ok := d.GetOk("access_config"); ok {
+			input := &eks.UpdateClusterConfigInput{
+				AccessConfig: expandUpdateAccessConfigRequest(v.([]any)),
+				Name:         aws.String(d.Id()),
+			}
+
+			output, err := conn.UpdateClusterConfig(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) access configuration: %s", d.Id(), err)
+			}
+
+			updateID := aws.ToString(output.Update.Id)
+
+			_, err = waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate))
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) access configuration update (%s): %s", d.Id(), updateID, err)
+			}
+		}
+	}
+
+	if d.HasChanges("compute_config", "kubernetes_network_config", "storage_config") {
+		computeConfig := expandComputeConfigRequest(d.Get("compute_config").([]any))
+		kubernetesNetworkConfig := expandKubernetesNetworkConfigRequest(d.Get("kubernetes_network_config").([]any))
+		storageConfig := expandStorageConfigRequest(d.Get("storage_config").([]any))
+
+		input := &eks.UpdateClusterConfigInput{
+			Name:                    aws.String(d.Id()),
+			ComputeConfig:           computeConfig,
+			KubernetesNetworkConfig: kubernetesNetworkConfig,
+			StorageConfig:           storageConfig,
+		}
+
+		output, err := conn.UpdateClusterConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) compute config: %s", d.Id(), err)
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+
+		if _, err = waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) compute config update (%s): %s", d.Id(), updateID, err)
+		}
+	}
+
+	if d.HasChange("encryption_config") {
+		o, n := d.GetChange("encryption_config")
+
+		if len(o.([]any)) == 0 && len(n.([]any)) == 1 {
+			input := &eks.AssociateEncryptionConfigInput{
+				ClusterName:      aws.String(d.Id()),
+				EncryptionConfig: expandEncryptionConfig(d.Get("encryption_config").([]any)),
+			}
+
+			output, err := conn.AssociateEncryptionConfig(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "associating EKS Cluster (%s) encryption config: %s", d.Id(), err)
+			}
+
+			updateID := aws.ToString(output.Update.Id)
+
+			if _, err := waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) encryption config association (%s): %s", d.Id(), updateID, err)
+			}
+		}
+	}
+
+	if d.HasChange("enabled_cluster_log_types") {
+		input := &eks.UpdateClusterConfigInput{
+			Logging: expandLogging(d.Get("enabled_cluster_log_types").(*schema.Set)),
+			Name:    aws.String(d.Id()),
+		}
+
+		output, err := conn.UpdateClusterConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) logging: %s", d.Id(), err)
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+
+		if _, err := waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) logging update (%s): %s", d.Id(), updateID, err)
+		}
+	}
+
+	if d.HasChange("upgrade_policy") {
+		input := &eks.UpdateClusterConfigInput{
+			Name:          aws.String(d.Id()),
+			UpgradePolicy: expandUpgradePolicy(d.Get("upgrade_policy").([]any)),
+		}
+
+		output, err := conn.UpdateClusterConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) upgrade policy: %s", d.Id(), err)
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+
+		if _, err := waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) upgrade policy update (%s): %s", d.Id(), updateID, err)
+		}
+	}
+
+	if d.HasChanges("vpc_config.0.endpoint_private_access", "vpc_config.0.endpoint_public_access", "vpc_config.0.public_access_cidrs") {
+		config := &types.VpcConfigRequest{
+			EndpointPrivateAccess: aws.Bool(d.Get("vpc_config.0.endpoint_private_access").(bool)),
+			EndpointPublicAccess:  aws.Bool(d.Get("vpc_config.0.endpoint_public_access").(bool)),
+		}
+
+		if v, ok := d.GetOk("vpc_config.0.public_access_cidrs"); ok && v.(*schema.Set).Len() > 0 {
+			config.PublicAccessCidrs = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if err := updateVPCConfig(ctx, conn, d.Id(), config, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	// API only allows one type of update at at time.
+	if d.HasChange("vpc_config.0.subnet_ids") {
+		config := &types.VpcConfigRequest{
+			SubnetIds: flex.ExpandStringValueSet(d.Get("vpc_config.0.subnet_ids").(*schema.Set)),
+		}
+
+		if err := updateVPCConfig(ctx, conn, d.Id(), config, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange("vpc_config.0.security_group_ids") {
+		config := &types.VpcConfigRequest{
+			SecurityGroupIds: flex.ExpandStringValueSet(d.Get("vpc_config.0.security_group_ids").(*schema.Set)),
+		}
+
+		if err := updateVPCConfig(ctx, conn, d.Id(), config, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange("zonal_shift_config") {
+		input := &eks.UpdateClusterConfigInput{
+			Name:             aws.String(d.Id()),
+			ZonalShiftConfig: expandZonalShiftConfig(d.Get("zonal_shift_config").([]any)),
+		}
+
+		output, err := conn.UpdateClusterConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) zonal shift config: %s", d.Id(), err)
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+
+		if _, err := waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) zonal shift config update (%s): %s", d.Id(), updateID, err)
+		}
+	}
+
+	return append(diags, resourceClusterRead(ctx, d, meta)...)
+}

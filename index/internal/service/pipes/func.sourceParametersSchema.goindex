@@ -1,0 +1,559 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pipes
+import (
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pipes/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sourceParametersSchema() *schema.Schema {
+	verifySecretsManagerARN := validation.StringMatch(regexache.MustCompile(`^(^arn:aws([a-z]|\-)*:secretsmanager:([a-z]{2}((-gov)|(-iso(b?)))?-[a-z]+-\d{1,2}):(\d{12}):secret:.+)$`), "")
+
+	return &schema.Schema{
+		Type:     schema.TypeList,
+		Optional: true,
+		Computed: true,
+		MaxItems: 1,
+		Elem: &schema.Resource{
+			Schema: map[string]*schema.Schema{
+				"activemq_broker_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"source_parameters.0.dynamodb_stream_parameters",
+						"source_parameters.0.kinesis_stream_parameters",
+						"source_parameters.0.managed_streaming_kafka_parameters",
+						"source_parameters.0.rabbitmq_broker_parameters",
+						"source_parameters.0.self_managed_kafka_parameters",
+						"source_parameters.0.sqs_queue_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"batch_size": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10000),
+							},
+							"credentials": {
+								Type:     schema.TypeList,
+								Required: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"basic_auth": {
+											Type:         schema.TypeString,
+											Required:     true,
+											ValidateFunc: verifySecretsManagerARN,
+										},
+									},
+								},
+							},
+							"maximum_batching_window_in_seconds": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(0, 300),
+							},
+							"queue_name": {
+								Type:     schema.TypeString,
+								Required: true,
+								ForceNew: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 1000),
+									validation.StringMatch(regexache.MustCompile(`^[\s\S]*$`), ""),
+								),
+							},
+						},
+					},
+				},
+				"dynamodb_stream_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"source_parameters.0.activemq_broker_parameters",
+						"source_parameters.0.kinesis_stream_parameters",
+						"source_parameters.0.managed_streaming_kafka_parameters",
+						"source_parameters.0.rabbitmq_broker_parameters",
+						"source_parameters.0.self_managed_kafka_parameters",
+						"source_parameters.0.sqs_queue_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"batch_size": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10000),
+							},
+							"dead_letter_config": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										names.AttrARN: {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verify.ValidARN,
+										},
+									},
+								},
+							},
+							"maximum_batching_window_in_seconds": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(0, 300),
+							},
+							"maximum_record_age_in_seconds": {
+								Type:     schema.TypeInt,
+								Optional: true,
+								Computed: true,
+								ValidateFunc: validation.Any(
+									validation.IntInSlice([]int{-1}),
+									validation.IntBetween(60, 604_800),
+								),
+							},
+							"maximum_retry_attempts": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								ValidateFunc: validation.IntBetween(-1, 10_000),
+							},
+							"on_partial_batch_item_failure": {
+								Type:             schema.TypeString,
+								Optional:         true,
+								ValidateDiagFunc: enum.Validate[types.OnPartialBatchItemFailureStreams](),
+							},
+							"parallelization_factor": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10),
+							},
+							"starting_position": {
+								Type:             schema.TypeString,
+								Required:         true,
+								ForceNew:         true,
+								ValidateDiagFunc: enum.Validate[types.DynamoDBStreamStartPosition](),
+							},
+						},
+					},
+				},
+				"filter_criteria": {
+					Type:             schema.TypeList,
+					Optional:         true,
+					MaxItems:         1,
+					DiffSuppressFunc: suppressEmptyConfigurationBlock("source_parameters.0.filter_criteria"),
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							names.AttrFilter: {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 5,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"pattern": {
+											Type:         schema.TypeString,
+											Required:     true,
+											ValidateFunc: validation.StringLenBetween(1, 4096),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"kinesis_stream_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"source_parameters.0.activemq_broker_parameters",
+						"source_parameters.0.dynamodb_stream_parameters",
+						"source_parameters.0.managed_streaming_kafka_parameters",
+						"source_parameters.0.rabbitmq_broker_parameters",
+						"source_parameters.0.self_managed_kafka_parameters",
+						"source_parameters.0.sqs_queue_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"batch_size": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10000),
+							},
+							"dead_letter_config": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										names.AttrARN: {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verify.ValidARN,
+										},
+									},
+								},
+							},
+							"maximum_batching_window_in_seconds": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(0, 300),
+							},
+							"maximum_record_age_in_seconds": {
+								Type:     schema.TypeInt,
+								Optional: true,
+								Computed: true,
+								ValidateFunc: validation.Any(
+									validation.IntInSlice([]int{-1}),
+									validation.IntBetween(60, 604_800),
+								),
+							},
+							"maximum_retry_attempts": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								ValidateFunc: validation.IntBetween(-1, 10_000),
+							},
+							"on_partial_batch_item_failure": {
+								Type:             schema.TypeString,
+								Optional:         true,
+								ValidateDiagFunc: enum.Validate[types.OnPartialBatchItemFailureStreams](),
+							},
+							"parallelization_factor": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10),
+							},
+							"starting_position": {
+								Type:             schema.TypeString,
+								Required:         true,
+								ForceNew:         true,
+								ValidateDiagFunc: enum.Validate[types.KinesisStreamStartPosition](),
+							},
+							"starting_position_timestamp": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ForceNew:     true,
+								ValidateFunc: validation.IsRFC3339Time,
+							},
+						},
+					},
+				},
+				"managed_streaming_kafka_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"source_parameters.0.activemq_broker_parameters",
+						"source_parameters.0.dynamodb_stream_parameters",
+						"source_parameters.0.kinesis_stream_parameters",
+						"source_parameters.0.rabbitmq_broker_parameters",
+						"source_parameters.0.self_managed_kafka_parameters",
+						"source_parameters.0.sqs_queue_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"batch_size": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10000),
+							},
+							"consumer_group_id": {
+								Type:     schema.TypeString,
+								Optional: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 200),
+									validation.StringMatch(regexache.MustCompile(`^[^.]([0-9A-Za-z_.-]+)$`), ""),
+								),
+							},
+							"credentials": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"client_certificate_tls_auth": {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verifySecretsManagerARN,
+										},
+										"sasl_scram_512_auth": {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verifySecretsManagerARN,
+										},
+									},
+								},
+							},
+							"maximum_batching_window_in_seconds": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(0, 300),
+							},
+							"starting_position": {
+								Type:             schema.TypeString,
+								Optional:         true,
+								ForceNew:         true,
+								ValidateDiagFunc: enum.Validate[types.MSKStartPosition](),
+							},
+							"topic_name": {
+								Type:     schema.TypeString,
+								Required: true,
+								ForceNew: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 249),
+									validation.StringMatch(regexache.MustCompile(`^[^.]([0-9A-Za-z_.-]+)$`), ""),
+								),
+							},
+						},
+					},
+				},
+				"rabbitmq_broker_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"source_parameters.0.activemq_broker_parameters",
+						"source_parameters.0.dynamodb_stream_parameters",
+						"source_parameters.0.kinesis_stream_parameters",
+						"source_parameters.0.managed_streaming_kafka_parameters",
+						"source_parameters.0.self_managed_kafka_parameters",
+						"source_parameters.0.sqs_queue_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"batch_size": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10000),
+							},
+							"credentials": {
+								Type:     schema.TypeList,
+								Required: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"basic_auth": {
+											Type:         schema.TypeString,
+											Required:     true,
+											ValidateFunc: verifySecretsManagerARN,
+										},
+									},
+								},
+							},
+							"maximum_batching_window_in_seconds": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(0, 300),
+							},
+							"queue_name": {
+								Type:     schema.TypeString,
+								Required: true,
+								ForceNew: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 1000),
+									validation.StringMatch(regexache.MustCompile(`^[\s\S]*$`), ""),
+								),
+							},
+							"virtual_host": {
+								Type:     schema.TypeString,
+								Optional: true,
+								ForceNew: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 200),
+									validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_\/*:+=.@-]*$`), ""),
+								),
+							},
+						},
+					},
+				},
+				"self_managed_kafka_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"source_parameters.0.activemq_broker_parameters",
+						"source_parameters.0.dynamodb_stream_parameters",
+						"source_parameters.0.kinesis_stream_parameters",
+						"source_parameters.0.managed_streaming_kafka_parameters",
+						"source_parameters.0.rabbitmq_broker_parameters",
+						"source_parameters.0.sqs_queue_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"additional_bootstrap_servers": {
+								Type:     schema.TypeSet,
+								Optional: true,
+								ForceNew: true,
+								MaxItems: 2,
+								Elem: &schema.Schema{
+									Type: schema.TypeString,
+									ValidateFunc: validation.All(
+										validation.StringLenBetween(1, 300),
+										validation.StringMatch(regexache.MustCompile(`^(([0-9A-Za-z]|[0-9A-Za-z][0-9A-Za-z-]*[0-9A-Za-z])\.)*([0-9A-Za-z]|[0-9A-Za-z][0-9A-Za-z-]*[0-9A-Za-z]):[0-9]{1,5}$`), ""),
+									),
+								},
+							},
+							"batch_size": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10000),
+							},
+							"consumer_group_id": {
+								Type:     schema.TypeString,
+								Optional: true,
+								ForceNew: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 200),
+									validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_\/*:+=.@-]*$`), ""),
+								),
+							},
+							"credentials": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"basic_auth": {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verifySecretsManagerARN,
+										},
+										"client_certificate_tls_auth": {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verifySecretsManagerARN,
+										},
+										"sasl_scram_256_auth": {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verifySecretsManagerARN,
+										},
+										"sasl_scram_512_auth": {
+											Type:         schema.TypeString,
+											Optional:     true,
+											ValidateFunc: verifySecretsManagerARN,
+										},
+									},
+								},
+							},
+							"maximum_batching_window_in_seconds": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(0, 300),
+							},
+							"server_root_ca_certificate": {
+								Type:         schema.TypeString,
+								Optional:     true,
+								ValidateFunc: verify.ValidARN,
+							},
+							"starting_position": {
+								Type:             schema.TypeString,
+								Optional:         true,
+								ForceNew:         true,
+								ValidateDiagFunc: enum.Validate[types.SelfManagedKafkaStartPosition](),
+							},
+							"topic_name": {
+								Type:     schema.TypeString,
+								Required: true,
+								ForceNew: true,
+								ValidateFunc: validation.All(
+									validation.StringLenBetween(1, 249),
+									validation.StringMatch(regexache.MustCompile(`^[^.]([0-9A-Za-z_.-]+)$`), ""),
+								),
+							},
+							"vpc": {
+								Type:     schema.TypeList,
+								Optional: true,
+								MaxItems: 1,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										names.AttrSecurityGroups: {
+											Type:     schema.TypeSet,
+											Optional: true,
+											MaxItems: 5,
+											Elem: &schema.Schema{
+												Type: schema.TypeString,
+												ValidateFunc: validation.All(
+													validation.StringLenBetween(1, 1024),
+													validation.StringMatch(regexache.MustCompile(`^sg-[0-9A-Za-z]*$`), ""),
+												),
+											},
+										},
+										names.AttrSubnets: {
+											Type:     schema.TypeSet,
+											Optional: true,
+											MaxItems: 16,
+											Elem: &schema.Schema{
+												Type: schema.TypeString,
+												ValidateFunc: validation.All(
+													validation.StringLenBetween(1, 1024),
+													validation.StringMatch(regexache.MustCompile(`^subnet-[0-9a-z]*$`), ""),
+												),
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"sqs_queue_parameters": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					ConflictsWith: []string{
+						"source_parameters.0.activemq_broker_parameters",
+						"source_parameters.0.dynamodb_stream_parameters",
+						"source_parameters.0.kinesis_stream_parameters",
+						"source_parameters.0.managed_streaming_kafka_parameters",
+						"source_parameters.0.rabbitmq_broker_parameters",
+						"source_parameters.0.self_managed_kafka_parameters",
+					},
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"batch_size": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(1, 10000),
+							},
+							"maximum_batching_window_in_seconds": {
+								Type:         schema.TypeInt,
+								Optional:     true,
+								Computed:     true,
+								ValidateFunc: validation.IntBetween(0, 300),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

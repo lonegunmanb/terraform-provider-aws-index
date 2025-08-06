@@ -1,0 +1,97 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mq
+import (
+	"context"
+	"encoding/base64"
+	"log"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mq"
+	"github.com/aws/aws-sdk-go-v2/service/mq/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceConfiguration() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceConfigurationCreate,
+		ReadWithoutTimeout:   resourceConfigurationRead,
+		UpdateWithoutTimeout: resourceConfigurationUpdate,
+		DeleteWithoutTimeout: schema.NoopContext, // Delete is not available in the API
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		CustomizeDiff: customdiff.Sequence(
+			func(_ context.Context, diff *schema.ResourceDiff, v any) error {
+				if diff.HasChange(names.AttrDescription) {
+					return diff.SetNewComputed("latest_revision")
+				}
+				if diff.HasChange("data") {
+					o, n := diff.GetChange("data")
+					os := o.(string)
+					ns := n.(string)
+					if !suppressXMLEquivalentConfig("data", os, ns, nil) {
+						return diff.SetNewComputed("latest_revision")
+					}
+				}
+				return nil
+			},
+		),
+
+		Schema: map[string]*schema.Schema{
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"authentication_strategy": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateDiagFunc: enum.ValidateIgnoreCase[types.AuthenticationStrategy](),
+			},
+			"data": {
+				Type:                  schema.TypeString,
+				Required:              true,
+				DiffSuppressFunc:      suppressXMLEquivalentConfig,
+				DiffSuppressOnRefresh: true,
+			},
+			names.AttrDescription: {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"engine_type": {
+				Type:             schema.TypeString,
+				Required:         true,
+				ForceNew:         true,
+				ValidateDiagFunc: enum.ValidateIgnoreCase[types.EngineType](),
+			},
+			names.AttrEngineVersion: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"latest_revision": {
+				Type:     schema.TypeInt,
+				Computed: true,
+			},
+			names.AttrName: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+		},
+	}
+}

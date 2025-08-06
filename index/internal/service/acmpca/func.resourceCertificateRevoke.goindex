@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/acmpca
+import (
+	"context"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"log"
+	"math/big"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca"
+	"github.com/aws/aws-sdk-go-v2/service/acmpca/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"golang.org/x/crypto/cryptobyte"
+	cryptobyte_asn1 "golang.org/x/crypto/cryptobyte/asn1"
+)
+func resourceCertificateRevoke(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ACMPCAClient(ctx)
+
+	block, _ := pem.Decode([]byte(d.Get(names.AttrCertificate).(string)))
+	if block == nil {
+		log.Printf("[WARN] Failed to parse ACM PCA Certificate (%s)", d.Id())
+		return diags
+	}
+
+	// Certificate can contain invalid extension values that will prevent full certificate parsing hence revocation
+	// but still have serial number that we need in order to revoke it.
+	serial, err := getCertificateSerial(block.Bytes)
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	log.Printf("[INFO] Revoking ACM PCA Certificate: %s", d.Id())
+	input := acmpca.RevokeCertificateInput{
+		CertificateAuthorityArn: aws.String(d.Get("certificate_authority_arn").(string)),
+		CertificateSerial:       aws.String(serial.Text(16)), //nolint:mnd // Should be excluded, but not sure how to specify a method
+		RevocationReason:        types.RevocationReasonUnspecified,
+	}
+	_, err = conn.RevokeCertificate(ctx, &input)
+
+	if errs.IsA[*types.ResourceNotFoundException](err) ||
+		errs.IsA[*types.RequestAlreadyProcessedException](err) ||
+		errs.IsA[*types.RequestInProgressException](err) ||
+		errs.IsAErrorMessageContains[*types.InvalidRequestException](err, "Self-signed certificate can not be revoked") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "revoking ACM PCA Certificate (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

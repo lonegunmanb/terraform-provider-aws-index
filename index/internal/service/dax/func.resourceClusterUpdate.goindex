@@ -1,0 +1,130 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dax
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dax"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dax/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DAXClient(ctx)
+
+	req := &dax.UpdateClusterInput{
+		ClusterName: aws.String(d.Id()),
+	}
+
+	requestUpdate := false
+	awaitUpdate := false
+	if d.HasChange(names.AttrDescription) {
+		req.Description = aws.String(d.Get(names.AttrDescription).(string))
+		requestUpdate = true
+	}
+
+	if d.HasChange(names.AttrSecurityGroupIDs) {
+		if attr := d.Get(names.AttrSecurityGroupIDs).(*schema.Set); attr.Len() > 0 {
+			req.SecurityGroupIds = flex.ExpandStringValueSet(attr)
+			requestUpdate = true
+		}
+	}
+
+	if d.HasChange(names.AttrParameterGroupName) {
+		req.ParameterGroupName = aws.String(d.Get(names.AttrParameterGroupName).(string))
+		requestUpdate = true
+	}
+
+	if d.HasChange("maintenance_window") {
+		req.PreferredMaintenanceWindow = aws.String(d.Get("maintenance_window").(string))
+		requestUpdate = true
+	}
+
+	if d.HasChange("notification_topic_arn") {
+		v := d.Get("notification_topic_arn").(string)
+		req.NotificationTopicArn = aws.String(v)
+		if v == "" {
+			inactive := "inactive"
+			req.NotificationTopicStatus = &inactive
+		}
+		requestUpdate = true
+	}
+
+	if requestUpdate {
+		log.Printf("[DEBUG] Modifying DAX Cluster (%s), opts:\n%v", d.Id(), req)
+		_, err := conn.UpdateCluster(ctx, req)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating DAX cluster (%s), error: %s", d.Id(), err)
+		}
+		awaitUpdate = true
+	}
+
+	if d.HasChange("replication_factor") {
+		oraw, nraw := d.GetChange("replication_factor")
+		o := oraw.(int)
+		n := nraw.(int)
+		if n < o {
+			log.Printf("[INFO] Decreasing nodes in DAX cluster %s from %d to %d", d.Id(), o, n)
+			input := dax.DecreaseReplicationFactorInput{
+				ClusterName:          aws.String(d.Id()),
+				NewReplicationFactor: int32(nraw.(int)),
+			}
+			_, err := conn.DecreaseReplicationFactor(ctx, &input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "increasing nodes in DAX cluster %s, error: %s", d.Id(), err)
+			}
+			awaitUpdate = true
+		}
+		if n > o {
+			log.Printf("[INFO] Increasing nodes in DAX cluster %s from %d to %d", d.Id(), o, n)
+			input := dax.IncreaseReplicationFactorInput{
+				ClusterName:          aws.String(d.Id()),
+				NewReplicationFactor: int32(nraw.(int)),
+			}
+			_, err := conn.IncreaseReplicationFactor(ctx, &input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "increasing nodes in DAX cluster %s, error: %s", d.Id(), err)
+			}
+			awaitUpdate = true
+		}
+	}
+
+	if awaitUpdate {
+		log.Printf("[DEBUG] Waiting for update: %s", d.Id())
+		pending := []string{"modifying"}
+		stateConf := &retry.StateChangeConf{
+			Pending:    pending,
+			Target:     []string{"available"},
+			Refresh:    clusterStateRefreshFunc(ctx, conn, d.Id(), "available", pending),
+			Timeout:    d.Timeout(schema.TimeoutUpdate),
+			MinTimeout: 10 * time.Second,
+			Delay:      30 * time.Second,
+		}
+
+		_, sterr := stateConf.WaitForStateContext(ctx)
+		if sterr != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for DAX (%s) to update: %s", d.Id(), sterr)
+		}
+	}
+
+	return append(diags, resourceClusterRead(ctx, d, meta)...)
+}

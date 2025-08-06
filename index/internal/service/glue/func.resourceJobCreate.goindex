@@ -1,0 +1,116 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceJobCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := glue.CreateJobInput{
+		Command: expandJobCommand(d.Get("command").([]any)),
+		Name:    aws.String(name),
+		Role:    aws.String(d.Get(names.AttrRoleARN).(string)),
+		Tags:    getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("connections"); ok {
+		input.Connections = &awstypes.ConnectionsList{
+			Connections: flex.ExpandStringValueList(v.([]any)),
+		}
+	}
+
+	if v, ok := d.GetOk("default_arguments"); ok {
+		input.DefaultArguments = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("execution_class"); ok {
+		input.ExecutionClass = awstypes.ExecutionClass(v.(string))
+	}
+
+	if v, ok := d.GetOk("execution_property"); ok {
+		input.ExecutionProperty = expandExecutionProperty(v.([]any))
+	}
+
+	if v, ok := d.GetOk("glue_version"); ok {
+		input.GlueVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("job_run_queuing_enabled"); ok {
+		input.JobRunQueuingEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk(names.AttrMaxCapacity); ok {
+		input.MaxCapacity = aws.Float64(v.(float64))
+	}
+
+	if v, ok := d.GetOk("maintenance_window"); ok {
+		input.MaintenanceWindow = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("max_retries"); ok {
+		input.MaxRetries = int32(v.(int))
+	}
+
+	if v, ok := d.GetOk("non_overridable_arguments"); ok {
+		input.NonOverridableArguments = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("notification_property"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.NotificationProperty = expandNotificationProperty(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("number_of_workers"); ok {
+		input.NumberOfWorkers = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("security_configuration"); ok {
+		input.SecurityConfiguration = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("source_control_details"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.SourceControlDetails = expandSourceControlDetails(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrTimeout); ok {
+		input.Timeout = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("worker_type"); ok {
+		input.WorkerType = awstypes.WorkerType(v.(string))
+	}
+
+	output, err := conn.CreateJob(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Glue Job (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Name))
+
+	return append(diags, resourceJobRead(ctx, d, meta)...)
+}

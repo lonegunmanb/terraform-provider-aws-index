@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"log"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceImageVersionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
+
+	name := d.Get("image_name").(string)
+	input := sagemaker.CreateImageVersionInput{
+		ImageName:   aws.String(name),
+		BaseImage:   aws.String(d.Get("base_image").(string)),
+		ClientToken: aws.String(id.UniqueId()),
+	}
+
+	if v, ok := d.GetOk("job_type"); ok {
+		input.JobType = awstypes.JobType(v.(string))
+	}
+
+	if v, ok := d.GetOk("processor"); ok {
+		input.Processor = awstypes.Processor(v.(string))
+	}
+
+	if v, ok := d.GetOk("release_notes"); ok {
+		input.ReleaseNotes = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("vendor_guidance"); ok {
+		input.VendorGuidance = awstypes.VendorGuidance(v.(string))
+	}
+
+	if v, ok := d.GetOk("horovod"); ok {
+		input.Horovod = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("ml_framework"); ok {
+		input.MLFramework = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("programming_lang"); ok {
+		input.ProgrammingLang = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("aliases"); ok && v.(*schema.Set).Len() > 0 {
+		input.Aliases = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if _, err := conn.CreateImageVersion(ctx, &input); err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Image Version %s: %s", name, err)
+	}
+
+	out, err := waitImageVersionCreated(ctx, conn, name)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for SageMaker AI Image Version (%s) to be created: %s", d.Id(), err)
+	}
+
+	parts := []string{name, strconv.Itoa(int(aws.ToInt32(out.Version)))}
+	id, err := flex.FlattenResourceId(parts, imageVersionResourcePartCount, false)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Image Version %s: %s", name, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceImageVersionRead(ctx, d, meta)...)
+}

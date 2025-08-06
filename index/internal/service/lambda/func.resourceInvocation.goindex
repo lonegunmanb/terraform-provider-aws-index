@@ -1,0 +1,85 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"crypto/md5"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInvocation() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceInvocationCreate,
+		ReadWithoutTimeout:   schema.NoopContext,
+		UpdateWithoutTimeout: resourceInvocationUpdate,
+		DeleteWithoutTimeout: resourceInvocationDelete,
+
+		SchemaVersion: 1,
+		StateUpgraders: []schema.StateUpgrader{
+			{
+				Type:    resourceInvocationConfigV0().CoreConfigSchema().ImpliedType(),
+				Upgrade: invocationStateUpgradeV0,
+				Version: 0,
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			"function_name": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"input": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ValidateFunc: validation.StringIsJSON,
+			},
+			"lifecycle_scope": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          lifecycleScopeCreateOnly,
+				ValidateDiagFunc: enum.Validate[lifecycleScope](),
+			},
+			"qualifier": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				Default:  FunctionVersionLatest,
+			},
+			"result": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"terraform_key": {
+				Type:     schema.TypeString,
+				Optional: true,
+				Default:  "tf",
+			},
+			names.AttrTriggers: {
+				Type:     schema.TypeMap,
+				Optional: true,
+				ForceNew: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+		},
+
+		CustomizeDiff: customdiff.Sequence(
+			customizeDiffValidateInput,
+			customizeDiffInputChangeWithCreateOnlyScope,
+			customizeDiffInputChangeWithCRUDScope,
+		),
+	}
+}

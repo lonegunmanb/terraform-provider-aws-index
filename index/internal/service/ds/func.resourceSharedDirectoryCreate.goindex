@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSharedDirectoryCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DSClient(ctx)
+
+	directoryID := d.Get("directory_id").(string)
+	input := &directoryservice.ShareDirectoryInput{
+		DirectoryId: aws.String(directoryID),
+		ShareMethod: awstypes.ShareMethod(d.Get("method").(string)),
+		ShareTarget: expandShareTarget(d.Get(names.AttrTarget).([]any)[0].(map[string]any)),
+	}
+
+	if v, ok := d.GetOk("notes"); ok {
+		input.ShareNotes = aws.String(v.(string))
+	}
+
+	output, err := conn.ShareDirectory(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Directory Service Shared Directory (%s): %s", directoryID, err)
+	}
+
+	d.SetId(sharedDirectoryCreateResourceID(directoryID, aws.ToString(output.SharedDirectoryId)))
+
+	return append(diags, resourceSharedDirectoryRead(ctx, d, meta)...)
+}

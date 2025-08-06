@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/costoptimizationhub
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/costoptimizationhub"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/costoptimizationhub/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *enrollmentStatusResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new enrollmentStatusResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &old)...)
+	response.Diagnostics.Append(request.State.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// out includes the IncludeMemberAccounts field ATM but it is always nil. Thus, we cannot update state
+	// and drift detection is not possible. However, we can still update if the configuration changes.
+	if !old.IncludeMemberAccounts.Equal(new.IncludeMemberAccounts) {
+		input := &costoptimizationhub.UpdateEnrollmentStatusInput{
+			Status:                awstypes.EnrollmentStatus("Active"),
+			IncludeMemberAccounts: old.IncludeMemberAccounts.ValueBoolPointer(),
+		}
+
+		conn := r.Meta().CostOptimizationHubClient(ctx)
+
+		out, err := conn.UpdateEnrollmentStatus(ctx, input)
+		if err != nil {
+			response.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.CostOptimizationHub, create.ErrActionCreating, ResNameEnrollmentStatus, old.ID.String(), err),
+				err.Error(),
+			)
+			return
+		}
+
+		if out == nil {
+			response.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.CostOptimizationHub, create.ErrActionCreating, ResNameEnrollmentStatus, old.ID.String(), nil),
+				errors.New("empty out").Error(),
+			)
+			return
+		}
+
+		old.ID = new.ID
+		old.Status = fwflex.StringValueToFramework(ctx, *out.Status)
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &old)...)
+}

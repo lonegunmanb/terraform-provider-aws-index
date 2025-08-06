@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepRoles(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	conn := client.IAMClient(ctx)
+
+	roles := make([]string, 0)
+	pages := iam.NewListRolesPaginator(conn, &iam.ListRolesInput{})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping IAM Role sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("retrieving IAM Roles: %w", err)
+		}
+
+		for _, role := range page.Roles {
+			roleName := aws.ToString(role.RoleName)
+			if roleNameFilter(roleName) {
+				roles = append(roles, roleName)
+			} else {
+				log.Printf("[INFO] Skipping IAM Role (%s): no match on allow-list", roleName)
+			}
+		}
+	}
+
+	if len(roles) == 0 {
+		log.Print("[DEBUG] No IAM Roles to sweep")
+		return nil
+	}
+
+	var sweeperErrs *multierror.Error
+
+	for _, roleName := range roles {
+		log.Printf("[DEBUG] Deleting IAM Role (%s)", roleName)
+
+		err := deleteRole(ctx, conn, roleName, true, true, true)
+
+		if tfawserr.ErrCodeContains(err, "AccessDenied") {
+			log.Printf("[WARN] Skipping IAM Role (%s): %s", roleName, err)
+			continue
+		}
+		if err != nil {
+			sweeperErr := fmt.Errorf("error deleting IAM Role (%s): %w", roleName, err)
+			log.Printf("[ERROR] %s", sweeperErr)
+			sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+			continue
+		}
+	}
+
+	return sweeperErrs.ErrorOrNil()
+}

@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLFTagUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LakeFormationClient(ctx)
+
+	catalogID, tagKey, err := lfTagParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	o, n := d.GetChange(names.AttrValues)
+	os := o.(*schema.Set)
+	ns := n.(*schema.Set)
+	toAdd := ns.Difference(os)
+	toDelete := os.Difference(ns)
+
+	var toAddChunks, toDeleteChunks [][]any
+	if len(toAdd.List()) > 0 {
+		toAddChunks = slices.Collect(slices.Chunk(toAdd.List(), lfTagsValuesMaxBatchSize))
+	}
+
+	if len(toDelete.List()) > 0 {
+		toDeleteChunks = slices.Collect(slices.Chunk(toDelete.List(), lfTagsValuesMaxBatchSize))
+	}
+
+	for {
+		if len(toAddChunks) == 0 && len(toDeleteChunks) == 0 {
+			break
+		}
+
+		input := &lakeformation.UpdateLFTagInput{
+			CatalogId: aws.String(catalogID),
+			TagKey:    aws.String(tagKey),
+		}
+
+		toAddEnd, toDeleteEnd := len(toAddChunks), len(toDeleteChunks)
+		var indexAdd, indexDelete int
+		if indexAdd < toAddEnd {
+			input.TagValuesToAdd = flex.ExpandStringValueList(toAddChunks[0])
+			indexAdd++
+		}
+		if indexDelete < toDeleteEnd {
+			input.TagValuesToDelete = flex.ExpandStringValueList(toDeleteChunks[0])
+			indexDelete++
+		}
+
+		toAddChunks = toAddChunks[indexAdd:]
+		toDeleteChunks = toDeleteChunks[indexDelete:]
+
+		_, err = conn.UpdateLFTag(ctx, input)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Lake Formation LF-Tag (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceLFTagRead(ctx, d, meta)...)
+}

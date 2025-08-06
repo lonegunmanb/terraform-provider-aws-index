@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mediapackage
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mediapackage"
+	"github.com/aws/aws-sdk-go-v2/service/mediapackage/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceChannelRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).MediaPackageClient(ctx)
+
+	resp, err := findChannelByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] MediaPackage Channel (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading MediaPackage Channel: %s", err)
+	}
+
+	d.Set(names.AttrARN, resp.Arn)
+	d.Set("channel_id", resp.Id)
+	d.Set(names.AttrDescription, resp.Description)
+
+	if err := d.Set("hls_ingest", flattenHLSIngest(resp.HlsIngest)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting hls_ingest: %s", err)
+	}
+
+	setTagsOut(ctx, resp.Tags)
+
+	return diags
+}

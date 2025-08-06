@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appstream
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appstream"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appstream/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFleetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppStreamClient(ctx)
+
+	fleet, err := findFleetByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] AppStream Fleet (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading AppStream Fleet (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, fleet.Arn)
+	if fleet.ComputeCapacityStatus != nil {
+		if err = d.Set("compute_capacity", []any{flattenComputeCapacity(fleet.ComputeCapacityStatus)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting compute_capacity: %s", err)
+		}
+	} else {
+		d.Set("compute_capacity", nil)
+	}
+	d.Set(names.AttrCreatedTime, aws.ToTime(fleet.CreatedTime).Format(time.RFC3339))
+	d.Set(names.AttrDescription, fleet.Description)
+	d.Set(names.AttrDisplayName, fleet.DisplayName)
+	d.Set("disconnect_timeout_in_seconds", fleet.DisconnectTimeoutInSeconds)
+	if fleet.DomainJoinInfo != nil {
+		if err = d.Set("domain_join_info", []any{flattenDomainInfo(fleet.DomainJoinInfo)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting domain_join_info: %s", err)
+		}
+	} else {
+		d.Set("domain_join_info", nil)
+	}
+	d.Set("enable_default_internet_access", fleet.EnableDefaultInternetAccess)
+	d.Set("fleet_type", fleet.FleetType)
+	d.Set(names.AttrIAMRoleARN, fleet.IamRoleArn)
+	d.Set("idle_disconnect_timeout_in_seconds", fleet.IdleDisconnectTimeoutInSeconds)
+	d.Set("image_arn", fleet.ImageArn)
+	d.Set("image_name", fleet.ImageName)
+	d.Set(names.AttrInstanceType, fleet.InstanceType)
+	d.Set("max_sessions_per_instance", fleet.MaxSessionsPerInstance)
+	d.Set("max_user_duration_in_seconds", fleet.MaxUserDurationInSeconds)
+	d.Set(names.AttrName, fleet.Name)
+	d.Set(names.AttrState, fleet.State)
+	d.Set("stream_view", fleet.StreamView)
+	if fleet.VpcConfig != nil {
+		if err = d.Set(names.AttrVPCConfig, []any{flattenVPCConfig(fleet.VpcConfig)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting vpc_config: %s", err)
+		}
+	} else {
+		d.Set(names.AttrVPCConfig, nil)
+	}
+
+	return diags
+}

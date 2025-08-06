@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRealtimeLogConfigUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	//
+	// https://docs.aws.amazon.com/cloudfront/latest/APIReference/API_UpdateRealtimeLogConfig.html:
+	// "When you update a real-time log configuration, all the parameters are updated with the values provided in the request. You cannot update some parameters independent of others."
+	//
+	input := &cloudfront.UpdateRealtimeLogConfigInput{
+		ARN: aws.String(d.Id()),
+	}
+
+	if v, ok := d.GetOk(names.AttrEndpoint); ok && len(v.([]any)) > 0 {
+		input.EndPoints = expandEndPoints(v.([]any))
+	}
+
+	if v, ok := d.GetOk("fields"); ok && v.(*schema.Set).Len() > 0 {
+		input.Fields = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("sampling_rate"); ok {
+		input.SamplingRate = aws.Int64(int64(v.(int)))
+	}
+
+	_, err := conn.UpdateRealtimeLogConfig(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating CloudFront Real-time Log Config (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceRealtimeLogConfigRead(ctx, d, meta)...)
+}

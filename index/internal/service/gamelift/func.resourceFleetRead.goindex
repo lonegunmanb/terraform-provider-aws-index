@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/gamelift
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/gamelift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/gamelift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFleetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GameLiftClient(ctx)
+
+	fleet, err := findFleetByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] GameLift Fleet (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading GameLift Fleet (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, fleet.FleetArn)
+	d.Set("build_arn", fleet.BuildArn)
+	d.Set("build_id", fleet.BuildId)
+	if err := d.Set("certificate_configuration", flattenCertificateConfiguration(fleet.CertificateConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting certificate_configuration: %s", err)
+	}
+	d.Set(names.AttrDescription, fleet.Description)
+	d.Set("log_paths", fleet.LogPaths)
+	d.Set("metric_groups", fleet.MetricGroups)
+	d.Set(names.AttrName, fleet.Name)
+	d.Set("fleet_type", fleet.FleetType)
+	d.Set("instance_role_arn", fleet.InstanceRoleArn)
+	d.Set("ec2_instance_type", fleet.InstanceType)
+	d.Set("new_game_session_protection_policy", fleet.NewGameSessionProtectionPolicy)
+	d.Set("operating_system", fleet.OperatingSystem)
+	if err := d.Set("resource_creation_limit_policy", flattenResourceCreationLimitPolicy(fleet.ResourceCreationLimitPolicy)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting resource_creation_limit_policy: %s", err)
+	}
+	d.Set("script_arn", fleet.ScriptArn)
+	d.Set("script_id", fleet.ScriptId)
+
+	input := &gamelift.DescribeFleetPortSettingsInput{
+		FleetId: aws.String(d.Id()),
+	}
+
+	output, err := conn.DescribeFleetPortSettings(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading GameLift Fleet (%s) inbound connection permissions: %s", d.Id(), err)
+	}
+
+	if err := d.Set("ec2_inbound_permission", flattenIPPermissions(output.InboundPermissions)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting ec2_inbound_permission: %s", err)
+	}
+
+	return diags
+}

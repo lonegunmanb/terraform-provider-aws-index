@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceScheduledActionPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppAutoScalingClient(ctx)
+
+	name, serviceNamespace, resourceID := d.Get(names.AttrName).(string), d.Get("service_namespace").(string), d.Get(names.AttrResourceID).(string)
+	id := strings.Join([]string{name, serviceNamespace, resourceID}, "-")
+	input := applicationautoscaling.PutScheduledActionInput{
+		ResourceId:          aws.String(resourceID),
+		ScalableDimension:   awstypes.ScalableDimension(d.Get("scalable_dimension").(string)),
+		ScheduledActionName: aws.String(name),
+		ServiceNamespace:    awstypes.ServiceNamespace(serviceNamespace),
+	}
+
+	if d.IsNewResource() {
+		if v, ok := d.GetOk("end_time"); ok {
+			t, _ := time.Parse(time.RFC3339, v.(string))
+			input.EndTime = aws.Time(t)
+		}
+		input.ScalableTargetAction = expandScalableTargetAction(d.Get("scalable_target_action").([]any))
+		input.Schedule = aws.String(d.Get(names.AttrSchedule).(string))
+		if v, ok := d.GetOk(names.AttrStartTime); ok {
+			t, _ := time.Parse(time.RFC3339, v.(string))
+			input.StartTime = aws.Time(t)
+		}
+		input.Timezone = aws.String(d.Get("timezone").(string))
+	} else {
+		if v, ok := d.GetOk("end_time"); ok {
+			t, _ := time.Parse(time.RFC3339, v.(string))
+			input.EndTime = aws.Time(t)
+		}
+		if d.HasChange("scalable_target_action") {
+			input.ScalableTargetAction = expandScalableTargetAction(d.Get("scalable_target_action").([]any))
+		}
+		if d.HasChange(names.AttrSchedule) {
+			input.Schedule = aws.String(d.Get(names.AttrSchedule).(string))
+		}
+		if v, ok := d.GetOk(names.AttrStartTime); ok {
+			t, _ := time.Parse(time.RFC3339, v.(string))
+			input.StartTime = aws.Time(t)
+		}
+		if d.HasChange("timezone") {
+			input.Timezone = aws.String(d.Get("timezone").(string))
+		}
+	}
+
+	const (
+		timeout = 5 * time.Minute
+	)
+	_, err := tfresource.RetryWhenIsA[*awstypes.ObjectNotFoundException](ctx, timeout, func() (any, error) {
+		return conn.PutScheduledAction(ctx, &input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting Application Auto Scaling Scheduled Action (%s): %s", id, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(id)
+	}
+
+	return append(diags, resourceScheduledActionRead(ctx, d, meta)...)
+}

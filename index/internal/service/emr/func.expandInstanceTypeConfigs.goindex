@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"slices"
+	"strings"
+	"time"
+	_ "unsafe" // Required for go:linkname
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	smithyjson "github.com/aws/smithy-go/encoding/json"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandInstanceTypeConfigs(tfList []any) []awstypes.InstanceTypeConfig {
+	apiObjects := []awstypes.InstanceTypeConfig{}
+
+	for _, tfMapRaw := range tfList {
+		tfMap := tfMapRaw.(map[string]any)
+		apiObject := awstypes.InstanceTypeConfig{
+			InstanceType: aws.String(tfMap[names.AttrInstanceType].(string)),
+		}
+
+		if v, ok := tfMap["bid_price"]; ok && v != "" {
+			apiObject.BidPrice = aws.String(v.(string))
+		}
+
+		if v, ok := tfMap["bid_price_as_percentage_of_on_demand_price"].(float64); ok && v != 0 {
+			apiObject.BidPriceAsPercentageOfOnDemandPrice = aws.Float64(v)
+		}
+
+		if v, ok := tfMap["weighted_capacity"].(int); ok {
+			apiObject.WeightedCapacity = aws.Int32(int32(v))
+		}
+
+		if v, ok := tfMap["configurations"].(*schema.Set); ok && v.Len() > 0 {
+			apiObject.Configurations = expandConfigurations(v.List())
+		}
+
+		if v, ok := tfMap["ebs_config"].(*schema.Set); ok && v.Len() == 1 {
+			apiObject.EbsConfiguration = expandEBSConfiguration(v.List())
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects
+}

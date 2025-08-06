@@ -1,0 +1,117 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func securityGroupIPPermGather(groupId string, permissions []awstypes.IpPermission, ownerId *string) []map[string]any {
+	ruleMap := make(map[string]map[string]any)
+	for _, perm := range permissions {
+		if len(perm.IpRanges) > 0 {
+			for _, ip := range perm.IpRanges {
+				desc := aws.ToString(ip.Description)
+
+				rule := initSecurityGroupRule(ruleMap, perm, desc)
+
+				raw, ok := rule["cidr_blocks"]
+				if !ok {
+					raw = make([]string, 0)
+				}
+				list := raw.([]string)
+
+				rule["cidr_blocks"] = append(list, *ip.CidrIp)
+			}
+		}
+
+		if len(perm.Ipv6Ranges) > 0 {
+			for _, ip := range perm.Ipv6Ranges {
+				desc := aws.ToString(ip.Description)
+
+				rule := initSecurityGroupRule(ruleMap, perm, desc)
+
+				raw, ok := rule["ipv6_cidr_blocks"]
+				if !ok {
+					raw = make([]string, 0)
+				}
+				list := raw.([]string)
+
+				rule["ipv6_cidr_blocks"] = append(list, *ip.CidrIpv6)
+			}
+		}
+
+		if len(perm.PrefixListIds) > 0 {
+			for _, pl := range perm.PrefixListIds {
+				desc := aws.ToString(pl.Description)
+
+				rule := initSecurityGroupRule(ruleMap, perm, desc)
+
+				raw, ok := rule["prefix_list_ids"]
+				if !ok {
+					raw = make([]string, 0)
+				}
+				list := raw.([]string)
+
+				rule["prefix_list_ids"] = append(list, *pl.PrefixListId)
+			}
+		}
+
+		groups := flattenSecurityGroups(perm.UserIdGroupPairs, ownerId)
+		if len(groups) > 0 {
+			for _, g := range groups {
+				desc := aws.ToString(g.Description)
+
+				rule := initSecurityGroupRule(ruleMap, perm, desc)
+
+				if aws.ToString(g.GroupId) == groupId {
+					rule["self"] = true
+					continue
+				}
+
+				raw, ok := rule[names.AttrSecurityGroups]
+				if !ok {
+					raw = schema.NewSet(schema.HashString, nil)
+				}
+				list := raw.(*schema.Set)
+
+				if g.GroupName != nil {
+					list.Add(*g.GroupName)
+				} else {
+					list.Add(*g.GroupId)
+				}
+				rule[names.AttrSecurityGroups] = list
+			}
+		}
+	}
+
+	rules := make([]map[string]any, 0, len(ruleMap))
+	for _, m := range ruleMap {
+		rules = append(rules, m)
+	}
+
+	return rules
+}

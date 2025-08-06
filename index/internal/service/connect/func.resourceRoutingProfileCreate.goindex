@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRoutingProfileCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConnectClient(ctx)
+
+	instanceID := d.Get(names.AttrInstanceID).(string)
+	name := d.Get(names.AttrName).(string)
+	input := &connect.CreateRoutingProfileInput{
+		DefaultOutboundQueueId: aws.String(d.Get("default_outbound_queue_id").(string)),
+		Description:            aws.String(d.Get(names.AttrDescription).(string)),
+		InstanceId:             aws.String(instanceID),
+		MediaConcurrencies:     expandMediaConcurrencies(d.Get("media_concurrencies").(*schema.Set).List()),
+		Name:                   aws.String(name),
+		Tags:                   getTagsIn(ctx),
+	}
+
+	var queueConfigs []awstypes.RoutingProfileQueueConfig
+	if v, ok := d.GetOk("queue_configs"); ok && v.(*schema.Set).Len() > 0 {
+		queueConfigs = expandRoutingProfileQueueConfigs(v.(*schema.Set).List())
+	}
+
+	if len(queueConfigs) <= routingProfileQueueAssociationChunkSize {
+		input.QueueConfigs = queueConfigs
+	}
+
+	output, err := conn.CreateRoutingProfile(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Connect Routing Profile (%s): %s", name, err)
+	}
+
+	routingProfileID := aws.ToString(output.RoutingProfileId)
+	id := routingProfileCreateResourceID(instanceID, routingProfileID)
+	d.SetId(id)
+
+	// call the batched association API if the number of queues to associate with the routing profile is > CreateRoutingProfileQueuesMaxItems
+	if len(queueConfigs) > routingProfileQueueAssociationChunkSize {
+		if err := updateRoutingProfileQueueAssociations(ctx, conn, instanceID, routingProfileID, queueConfigs, nil); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceRoutingProfileRead(ctx, d, meta)...)
+}

@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfrontkeyvaluestore
+import (
+	"context"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfrontkeyvaluestore"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfrontkeyvaluestore/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *keysExclusiveResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"key_value_store_arn": schema.StringAttribute{
+				CustomType:          fwtypes.ARNType,
+				Required:            true,
+				MarkdownDescription: "The Amazon Resource Name (ARN) of the Key Value Store.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"max_batch_size": schema.Int64Attribute{
+				Optional: true,
+				Computed: true,
+				Default:  int64default.StaticInt64(maxBatchSizeDefault),
+				Validators: []validator.Int64{
+					int64validator.Between(1, 50),
+				},
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.UseStateForUnknown(),
+				},
+				MarkdownDescription: "Maximum resource key values pairs that you wills update in a single API request. AWS has a default quota of 50 keys or a 3 MB payload, whichever is reached first",
+			},
+			"total_size_in_bytes": schema.Int64Attribute{
+				Computed:            true,
+				MarkdownDescription: "Total size of the Key Value Store in bytes.",
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"resource_key_value_pair": schema.SetNestedBlock{
+				CustomType: fwtypes.NewSetNestedObjectTypeOf[resourceKeyValuePairModel](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrKey: schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The key to put.",
+						},
+						names.AttrValue: schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The value to put.",
+						},
+					},
+				},
+			},
+		},
+	}
+}

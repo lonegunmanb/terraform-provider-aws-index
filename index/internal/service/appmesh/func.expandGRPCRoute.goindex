@@ -1,0 +1,157 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandGRPCRoute(vGrpcRoute []any) *awstypes.GrpcRoute {
+	if len(vGrpcRoute) == 0 || vGrpcRoute[0] == nil {
+		return nil
+	}
+
+	mGrpcRoute := vGrpcRoute[0].(map[string]any)
+
+	grpcRoute := &awstypes.GrpcRoute{}
+
+	if vGrpcRouteAction, ok := mGrpcRoute[names.AttrAction].([]any); ok && len(vGrpcRouteAction) > 0 && vGrpcRouteAction[0] != nil {
+		mGrpcRouteAction := vGrpcRouteAction[0].(map[string]any)
+
+		if vWeightedTargets, ok := mGrpcRouteAction["weighted_target"].(*schema.Set); ok && vWeightedTargets.Len() > 0 {
+			weightedTargets := []awstypes.WeightedTarget{}
+
+			for _, vWeightedTarget := range vWeightedTargets.List() {
+				weightedTarget := awstypes.WeightedTarget{}
+
+				mWeightedTarget := vWeightedTarget.(map[string]any)
+
+				if vPort, ok := mWeightedTarget[names.AttrPort].(int); ok && vPort > 0 {
+					weightedTarget.Port = aws.Int32(int32(vPort))
+				}
+				if vVirtualNode, ok := mWeightedTarget["virtual_node"].(string); ok && vVirtualNode != "" {
+					weightedTarget.VirtualNode = aws.String(vVirtualNode)
+				}
+				if vWeight, ok := mWeightedTarget[names.AttrWeight].(int); ok {
+					weightedTarget.Weight = int32(vWeight)
+				}
+
+				weightedTargets = append(weightedTargets, weightedTarget)
+			}
+
+			grpcRoute.Action = &awstypes.GrpcRouteAction{
+				WeightedTargets: weightedTargets,
+			}
+		}
+	}
+
+	if vGrpcRouteMatch, ok := mGrpcRoute["match"].([]any); ok {
+		grpcRouteMatch := &awstypes.GrpcRouteMatch{}
+
+		// Empty match is allowed.
+		// https://github.com/hashicorp/terraform-provider-aws/issues/16816.
+
+		if len(vGrpcRouteMatch) > 0 && vGrpcRouteMatch[0] != nil {
+			mGrpcRouteMatch := vGrpcRouteMatch[0].(map[string]any)
+
+			if vMethodName, ok := mGrpcRouteMatch["method_name"].(string); ok && vMethodName != "" {
+				grpcRouteMatch.MethodName = aws.String(vMethodName)
+			}
+			if vPort, ok := mGrpcRouteMatch[names.AttrPort].(int); ok && vPort > 0 {
+				grpcRouteMatch.Port = aws.Int32(int32(vPort))
+			}
+			if vServiceName, ok := mGrpcRouteMatch[names.AttrServiceName].(string); ok && vServiceName != "" {
+				grpcRouteMatch.ServiceName = aws.String(vServiceName)
+			}
+
+			if vGrpcRouteMetadatas, ok := mGrpcRouteMatch["metadata"].(*schema.Set); ok && vGrpcRouteMetadatas.Len() > 0 {
+				grpcRouteMetadatas := []awstypes.GrpcRouteMetadata{}
+
+				for _, vGrpcRouteMetadata := range vGrpcRouteMetadatas.List() {
+					grpcRouteMetadata := awstypes.GrpcRouteMetadata{}
+
+					mGrpcRouteMetadata := vGrpcRouteMetadata.(map[string]any)
+
+					if vInvert, ok := mGrpcRouteMetadata["invert"].(bool); ok {
+						grpcRouteMetadata.Invert = aws.Bool(vInvert)
+					}
+					if vName, ok := mGrpcRouteMetadata[names.AttrName].(string); ok && vName != "" {
+						grpcRouteMetadata.Name = aws.String(vName)
+					}
+
+					if vMatch, ok := mGrpcRouteMetadata["match"].([]any); ok && len(vMatch) > 0 && vMatch[0] != nil {
+						mMatch := vMatch[0].(map[string]any)
+
+						if vExact, ok := mMatch["exact"].(string); ok && vExact != "" {
+							grpcRouteMetadata.Match = &awstypes.GrpcRouteMetadataMatchMethodMemberExact{Value: vExact}
+						}
+						if vPrefix, ok := mMatch[names.AttrPrefix].(string); ok && vPrefix != "" {
+							grpcRouteMetadata.Match = &awstypes.GrpcRouteMetadataMatchMethodMemberPrefix{Value: vPrefix}
+						}
+						if vRegex, ok := mMatch["regex"].(string); ok && vRegex != "" {
+							grpcRouteMetadata.Match = &awstypes.GrpcRouteMetadataMatchMethodMemberRegex{Value: vRegex}
+						}
+						if vSuffix, ok := mMatch["suffix"].(string); ok && vSuffix != "" {
+							grpcRouteMetadata.Match = &awstypes.GrpcRouteMetadataMatchMethodMemberSuffix{Value: vSuffix}
+						}
+
+						if vRange, ok := mMatch["range"].([]any); ok && len(vRange) > 0 && vRange[0] != nil {
+							memberRange := &awstypes.GrpcRouteMetadataMatchMethodMemberRange{}
+
+							mRange := vRange[0].(map[string]any)
+
+							if vEnd, ok := mRange["end"].(int); ok && vEnd > 0 {
+								memberRange.Value.End = aws.Int64(int64(vEnd))
+							}
+							if vStart, ok := mRange["start"].(int); ok && vStart > 0 {
+								memberRange.Value.Start = aws.Int64(int64(vStart))
+							}
+
+							grpcRouteMetadata.Match = memberRange
+						}
+					}
+
+					grpcRouteMetadatas = append(grpcRouteMetadatas, grpcRouteMetadata)
+				}
+
+				grpcRouteMatch.Metadata = grpcRouteMetadatas
+			}
+		}
+
+		grpcRoute.Match = grpcRouteMatch
+	}
+
+	if vGrpcRetryPolicy, ok := mGrpcRoute["retry_policy"].([]any); ok && len(vGrpcRetryPolicy) > 0 && vGrpcRetryPolicy[0] != nil {
+		grpcRetryPolicy := &awstypes.GrpcRetryPolicy{}
+
+		mGrpcRetryPolicy := vGrpcRetryPolicy[0].(map[string]any)
+
+		if vMaxRetries, ok := mGrpcRetryPolicy["max_retries"].(int); ok {
+			grpcRetryPolicy.MaxRetries = aws.Int64(int64(vMaxRetries))
+		}
+
+		if vGrpcRetryEvents, ok := mGrpcRetryPolicy["grpc_retry_events"].(*schema.Set); ok && vGrpcRetryEvents.Len() > 0 {
+			grpcRetryPolicy.GrpcRetryEvents = flex.ExpandStringyValueSet[awstypes.GrpcRetryPolicyEvent](vGrpcRetryEvents)
+		}
+
+		if vHttpRetryEvents, ok := mGrpcRetryPolicy["http_retry_events"].(*schema.Set); ok && vHttpRetryEvents.Len() > 0 {
+			grpcRetryPolicy.HttpRetryEvents = flex.ExpandStringValueSet(vHttpRetryEvents)
+		}
+
+		if vPerRetryTimeout, ok := mGrpcRetryPolicy["per_retry_timeout"].([]any); ok {
+			grpcRetryPolicy.PerRetryTimeout = expandDuration(vPerRetryTimeout)
+		}
+
+		if vTcpRetryEvents, ok := mGrpcRetryPolicy["tcp_retry_events"].(*schema.Set); ok && vTcpRetryEvents.Len() > 0 {
+			grpcRetryPolicy.TcpRetryEvents = flex.ExpandStringyValueSet[awstypes.TcpRetryPolicyEvent](vTcpRetryEvents)
+		}
+
+		grpcRoute.RetryPolicy = grpcRetryPolicy
+	}
+
+	if vGrpcTimeout, ok := mGrpcRoute[names.AttrTimeout].([]any); ok {
+		grpcRoute.Timeout = expandGRPCTimeout(vGrpcTimeout)
+	}
+
+	return grpcRoute
+}

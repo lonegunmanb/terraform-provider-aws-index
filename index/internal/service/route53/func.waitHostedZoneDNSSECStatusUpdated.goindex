@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitHostedZoneDNSSECStatusUpdated(ctx context.Context, conn *route53.Client, hostedZoneID, status string) (*awstypes.DNSSECStatus, error) { //nolint:unparam
+	const (
+		timeout = 5 * time.Minute
+	)
+	stateConf := &retry.StateChangeConf{
+		Target:     []string{status},
+		Refresh:    statusHostedZoneDNSSEC(ctx, conn, hostedZoneID),
+		MinTimeout: 5 * time.Second,
+		Timeout:    timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.DNSSECStatus); ok {
+		if serveSignature := aws.ToString(output.ServeSignature); serveSignature == serveSignatureInternalFailure {
+			tfresource.SetLastError(err, errors.New(aws.ToString(output.StatusMessage)))
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}

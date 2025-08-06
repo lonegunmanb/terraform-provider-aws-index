@@ -1,0 +1,410 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudsearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudsearch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudsearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenIndexFieldStatus(apiObject types.IndexFieldStatus) (map[string]any, error) {
+	if apiObject.Options == nil || apiObject.Status == nil {
+		return nil, nil
+	}
+
+	// Don't read in any fields that are pending deletion.
+	if aws.ToBool(apiObject.Status.PendingDeletion) {
+		return nil, nil
+	}
+
+	field := apiObject.Options
+	tfMap := map[string]any{}
+
+	if v := field.IndexFieldName; v != nil {
+		tfMap[names.AttrName] = aws.ToString(v)
+	}
+
+	fieldType := field.IndexFieldType
+	tfMap[names.AttrType] = fieldType
+
+	switch fieldType {
+	case types.IndexFieldTypeDate:
+		options := field.DateOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = aws.ToString(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SortEnabled; v != nil {
+			tfMap["sort"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceField; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+
+	case types.IndexFieldTypeDateArray:
+		options := field.DateArrayOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = aws.ToString(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceFields; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+		tfMap["sort"] = false
+
+	case types.IndexFieldTypeDouble:
+		options := field.DoubleOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = flex.Float64ToStringValue(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SortEnabled; v != nil {
+			tfMap["sort"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceField; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+
+	case types.IndexFieldTypeDoubleArray:
+		options := field.DoubleArrayOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = flex.Float64ToStringValue(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceFields; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+		tfMap["sort"] = false
+
+	case types.IndexFieldTypeInt:
+		options := field.IntOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = flex.Int64ToStringValue(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SortEnabled; v != nil {
+			tfMap["sort"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceField; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+
+	case types.IndexFieldTypeIntArray:
+		options := field.IntArrayOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = flex.Int64ToStringValue(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceFields; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+		tfMap["sort"] = false
+
+	case types.IndexFieldTypeLatlon:
+		options := field.LatLonOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = aws.ToString(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SortEnabled; v != nil {
+			tfMap["sort"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceField; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+
+	case types.IndexFieldTypeLiteral:
+		options := field.LiteralOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = aws.ToString(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SortEnabled; v != nil {
+			tfMap["sort"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceField; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+
+	case types.IndexFieldTypeLiteralArray:
+		options := field.LiteralArrayOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = aws.ToString(v)
+		}
+
+		if v := options.FacetEnabled; v != nil {
+			tfMap["facet"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SearchEnabled; v != nil {
+			tfMap["search"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceFields; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["analysis_scheme"] = ""
+		tfMap["highlight"] = false
+		tfMap["sort"] = false
+
+	case types.IndexFieldTypeText:
+		options := field.TextOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.AnalysisScheme; v != nil {
+			tfMap["analysis_scheme"] = aws.ToString(v)
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = aws.ToString(v)
+		}
+
+		if v := options.HighlightEnabled; v != nil {
+			tfMap["highlight"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SortEnabled; v != nil {
+			tfMap["sort"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceField; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["facet"] = false
+		tfMap["search"] = true
+
+	case types.IndexFieldTypeTextArray:
+		options := field.TextArrayOptions
+		if options == nil {
+			break
+		}
+
+		if v := options.AnalysisScheme; v != nil {
+			tfMap["analysis_scheme"] = aws.ToString(v)
+		}
+
+		if v := options.DefaultValue; v != nil {
+			tfMap[names.AttrDefaultValue] = aws.ToString(v)
+		}
+
+		if v := options.HighlightEnabled; v != nil {
+			tfMap["highlight"] = aws.ToBool(v)
+		}
+
+		if v := options.ReturnEnabled; v != nil {
+			tfMap["return"] = aws.ToBool(v)
+		}
+
+		if v := options.SourceFields; v != nil {
+			tfMap["source_fields"] = aws.ToString(v)
+		}
+
+		// Defaults not returned via the API.
+		tfMap["facet"] = false
+		tfMap["search"] = true
+		tfMap["sort"] = false
+
+	default:
+		return nil, fmt.Errorf("unsupported index_field type: %s", fieldType)
+	}
+
+	return tfMap, nil
+}

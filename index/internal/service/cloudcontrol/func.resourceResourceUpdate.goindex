@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudcontrol
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudcontrol"
+	"github.com/aws/aws-sdk-go-v2/service/cloudcontrol/types"
+	cfschema "github.com/hashicorp/aws-cloudformation-resource-schema-sdk-go"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfcloudformation "github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mattbaird/jsonpatch"
+)
+func resourceResourceUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).CloudControlClient(ctx)
+
+	if d.HasChange("desired_state") {
+		oldRaw, newRaw := d.GetChange("desired_state")
+
+		patchDocument, err := patchDocument(oldRaw.(string), newRaw.(string))
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating JSON Patch: %s", err)
+		}
+
+		typeName := d.Get("type_name").(string)
+		input := &cloudcontrol.UpdateResourceInput{
+			ClientToken:   aws.String(id.UniqueId()),
+			Identifier:    aws.String(d.Id()),
+			PatchDocument: aws.String(patchDocument),
+			TypeName:      aws.String(typeName),
+		}
+
+		if v, ok := d.GetOk(names.AttrRoleARN); ok {
+			input.RoleArn = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("type_version_id"); ok {
+			input.TypeVersionId = aws.String(v.(string))
+		}
+
+		output, err := conn.UpdateResource(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Cloud Control API (%s) Resource (%s): %s", typeName, d.Id(), err)
+		}
+
+		if _, err := waitProgressEventOperationStatusSuccess(ctx, conn, aws.ToString(output.ProgressEvent.RequestToken), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Cloud Control API (%s) Resource (%s) update: %s", typeName, d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceResourceRead(ctx, d, meta)...)
+}

@@ -1,0 +1,155 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStackInstancesUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	accounts := flex.ExpandStringValueSet(d.Get(AttrAccounts).(*schema.Set))
+	regions := flex.ExpandStringValueSet(d.Get(AttrRegions).(*schema.Set))
+	dtAccounts := flex.ExpandStringValueSet(d.Get(AttrDTAccounts).(*schema.Set))
+	dtOUs := flex.ExpandStringValueSet(d.Get(AttrDTOUs).(*schema.Set))
+
+	if d.HasChange(AttrRegions) {
+		oRaw, nRaw := d.GetChange(AttrRegions)
+		o, n := oRaw.(*schema.Set), nRaw.(*schema.Set)
+
+		if axe := o.Difference(n); axe.Len() > 0 {
+			if err := deleteStackInstances(ctx, d, meta, accounts, flex.ExpandStringValueSet(axe), dtAccounts, dtOUs); err != nil {
+				return create.AppendDiagError(diags, names.CloudFormation, create.ErrActionDeleting, ResNameStackInstances, d.Id(), err)
+			}
+		}
+
+		if add := n.Difference(o); add.Len() > 0 {
+			diags = append(diags, resourceStackInstancesCreate(ctx, d, meta)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	}
+
+	if d.HasChange(AttrAccounts) {
+		oRaw, nRaw := d.GetChange(AttrAccounts)
+		o, n := oRaw.(*schema.Set), nRaw.(*schema.Set)
+
+		if axe := o.Difference(n); axe.Len() > 0 {
+			if err := deleteStackInstances(ctx, d, meta, flex.ExpandStringValueSet(axe), regions, dtAccounts, dtOUs); err != nil {
+				return create.AppendDiagError(diags, names.CloudFormation, create.ErrActionDeleting, ResNameStackInstances, d.Id(), err)
+			}
+		}
+
+		if add := n.Difference(o); add.Len() > 0 {
+			diags = append(diags, resourceStackInstancesCreate(ctx, d, meta)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	}
+
+	if d.HasChange(AttrDTAccounts) {
+		oRaw, nRaw := d.GetChange(AttrDTAccounts)
+		o, n := oRaw.(*schema.Set), nRaw.(*schema.Set)
+
+		if axe := o.Difference(n); axe.Len() > 0 {
+			if err := deleteStackInstances(ctx, d, meta, accounts, regions, flex.ExpandStringValueSet(axe), dtOUs); err != nil {
+				return create.AppendDiagError(diags, names.CloudFormation, create.ErrActionDeleting, ResNameStackInstances, d.Id(), err)
+			}
+		}
+
+		if add := n.Difference(o); add.Len() > 0 {
+			diags = append(diags, resourceStackInstancesCreate(ctx, d, meta)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	}
+
+	if d.HasChange(AttrDTOUs) {
+		oRaw, nRaw := d.GetChange(AttrDTOUs)
+		o, n := oRaw.(*schema.Set), nRaw.(*schema.Set)
+
+		if axe := o.Difference(n); axe.Len() > 0 {
+			if err := deleteStackInstances(ctx, d, meta, accounts, regions, dtAccounts, flex.ExpandStringValueSet(axe)); err != nil {
+				return create.AppendDiagError(diags, names.CloudFormation, create.ErrActionDeleting, ResNameStackInstances, d.Id(), err)
+			}
+		}
+
+		if add := n.Difference(o); add.Len() > 0 {
+			diags = append(diags, resourceStackInstancesCreate(ctx, d, meta)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	}
+
+	if d.HasChanges(
+		"call_as",
+		"deployment_targets.0.accounts_url",
+		"operation_preferences",
+		"parameter_overrides",
+	) {
+		input := &cloudformation.UpdateStackInstancesInput{
+			OperationId:        aws.String(sdkid.UniqueId()),
+			ParameterOverrides: []awstypes.Parameter{},
+			Regions:            flex.ExpandStringValueSet(d.Get(AttrRegions).(*schema.Set)),
+			StackSetName:       aws.String(d.Get("stack_set_name").(string)),
+		}
+
+		// can only give either accounts or deployment_targets
+		input.Accounts = []string{meta.(*conns.AWSClient).AccountID(ctx)}
+		if v, ok := d.GetOk(AttrAccounts); ok && v.(*schema.Set).Len() > 0 {
+			input.Accounts = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+
+		if v, ok := d.GetOk("deployment_targets"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.DeploymentTargets = expandDeploymentTargets(v.([]any))
+			input.Accounts = nil
+		}
+
+		if v, ok := d.GetOk("call_as"); ok {
+			input.CallAs = awstypes.CallAs(v.(string))
+		}
+
+		if v, ok := d.GetOk("operation_preferences"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.OperationPreferences = expandOperationPreferences(v.([]any)[0].(map[string]any))
+		}
+
+		if v, ok := d.GetOk("parameter_overrides"); ok {
+			input.ParameterOverrides = expandParameters(v.(map[string]any))
+		}
+
+		output, err := conn.UpdateStackInstances(ctx, input)
+		if err != nil {
+			return create.AppendDiagError(diags, names.CloudFormation, create.ErrActionUpdating, ResNameStackInstances, d.Id(), err)
+		}
+
+		if _, err := waitStackSetOperationSucceeded(ctx, conn, d.Get("stack_set_name").(string), aws.ToString(output.OperationId), d.Get("call_as").(string), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return create.AppendDiagError(diags, names.CloudFormation, create.ErrActionWaitingForUpdate, ResNameStackInstances, d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceStackInstancesRead(ctx, d, meta)...)
+}

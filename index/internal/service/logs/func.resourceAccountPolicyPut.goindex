@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/logs
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAccountPolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LogsClient(ctx)
+
+	policy, err := structure.NormalizeJsonString(d.Get("policy_document").(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	name := d.Get("policy_name").(string)
+	input := &cloudwatchlogs.PutAccountPolicyInput{
+		PolicyDocument: aws.String(policy),
+		PolicyName:     aws.String(name),
+		PolicyType:     awstypes.PolicyType(d.Get("policy_type").(string)),
+		Scope:          awstypes.Scope(d.Get(names.AttrScope).(string)),
+	}
+
+	if v, ok := d.GetOk("selection_criteria"); ok {
+		input.SelectionCriteria = aws.String(v.(string))
+	}
+
+	output, err := conn.PutAccountPolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting CloudWatch Logs Account Policy (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.AccountPolicy.PolicyName))
+
+	return append(diags, resourceAccountPolicyRead(ctx, d, meta)...)
+}

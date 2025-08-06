@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainNameRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	c := meta.(*conns.AWSClient)
+	conn := c.APIGatewayClient(ctx)
+
+	domainName, domainNameID, err := domainNameParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	output, err := findDomainNameByTwoPartKey(ctx, conn, domainName, domainNameID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] API Gateway Domain Name (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading API Gateway Domain Name (%s): %s", d.Id(), err)
+	}
+
+	if output.DomainNameArn != nil { // nosemgrep: ci.helper-schema-ResourceData-Set-extraneous-nil-check
+		d.Set(names.AttrARN, output.DomainNameArn)
+	} else {
+		d.Set(names.AttrARN, domainNameARN(ctx, c, d.Id()))
+	}
+	d.Set(names.AttrCertificateARN, output.CertificateArn)
+	d.Set("certificate_name", output.CertificateName)
+	if output.CertificateUploadDate != nil {
+		d.Set("certificate_upload_date", output.CertificateUploadDate.Format(time.RFC3339))
+	} else {
+		d.Set("certificate_upload_date", nil)
+	}
+	d.Set("cloudfront_domain_name", output.DistributionDomainName)
+	d.Set("cloudfront_zone_id", c.CloudFrontDistributionHostedZoneID(ctx))
+	d.Set(names.AttrDomainName, output.DomainName)
+	d.Set("domain_name_id", output.DomainNameId)
+	if err := d.Set("endpoint_configuration", flattenEndpointConfiguration(output.EndpointConfiguration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting endpoint_configuration: %s", err)
+	}
+	if err = d.Set("mutual_tls_authentication", flattenMutualTLSAuthentication(output.MutualTlsAuthentication)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting mutual_tls_authentication: %s", err)
+	}
+	d.Set("ownership_verification_certificate_arn", output.OwnershipVerificationCertificateArn)
+	d.Set(names.AttrPolicy, output.Policy)
+	d.Set("regional_certificate_arn", output.RegionalCertificateArn)
+	d.Set("regional_certificate_name", output.RegionalCertificateName)
+	d.Set("regional_domain_name", output.RegionalDomainName)
+	d.Set("regional_zone_id", output.RegionalHostedZoneId)
+	d.Set("security_policy", output.SecurityPolicy)
+
+	setTagsOut(ctx, output.Tags)
+
+	return diags
+}

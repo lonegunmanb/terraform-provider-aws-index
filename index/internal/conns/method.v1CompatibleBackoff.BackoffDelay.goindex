@@ -1,0 +1,35 @@
+package github.com/hashicorp/terraform-provider-aws/internal/conns
+import (
+	"math"
+	"math/rand"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
+)
+func (c *v1CompatibleBackoff) BackoffDelay(attempt int, err error) (time.Duration, error) {
+	const (
+		defaultMinRetryDelay    = 30 * time.Millisecond
+		defaultMinThrottleDelay = 500 * time.Millisecond
+	)
+	minDelay := defaultMinRetryDelay
+
+	if retry.IsErrorThrottles(retry.DefaultThrottles).IsErrorThrottle(err).Bool() {
+		minDelay = defaultMinThrottleDelay
+	}
+
+	maxDelay := c.maxRetryDelay
+	var delay time.Duration
+
+	// Logic to cap the retry count based on the minDelay provided.
+	actualRetryCount := int(math.Log2(float64(minDelay))) + 1
+	if actualRetryCount < 63-attempt {
+		delay = time.Duration(1<<uint64(attempt)) * getJitterDelay(minDelay)
+		if delay > maxDelay {
+			delay = getJitterDelay(maxDelay / 2) //nolint:mnd // copied verbatim
+		}
+	} else {
+		delay = getJitterDelay(maxDelay / 2) //nolint:mnd // copied verbatim
+	}
+
+	return delay, nil
+}

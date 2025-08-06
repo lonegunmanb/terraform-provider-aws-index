@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceProxyProtocolPolicyUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ELBClient(ctx)
+
+	lbName, policyName, err := proxyProtocolPolicyParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	lb, err := findLoadBalancerByName(ctx, conn, lbName)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ELB Classic Load Balancer (%s): %s", lbName, err)
+	}
+
+	backendPolicies := flattenBackendServerDescriptionPolicies(lb.BackendServerDescriptions)
+
+	if d.HasChange("instance_ports") {
+		o, n := d.GetChange("instance_ports")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+		add, del := ns.Difference(os), os.Difference(ns)
+
+		var inputs []*elasticloadbalancing.SetLoadBalancerPoliciesForBackendServerInput
+		inputs = append(inputs, expandRemoveProxyProtocolPolicyInputs(policyName, flex.ExpandStringValueSet(del), backendPolicies)...)
+		inputs = append(inputs, expandAddProxyProtocolPolicyInputs(policyName, flex.ExpandStringValueSet(add), backendPolicies)...)
+
+		for _, input := range inputs {
+			input.LoadBalancerName = aws.String(lbName)
+
+			_, err := conn.SetLoadBalancerPoliciesForBackendServer(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "setting ELB Classic Backend Server Policy (%s): %s", lbName, err)
+			}
+		}
+	}
+
+	return append(diags, resourceProxyProtocolPolicyRead(ctx, d, meta)...)
+}

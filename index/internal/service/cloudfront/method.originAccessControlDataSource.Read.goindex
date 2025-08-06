@@ -1,0 +1,41 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *originAccessControlDataSource) Read(ctx context.Context, request datasource.ReadRequest, response *datasource.ReadResponse) {
+	conn := d.Meta().CloudFrontClient(ctx)
+	var data originAccessControlDataSourceModel
+
+	response.Diagnostics.Append(request.Config.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	output, err := findOriginAccessControlByID(ctx, conn, data.ID.ValueString())
+
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.CloudFront, create.ErrActionReading, DSNameOriginAccessControl, data.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output.OriginAccessControl.OriginAccessControlConfig, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	data.ARN = fwflex.StringValueToFramework(ctx, originAccessControlARN(ctx, d.Meta(), data.ID.ValueString()))
+	data.Etag = fwflex.StringToFramework(ctx, output.ETag)
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

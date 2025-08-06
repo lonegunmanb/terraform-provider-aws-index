@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceNetworkInterfaceSGAttachmentRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	networkInterfaceID := d.Get(names.AttrNetworkInterfaceID).(string)
+	sgID := d.Get("security_group_id").(string)
+	outputRaw, err := tfresource.RetryWhenNewResourceNotFound(ctx, maxDuration(ec2PropagationTimeout, d.Timeout(schema.TimeoutRead)), func() (any, error) {
+		return findNetworkInterfaceSecurityGroup(ctx, conn, networkInterfaceID, sgID)
+	}, d.IsNewResource())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EC2 Network Interface (%s) Security Group (%s) Attachment not found, removing from state", networkInterfaceID, sgID)
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Network Interface (%s) Security Group (%s) Attachment: %s", networkInterfaceID, sgID, err)
+	}
+
+	groupIdentifier := outputRaw.(*awstypes.GroupIdentifier)
+
+	d.Set(names.AttrNetworkInterfaceID, networkInterfaceID)
+	d.Set("security_group_id", groupIdentifier.GroupId)
+
+	return diags
+}

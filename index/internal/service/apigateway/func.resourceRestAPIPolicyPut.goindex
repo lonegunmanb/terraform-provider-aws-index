@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRestAPIPolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	apiID := d.Get("rest_api_id").(string)
+
+	policy, err := structure.NormalizeJsonString(d.Get(names.AttrPolicy).(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	operations := []types.PatchOperation{
+		{
+			Op:    types.OpReplace,
+			Path:  aws.String("/policy"),
+			Value: aws.String(policy),
+		},
+	}
+	input := apigateway.UpdateRestApiInput{
+		PatchOperations: operations,
+		RestApiId:       aws.String(apiID),
+	}
+	output, err := conn.UpdateRestApi(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating API Gateway REST API Policy (%s): %s", apiID, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(aws.ToString(output.Id))
+	}
+
+	return append(diags, resourceRestAPIPolicyRead(ctx, d, meta)...)
+}

@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceArchiveCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EventsClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &eventbridge.CreateArchiveInput{
+		ArchiveName:    aws.String(name),
+		EventSourceArn: aws.String(d.Get("event_source_arn").(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("event_pattern"); ok {
+		v, err := structure.NormalizeJsonString(v)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.EventPattern = aws.String(v)
+	}
+
+	if v, ok := d.GetOk("retention_days"); ok {
+		input.RetentionDays = aws.Int32(int32(v.(int)))
+	}
+
+	_, err := conn.CreateArchive(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EventBridge Archive (%s)): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	return append(diags, resourceArchiveRead(ctx, d, meta)...)
+}

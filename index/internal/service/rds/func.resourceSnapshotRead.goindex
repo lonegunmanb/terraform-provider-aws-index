@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSnapshotRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	snapshot, err := findDBSnapshotByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] RDS DB Snapshot (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading RDS DB Snapshot (%s): %s", d.Id(), err)
+	}
+
+	arn := aws.ToString(snapshot.DBSnapshotArn)
+	d.Set(names.AttrAllocatedStorage, snapshot.AllocatedStorage)
+	d.Set(names.AttrAvailabilityZone, snapshot.AvailabilityZone)
+	d.Set("db_instance_identifier", snapshot.DBInstanceIdentifier)
+	d.Set("db_snapshot_arn", arn)
+	d.Set("db_snapshot_identifier", snapshot.DBSnapshotIdentifier)
+	d.Set(names.AttrEncrypted, snapshot.Encrypted)
+	d.Set(names.AttrEngine, snapshot.Engine)
+	d.Set(names.AttrEngineVersion, snapshot.EngineVersion)
+	d.Set(names.AttrIOPS, snapshot.Iops)
+	d.Set(names.AttrKMSKeyID, snapshot.KmsKeyId)
+	d.Set("license_model", snapshot.LicenseModel)
+	d.Set("option_group_name", snapshot.OptionGroupName)
+	d.Set(names.AttrPort, snapshot.Port)
+	d.Set("source_db_snapshot_identifier", snapshot.SourceDBSnapshotIdentifier)
+	d.Set("source_region", snapshot.SourceRegion)
+	d.Set("snapshot_type", snapshot.SnapshotType)
+	d.Set(names.AttrStatus, snapshot.Status)
+	d.Set(names.AttrVPCID, snapshot.VpcId)
+
+	attribute, err := findDBSnapshotAttributeByTwoPartKey(ctx, conn, d.Id(), dbSnapshotAttributeNameRestore)
+	switch {
+	case err == nil:
+		d.Set("shared_accounts", attribute.AttributeValues)
+	case tfresource.NotFound(err):
+	default:
+		return sdkdiag.AppendErrorf(diags, "reading RDS DB Snapshot (%s) attribute: %s", d.Id(), err)
+	}
+
+	setTagsOut(ctx, snapshot.TagList)
+
+	return diags
+}

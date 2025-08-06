@@ -1,0 +1,104 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	userPoolID := d.Get(names.AttrUserPoolID).(string)
+	username := d.Get(names.AttrUsername).(string)
+	id := userCreateResourceID(userPoolID, username)
+	input := &cognitoidentityprovider.AdminCreateUserInput{
+		Username:   aws.String(username),
+		UserPoolId: aws.String(userPoolID),
+	}
+
+	if v, ok := d.GetOk("client_metadata"); ok {
+		input.ClientMetadata = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("desired_delivery_mediums"); ok {
+		input.DesiredDeliveryMediums = flex.ExpandStringyValueSet[awstypes.DeliveryMediumType](v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("force_alias_creation"); ok {
+		input.ForceAliasCreation = v.(bool)
+	}
+
+	if v, ok := d.GetOk("message_action"); ok {
+		input.MessageAction = awstypes.MessageActionType(v.(string))
+	}
+
+	if v, ok := d.GetOk("temporary_password"); ok {
+		input.TemporaryPassword = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrAttributes); ok {
+		input.UserAttributes = expandAttributeTypes(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("validation_data"); ok {
+		input.ValidationData = expandAttributeTypes(v.(map[string]any))
+	}
+
+	_, err := conn.AdminCreateUser(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Cognito User (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if v := d.Get(names.AttrEnabled); !v.(bool) {
+		input := &cognitoidentityprovider.AdminDisableUserInput{
+			Username:   aws.String(username),
+			UserPoolId: aws.String(userPoolID),
+		}
+
+		_, err := conn.AdminDisableUser(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "disabling Cognito User (%s): %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk(names.AttrPassword); ok {
+		input := &cognitoidentityprovider.AdminSetUserPasswordInput{
+			Password:   aws.String(v.(string)),
+			Permanent:  true,
+			Username:   aws.String(username),
+			UserPoolId: aws.String(userPoolID),
+		}
+
+		_, err := conn.AdminSetUserPassword(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting Cognito User (%s) password: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceUserRead(ctx, d, meta)...)
+}

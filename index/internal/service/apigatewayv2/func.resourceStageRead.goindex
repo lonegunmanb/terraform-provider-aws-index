@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStageRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayV2Client(ctx)
+
+	apiID := d.Get("api_id").(string)
+	outputGS, err := findStageByTwoPartKey(ctx, conn, apiID, d.Id())
+
+	if errs.IsA[*awstypes.NotFoundException](err) && !d.IsNewResource() {
+		log.Printf("[WARN] API Gateway v2 Stage (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading API Gateway v2 Stage (%s): %s", d.Id(), err)
+	}
+
+	stageName := aws.ToString(outputGS.StageName)
+	if err := d.Set("access_log_settings", flattenAccessLogSettings(outputGS.AccessLogSettings)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting access_log_settings: %s", err)
+	}
+	d.Set(names.AttrARN, stageARN(ctx, meta.(*conns.AWSClient), apiID, stageName))
+	d.Set("auto_deploy", outputGS.AutoDeploy)
+	d.Set("client_certificate_id", outputGS.ClientCertificateId)
+	if err := d.Set("default_route_settings", flattenDefaultRouteSettings(outputGS.DefaultRouteSettings)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting default_route_settings: %s", err)
+	}
+	d.Set("deployment_id", outputGS.DeploymentId)
+	d.Set(names.AttrDescription, outputGS.Description)
+	d.Set("execution_arn", stageInvokeARN(ctx, meta.(*conns.AWSClient), apiID, stageName))
+	d.Set(names.AttrName, stageName)
+	if err := d.Set("route_settings", flattenRouteSettings(outputGS.RouteSettings)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting route_settings: %s", err)
+	}
+	d.Set("stage_variables", outputGS.StageVariables)
+
+	setTagsOut(ctx, outputGS.Tags)
+
+	outputGA, err := findAPIByID(ctx, conn, apiID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading API Gateway v2 API (%s): %s", apiID, err)
+	}
+
+	d.Set("invoke_url", meta.(*conns.AWSClient).APIGatewayV2InvokeURL(ctx, outputGA.ProtocolType, apiID, stageName))
+
+	return diags
+}

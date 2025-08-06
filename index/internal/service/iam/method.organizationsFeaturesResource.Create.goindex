@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *organizationsFeaturesResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data organizationsFeaturesResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().IAMClient(ctx)
+
+	var enabledFeatures []awstypes.FeatureType
+	response.Diagnostics.Append(fwflex.Expand(ctx, data.EnabledFeatures, &enabledFeatures)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if err := updateOrganizationFeatures(ctx, conn, enabledFeatures, []awstypes.FeatureType{}); err != nil {
+		response.Diagnostics.AddError("creating IAM Organizations Features", err.Error())
+
+		return
+	}
+
+	output, err := findOrganizationsFeatures(ctx, conn)
+
+	if err != nil {
+		response.Diagnostics.AddError("reading IAM Organizations Features", err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.OrganizationID = fwflex.StringToFramework(ctx, output.OrganizationId)
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

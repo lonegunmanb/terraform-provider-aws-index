@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/costoptimizationhub
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/costoptimizationhub"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/costoptimizationhub/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *enrollmentStatusResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data enrollmentStatusResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	//Input for UpdateEnrollmentStatus
+	input := &costoptimizationhub.UpdateEnrollmentStatusInput{}
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	input.Status = awstypes.EnrollmentStatus("Active") // Computed
+
+	conn := r.Meta().CostOptimizationHubClient(ctx)
+
+	out, err := conn.UpdateEnrollmentStatus(ctx, input)
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.CostOptimizationHub, create.ErrActionCreating, ResNameEnrollmentStatus, "UpdateEnrollmentStatus", err),
+			err.Error(),
+		)
+		return
+	}
+
+	if out == nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.CostOptimizationHub, create.ErrActionCreating, ResNameEnrollmentStatus, "UpdateEnrollmentStatus", nil),
+			errors.New("empty out").Error(),
+		)
+		return
+	}
+
+	data.ID = fwflex.StringValueToFramework(ctx, r.Meta().AccountID(ctx))
+	data.Status = fwflex.StringValueToFramework(ctx, aws.ToString(out.Status))
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/events
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findPermissionByTwoPartKey(ctx context.Context, conn *eventbridge.Client, eventBusName, statementID string) (*permissionPolicyStatement, error) {
+	output, err := findEventBusPolicyByName(ctx, conn, eventBusName)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var policyDoc permissionPolicyDoc
+	if err := json.Unmarshal([]byte(aws.ToString(output)), &policyDoc); err != nil {
+		return nil, err
+	}
+
+	for _, statement := range policyDoc.Statements {
+		if statement.Sid == statementID {
+			return &statement, nil
+		}
+	}
+
+	return nil, &retry.NotFoundError{}
+}

@@ -1,0 +1,143 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/url"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+)
+func deletePage(ctx context.Context, conn *s3.Client, bucket string, force bool, toDelete []types.ObjectIdentifier) (int64, error) {
+	if len(toDelete) == 0 {
+		return 0, nil
+	}
+
+	// Typically every entry from toDelete ends up in toDeleteBulk, so pre-allocate
+	toDeleteBulk := make([]types.ObjectIdentifier, 0, len(toDelete))
+	var toDeleteSingly []types.ObjectIdentifier
+
+	// Keys with characters outside the valid XML character set cannot be deleted by bulk DeleteObjects, and must be deleted individually
+	// using DeleteObject.
+	for _, v := range toDelete {
+		if keyInXMLCharacterRange(aws.ToString(v.Key)) {
+			toDeleteBulk = append(toDeleteBulk, v)
+		} else {
+			toDeleteSingly = append(toDeleteSingly, v)
+		}
+	}
+
+	var nObjects int64
+	var outputErrs []types.Error
+
+	for _, v := range toDeleteSingly {
+		key := aws.ToString(v.Key)
+		versionID := aws.ToString(v.VersionId)
+
+		err := deleteObjectVersion(ctx, conn, bucket, key, versionID, force)
+		if err == nil {
+			nObjects++
+			continue
+		}
+
+		if err, ok := errs.As[smithy.APIError](err); ok {
+			if errorCode := err.ErrorCode(); errorCode == errCodeNoSuchBucket {
+				return int64(len(toDelete)), nil
+			} else {
+				outputErrs = append(outputErrs, types.Error{
+					Code:      aws.String(errorCode),
+					Key:       aws.String(key),
+					VersionId: aws.String(versionID),
+				})
+			}
+		} else {
+			typeErr := fmt.Errorf("unexpected error type: %w", err)
+			return nObjects, newObjectVersionError(key, versionID, typeErr)
+		}
+	}
+
+	if len(toDeleteBulk) > 0 {
+		input := &s3.DeleteObjectsInput{
+			Bucket: aws.String(bucket),
+			Delete: &types.Delete{
+				Objects: toDeleteBulk,
+				Quiet:   aws.Bool(true), // Only report errors.
+			},
+		}
+		if force {
+			input.BypassGovernanceRetention = aws.Bool(force)
+		}
+
+		output, err := conn.DeleteObjects(ctx, input)
+
+		if tfawserr.ErrCodeEquals(err, errCodeNoSuchBucket) {
+			return int64(len(toDelete)), nil
+		}
+
+		if err != nil {
+			return nObjects, fmt.Errorf("deleting S3 bucket (%s) object versions: %w", bucket, err)
+		}
+
+		nObjects += int64(len(toDeleteBulk)) - int64(len(output.Errors))
+		outputErrs = append(outputErrs, output.Errors...)
+	}
+
+	var errs []error
+	for _, v := range outputErrs {
+		code := aws.ToString(v.Code)
+		if code == errCodeNoSuchKey {
+			continue
+		}
+
+		// Attempt to remove any legal hold on the object.
+		if force && code == errCodeAccessDenied {
+			key := aws.ToString(v.Key)
+			versionID := aws.ToString(v.VersionId)
+			input := &s3.PutObjectLegalHoldInput{
+				Bucket: aws.String(bucket),
+				Key:    aws.String(key),
+				LegalHold: &types.ObjectLockLegalHold{
+					Status: types.ObjectLockLegalHoldStatusOff,
+				},
+				VersionId: aws.String(versionID),
+			}
+
+			_, err := conn.PutObjectLegalHold(ctx, input)
+
+			if err != nil {
+				// Add the original error and the new error.
+				errs = append(errs, newDeleteObjectVersionError(v))
+				errs = append(errs, fmt.Errorf("removing legal hold: %w", newObjectVersionError(key, versionID, err)))
+			} else {
+				// Attempt to delete the object once the legal hold has been removed.
+				input := &s3.DeleteObjectInput{
+					Bucket:    aws.String(bucket),
+					Key:       aws.String(key),
+					VersionId: aws.String(versionID),
+				}
+
+				_, err := conn.DeleteObject(ctx, input)
+
+				if err != nil {
+					errs = append(errs, fmt.Errorf("deleting: %w", newObjectVersionError(key, versionID, err)))
+				} else {
+					nObjects++
+				}
+			}
+		} else {
+			errs = append(errs, newDeleteObjectVersionError(v))
+		}
+	}
+
+	if err := errors.Join(errs...); err != nil {
+		return nObjects, fmt.Errorf("deleting S3 bucket (%s) object versions: %w", bucket, err)
+	}
+
+	return nObjects, nil
+}

@@ -1,0 +1,188 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/backup
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/backup"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/backup/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePlan() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourcePlanCreate,
+		ReadWithoutTimeout:   resourcePlanRead,
+		UpdateWithoutTimeout: resourcePlanUpdate,
+		DeleteWithoutTimeout: resourcePlanDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
+		SchemaVersion: 1,
+		StateUpgraders: []schema.StateUpgrader{
+			{
+				Type:    planResourceV0().CoreConfigSchema().ImpliedType(),
+				Upgrade: planStateUpgradeV0,
+				Version: 0,
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			"advanced_backup_setting": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"backup_options": {
+							Type:     schema.TypeMap,
+							Required: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						names.AttrResourceType: {
+							Type:     schema.TypeString,
+							Required: true,
+							ValidateFunc: validation.StringInSlice([]string{
+								"EC2",
+							}, false),
+						},
+					},
+				},
+			},
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrName: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			names.AttrRule: {
+				Type:     schema.TypeSet,
+				Required: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"completion_window": {
+							Type:     schema.TypeInt,
+							Optional: true,
+							Default:  180,
+						},
+						"copy_action": {
+							Type:     schema.TypeSet,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"destination_vault_arn": {
+										Type:         schema.TypeString,
+										Required:     true,
+										ValidateFunc: verify.ValidARN,
+									},
+									"lifecycle": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"cold_storage_after": {
+													Type:     schema.TypeInt,
+													Optional: true,
+												},
+												"delete_after": {
+													Type:     schema.TypeInt,
+													Optional: true,
+												},
+												"opt_in_to_archive_for_supported_resources": {
+													Type:     schema.TypeBool,
+													Optional: true,
+													Computed: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"enable_continuous_backup": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  false,
+						},
+						"lifecycle": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"cold_storage_after": {
+										Type:     schema.TypeInt,
+										Optional: true,
+									},
+									"delete_after": {
+										Type:     schema.TypeInt,
+										Optional: true,
+									},
+									"opt_in_to_archive_for_supported_resources": {
+										Type:     schema.TypeBool,
+										Optional: true,
+										Computed: true,
+									},
+								},
+							},
+						},
+						"recovery_point_tags": tftags.TagsSchema(),
+						"rule_name": {
+							Type:     schema.TypeString,
+							Required: true,
+							ValidateFunc: validation.All(
+								validation.StringLenBetween(1, 50),
+								validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_.-]+$`), "must contain only alphanumeric characters, hyphens, underscores, and periods"),
+							),
+						},
+						names.AttrSchedule: {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"schedule_expression_timezone": {
+							Type:     schema.TypeString,
+							Optional: true,
+							Default:  defaultPlanRuleScheduleExpressionTimezone,
+						},
+						"start_window": {
+							Type:     schema.TypeInt,
+							Optional: true,
+							Default:  60,
+						},
+						"target_vault_name": {
+							Type:     schema.TypeString,
+							Required: true,
+							ValidateFunc: validation.All(
+								validation.StringLenBetween(2, 50),
+								validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_-]+$`), "must contain only alphanumeric characters, hyphens, and underscores"),
+							),
+						},
+					},
+				},
+			},
+			names.AttrTags:    tftags.TagsSchema(),
+			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+			names.AttrVersion: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+		},
+	}
+}

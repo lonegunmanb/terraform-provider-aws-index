@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafregional
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafregional"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafregional/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceXSSMatchSetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFRegionalClient(ctx)
+	region := meta.(*conns.AWSClient).Region(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	output, err := newRetryer(conn, region).RetryWithToken(ctx, func(token *string) (any, error) {
+		input := &wafregional.CreateXssMatchSetInput{
+			ChangeToken: token,
+			Name:        aws.String(d.Get(names.AttrName).(string)),
+		}
+
+		return conn.CreateXssMatchSet(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating WAF Regional XSS Match Set (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.(*wafregional.CreateXssMatchSetOutput).XssMatchSet.XssMatchSetId))
+
+	if v, ok := d.Get("xss_match_tuple").(*schema.Set); ok && v.Len() > 0 {
+		if err := updateXSSMatchSet(ctx, conn, region, d.Id(), nil, v.List()); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	return append(diags, resourceXSSMatchSetRead(ctx, d, meta)...)
+}

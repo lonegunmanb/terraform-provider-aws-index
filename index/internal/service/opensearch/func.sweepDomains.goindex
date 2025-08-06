@@ -1,0 +1,90 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepDomains(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	conn := client.OpenSearchClient(ctx)
+	sweepResources := make([]sweep.Sweepable, 0)
+	var errs *multierror.Error
+
+	input := &opensearch.ListDomainNamesInput{}
+
+	// ListDomainNames has no pagination support whatsoever
+	output, err := conn.ListDomainNames(ctx, input)
+
+	if awsv2.SkipSweepError(err) {
+		log.Printf("[WARN] Skipping OpenSearch Domain sweep for %s: %s", region, err)
+		return errs.ErrorOrNil()
+	}
+
+	if err != nil {
+		sweeperErr := fmt.Errorf("error listing OpenSearch Domains: %w", err)
+		log.Printf("[ERROR] %s", sweeperErr)
+		errs = multierror.Append(errs, sweeperErr)
+		return errs.ErrorOrNil()
+	}
+
+	if output == nil {
+		log.Printf("[WARN] Skipping OpenSearch Domain sweep for %s: empty response", region)
+		return errs.ErrorOrNil()
+	}
+
+	for _, domainInfo := range output.DomainNames {
+		name := aws.ToString(domainInfo.DomainName)
+
+		if engineType := domainInfo.EngineType; engineType != awstypes.EngineTypeOpenSearch {
+			log.Printf("[INFO] Skipping OpenSearch Domain %s: EngineType = %s", name, engineType)
+			continue
+		}
+
+		// OpenSearch Domains have regularly gotten stuck in a "being deleted" state
+		// e.g. Deleted and Processing are both true for days in the API
+		// Filter out domains that are Deleted already.
+
+		output, err := findDomainByName(ctx, conn, name)
+		if err != nil {
+			sweeperErr := fmt.Errorf("error describing OpenSearch Domain (%s): %w", name, err)
+			log.Printf("[ERROR] %s", sweeperErr)
+			errs = multierror.Append(errs, sweeperErr)
+			continue
+		}
+
+		if output != nil && aws.ToBool(output.Deleted) {
+			log.Printf("[INFO] Skipping OpenSearch Domain (%s) with deleted status", name)
+			continue
+		}
+
+		r := resourceDomain()
+		d := r.Data(nil)
+		d.SetId(name)
+		d.Set(names.AttrDomainName, name)
+
+		sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+	}
+
+	if err = sweep.SweepOrchestrator(ctx, sweepResources); err != nil {
+		errs = multierror.Append(errs, fmt.Errorf("error sweeping OpenSearch Domains for %s: %w", region, err))
+	}
+
+	if awsv2.SkipSweepError(errs.ErrorOrNil()) {
+		log.Printf("[WARN] Skipping OpenSearch Domain sweep for %s: %s", region, errs)
+		return nil
+	}
+
+	return errs.ErrorOrNil()
+}

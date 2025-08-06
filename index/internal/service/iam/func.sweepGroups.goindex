@@ -1,0 +1,135 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepGroups(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+
+	conn := client.IAMClient(ctx)
+	input := &iam.ListGroupsInput{}
+	var sweeperErrs *multierror.Error
+
+	pages := iam.NewListGroupsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping IAM Group sweep for %s: %s", region, err)
+			return sweeperErrs.ErrorOrNil()
+		}
+
+		if err != nil {
+			sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error retrieving IAM Groups: %w", err))
+		}
+
+		for _, group := range page.Groups {
+			name := aws.ToString(group.GroupName)
+
+			if name == "Admin" || name == "TerraformAccTests" {
+				continue
+			}
+
+			log.Printf("[INFO] Deleting IAM Group: %s", name)
+
+			getGroupInput := &iam.GetGroupInput{
+				GroupName: group.GroupName,
+			}
+
+			getGroupOutput, err := conn.GetGroup(ctx, getGroupInput)
+
+			if errs.IsA[*awstypes.NoSuchEntityException](err) {
+				continue
+			}
+
+			if err != nil {
+				sweeperErr := fmt.Errorf("error reading IAM Group (%s): %w", name, err)
+				log.Printf("[ERROR] %s", sweeperErr)
+				sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+				continue
+			}
+
+			if getGroupOutput != nil {
+				for _, user := range getGroupOutput.Users {
+					username := aws.ToString(user.UserName)
+
+					log.Printf("[INFO] Removing IAM User (%s) from Group: %s", username, name)
+
+					input := &iam.RemoveUserFromGroupInput{
+						UserName:  user.UserName,
+						GroupName: group.GroupName,
+					}
+
+					_, err := conn.RemoveUserFromGroup(ctx, input)
+
+					if errs.IsA[*awstypes.NoSuchEntityException](err) {
+						continue
+					}
+
+					if err != nil {
+						sweeperErr := fmt.Errorf("error removing IAM User (%s) from IAM Group (%s): %w", username, name, err)
+						log.Printf("[ERROR] %s", sweeperErr)
+						sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+						continue
+					}
+				}
+			}
+
+			input := &iam.DeleteGroupInput{
+				GroupName: group.GroupName,
+			}
+
+			if err := deleteGroupPolicyAttachments(ctx, conn, name); err != nil {
+				sweeperErr := fmt.Errorf("error deleting IAM Group (%s) policy attachments: %w", name, err)
+				log.Printf("[ERROR] %s", sweeperErr)
+				sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+				continue
+			}
+
+			if err := deleteGroupPolicies(ctx, conn, name); err != nil {
+				sweeperErr := fmt.Errorf("error deleting IAM Group (%s) policies: %w", name, err)
+				log.Printf("[ERROR] %s", sweeperErr)
+				sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+				continue
+			}
+
+			_, err = conn.DeleteGroup(ctx, input)
+
+			if errs.IsA[*awstypes.NoSuchEntityException](err) {
+				continue
+			}
+
+			if err != nil {
+				sweeperErr := fmt.Errorf("error deleting IAM Group (%s): %w", name, err)
+				log.Printf("[ERROR] %s", sweeperErr)
+				sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+				continue
+			}
+		}
+	}
+
+	return sweeperErrs.ErrorOrNil()
+}

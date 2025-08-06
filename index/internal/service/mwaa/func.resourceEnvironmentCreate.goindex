@@ -1,0 +1,140 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mwaa
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mwaa"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/mwaa/types"
+	gversion "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEnvironmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).MWAAClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &mwaa.CreateEnvironmentInput{
+		DagS3Path:            aws.String(d.Get("dag_s3_path").(string)),
+		ExecutionRoleArn:     aws.String(d.Get(names.AttrExecutionRoleARN).(string)),
+		Name:                 aws.String(name),
+		NetworkConfiguration: expandEnvironmentNetworkConfigurationCreate(d.Get(names.AttrNetworkConfiguration).([]any)),
+		SourceBucketArn:      aws.String(d.Get("source_bucket_arn").(string)),
+		Tags:                 getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("airflow_configuration_options"); ok {
+		input.AirflowConfigurationOptions = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("airflow_version"); ok {
+		input.AirflowVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("endpoint_management"); ok {
+		input.EndpointManagement = awstypes.EndpointManagement(v.(string))
+	}
+
+	if v, ok := d.GetOk("environment_class"); ok {
+		input.EnvironmentClass = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKey); ok {
+		input.KmsKey = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrLoggingConfiguration); ok {
+		input.LoggingConfiguration = expandEnvironmentLoggingConfiguration(v.([]any))
+	}
+
+	// input.MaxWorkers = aws.Int32(int32(90))
+	if v, ok := d.GetOk("max_workers"); ok {
+		input.MaxWorkers = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("min_workers"); ok {
+		input.MinWorkers = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("max_webservers"); ok {
+		input.MaxWebservers = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("min_webservers"); ok {
+		input.MinWebservers = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("plugins_s3_object_version"); ok {
+		input.PluginsS3ObjectVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("plugins_s3_path"); ok {
+		input.PluginsS3Path = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("requirements_s3_object_version"); ok {
+		input.RequirementsS3ObjectVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("requirements_s3_path"); ok {
+		input.RequirementsS3Path = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("schedulers"); ok {
+		input.Schedulers = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("startup_script_s3_object_version"); ok {
+		input.StartupScriptS3ObjectVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("startup_script_s3_path"); ok {
+		input.StartupScriptS3Path = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("webserver_access_mode"); ok {
+		input.WebserverAccessMode = awstypes.WebserverAccessMode(v.(string))
+	}
+
+	if v, ok := d.GetOk("weekly_maintenance_window_start"); ok {
+		input.WeeklyMaintenanceWindowStart = aws.String(v.(string))
+	}
+
+	/*
+		Execution roles created just before the MWAA Environment may result in ValidationExceptions
+		due to IAM permission propagation delays.
+	*/
+
+	var validationException, internalServerException = &awstypes.ValidationException{}, &awstypes.InternalServerException{}
+	_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, propagationTimeout, func() (any, error) {
+		return conn.CreateEnvironment(ctx, input)
+	}, validationException.ErrorCode(), internalServerException.ErrorCode())
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating MWAA Environment (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	if _, err := waitEnvironmentCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for MWAA Environment (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceEnvironmentRead(ctx, d, meta)...)
+}

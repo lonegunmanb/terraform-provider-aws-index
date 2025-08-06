@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/servicequotas
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/servicequotas/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *templateResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data templateResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().ServiceQuotasClient(ctx)
+
+	region, quotaCode, serviceCode := fwflex.StringValueFromFramework(ctx, data.AWSRegion), fwflex.StringValueFromFramework(ctx, data.QuotaCode), fwflex.StringValueFromFramework(ctx, data.ServiceCode)
+	if region == "" {
+		region = fwflex.StringValueFromFramework(ctx, data.Region)
+	}
+
+	id, err := flex.FlattenResourceId([]string{region, quotaCode, serviceCode}, templateResourceIDPartCount, false)
+	if err != nil {
+		response.Diagnostics.AddError("creating resource ID", err.Error())
+
+		return
+	}
+
+	var input servicequotas.PutServiceQuotaIncreaseRequestIntoTemplateInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Additional fields.
+	input.AwsRegion = aws.String(region)
+
+	output, err := conn.PutServiceQuotaIncreaseRequestIntoTemplate(ctx, &input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating Service Quotas Template (%s)", id), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	data.ID = fwflex.StringValueToFramework(ctx, id)
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output.ServiceQuotaIncreaseRequestInTemplate, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Additional fields.
+	data.Region = data.AWSRegion
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

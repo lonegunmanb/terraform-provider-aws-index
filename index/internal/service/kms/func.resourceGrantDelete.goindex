@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kms
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGrantDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KMSClient(ctx)
+
+	keyID, grantID, err := grantParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.Get("retire_on_delete").(bool) {
+		log.Printf("[DEBUG] Retiring KMS Grant: %s", d.Id())
+		_, err = conn.RetireGrant(ctx, &kms.RetireGrantInput{
+			GrantId: aws.String(grantID),
+			KeyId:   aws.String(keyID),
+		})
+	} else {
+		log.Printf("[DEBUG] Revoking KMS Grant: %s", d.Id())
+		_, err = conn.RevokeGrant(ctx, &kms.RevokeGrantInput{
+			GrantId: aws.String(grantID),
+			KeyId:   aws.String(keyID),
+		})
+	}
+
+	if errs.IsA[*awstypes.NotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting KMS Grant (%s): %s", d.Id(), err)
+	}
+
+	_, err = tfresource.RetryUntilNotFound(ctx, propagationTimeout, func() (any, error) {
+		return findGrantByTwoPartKey(ctx, conn, keyID, grantID)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for KMS Grant (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

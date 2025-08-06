@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/resourcegroups
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/resourcegroups"
+	"github.com/aws/aws-sdk-go-v2/service/resourcegroups/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourceDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ResourceGroupsClient(ctx)
+
+	groupARN := d.Get("group_arn").(string)
+	resourceARN := d.Get(names.AttrResourceARN).(string)
+
+	log.Printf("[INFO] Deleting Resource Groups Resource: %s", d.Id())
+	output, err := conn.UngroupResources(ctx, &resourcegroups.UngroupResourcesInput{
+		Group:        aws.String(groupARN),
+		ResourceArns: []string{resourceARN},
+	})
+
+	if err == nil {
+		err = failedResourcesError(output.Failed)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Resource Groups Resource (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitResourceDeleted(ctx, conn, groupARN, resourceARN, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Resource Groups Resource (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

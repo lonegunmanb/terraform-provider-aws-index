@@ -1,0 +1,158 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/budgets
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/budgets"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/budgets/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/shopspring/decimal"
+)
+func resourceBudgetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).BudgetsClient(ctx)
+
+	accountID, budgetName, err := BudgetParseResourceID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	//budget, err := FindBudgetByTwoPartKey(ctx, conn, accountID, budgetName)
+
+	budget, err := FindBudgetWithDelay(ctx, func() (*awstypes.Budget, error) {
+		return FindBudgetByTwoPartKey(ctx, conn, accountID, budgetName)
+	})
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Budget (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Budget (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrAccountID, accountID)
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "budgets",
+		AccountID: accountID,
+		Resource:  "budget/" + budgetName,
+	}
+	d.Set(names.AttrARN, arn.String())
+	d.Set("budget_type", budget.BudgetType)
+
+	if err := d.Set("cost_filter", convertCostFiltersToMap(budget.CostFilters)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting cost_filter: %s", err)
+	}
+	if err := d.Set("cost_types", flattenCostTypes(budget.CostTypes)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting cost_types: %s", err)
+	}
+	if err := d.Set("auto_adjust_data", flattenAutoAdjustData(budget.AutoAdjustData)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting auto_adjust_data: %s", err)
+	}
+
+	if budget.BudgetLimit != nil {
+		d.Set("limit_amount", budget.BudgetLimit.Amount)
+		d.Set("limit_unit", budget.BudgetLimit.Unit)
+	}
+
+	d.Set(names.AttrName, budget.BudgetName)
+	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(budget.BudgetName)))
+
+	if err := d.Set("planned_limit", convertPlannedBudgetLimitsToSet(budget.PlannedBudgetLimits)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting planned_limit: %s", err)
+	}
+
+	if budget.TimePeriod != nil {
+		d.Set("time_period_end", TimePeriodTimestampToString(budget.TimePeriod.End))
+		d.Set("time_period_start", TimePeriodTimestampToString(budget.TimePeriod.Start))
+	}
+
+	d.Set("time_unit", budget.TimeUnit)
+
+	notifications, err := findNotifications(ctx, conn, accountID, budgetName)
+
+	if tfresource.NotFound(err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Budget (%s) notifications: %s", d.Id(), err)
+	}
+
+	var tfList []any
+
+	for _, notification := range notifications {
+		tfMap := make(map[string]any)
+
+		tfMap["comparison_operator"] = string(notification.ComparisonOperator)
+		tfMap["threshold"] = notification.Threshold
+		tfMap["notification_type"] = string(notification.NotificationType)
+
+		if notification.ThresholdType == "" {
+			// The AWS API doesn't seem to return a ThresholdType if it's set to PERCENTAGE
+			// Set it manually to make behavior more predictable
+			tfMap["threshold_type"] = awstypes.ThresholdTypePercentage
+		} else {
+			tfMap["threshold_type"] = string(notification.ThresholdType)
+		}
+
+		subscribers, err := findSubscribers(ctx, conn, accountID, budgetName, notification)
+
+		if tfresource.NotFound(err) {
+			tfList = append(tfList, tfMap)
+			continue
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Budget (%s) subscribers: %s", d.Id(), err)
+		}
+
+		var emailSubscribers []string
+		var snsSubscribers []string
+
+		for _, subscriber := range subscribers {
+			switch subscriber.SubscriptionType {
+			case awstypes.SubscriptionTypeSns:
+				snsSubscribers = append(snsSubscribers, aws.ToString(subscriber.Address))
+			case awstypes.SubscriptionTypeEmail:
+				emailSubscribers = append(emailSubscribers, aws.ToString(subscriber.Address))
+			}
+		}
+
+		tfMap["subscriber_email_addresses"] = emailSubscribers
+		tfMap["subscriber_sns_topic_arns"] = snsSubscribers
+
+		tfList = append(tfList, tfMap)
+	}
+
+	if err := d.Set("notification", tfList); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting notification: %s", err)
+	}
+
+	return diags
+}

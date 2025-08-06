@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"log"
+	"reflect"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceContainerServiceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	cs, err := FindContainerServiceByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Lightsail Container Service (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Lightsail Container Service (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrName, cs.ContainerServiceName)
+	d.Set("power", cs.Power)
+	d.Set("scale", cs.Scale)
+	d.Set("is_disabled", cs.IsDisabled)
+
+	if err := d.Set("public_domain_names", flattenContainerServicePublicDomainNames(cs.PublicDomainNames)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting public_domain_names for Lightsail Container Service (%s): %s", d.Id(), err)
+	}
+	if err := d.Set("private_registry_access", []any{flattenPrivateRegistryAccess(cs.PrivateRegistryAccess)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting private_registry_access for Lightsail Container Service (%s): %s", d.Id(), err)
+	}
+	d.Set(names.AttrARN, cs.Arn)
+	d.Set(names.AttrAvailabilityZone, cs.Location.AvailabilityZone)
+	d.Set(names.AttrCreatedAt, aws.ToTime(cs.CreatedAt).Format(time.RFC3339))
+	d.Set("power_id", cs.PowerId)
+	d.Set("principal_arn", cs.PrincipalArn)
+	d.Set("private_domain_name", cs.PrivateDomainName)
+	d.Set(names.AttrResourceType, cs.ResourceType)
+	d.Set(names.AttrState, cs.State)
+	d.Set(names.AttrURL, cs.Url)
+
+	setTagsOut(ctx, cs.Tags)
+
+	return diags
+}

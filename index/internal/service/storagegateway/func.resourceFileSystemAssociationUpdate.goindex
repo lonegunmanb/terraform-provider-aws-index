@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/storagegateway
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/storagegateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFileSystemAssociationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).StorageGatewayClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTagsAll) {
+		input := &storagegateway.UpdateFileSystemAssociationInput{
+			AuditDestinationARN:      aws.String(d.Get("audit_destination_arn").(string)),
+			FileSystemAssociationARN: aws.String(d.Id()),
+			Password:                 aws.String(d.Get(names.AttrPassword).(string)),
+			UserName:                 aws.String(d.Get(names.AttrUsername).(string)),
+		}
+
+		if v, ok := d.GetOk("cache_attributes"); ok {
+			input.CacheAttributes = expandFileSystemAssociationCacheAttributes(v.([]any))
+		}
+
+		_, err := conn.UpdateFileSystemAssociation(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Storage Gateway File System Association (%s): %s", d.Id(), err)
+		}
+
+		if _, err = waitFileSystemAssociationAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Storage Gateway File System Association (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceFileSystemAssociationRead(ctx, d, meta)...)
+}

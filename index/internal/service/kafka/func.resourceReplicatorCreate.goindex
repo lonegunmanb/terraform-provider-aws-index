@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kafka
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kafka"
+	"github.com/aws/aws-sdk-go-v2/service/kafka/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicatorCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).KafkaClient(ctx)
+
+	name := d.Get("replicator_name").(string)
+	input := &kafka.CreateReplicatorInput{
+		KafkaClusters:           expandKafkaClusters(d.Get("kafka_cluster").([]any)),
+		ReplicationInfoList:     expandReplicationInfos(d.Get("replication_info_list").([]any)),
+		ReplicatorName:          aws.String(name),
+		ServiceExecutionRoleArn: aws.String(d.Get("service_execution_role_arn").(string)),
+		Tags:                    getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateReplicator(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating MSK Replicator (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.ReplicatorArn))
+
+	if _, err := waitReplicatorCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for MSK Replicator (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceReplicatorRead(ctx, d, meta)...)
+}

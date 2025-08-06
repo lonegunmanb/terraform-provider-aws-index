@@ -1,0 +1,88 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStackSetInstanceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), stackSetInstanceResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	stackSetName, accountOrOrgID, region := parts[0], parts[1], parts[2]
+	d.Set(names.AttrRegion, region)
+	d.Set("stack_set_instance_region", region)
+	d.Set("stack_set_name", stackSetName)
+
+	callAs := d.Get("call_as").(string)
+
+	if itypes.IsAWSAccountID(accountOrOrgID) {
+		// Stack instances deployed by account ID
+		stackInstance, err := findStackInstanceByFourPartKey(ctx, conn, stackSetName, accountOrOrgID, region, callAs)
+
+		if !d.IsNewResource() && tfresource.NotFound(err) {
+			log.Printf("[WARN] CloudFormation StackSet Instance (%s) not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading CloudFormation StackSet Instance (%s): %s", d.Id(), err)
+		}
+
+		d.Set(names.AttrAccountID, stackInstance.Account)
+		d.Set("organizational_unit_id", stackInstance.OrganizationalUnitId)
+		if err := d.Set("parameter_overrides", flattenAllParameters(stackInstance.ParameterOverrides)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting parameters: %s", err)
+		}
+
+		d.Set("stack_id", stackInstance.StackId)
+		d.Set("stack_instance_summaries", nil)
+	} else {
+		// Stack instances deployed by organizational unit ID
+		orgIDs := strings.Split(accountOrOrgID, "/")
+
+		summaries, err := findStackInstanceSummariesByFourPartKey(ctx, conn, stackSetName, region, callAs, orgIDs)
+
+		if !d.IsNewResource() && tfresource.NotFound(err) {
+			log.Printf("[WARN] CloudFormation StackSet Instance (%s) not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "finding CloudFormation StackSet Instance (%s): %s", d.Id(), err)
+		}
+
+		d.Set("stack_instance_summaries", flattenStackInstanceSummaries(summaries))
+	}
+
+	return diags
+}

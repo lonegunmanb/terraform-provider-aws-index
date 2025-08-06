@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datasync
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datasync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datasync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAgentRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DataSyncClient(ctx)
+
+	output, err := FindAgentByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] DataSync Agent (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading DataSync Agent (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, output.AgentArn)
+	d.Set(names.AttrName, output.Name)
+	if plc := output.PrivateLinkConfig; plc != nil {
+		d.Set("private_link_endpoint", plc.PrivateLinkEndpoint)
+		d.Set("security_group_arns", flex.FlattenStringValueList(plc.SecurityGroupArns))
+		d.Set("subnet_arns", flex.FlattenStringValueList(plc.SubnetArns))
+		d.Set(names.AttrVPCEndpointID, plc.VpcEndpointId)
+	} else {
+		d.Set("private_link_endpoint", "")
+		d.Set("security_group_arns", nil)
+		d.Set("subnet_arns", nil)
+		d.Set(names.AttrVPCEndpointID, "")
+	}
+
+	return diags
+}

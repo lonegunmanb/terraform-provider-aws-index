@@ -1,0 +1,101 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTableItemUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+
+	if d.HasChange("item") {
+		tableName := d.Get(names.AttrTableName).(string)
+		hashKey := d.Get("hash_key").(string)
+		rangeKey := d.Get("range_key").(string)
+
+		oldItem, newItem := d.GetChange("item")
+
+		attributes, err := expandTableItemAttributes(newItem.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		newQueryKey := expandTableItemQueryKey(attributes, hashKey, rangeKey)
+
+		updates := map[string]awstypes.AttributeValueUpdate{}
+		for key, value := range attributes {
+			// Hash keys and range keys are not updatable, so we'll basically create
+			// a new record and delete the old one below
+			if key == hashKey || key == rangeKey {
+				continue
+			}
+			updates[key] = awstypes.AttributeValueUpdate{
+				Action: awstypes.AttributeActionPut,
+				Value:  value,
+			}
+		}
+
+		oldAttributes, err := expandTableItemAttributes(oldItem.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		for k := range oldAttributes {
+			if k == hashKey || k == rangeKey {
+				continue
+			}
+			if _, ok := attributes[k]; !ok {
+				updates[k] = awstypes.AttributeValueUpdate{
+					Action: awstypes.AttributeActionDelete,
+				}
+			}
+		}
+
+		input := &dynamodb.UpdateItemInput{
+			AttributeUpdates: updates,
+			Key:              newQueryKey,
+			TableName:        aws.String(tableName),
+		}
+
+		_, err = conn.UpdateItem(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating DynamoDB Table Item (%s): %s", d.Id(), err)
+		}
+
+		// New record is created via UpdateItem in case we're changing hash key
+		// so we need to get rid of the old one
+		oldQueryKey := expandTableItemQueryKey(oldAttributes, hashKey, rangeKey)
+		if !reflect.DeepEqual(oldQueryKey, newQueryKey) {
+			input := &dynamodb.DeleteItemInput{
+				Key:       oldQueryKey,
+				TableName: aws.String(tableName),
+			}
+
+			_, err := conn.DeleteItem(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating DynamoDB Table Item (%s): removing old record: %s", d.Id(), err)
+			}
+		}
+
+		d.SetId(tableItemCreateResourceID(tableName, hashKey, rangeKey, attributes))
+	}
+
+	return append(diags, resourceTableItemRead(ctx, d, meta)...)
+}

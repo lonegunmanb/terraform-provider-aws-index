@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kendra
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kendra"
+	"github.com/aws/aws-sdk-go-v2/service/kendra/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceExperienceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).KendraClient(ctx)
+
+	id, indexId, err := ExperienceParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	out, err := FindExperienceByID(ctx, conn, id, indexId)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Kendra Experience (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Kendra Experience (%s): %s", d.Id(), err)
+	}
+
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		Service:   "kendra",
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("index/%s/experience/%s", indexId, id),
+	}.String()
+
+	d.Set(names.AttrARN, arn)
+	d.Set("index_id", out.IndexId)
+	d.Set(names.AttrDescription, out.Description)
+	d.Set("experience_id", out.Id)
+	d.Set(names.AttrName, out.Name)
+	d.Set(names.AttrRoleARN, out.RoleArn)
+	d.Set(names.AttrStatus, out.Status)
+
+	if err := d.Set(names.AttrEndpoints, flattenEndpoints(out.Endpoints)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting endpoints argument: %s", err)
+	}
+
+	if err := d.Set(names.AttrConfiguration, flattenConfiguration(out.Configuration)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting configuration argument: %s", err)
+	}
+
+	return diags
+}

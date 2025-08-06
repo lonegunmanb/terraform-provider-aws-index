@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codeartifact
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codeartifact"
+	"github.com/aws/aws-sdk-go-v2/service/codeartifact/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainPermissionsPolicyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeArtifactClient(ctx)
+
+	owner, domainName, err := parseDomainARN(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	policy, err := findDomainPermissionsPolicyByTwoPartKey(ctx, conn, owner, domainName)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CodeArtifact Domain Permissions Policy (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CodeArtifact Domain Permissions Policy (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrDomain, domainName)
+	d.Set("domain_owner", owner)
+	d.Set("policy_revision", policy.Revision)
+	d.Set(names.AttrResourceARN, policy.ResourceArn)
+
+	policyToSet, err := verify.SecondJSONUnlessEquivalent(d.Get("policy_document").(string), aws.ToString(policy.Document))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	policyToSet, err = structure.NormalizeJsonString(policyToSet)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set("policy_document", policyToSet)
+
+	return diags
+}

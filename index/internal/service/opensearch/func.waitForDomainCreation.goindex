@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitForDomainCreation(ctx context.Context, conn *opensearch.Client, domainName string, timeout time.Duration) error {
+	var out *awstypes.DomainStatus
+	err := tfresource.Retry(ctx, timeout, func() *retry.RetryError {
+		var err error
+		out, err = findDomainByName(ctx, conn, domainName)
+		if tfresource.NotFound(err) {
+			return retry.RetryableError(err)
+		}
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		if !aws.ToBool(out.Processing) && (out.Endpoint != nil || out.Endpoints != nil) {
+			return nil
+		}
+
+		return retry.RetryableError(
+			fmt.Errorf("%q: Timeout while waiting for OpenSearch Domain to be created", domainName))
+	}, tfresource.WithDelay(10*time.Minute), tfresource.WithPollInterval(10*time.Second))
+
+	if tfresource.TimedOut(err) {
+		out, err = findDomainByName(ctx, conn, domainName)
+		if err != nil {
+			return fmt.Errorf("describing OpenSearch Domain: %w", err)
+		}
+		if !aws.ToBool(out.Processing) && (out.Endpoint != nil || out.Endpoints != nil) {
+			return nil
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("waiting for OpenSearch Domain to be created: %w", err)
+	}
+	return nil
+}

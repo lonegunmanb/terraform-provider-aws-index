@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/globalaccelerator
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/globalaccelerator"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/globalaccelerator/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlobalAcceleratorClient(ctx)
+
+	endpointGroup, err := findEndpointGroupByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Global Accelerator endpoint group (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Global Accelerator Endpoint Group (%s): %s", d.Id(), err)
+	}
+
+	listenerARN, err := endpointGroupARNToListenerARN(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	crossAccountAttachments, err := findCrossAccountAttachments(ctx, conn, endpointGroup.EndpointDescriptions)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Global Accelerator Endpoint Group (%s) cross-account attachments: %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, endpointGroup.EndpointGroupArn)
+	if err := d.Set("endpoint_configuration", flattenEndpointDescriptions(endpointGroup.EndpointDescriptions, crossAccountAttachments)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting endpoint_configuration: %s", err)
+	}
+	d.Set("endpoint_group_region", endpointGroup.EndpointGroupRegion)
+	d.Set("health_check_interval_seconds", endpointGroup.HealthCheckIntervalSeconds)
+	d.Set("health_check_path", endpointGroup.HealthCheckPath)
+	d.Set("health_check_port", endpointGroup.HealthCheckPort)
+	d.Set("health_check_protocol", endpointGroup.HealthCheckProtocol)
+	d.Set("listener_arn", listenerARN)
+	if err := d.Set("port_override", flattenPortOverrides(endpointGroup.PortOverrides)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting port_override: %s", err)
+	}
+	d.Set("threshold_count", endpointGroup.ThresholdCount)
+	d.Set("traffic_dial_percentage", endpointGroup.TrafficDialPercentage)
+
+	return diags
+}

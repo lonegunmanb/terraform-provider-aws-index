@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSharedDirectoryRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DSClient(ctx)
+
+	ownerDirID, sharedDirID, err := sharedDirectoryParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	output, err := findSharedDirectoryByTwoPartKey(ctx, conn, ownerDirID, sharedDirID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Directory Service Shared Directory (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Directory Service Shared Directory (%s): %s", d.Id(), err)
+	}
+
+	d.Set("directory_id", output.OwnerDirectoryId)
+	d.Set("method", output.ShareMethod)
+	d.Set("notes", output.ShareNotes)
+	d.Set("shared_directory_id", output.SharedDirectoryId)
+	if output.SharedAccountId != nil {
+		if err := d.Set(names.AttrTarget, []any{flattenShareTarget(output)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting target: %s", err)
+		}
+	} else {
+		d.Set(names.AttrTarget, nil)
+	}
+
+	return diags
+}

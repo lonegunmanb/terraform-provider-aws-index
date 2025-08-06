@@ -1,0 +1,101 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMethod() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceMethodCreate,
+		ReadWithoutTimeout:   resourceMethodRead,
+		UpdateWithoutTimeout: resourceMethodUpdate,
+		DeleteWithoutTimeout: resourceMethodDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: func(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+				idParts := strings.Split(d.Id(), "/")
+				if len(idParts) != 3 || idParts[0] == "" || idParts[1] == "" || idParts[2] == "" {
+					return nil, fmt.Errorf("Unexpected format of ID (%q), expected REST-API-ID/RESOURCE-ID/HTTP-METHOD", d.Id())
+				}
+				restApiID := idParts[0]
+				resourceID := idParts[1]
+				httpMethod := idParts[2]
+				d.Set("http_method", httpMethod)
+				d.Set(names.AttrResourceID, resourceID)
+				d.Set("rest_api_id", restApiID)
+				d.SetId(fmt.Sprintf("agm-%s-%s-%s", restApiID, resourceID, httpMethod))
+				return []*schema.ResourceData{d}, nil
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			"api_key_required": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+			},
+			"authorization": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"authorization_scopes": {
+				Type:     schema.TypeSet,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				Optional: true,
+			},
+			"authorizer_id": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"http_method": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validHTTPMethod(),
+			},
+			"operation_name": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"request_models": {
+				Type:     schema.TypeMap,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"request_parameters": {
+				Type:     schema.TypeMap,
+				Elem:     &schema.Schema{Type: schema.TypeBool},
+				Optional: true,
+			},
+			"request_validator_id": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			names.AttrResourceID: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"rest_api_id": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+		},
+	}
+}

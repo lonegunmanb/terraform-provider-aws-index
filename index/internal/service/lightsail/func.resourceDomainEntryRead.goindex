@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDomainEntryRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	entry, err := FindDomainEntryById(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		create.LogNotFoundRemoveState(names.Lightsail, create.ErrActionReading, ResNameDomainEntry, d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.Lightsail, create.ErrActionReading, ResNameDomainEntry, d.Id(), err)
+	}
+
+	domainName, err := expandDomainNameFromId(d.Id())
+
+	if err != nil {
+		return create.AppendDiagError(diags, names.Lightsail, create.ErrActionExpandingResourceId, ResNameDomainEntry, d.Id(), err)
+	}
+
+	name := flattenDomainEntryName(aws.ToString(entry.Name), domainName)
+
+	partCount := flex.ResourceIdPartCount(d.Id())
+
+	// This code is intended to update the Id to use the common separator for resources still using the old separator
+	if partCount == 1 {
+		idParts := []string{
+			name,
+			domainName,
+			aws.ToString(entry.Type),
+			aws.ToString(entry.Target),
+		}
+
+		id, err := flex.FlattenResourceId(idParts, DomainEntryIdPartsCount, true)
+
+		if err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionFlatteningResourceId, ResNameDomainEntry, d.Get(names.AttrDomainName).(string), err)
+		}
+
+		d.SetId(id)
+	}
+	d.Set(names.AttrName, name)
+	d.Set(names.AttrDomainName, domainName)
+	d.Set(names.AttrType, entry.Type)
+	d.Set("is_alias", entry.IsAlias)
+	d.Set(names.AttrTarget, entry.Target)
+
+	return diags
+}

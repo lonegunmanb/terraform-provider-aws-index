@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/detective
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/detective"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/detective/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMemberRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).DetectiveClient(ctx)
+
+	graphARN, accountID, err := MemberParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	member, err := FindMemberByGraphByTwoPartKey(ctx, conn, graphARN, accountID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Detective Member (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Detective Member (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrAccountID, member.AccountId)
+	d.Set("administrator_id", member.AdministratorId)
+	d.Set("disabled_reason", member.DisabledReason)
+	d.Set("email_address", member.EmailAddress)
+	d.Set("graph_arn", member.GraphArn)
+	d.Set("invited_time", aws.ToTime(member.InvitedTime).Format(time.RFC3339))
+	d.Set(names.AttrStatus, member.Status)
+	d.Set("updated_time", aws.ToTime(member.UpdatedTime).Format(time.RFC3339))
+	d.Set("volume_usage_in_bytes", member.VolumeUsageInBytes)
+
+	return diags
+}

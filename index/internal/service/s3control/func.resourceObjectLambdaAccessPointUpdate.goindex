@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3control
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/s3control"
+	"github.com/aws/aws-sdk-go-v2/service/s3control/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceObjectLambdaAccessPointUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3ControlClient(ctx)
+
+	accountID, name, err := ObjectLambdaAccessPointParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &s3control.PutAccessPointConfigurationForObjectLambdaInput{
+		AccountId: aws.String(accountID),
+		Name:      aws.String(name),
+	}
+
+	if v, ok := d.GetOk(names.AttrConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Configuration = expandObjectLambdaConfiguration(v.([]any)[0].(map[string]any))
+	}
+
+	_, err = conn.PutAccessPointConfigurationForObjectLambda(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating S3 Object Lambda Access Point (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceObjectLambdaAccessPointRead(ctx, d, meta)...)
+}

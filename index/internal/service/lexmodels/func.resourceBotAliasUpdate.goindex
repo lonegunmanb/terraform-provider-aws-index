@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lexmodels
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lexmodelbuildingservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBotAliasUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LexModelsClient(ctx)
+
+	input := &lexmodelbuildingservice.PutBotAliasInput{
+		BotName:    aws.String(d.Get("bot_name").(string)),
+		BotVersion: aws.String(d.Get("bot_version").(string)),
+		Checksum:   aws.String(d.Get("checksum").(string)),
+		Name:       aws.String(d.Get(names.AttrName).(string)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("conversation_logs"); ok {
+		conversationLogs, err := expandConversationLogs(v)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Lex Model Bot Alias (%s): %s", d.Id(), err)
+		}
+		input.ConversationLogs = conversationLogs
+	}
+
+	err := retry.RetryContext(ctx, d.Timeout(schema.TimeoutUpdate), func() *retry.RetryError {
+		_, err := conn.PutBotAlias(ctx, input)
+
+		// IAM eventual consistency
+		if errs.IsAErrorMessageContains[*awstypes.BadRequestException](err, "Lex can't access your IAM role") {
+			return retry.RetryableError(err)
+		}
+		if errs.IsA[*awstypes.ConflictException](err) {
+			return retry.RetryableError(fmt.Errorf("%q bot alias still updating", d.Id()))
+		}
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	})
+
+	if tfresource.TimedOut(err) {
+		_, err = conn.PutBotAlias(ctx, input)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Lex Model Bot Alias (%s): %s", d.Id(), err)
+	}
+
+	return append(diags, resourceBotAliasRead(ctx, d, meta)...)
+}

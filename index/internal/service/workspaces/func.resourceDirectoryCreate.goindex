@@ -1,0 +1,158 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workspaces
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workspaces"
+	"github.com/aws/aws-sdk-go-v2/service/workspaces/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDirectoryCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WorkSpacesClient(ctx)
+
+	directoryID := d.Get("directory_id").(string)
+	workspaceType := types.WorkspaceType(d.Get("workspace_type").(string))
+	input := workspaces.RegisterWorkspaceDirectoryInput{
+		Tags:          getTagsIn(ctx),
+		Tenancy:       types.TenancyShared,
+		WorkspaceType: workspaceType,
+	}
+
+	if v, ok := d.GetOk(names.AttrSubnetIDs); ok {
+		input.SubnetIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	switch workspaceType {
+	case types.WorkspaceTypePools:
+		if v, ok := d.GetOk("active_directory_config"); ok && len(v.([]any)) > 0 {
+			input.ActiveDirectoryConfig = expandActiveDirectoryConfig(v.([]any))
+		}
+		input.UserIdentityType = types.UserIdentityType(d.Get("user_identity_type").(string))
+		input.WorkspaceDirectoryDescription = aws.String(d.Get("workspace_directory_description").(string))
+		input.WorkspaceDirectoryName = aws.String(d.Get("workspace_directory_name").(string))
+	case types.WorkspaceTypePersonal:
+		input.DirectoryId = aws.String(directoryID)
+		input.EnableSelfService = aws.Bool(false)
+	}
+
+	const (
+		timeout = 2 * time.Minute
+	)
+	output, err := tfresource.RetryWhenIsA[*types.InvalidResourceStateException](ctx, timeout,
+		func() (any, error) {
+			return conn.RegisterWorkspaceDirectory(ctx, &input)
+		})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "registering WorkSpaces Directory (%s): %s", directoryID, err)
+	}
+
+	switch workspaceType {
+	case types.WorkspaceTypePersonal:
+		d.SetId(directoryID)
+	case types.WorkspaceTypePools:
+		d.SetId(aws.ToString(output.(*workspaces.RegisterWorkspaceDirectoryOutput).DirectoryId))
+	}
+
+	if _, err := waitDirectoryRegistered(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for WorkSpaces Directory (%s) create: %s", d.Id(), err)
+	}
+
+	if v, ok := d.GetOk("saml_properties"); ok {
+		input := workspaces.ModifySamlPropertiesInput{
+			ResourceId:     aws.String(d.Id()),
+			SamlProperties: expandSAMLProperties(v.([]any)),
+		}
+
+		_, err := conn.ModifySamlProperties(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting WorkSpaces Directory (%s) SAML properties: %s", d.Id(), err)
+		}
+	}
+
+	// SAML needs to be enabled for directory before enabling certificate based authentication.
+	if v, ok := d.GetOk("certificate_based_auth_properties"); ok {
+		input := workspaces.ModifyCertificateBasedAuthPropertiesInput{
+			CertificateBasedAuthProperties: expandCertificateBasedAuthProperties(v.([]any)),
+			ResourceId:                     aws.String(d.Id()),
+		}
+
+		_, err := conn.ModifyCertificateBasedAuthProperties(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting WorkSpaces Directory (%s) certificate-based authentication properties: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("self_service_permissions"); ok {
+		input := workspaces.ModifySelfservicePermissionsInput{
+			ResourceId:             aws.String(d.Id()),
+			SelfservicePermissions: expandSelfservicePermissions(v.([]any)),
+		}
+
+		_, err := conn.ModifySelfservicePermissions(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting WorkSpaces Directory (%s) self-service permissions: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("workspace_access_properties"); ok {
+		input := workspaces.ModifyWorkspaceAccessPropertiesInput{
+			ResourceId:                aws.String(d.Id()),
+			WorkspaceAccessProperties: expandWorkspaceAccessProperties(v.([]any)),
+		}
+
+		_, err := conn.ModifyWorkspaceAccessProperties(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting WorkSpaces Directory (%s) access properties: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("workspace_creation_properties"); ok {
+		input := workspaces.ModifyWorkspaceCreationPropertiesInput{
+			ResourceId:                  aws.String(d.Id()),
+			WorkspaceCreationProperties: expandWorkspaceCreationProperties(v.([]any), workspaceType),
+		}
+
+		_, err := conn.ModifyWorkspaceCreationProperties(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting WorkSpaces Directory (%s) creation properties: %s", d.Id(), err)
+		}
+	}
+
+	if v, ok := d.GetOk("ip_group_ids"); ok && v.(*schema.Set).Len() > 0 {
+		input := workspaces.AssociateIpGroupsInput{
+			DirectoryId: aws.String(d.Id()),
+			GroupIds:    flex.ExpandStringValueSet(v.(*schema.Set)),
+		}
+
+		_, err := conn.AssociateIpGroups(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "asassociating WorkSpaces Directory (%s) IP Groups: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceDirectoryRead(ctx, d, meta)...)
+}

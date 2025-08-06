@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datasync
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datasync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datasync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTaskCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DataSyncClient(ctx)
+
+	input := &datasync.CreateTaskInput{
+		DestinationLocationArn: aws.String(d.Get("destination_location_arn").(string)),
+		Options:                expandOptions(d.Get("options").([]any)),
+		SourceLocationArn:      aws.String(d.Get("source_location_arn").(string)),
+		Tags:                   getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrCloudWatchLogGroupARN); ok {
+		input.CloudWatchLogGroupArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("excludes"); ok {
+		input.Excludes = expandFilterRules(v.([]any))
+	}
+
+	if v, ok := d.GetOk("includes"); ok {
+		input.Includes = expandFilterRules(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrName); ok {
+		input.Name = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("task_report_config"); ok {
+		input.TaskReportConfig = expandTaskReportConfig(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrSchedule); ok {
+		input.Schedule = expandTaskSchedule(v.([]any))
+	}
+
+	if v, ok := d.GetOk("task_mode"); ok {
+		input.TaskMode = awstypes.TaskMode(v.(string))
+	}
+
+	output, err := conn.CreateTask(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DataSync Task: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.TaskArn))
+
+	if _, err := waitTaskAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DataSync Task (%s) creation: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceTaskRead(ctx, d, meta)...)
+}

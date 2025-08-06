@@ -1,0 +1,193 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func s3Settings(d *schema.ResourceData, target bool) *awstypes.S3Settings {
+	s3s := &awstypes.S3Settings{}
+
+	if v, ok := d.Get("add_column_name").(bool); ok { // likely only useful for target
+		s3s.AddColumnName = aws.Bool(v)
+	}
+
+	if v, ok := d.GetOk("add_trailing_padding_character"); ok && target { // target
+		s3s.AddTrailingPaddingCharacter = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("bucket_folder"); ok {
+		s3s.BucketFolder = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrBucketName); ok {
+		s3s.BucketName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("canned_acl_for_objects"); ok { // likely only useful for target
+		s3s.CannedAclForObjects = awstypes.CannedAclForObjectsValue(v.(string))
+	}
+
+	if v, ok := d.Get("cdc_inserts_and_updates").(bool); ok { // likely only useful for target
+		s3s.CdcInsertsAndUpdates = aws.Bool(v)
+	}
+
+	if v, ok := d.Get("cdc_inserts_only").(bool); ok { // likely only useful for target
+		s3s.CdcInsertsOnly = aws.Bool(v)
+	}
+
+	if v, ok := d.GetOk("cdc_max_batch_interval"); ok { // likely only useful for target
+		s3s.CdcMaxBatchInterval = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("cdc_min_file_size"); ok { // likely only useful for target
+		s3s.CdcMinFileSize = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("cdc_path"); ok {
+		s3s.CdcPath = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("compression_type"); ok && target { // likely only useful for target
+		s3s.CompressionType = awstypes.CompressionTypeValue(v.(string))
+	}
+
+	if v, ok := d.GetOk("csv_delimiter"); ok {
+		s3s.CsvDelimiter = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("csv_no_sup_value"); ok && target { // target
+		s3s.CsvNoSupValue = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("csv_null_value"); ok { // likely only useful for target
+		s3s.CsvNullValue = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("csv_row_delimiter"); ok {
+		s3s.CsvRowDelimiter = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("data_format"); ok && target { // target
+		s3s.DataFormat = awstypes.DataFormatValue(v.(string))
+	}
+
+	if v, ok := d.GetOk("data_page_size"); ok { // likely only useful for target
+		s3s.DataPageSize = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("date_partition_delimiter"); ok && target { // target
+		s3s.DatePartitionDelimiter = awstypes.DatePartitionDelimiterValue(v.(string))
+	}
+
+	if v, ok := d.Get("date_partition_enabled").(bool); ok && target { // likely only useful for target
+		s3s.DatePartitionEnabled = aws.Bool(v)
+	}
+
+	if v, ok := d.GetOk("date_partition_sequence"); ok && target { // target
+		s3s.DatePartitionSequence = awstypes.DatePartitionSequenceValue(v.(string))
+	}
+
+	if v, ok := d.GetOk("date_partition_timezone"); ok && target { // target
+		s3s.DatePartitionTimezone = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("dict_page_size_limit"); ok { // likely only useful for target
+		s3s.DictPageSizeLimit = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.Get("enable_statistics").(bool); ok { // likely only useful for target
+		s3s.EnableStatistics = aws.Bool(v)
+	}
+
+	if v, ok := d.GetOk("encoding_type"); ok { // likely only useful for target
+		s3s.EncodingType = awstypes.EncodingTypeValue(v.(string))
+	}
+
+	if v, ok := d.GetOk("encryption_mode"); ok && target { // target
+		s3s.EncryptionMode = awstypes.EncryptionModeValue(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrExpectedBucketOwner); ok { // likely only useful for target
+		s3s.ExpectedBucketOwner = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("external_table_definition"); ok {
+		s3s.ExternalTableDefinition = aws.String(v.(string))
+	}
+
+	if v, ok := d.Get("glue_catalog_generation").(bool); ok { // target
+		s3s.GlueCatalogGeneration = aws.Bool(v)
+	}
+
+	if v, ok := d.GetOk("ignore_header_rows"); ok {
+		s3s.IgnoreHeaderRows = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.Get("include_op_for_full_load").(bool); ok { // likely only useful for target
+		s3s.IncludeOpForFullLoad = aws.Bool(v)
+	}
+
+	if v, ok := d.GetOk("max_file_size"); ok { // likely only useful for target
+		s3s.MaxFileSize = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.Get("parquet_timestamp_in_millisecond").(bool); ok && target { // target
+		s3s.ParquetTimestampInMillisecond = aws.Bool(v)
+	}
+
+	if v, ok := d.GetOk("parquet_version"); ok && target { // target
+		s3s.ParquetVersion = awstypes.ParquetVersionValue(v.(string))
+	}
+
+	if v, ok := d.Get("preserve_transactions").(bool); ok && target { // target
+		s3s.PreserveTransactions = aws.Bool(v)
+	}
+
+	if v, ok := d.Get("rfc_4180").(bool); ok {
+		s3s.Rfc4180 = aws.Bool(v)
+	}
+
+	if v, ok := d.GetOk("row_group_length"); ok { // likely only useful for target
+		s3s.RowGroupLength = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("server_side_encryption_kms_key_id"); ok && target { // target
+		s3s.ServerSideEncryptionKmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("service_access_role_arn"); ok {
+		s3s.ServiceAccessRoleArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("timestamp_column_name"); ok { // likely only useful for target
+		s3s.TimestampColumnName = aws.String(v.(string))
+	}
+
+	if v, ok := d.Get("use_csv_no_sup_value").(bool); ok && target { // target
+		s3s.UseCsvNoSupValue = aws.Bool(v)
+	}
+
+	if v, ok := d.Get("use_task_start_time_for_full_load_timestamp").(bool); ok { // likely only useful for target
+		s3s.UseTaskStartTimeForFullLoadTimestamp = aws.Bool(v)
+	}
+
+	return s3s
+}

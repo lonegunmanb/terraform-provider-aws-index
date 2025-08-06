@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceCustomerGatewayAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	globalNetworkID := d.Get("global_network_id").(string)
+	customerGatewayARN := d.Get("customer_gateway_arn").(string)
+	id := customerGatewayAssociationCreateResourceID(globalNetworkID, customerGatewayARN)
+	input := &networkmanager.AssociateCustomerGatewayInput{
+		CustomerGatewayArn: aws.String(customerGatewayARN),
+		DeviceId:           aws.String(d.Get("device_id").(string)),
+		GlobalNetworkId:    aws.String(globalNetworkID),
+	}
+
+	if v, ok := d.GetOk("link_id"); ok {
+		input.LinkId = aws.String(v.(string))
+	}
+
+	log.Printf("[DEBUG] Creating Network Manager Customer Gateway Association: %#v", input)
+	_, err := tfresource.RetryWhen(ctx, customerGatewayAssociationResourceNotFoundExceptionTimeout,
+		func() (any, error) {
+			return conn.AssociateCustomerGateway(ctx, input)
+		},
+		func(err error) (bool, error) {
+			// Wait out eventual consistency errors like:
+			//
+			// ResourceNotFoundException: Resource not found.
+			// {
+			//   RespMetadata: {
+			// 	  StatusCode: 404,
+			// 	  RequestID: "530d124c-2af8-4adf-be73-cee3793042f3"
+			//   },
+			//   Message_: "Resource not found.",
+			//   ResourceId: "arn:aws:ec2:us-west-2:123456789012:customer-gateway/cgw-07c83f17516ae28fd",
+			//   ResourceType: "customer-gateway"
+			// }
+			if resourceNotFoundExceptionResourceIDEquals(err, customerGatewayARN) {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Network Manager Customer Gateway Association (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitCustomerGatewayAssociationCreated(ctx, conn, globalNetworkID, customerGatewayARN, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Customer Gateway Association (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceCustomerGatewayAssociationRead(ctx, d, meta)...)
+}

@@ -1,0 +1,96 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAccountSubscriptionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID := meta.(*conns.AWSClient).AccountID(ctx)
+	if v, ok := d.GetOk(names.AttrAWSAccountID); ok {
+		awsAccountID = v.(string)
+	}
+	accountName := d.Get("account_name").(string)
+	input := &quicksight.CreateAccountSubscriptionInput{
+		AccountName:          aws.String(accountName),
+		AwsAccountId:         aws.String(awsAccountID),
+		AuthenticationMethod: awstypes.AuthenticationMethodOption(d.Get("authentication_method").(string)),
+		Edition:              awstypes.Edition(d.Get("edition").(string)),
+		NotificationEmail:    aws.String(d.Get("notification_email").(string)),
+	}
+
+	if v, ok := d.GetOk("active_directory_name"); ok {
+		input.ActiveDirectoryName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("admin_group"); ok && len(v.([]any)) > 0 {
+		input.AdminGroup = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("author_group"); ok && len(v.([]any)) > 0 {
+		input.AuthorGroup = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("reader_group"); ok && len(v.([]any)) > 0 {
+		input.ReaderGroup = flex.ExpandStringValueList(v.([]any))
+	}
+
+	if v, ok := d.GetOk("contact_number"); ok {
+		input.ContactNumber = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("directory_id"); ok {
+		input.DirectoryId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("email_address"); ok {
+		input.EmailAddress = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("first_name"); ok {
+		input.FirstName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("iam_identity_center_instance_arn"); ok {
+		input.IAMIdentityCenterInstanceArn = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("last_name"); ok {
+		input.LastName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("realm"); ok {
+		input.Realm = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateAccountSubscription(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating QuickSight Account Subscription (%s): %s", accountName, err)
+	}
+
+	d.SetId(awsAccountID)
+
+	if _, err := waitAccountSubscriptionCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for QuickSight Account Subscription (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceAccountSubscriptionRead(ctx, d, meta)...)
+}

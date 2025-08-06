@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserDefinedFunctionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	catalogID, dbName, funcName, err := ReadUDFID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Glue User Defined Function (%s): %s", d.Id(), err)
+	}
+
+	input := &glue.GetUserDefinedFunctionInput{
+		CatalogId:    aws.String(catalogID),
+		DatabaseName: aws.String(dbName),
+		FunctionName: aws.String(funcName),
+	}
+
+	out, err := conn.GetUserDefinedFunction(ctx, input)
+	if err != nil {
+		if errs.IsA[*awstypes.EntityNotFoundException](err) {
+			log.Printf("[WARN] Glue User Defined Function (%s) not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+
+		return sdkdiag.AppendErrorf(diags, "reading Glue User Defined Function (%s): %s", d.Id(), err)
+	}
+
+	udf := out.UserDefinedFunction
+
+	udfArn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "glue",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("userDefinedFunction/%s/%s", dbName, aws.ToString(udf.FunctionName)),
+	}.String()
+
+	d.Set(names.AttrARN, udfArn)
+	d.Set(names.AttrName, udf.FunctionName)
+	d.Set(names.AttrCatalogID, catalogID)
+	d.Set(names.AttrDatabaseName, dbName)
+	d.Set("owner_type", udf.OwnerType)
+	d.Set("owner_name", udf.OwnerName)
+	d.Set("class_name", udf.ClassName)
+	if udf.CreateTime != nil {
+		d.Set(names.AttrCreateTime, udf.CreateTime.Format(time.RFC3339))
+	}
+	if err := d.Set("resource_uris", flattenUserDefinedFunctionResourceURI(udf.ResourceUris)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Glue User Defined Function (%s): setting resource_uris: %s", d.Id(), err)
+	}
+
+	return diags
+}

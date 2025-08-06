@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2
+import (
+	"context"
+	"fmt"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/identity"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r identityInterceptor) run(ctx context.Context, opts crudInterceptorOptions) diag.Diagnostics {
+	var diags diag.Diagnostics
+	awsClient := opts.c
+
+	switch d, when, why := opts.d, opts.when, opts.why; when {
+	case After:
+		switch why {
+		case Create, Read:
+			identity, err := d.Identity()
+			if err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+
+			for _, attr := range r.attributes {
+				switch attr {
+				case names.AttrAccountID:
+					if err := identity.Set(attr, awsClient.AccountID(ctx)); err != nil {
+						return sdkdiag.AppendFromErr(diags, err)
+					}
+
+				case names.AttrRegion:
+					if err := identity.Set(attr, awsClient.Region(ctx)); err != nil {
+						return sdkdiag.AppendFromErr(diags, err)
+					}
+
+				default:
+					val, ok := getAttributeOk(d, attr)
+					if !ok {
+						continue
+					}
+					if err := identity.Set(attr, val); err != nil {
+						return sdkdiag.AppendFromErr(diags, err)
+					}
+				}
+			}
+		}
+	}
+
+	return diags
+}

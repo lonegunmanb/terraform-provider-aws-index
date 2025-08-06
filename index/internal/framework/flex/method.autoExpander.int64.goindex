@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	smithyjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func (expander autoExpander) int64(ctx context.Context, vFrom basetypes.Int64Valuable, vTo reflect.Value, fieldOpts fieldOpts) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	v, d := vFrom.ToInt64Value(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	switch tTo := vTo.Type(); vTo.Kind() {
+	case reflect.Int32, reflect.Int64:
+		//
+		// types.Int32/types.Int64 -> int32/int64.
+		//
+		vTo.SetInt(v.ValueInt64())
+		return diags
+
+	case reflect.Pointer:
+		switch tElem := tTo.Elem(); tElem.Kind() {
+		case reflect.Int32:
+			//
+			// types.Int32/types.Int64 -> *int32.
+			//
+			to := int32(v.ValueInt64())
+			if fieldOpts.legacy {
+				tflog.SubsystemDebug(ctx, subsystemName, "Using legacy expander")
+				if to == 0 {
+					return diags
+				}
+			}
+			vTo.Set(reflect.ValueOf(&to))
+			return diags
+
+		case reflect.Int64:
+			//
+			// types.Int32/types.Int64 -> *int64.
+			//
+			if fieldOpts.legacy {
+				tflog.SubsystemDebug(ctx, subsystemName, "Using legacy expander")
+				if v.ValueInt64() == 0 {
+					return diags
+				}
+			}
+			vTo.Set(reflect.ValueOf(v.ValueInt64Pointer()))
+			return diags
+		}
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "AutoFlex Expand; incompatible types", map[string]any{
+		"from": vFrom.Type(ctx),
+		"to":   vTo.Kind(),
+	})
+
+	return diags
+}

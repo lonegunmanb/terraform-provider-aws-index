@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAnalysisCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID := meta.(*conns.AWSClient).AccountID(ctx)
+	if v, ok := d.GetOk(names.AttrAWSAccountID); ok {
+		awsAccountID = v.(string)
+	}
+	analysisID := d.Get("analysis_id").(string)
+	id := analysisCreateResourceID(awsAccountID, analysisID)
+	input := &quicksight.CreateAnalysisInput{
+		AwsAccountId: aws.String(awsAccountID),
+		AnalysisId:   aws.String(analysisID),
+		Name:         aws.String(d.Get(names.AttrName).(string)),
+		Tags:         getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("definition"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Definition = quicksightschema.ExpandAnalysisDefinition(d.Get("definition").([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrParameters); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Parameters = quicksightschema.ExpandParameters(d.Get(names.AttrParameters).([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrPermissions); ok && v.(*schema.Set).Len() != 0 {
+		input.Permissions = quicksightschema.ExpandResourcePermissions(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("source_entity"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.SourceEntity = quicksightschema.ExpandAnalysisSourceEntity(v.([]any))
+	}
+
+	if v, ok := d.Get("theme_arn").(string); ok && v != "" {
+		input.ThemeArn = aws.String(v)
+	}
+
+	_, err := conn.CreateAnalysis(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating QuickSight Analysis (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitAnalysisCreated(ctx, conn, awsAccountID, analysisID, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for QuickSight Analysis (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceAnalysisRead(ctx, d, meta)...)
+}

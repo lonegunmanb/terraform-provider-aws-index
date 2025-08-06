@@ -1,0 +1,93 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStageCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	apiID := d.Get("rest_api_id").(string)
+	stageName := d.Get("stage_name").(string)
+	deploymentID := d.Get("deployment_id").(string)
+	input := apigateway.CreateStageInput{
+		RestApiId:    aws.String(apiID),
+		StageName:    aws.String(stageName),
+		DeploymentId: aws.String(deploymentID),
+		Tags:         getTagsIn(ctx),
+	}
+
+	waitForCache := false
+	if v, ok := d.GetOk("cache_cluster_enabled"); ok {
+		input.CacheClusterEnabled = v.(bool)
+		waitForCache = true
+	}
+
+	if v, ok := d.GetOk("cache_cluster_size"); ok {
+		input.CacheClusterSize = types.CacheClusterSize(v.(string))
+		waitForCache = true
+	}
+
+	if v, ok := d.GetOk("canary_settings"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.CanarySettings = expandCanarySettings(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("documentation_version"); ok {
+		input.DocumentationVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("variables"); ok && len(v.(map[string]any)) > 0 {
+		input.Variables = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("xray_tracing_enabled"); ok {
+		input.TracingEnabled = v.(bool)
+	}
+
+	output, err := conn.CreateStage(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway Stage (%s): %s", stageName, err)
+	}
+
+	d.SetId(fmt.Sprintf("ags-%s-%s", apiID, stageName))
+
+	if waitForCache && output.CacheClusterStatus != types.CacheClusterStatusNotAvailable {
+		if _, err := waitStageCacheAvailable(ctx, conn, apiID, stageName); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for API Gateway Stage (%s) cache create: %s", d.Id(), err)
+		}
+	}
+
+	_, certOk := d.GetOk("client_certificate_id")
+	_, logsOk := d.GetOk("access_log_settings")
+
+	if certOk || logsOk {
+		return append(diags, resourceStageUpdate(ctx, d, meta)...)
+	}
+
+	return append(diags, resourceStageRead(ctx, d, meta)...)
+}

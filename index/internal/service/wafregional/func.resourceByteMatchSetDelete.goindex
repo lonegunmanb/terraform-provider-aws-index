@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafregional
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafregional"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafregional/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceByteMatchSetDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFRegionalClient(ctx)
+	region := meta.(*conns.AWSClient).Region(ctx)
+
+	if oldT := d.Get("byte_match_tuples").(*schema.Set).List(); len(oldT) > 0 {
+		var newT []any
+		if err := updateByteMatchSet(ctx, conn, region, d.Id(), oldT, newT); err != nil && !errs.IsA[*awstypes.WAFNonexistentItemException](err) && !errs.IsA[*awstypes.WAFNonexistentContainerException](err) {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	log.Printf("[INFO] Deleting WAF Regional Byte Match Set: %s", d.Id())
+	_, err := newRetryer(conn, region).RetryWithToken(ctx, func(token *string) (any, error) {
+		input := &wafregional.DeleteByteMatchSetInput{
+			ByteMatchSetId: aws.String(d.Id()),
+			ChangeToken:    token,
+		}
+
+		return conn.DeleteByteMatchSet(ctx, input)
+	})
+
+	if errs.IsA[*awstypes.WAFNonexistentItemException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting WAF Regional Byte Match Set (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

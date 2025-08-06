@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/controltower
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/controltower"
+	"github.com/aws/aws-sdk-go-v2/service/controltower/document"
+	"github.com/aws/aws-sdk-go-v2/service/controltower/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceControlRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).ControlTowerClient(ctx)
+
+	var output *types.EnabledControlDetails
+	var err error
+	if v, ok := d.GetOk(names.AttrARN); ok {
+		output, err = findEnabledControlByARN(ctx, conn, v.(string))
+	} else {
+		// backwards compatibility if ARN is not set from existing state
+		parts, internalErr := flex.ExpandResourceId(d.Id(), controlResourceIDPartCount, false)
+		if internalErr != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		targetIdentifier, controlIdentifier := parts[0], parts[1]
+		out, internalErr := findEnabledControlByTwoPartKey(ctx, conn, targetIdentifier, controlIdentifier)
+		if internalErr != nil {
+			return sdkdiag.AppendErrorf(diags, "reading ControlTower Control (%s): %s", d.Id(), err)
+		}
+
+		output, err = findEnabledControlByARN(ctx, conn, aws.ToString(out.Arn))
+	}
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] ControlTower Control %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ControlTower Control (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, output.Arn)
+	d.Set("control_identifier", output.ControlIdentifier)
+
+	parameters, err := flattenControlParameters(output.Parameters)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "flattening ControlTower Control (%s) parameters: %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrParameters, parameters)
+	d.Set("target_identifier", output.TargetIdentifier)
+
+	return diags
+}

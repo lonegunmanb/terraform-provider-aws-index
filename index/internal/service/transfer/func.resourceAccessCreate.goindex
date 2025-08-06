@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/transfer
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/transfer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/transfer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAccessCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).TransferClient(ctx)
+
+	externalID := d.Get(names.AttrExternalID).(string)
+	serverID := d.Get("server_id").(string)
+	id := accessCreateResourceID(serverID, externalID)
+	input := &transfer.CreateAccessInput{
+		ExternalId: aws.String(externalID),
+		ServerId:   aws.String(serverID),
+	}
+
+	if v, ok := d.GetOk("home_directory"); ok {
+		input.HomeDirectory = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("home_directory_mappings"); ok {
+		input.HomeDirectoryMappings = expandHomeDirectoryMapEntries(v.([]any))
+	}
+
+	if v, ok := d.GetOk("home_directory_type"); ok {
+		input.HomeDirectoryType = awstypes.HomeDirectoryType(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrPolicy); ok {
+		policy, err := structure.NormalizeJsonString(v.(string))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input.Policy = aws.String(policy)
+	}
+
+	if v, ok := d.GetOk("posix_profile"); ok {
+		input.PosixProfile = expandPOSIXProfile(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrRole); ok {
+		input.Role = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateAccess(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Transfer Access (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceAccessRead(ctx, d, meta)...)
+}

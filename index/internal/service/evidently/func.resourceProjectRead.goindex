@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/evidently
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/evidently"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/evidently/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceProjectRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EvidentlyClient(ctx)
+
+	project, err := FindProjectByNameOrARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudWatch Evidently Project (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudWatch Evidently Project (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("data_delivery", flattenDataDelivery(project.DataDelivery)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting data_delivery: %s", err)
+	}
+
+	d.Set("active_experiment_count", project.ActiveExperimentCount)
+	d.Set("active_launch_count", project.ActiveLaunchCount)
+	d.Set(names.AttrARN, project.Arn)
+	d.Set(names.AttrCreatedTime, aws.ToTime(project.CreatedTime).Format(time.RFC3339))
+	d.Set(names.AttrDescription, project.Description)
+	d.Set("experiment_count", project.ExperimentCount)
+	d.Set("feature_count", project.FeatureCount)
+	d.Set(names.AttrLastUpdatedTime, aws.ToTime(project.LastUpdatedTime).Format(time.RFC3339))
+	d.Set("launch_count", project.LaunchCount)
+	d.Set(names.AttrName, project.Name)
+	d.Set(names.AttrStatus, project.Status)
+
+	setTagsOut(ctx, project.Tags)
+
+	return diags
+}

@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+	"fmt"
+	"unique"
+
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/interceptors"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r tagsResourceInterceptor) update(ctx context.Context, opts interceptorOptions[resource.UpdateRequest, resource.UpdateResponse]) diag.Diagnostics {
+	c := opts.c
+	var diags diag.Diagnostics
+
+	if !r.Enabled() {
+		return diags
+	}
+
+	sp, serviceName, resourceName, tagsInContext, ok := interceptors.InfoFromContext(ctx, c)
+	if !ok {
+		return diags
+	}
+
+	switch request, when := opts.request, opts.when; when {
+	case Before:
+		var planTags tftags.Map
+		diags.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrTags), &planTags)...)
+		if diags.HasError() {
+			return diags
+		}
+
+		// Merge the resource's configured tags with any provider configured default_tags.
+		tags := c.DefaultTagsConfig(ctx).MergeTags(tftags.New(ctx, planTags))
+		// Remove system tags.
+		tags = tags.IgnoreSystem(sp.ServicePackageName())
+		tagsInContext.TagsIn = option.Some(tags)
+
+		var oldTagsAll, newTagsAll tftags.Map
+		diags.Append(request.State.GetAttribute(ctx, path.Root(names.AttrTagsAll), &oldTagsAll)...)
+		if diags.HasError() {
+			return diags
+		}
+		diags.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrTagsAll), &newTagsAll)...)
+		if diags.HasError() {
+			return diags
+		}
+
+		if !newTagsAll.Equal(oldTagsAll) {
+			// Some old resources may not have the required attribute set after Read:
+			// https://github.com/hashicorp/terraform-provider-aws/issues/31180
+			if identifier := r.GetIdentifierFramework(ctx, request.Plan); identifier != "" {
+				if err := r.UpdateTags(ctx, sp, c, identifier, oldTagsAll, newTagsAll); err != nil {
+					diags.AddError(fmt.Sprintf("updating tags for %s %s (%s)", serviceName, resourceName, identifier), err.Error())
+
+					return diags
+				}
+			}
+			// TODO If the only change was to tags it would be nice to not call the resource's U handler.
+		}
+	}
+
+	return diags
+}

@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudcontrol
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudcontrol"
+	"github.com/aws/aws-sdk-go-v2/service/cloudcontrol/types"
+	cfschema "github.com/hashicorp/aws-cloudformation-resource-schema-sdk-go"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfcloudformation "github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mattbaird/jsonpatch"
+)
+func resourceResource() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceResourceCreate,
+		DeleteWithoutTimeout: resourceResourceDelete,
+		ReadWithoutTimeout:   resourceResourceRead,
+		UpdateWithoutTimeout: resourceResourceUpdate,
+
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(2 * time.Hour),
+			Delete: schema.DefaultTimeout(2 * time.Hour),
+			Update: schema.DefaultTimeout(2 * time.Hour),
+		},
+
+		Schema: map[string]*schema.Schema{
+			"desired_state": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			names.AttrProperties: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrRoleARN: {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			names.AttrSchema: {
+				Type:      schema.TypeString,
+				Optional:  true,
+				Computed:  true,
+				Sensitive: true,
+			},
+			"type_name": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validation.StringMatch(regexache.MustCompile(`[0-9A-Za-z]{2,64}::[0-9A-Za-z]{2,64}::[0-9A-Za-z]{2,64}`), "must be three alphanumeric sections separated by double colons (::)"),
+			},
+			"type_version_id": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+		},
+
+		CustomizeDiff: customdiff.Sequence(
+			resourceResourceCustomizeDiffGetSchema,
+			resourceResourceCustomizeDiffSchemaDiff,
+			customdiff.ComputedIf(names.AttrProperties, func(ctx context.Context, diff *schema.ResourceDiff, meta any) bool {
+				return diff.HasChange("desired_state")
+			}),
+		),
+	}
+}

@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/docdb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/docdb"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepClusters(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.DocDBClient(ctx)
+
+	var sweepResources []sweep.Sweepable
+	r := resourceCluster()
+
+	input := docdb.DescribeDBClustersInput{}
+	pages := docdb.NewDescribeDBClustersPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, v := range page.DBClusters {
+			arn := aws.ToString(v.DBClusterArn)
+			id := aws.ToString(v.DBClusterIdentifier)
+
+			d := r.Data(nil)
+			d.SetId(id)
+			d.Set(names.AttrARN, arn)
+			d.Set("skip_final_snapshot", true)
+
+			globalCluster, err := findGlobalClusterByClusterARN(ctx, conn, arn)
+
+			if err != nil && !tfresource.NotFound(err) {
+				log.Printf("[WARN] Reading DocumentDB Cluster %s Global Cluster information: %s", id, err)
+				continue
+			}
+
+			if globalCluster != nil && globalCluster.GlobalClusterIdentifier != nil {
+				d.Set("global_cluster_identifier", globalCluster.GlobalClusterIdentifier)
+			}
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	return sweepResources, nil
+}

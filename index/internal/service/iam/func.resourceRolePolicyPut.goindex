@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/url"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRolePolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	policy, err := verify.LegacyPolicyNormalize(d.Get(names.AttrPolicy).(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	policyName := create.Name(d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string))
+	roleName := d.Get(names.AttrRole).(string)
+	input := &iam.PutRolePolicyInput{
+		PolicyDocument: aws.String(policy),
+		PolicyName:     aws.String(policyName),
+		RoleName:       aws.String(roleName),
+	}
+
+	_, err = conn.PutRolePolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting IAM Role (%s) Policy (%s): %s", roleName, policyName, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(fmt.Sprintf("%s:%s", roleName, policyName))
+
+		_, err := tfresource.RetryWhenNotFound(ctx, propagationTimeout, func() (any, error) {
+			return FindRolePolicyByTwoPartKey(ctx, conn, roleName, policyName)
+		})
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for IAM Role Policy (%s) create: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceRolePolicyRead(ctx, d, meta)...)
+}

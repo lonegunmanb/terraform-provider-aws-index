@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elastictranscoder
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elastictranscoder"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elastictranscoder/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePresetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElasticTranscoderClient(ctx)
+
+	resp, err := conn.ReadPreset(ctx, &elastictranscoder.ReadPresetInput{
+		Id: aws.String(d.Id()),
+	})
+
+	if err != nil {
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			log.Printf("[WARN] Elastic Transcoder Preset (%s) not found, removing from state", d.Id())
+			d.SetId("")
+			return diags
+		}
+		return sdkdiag.AppendErrorf(diags, "reading Elastic Transcoder Preset (%s): %s", d.Id(), err)
+	}
+
+	preset := resp.Preset
+	d.Set(names.AttrARN, preset.Arn)
+
+	if preset.Audio != nil {
+		if err := d.Set("audio", flattenETAudioParameters(preset.Audio)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Elastic Transcoder Preset (%s): setting audio: %s", d.Id(), err)
+		}
+
+		if preset.Audio.CodecOptions != nil {
+			if err := d.Set("audio_codec_options", flattenETAudioCodecOptions(preset.Audio.CodecOptions)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "reading Elastic Transcoder Preset (%s): setting audio_codec_options: %s", d.Id(), err)
+			}
+		}
+	}
+
+	d.Set("container", preset.Container)
+	d.Set(names.AttrName, preset.Name)
+	d.Set(names.AttrDescription, preset.Description)
+
+	if preset.Thumbnails != nil {
+		err := d.Set("thumbnails", flattenETThumbnails(preset.Thumbnails))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Elastic Transcoder Preset (%s): setting thumbnails: %s", d.Id(), err)
+		}
+	}
+
+	d.Set(names.AttrType, preset.Type)
+
+	if preset.Video != nil {
+		err := d.Set("video", flattenETVideoParams(preset.Video))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Elastic Transcoder Preset (%s): setting video: %s", d.Id(), err)
+		}
+
+		if err := d.Set("video_codec_options", preset.Video.CodecOptions); err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Elastic Transcoder Preset (%s): setting video_codec_options: %s", d.Id(), err)
+		}
+
+		if preset.Video.Watermarks != nil {
+			if err := d.Set("video_watermarks", flattenETWatermarks(preset.Video.Watermarks)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "reading Elastic Transcoder Preset (%s): setting video_watermarks: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return diags
+}

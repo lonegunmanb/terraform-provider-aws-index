@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *instanceMetadataDefaultsResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	var data instanceMetadataDefaultsResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EC2Client(ctx)
+
+	output, err := findInstanceMetadataDefaults(ctx, conn)
+
+	switch {
+	case err == nil && itypes.IsZero(output):
+		err = tfresource.NewEmptyResultError(nil)
+		fallthrough
+	case tfresource.NotFound(err):
+		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		response.State.RemoveResource(ctx)
+
+		return
+	case err != nil:
+		response.Diagnostics.AddError("reading EC2 Instance Metadata Defaults", err.Error())
+
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Defaults.
+	if data.HttpEndpoint.IsNull() {
+		data.HttpEndpoint = fwtypes.StringEnumValue(awstypes.DefaultInstanceMetadataEndpointStateNoPreference)
+	}
+	if data.HttpPutResponseHopLimit.IsNull() || data.HttpPutResponseHopLimit.ValueInt64() == 0 {
+		data.HttpPutResponseHopLimit = types.Int64Value(httpPutResponseHopLimitNoPreference)
+	}
+	if data.HttpTokens.IsNull() {
+		data.HttpTokens = fwtypes.StringEnumValue(awstypes.MetadataDefaultHttpTokensStateNoPreference)
+	}
+	if data.InstanceMetadataTags.IsNull() {
+		data.InstanceMetadataTags = fwtypes.StringEnumValue(awstypes.DefaultInstanceMetadataTagsStateNoPreference)
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

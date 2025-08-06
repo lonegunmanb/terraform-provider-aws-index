@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTrafficPolicyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &route53.CreateTrafficPolicyInput{
+		Document: aws.String(d.Get("document").(string)),
+		Name:     aws.String(name),
+	}
+
+	if v, ok := d.GetOk(names.AttrComment); ok {
+		input.Comment = aws.String(v.(string))
+	}
+
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.NoSuchTrafficPolicy](ctx, d.Timeout(schema.TimeoutCreate), func() (any, error) {
+		return conn.CreateTrafficPolicy(ctx, input)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Route53 Traffic Policy (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(outputRaw.(*route53.CreateTrafficPolicyOutput).TrafficPolicy.Id))
+
+	return append(diags, resourceTrafficPolicyRead(ctx, d, meta)...)
+}

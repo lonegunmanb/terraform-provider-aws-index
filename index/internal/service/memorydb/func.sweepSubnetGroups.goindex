@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/memorydb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/memorydb"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/sdk"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepSubnetGroups(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+	conn := client.MemoryDBClient(ctx)
+	input := memorydb.DescribeSubnetGroupsInput{}
+	var sweepResources []sweep.Sweepable
+
+	pages := memorydb.NewDescribeSubnetGroupsPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping MemoryDB Subnet Group sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("error listing MemoryDB Subnet Groups (%s): %w", region, err)
+		}
+
+		for _, v := range page.SubnetGroups {
+			id := aws.ToString(v.Name)
+
+			if id == "default" {
+				log.Printf("[INFO] Skipping MemoryDB Subnet Group %s", id)
+				continue // The default subnet group cannot be deleted.
+			}
+
+			r := resourceSubnetGroup()
+			d := r.Data(nil)
+			d.SetId(id)
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+
+	if err != nil {
+		return fmt.Errorf("error sweeping MemoryDB Subnet Groups (%s): %w", region, err)
+	}
+
+	return nil
+}

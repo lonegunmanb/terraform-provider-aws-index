@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findVPCEndpointConnectionByServiceIDAndVPCEndpointID(ctx context.Context, conn *ec2.Client, serviceID, vpcEndpointID string) (*awstypes.VpcEndpointConnection, error) {
+	input := ec2.DescribeVpcEndpointConnectionsInput{
+		Filters: newAttributeFilterList(map[string]string{
+			"service-id": serviceID,
+			// "InvalidFilter: The filter vpc-endpoint-id  is invalid"
+			// "vpc-endpoint-id ": vpcEndpointID,
+		}),
+	}
+
+	vpcEndpointConnections, err := findVPCEndpointConnections(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	output, err := tfresource.AssertSingleValueResult(tfslices.Filter(vpcEndpointConnections, func(v awstypes.VpcEndpointConnection) bool {
+		return aws.ToString(v.VpcEndpointId) == vpcEndpointID
+	}))
+
+	if err != nil {
+		return nil, err
+	}
+
+	if state := string(output.VpcEndpointState); strings.EqualFold(state, vpcEndpointStateDeleted) {
+		return nil, &retry.NotFoundError{
+			Message:     state,
+			LastRequest: &input,
+		}
+	}
+
+	return output, nil
+}

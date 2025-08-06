@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/controltower
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/controltower"
+	"github.com/aws/aws-sdk-go-v2/service/controltower/document"
+	"github.com/aws/aws-sdk-go-v2/service/controltower/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenControlParameters(input []types.EnabledControlParameterSummary) (*schema.Set, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+
+	res := &schema.Resource{
+		Schema: map[string]*schema.Schema{
+			names.AttrKey: {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			names.AttrValue: {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+		},
+	}
+
+	var output []any
+
+	for _, v := range input {
+		val := map[string]any{
+			names.AttrKey: aws.ToString(v.Key),
+		}
+
+		var va any
+		err := v.Value.UnmarshalSmithyDocument(&va)
+
+		if err != nil {
+			log.Printf("[WARN] Error unmarshalling control parameter value: %s", err)
+			return nil, err
+		}
+
+		out, err := json.Marshal(va)
+		if err != nil {
+			return nil, err
+		}
+
+		val[names.AttrValue] = string(out)
+		output = append(output, val)
+	}
+
+	return schema.NewSet(schema.HashResource(res), output), nil
+}

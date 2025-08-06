@@ -1,0 +1,155 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIntegration() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceIntegrationCreate,
+		ReadWithoutTimeout:   resourceIntegrationRead,
+		UpdateWithoutTimeout: resourceIntegrationUpdate,
+		DeleteWithoutTimeout: resourceIntegrationDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: func(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+				idParts := strings.Split(d.Id(), "/")
+				if len(idParts) != 3 || idParts[0] == "" || idParts[1] == "" || idParts[2] == "" {
+					return nil, fmt.Errorf("Unexpected format of ID (%q), expected REST-API-ID/RESOURCE-ID/HTTP-METHOD", d.Id())
+				}
+				restApiID := idParts[0]
+				resourceID := idParts[1]
+				httpMethod := idParts[2]
+				d.Set("http_method", httpMethod)
+				d.Set(names.AttrResourceID, resourceID)
+				d.Set("rest_api_id", restApiID)
+				d.SetId(fmt.Sprintf("agi-%s-%s-%s", restApiID, resourceID, httpMethod))
+				return []*schema.ResourceData{d}, nil
+			},
+		},
+
+		Schema: map[string]*schema.Schema{
+			"cache_key_parameters": {
+				Type:     schema.TypeSet,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				Optional: true,
+			},
+			"cache_namespace": {
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+			},
+			names.AttrConnectionID: {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"connection_type": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          types.ConnectionTypeInternet,
+				ValidateDiagFunc: enum.Validate[types.ConnectionType](),
+			},
+			"content_handling": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateDiagFunc: validIntegrationContentHandling(),
+			},
+			"credentials": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+			"http_method": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: validHTTPMethod(),
+			},
+			"integration_http_method": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: validHTTPMethod(),
+			},
+			"passthrough_behavior": {
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ForceNew: true,
+				ValidateFunc: validation.StringInSlice([]string{
+					"WHEN_NO_MATCH",
+					"WHEN_NO_TEMPLATES",
+					"NEVER",
+				}, false),
+			},
+			"request_parameters": {
+				Type:     schema.TypeMap,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				Optional: true,
+			},
+			"request_templates": {
+				Type:     schema.TypeMap,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			names.AttrResourceID: {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"rest_api_id": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"timeout_milliseconds": {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				ValidateFunc: validation.IntBetween(50, 300000),
+				Default:      29000,
+			},
+			"tls_config": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"insecure_skip_verification": {
+							Type:     schema.TypeBool,
+							Optional: true,
+						},
+					},
+				},
+			},
+			names.AttrType: {
+				Type:             schema.TypeString,
+				Required:         true,
+				ForceNew:         true,
+				ValidateDiagFunc: enum.Validate[types.IntegrationType](),
+			},
+			names.AttrURI: {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+		},
+	}
+}

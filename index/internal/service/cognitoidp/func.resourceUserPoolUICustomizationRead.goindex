@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserPoolUICustomizationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), userPoolUICustomizationResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+	userPoolID, clientID := parts[0], parts[1]
+
+	uiCustomization, err := findUserPoolUICustomizationByTwoPartKey(ctx, conn, userPoolID, clientID)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Cognito User Pool UI Customization %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Cognito User Pool UI Customization (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrClientID, uiCustomization.ClientId)
+	d.Set(names.AttrCreationDate, aws.ToTime(uiCustomization.CreationDate).Format(time.RFC3339))
+	d.Set("css", uiCustomization.CSS)
+	d.Set("css_version", uiCustomization.CSSVersion)
+	d.Set("image_url", uiCustomization.ImageUrl)
+	d.Set("last_modified_date", aws.ToTime(uiCustomization.LastModifiedDate).Format(time.RFC3339))
+	d.Set(names.AttrUserPoolID, uiCustomization.UserPoolId)
+
+	return diags
+}

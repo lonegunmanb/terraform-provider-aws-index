@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"errors"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ram"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourceShareAccepterDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RAMClient(ctx)
+
+	receiverAccountID := d.Get("receiver_account_id").(string)
+	if receiverAccountID == "" {
+		return sdkdiag.AppendErrorf(diags, "The receiver account ID is required to leave a resource share")
+	}
+
+	input := &ram.DisassociateResourceShareInput{
+		ClientToken:      aws.String(id.UniqueId()),
+		Principals:       []string{receiverAccountID},
+		ResourceShareArn: aws.String(d.Id()),
+	}
+
+	_, err := conn.DisassociateResourceShare(ctx, input)
+
+	switch {
+	case errs.IsA[*awstypes.UnknownResourceException](err):
+		return diags
+
+	case errs.IsA[*awstypes.OperationNotPermittedException](err):
+		log.Printf("[WARN] Resource share could not be disassociated, but continuing: %s", err)
+
+	case err != nil:
+		return sdkdiag.AppendErrorf(diags, "leaving RAM resource share: %s", err)
+	}
+
+	if _, err := waitResourceShareOwnedBySelfDisassociated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RAM Resource Share (%s) disassociate: %s", d.Id(), err)
+	}
+
+	return diags
+}

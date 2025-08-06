@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenIpPermission(d *schema.ResourceData, apiObject *awstypes.IpPermission) { // nosemgrep:ci.caps5-in-func-name
+	if apiObject == nil {
+		return
+	}
+
+	d.Set("from_port", apiObject.FromPort)
+	d.Set(names.AttrProtocol, apiObject.IpProtocol)
+	d.Set("to_port", apiObject.ToPort)
+
+	if v := apiObject.IpRanges; len(v) > 0 {
+		var ipRanges []string
+
+		for _, v := range v {
+			ipRanges = append(ipRanges, aws.ToString(v.CidrIp))
+		}
+
+		d.Set("cidr_blocks", ipRanges)
+	}
+
+	if v := apiObject.Ipv6Ranges; len(v) > 0 {
+		var ipv6Ranges []string
+
+		for _, v := range v {
+			ipv6Ranges = append(ipv6Ranges, aws.ToString(v.CidrIpv6))
+		}
+
+		d.Set("ipv6_cidr_blocks", ipv6Ranges)
+	}
+
+	if v := apiObject.PrefixListIds; len(v) > 0 {
+		var prefixListIDs []string
+
+		for _, v := range v {
+			prefixListIDs = append(prefixListIDs, aws.ToString(v.PrefixListId))
+		}
+
+		d.Set("prefix_list_ids", prefixListIDs)
+	}
+
+	if v := apiObject.UserIdGroupPairs; len(v) > 0 {
+		v := v[0]
+
+		if old, ok := d.GetOk("source_security_group_id"); ok {
+			// [OwnerID/]SecurityGroupID.
+			if parts := strings.Split(old.(string), "/"); len(parts) == 1 || aws.ToString(v.UserId) == "" {
+				d.Set("source_security_group_id", v.GroupId)
+			} else {
+				d.Set("source_security_group_id", strings.Join([]string{aws.ToString(v.UserId), aws.ToString(v.GroupId)}, "/"))
+			}
+		}
+	}
+}

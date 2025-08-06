@@ -1,0 +1,95 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EMRClient(ctx)
+
+	if d.HasChanges(names.AttrInstanceCount, "configurations_json") {
+		groupConfig := awstypes.InstanceGroupModifyConfig{
+			InstanceGroupId: aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrInstanceCount) {
+			groupConfig.InstanceCount = aws.Int32(int32(d.Get(names.AttrInstanceCount).(int)))
+		}
+
+		if d.HasChange("configurations_json") {
+			if v, ok := d.GetOk("configurations_json"); ok {
+				v, err := structure.NormalizeJsonString(v)
+				if err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+				groupConfig.Configurations, err = expandConfigurationJSON(v)
+				if err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+			}
+		}
+
+		input := &emr.ModifyInstanceGroupsInput{
+			InstanceGroups: []awstypes.InstanceGroupModifyConfig{
+				groupConfig,
+			},
+		}
+
+		_, err := conn.ModifyInstanceGroups(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EMR Instance Group (%s): %s", d.Id(), err)
+		}
+
+		const (
+			timeout = 30 * time.Minute
+		)
+		if _, err := waitInstanceGroupRunning(ctx, conn, d.Get("cluster_id").(string), d.Id(), timeout); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EMR Instance Group (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("autoscaling_policy") {
+		var autoScalingPolicy awstypes.AutoScalingPolicy
+
+		if err := tfjson.DecodeFromString(d.Get("autoscaling_policy").(string), &autoScalingPolicy); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		input := &emr.PutAutoScalingPolicyInput{
+			AutoScalingPolicy: &autoScalingPolicy,
+			ClusterId:         aws.String(d.Get("cluster_id").(string)),
+			InstanceGroupId:   aws.String(d.Id()),
+		}
+
+		_, err := conn.PutAutoScalingPolicy(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EMR Instance Group (%s) AutoScalingPolicy: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceInstanceGroupRead(ctx, d, meta)...)
+}

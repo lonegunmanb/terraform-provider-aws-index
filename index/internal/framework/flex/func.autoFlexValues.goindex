@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"strings"
+
+	pluralize "github.com/gertd/go-pluralize"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func autoFlexValues(ctx context.Context, from, to any) (context.Context, reflect.Value, reflect.Value, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	valFrom, valTo := reflect.ValueOf(from), reflect.ValueOf(to)
+	if kind := valFrom.Kind(); kind == reflect.Pointer {
+		valFrom = valFrom.Elem()
+	}
+
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourceType, fullTypeName(valueType(valFrom)))
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeyTargetType, fullTypeName(valueType(valTo)))
+
+	kind := valTo.Kind()
+	switch kind {
+	case reflect.Pointer:
+		if valTo.IsNil() {
+			tflog.SubsystemError(ctx, subsystemName, "Target is nil")
+			diags.Append(diagConvertingTargetIsNil(valTo.Type()))
+			return ctx, reflect.Value{}, reflect.Value{}, diags
+		}
+		valTo = valTo.Elem()
+		return ctx, valFrom, valTo, diags
+
+	case reflect.Invalid:
+		tflog.SubsystemError(ctx, subsystemName, "Target is nil")
+		diags.Append(diagConvertingTargetIsNil(nil))
+		return ctx, reflect.Value{}, reflect.Value{}, diags
+
+	default:
+		tflog.SubsystemError(ctx, subsystemName, "Target is not a pointer")
+		diags.Append(diagConvertingTargetIsNotPointer(valTo.Type()))
+		return ctx, reflect.Value{}, reflect.Value{}, diags
+	}
+}

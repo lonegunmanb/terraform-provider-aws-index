@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRouteRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	destinationAttributeKey, destination, err := routeDestinationAttribute(d)
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	var routeFinder routeFinder
+	switch destinationAttributeKey {
+	case routeDestinationCIDRBlock:
+		routeFinder = findRouteByIPv4Destination
+	case routeDestinationIPv6CIDRBlock:
+		routeFinder = findRouteByIPv6Destination
+	case routeDestinationPrefixListID:
+		routeFinder = findRouteByPrefixListIDDestination
+	default:
+		return sdkdiag.AppendErrorf(diags, "reading Route: unexpected route destination attribute: %q", destinationAttributeKey)
+	}
+
+	routeTableID := d.Get("route_table_id").(string)
+	outputRaw, err := tfresource.RetryWhenNewResourceNotFound(ctx, ec2PropagationTimeout, func() (any, error) {
+		return routeFinder(ctx, conn, routeTableID, destination)
+	}, d.IsNewResource())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Route in Route Table (%s) with destination (%s) not found, removing from state", routeTableID, destination)
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Route in Route Table (%s) with destination (%s): %s", routeTableID, destination, err)
+	}
+
+	route := outputRaw.(*awstypes.Route)
+	d.Set("carrier_gateway_id", route.CarrierGatewayId)
+	d.Set("core_network_arn", route.CoreNetworkArn)
+	d.Set(routeDestinationCIDRBlock, route.DestinationCidrBlock)
+	d.Set(routeDestinationIPv6CIDRBlock, route.DestinationIpv6CidrBlock)
+	d.Set(routeDestinationPrefixListID, route.DestinationPrefixListId)
+	// VPC Endpoint ID is returned in Gateway ID field
+	if strings.HasPrefix(aws.ToString(route.GatewayId), "vpce-") {
+		d.Set("gateway_id", "")
+		d.Set(names.AttrVPCEndpointID, route.GatewayId)
+	} else {
+		d.Set("gateway_id", route.GatewayId)
+		d.Set(names.AttrVPCEndpointID, "")
+	}
+	d.Set("egress_only_gateway_id", route.EgressOnlyInternetGatewayId)
+	d.Set("nat_gateway_id", route.NatGatewayId)
+	d.Set("local_gateway_id", route.LocalGatewayId)
+	d.Set(names.AttrInstanceID, route.InstanceId)
+	d.Set("instance_owner_id", route.InstanceOwnerId)
+	d.Set(names.AttrNetworkInterfaceID, route.NetworkInterfaceId)
+	d.Set("origin", route.Origin)
+	d.Set(names.AttrState, route.State)
+	d.Set(names.AttrTransitGatewayID, route.TransitGatewayId)
+	d.Set("vpc_peering_connection_id", route.VpcPeeringConnectionId)
+
+	return diags
+}

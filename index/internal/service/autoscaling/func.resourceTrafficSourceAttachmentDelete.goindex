@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/autoscaling
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTrafficSourceAttachmentDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AutoScalingClient(ctx)
+
+	asgName, trafficSourceType, trafficSourceID, err := trafficSourceAttachmentParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	trafficSource := expandTrafficSourceIdentifier(d.Get("traffic_source").([]any)[0].(map[string]any))
+
+	log.Printf("[INFO] Deleting Auto Scaling Traffic Source Attachment: %s", d.Id())
+	input := autoscaling.DetachTrafficSourcesInput{
+		AutoScalingGroupName: aws.String(asgName),
+		TrafficSources:       []awstypes.TrafficSourceIdentifier{trafficSource},
+	}
+	_, err = conn.DetachTrafficSources(ctx, &input)
+
+	if tfawserr.ErrMessageContains(err, errCodeValidationError, "not found") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Auto Scaling Traffic Source Attachment (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitTrafficSourceAttachmentDeleted(ctx, conn, asgName, trafficSourceType, trafficSourceID, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Auto Scaling Traffic Source Attachment (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"encoding/json"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceBucketWebsiteConfigurationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	websiteConfig := &types.WebsiteConfiguration{}
+
+	if v, ok := d.GetOk("error_document"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		websiteConfig.ErrorDocument = expandErrorDocument(v.([]any))
+	}
+
+	if v, ok := d.GetOk("index_document"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		websiteConfig.IndexDocument = expandIndexDocument(v.([]any))
+	}
+
+	if v, ok := d.GetOk("redirect_all_requests_to"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		websiteConfig.RedirectAllRequestsTo = expandRedirectAllRequestsTo(v.([]any))
+	}
+
+	if v, ok := d.GetOk("routing_rule"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		websiteConfig.RoutingRules = expandRoutingRules(v.([]any))
+	}
+
+	if v, ok := d.GetOk("routing_rules"); ok {
+		var unmarshalledRules []types.RoutingRule
+		if err := json.Unmarshal([]byte(v.(string)), &unmarshalledRules); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		websiteConfig.RoutingRules = unmarshalledRules
+	}
+
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+	expectedBucketOwner := d.Get(names.AttrExpectedBucketOwner).(string)
+	input := &s3.PutBucketWebsiteInput{
+		Bucket:               aws.String(bucket),
+		WebsiteConfiguration: websiteConfig,
+	}
+	if expectedBucketOwner != "" {
+		input.ExpectedBucketOwner = aws.String(expectedBucketOwner)
+	}
+
+	_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, bucketPropagationTimeout, func() (any, error) {
+		return conn.PutBucketWebsite(ctx, input)
+	}, errCodeNoSuchBucket)
+
+	if tfawserr.ErrMessageContains(err, errCodeInvalidArgument, "WebsiteConfiguration is not valid, expected CreateBucketConfiguration") {
+		err = errDirectoryBucket(err)
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating S3 Bucket (%s) Website Configuration: %s", bucket, err)
+	}
+
+	d.SetId(createResourceID(bucket, expectedBucketOwner))
+
+	_, err = tfresource.RetryWhenNotFound(ctx, bucketPropagationTimeout, func() (any, error) {
+		return findBucketWebsite(ctx, conn, bucket, expectedBucketOwner)
+	})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for S3 Bucket Website Configuration (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceBucketWebsiteConfigurationRead(ctx, d, meta)...)
+}

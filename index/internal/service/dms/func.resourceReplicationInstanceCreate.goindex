@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicationInstanceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DMSClient(ctx)
+
+	replicationInstanceID := d.Get("replication_instance_id").(string)
+	input := &dms.CreateReplicationInstanceInput{
+		AutoMinorVersionUpgrade:       aws.Bool(d.Get(names.AttrAutoMinorVersionUpgrade).(bool)),
+		PubliclyAccessible:            aws.Bool(d.Get(names.AttrPubliclyAccessible).(bool)),
+		MultiAZ:                       aws.Bool(d.Get("multi_az").(bool)),
+		ReplicationInstanceClass:      aws.String(d.Get("replication_instance_class").(string)),
+		ReplicationInstanceIdentifier: aws.String(replicationInstanceID),
+		Tags:                          getTagsIn(ctx),
+	}
+
+	// WARNING: GetOk returns the zero value for the type if the key is omitted in config. This means for optional
+	// keys that the zero value is valid we cannot know if the zero value was in the config and cannot allow the API
+	// to set the default value. See GitHub Issue #5694 https://github.com/hashicorp/terraform/issues/5694
+
+	if v, ok := d.GetOk(names.AttrAllocatedStorage); ok {
+		input.AllocatedStorage = aws.Int32(int32(v.(int)))
+	}
+	if v, ok := d.GetOk(names.AttrAvailabilityZone); ok {
+		input.AvailabilityZone = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk(names.AttrEngineVersion); ok {
+		input.EngineVersion = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk(names.AttrKMSKeyARN); ok {
+		input.KmsKeyId = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk("network_type"); ok {
+		input.NetworkType = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk(names.AttrPreferredMaintenanceWindow); ok {
+		input.PreferredMaintenanceWindow = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk("replication_subnet_group_id"); ok {
+		input.ReplicationSubnetGroupIdentifier = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk(names.AttrVPCSecurityGroupIDs); ok {
+		input.VpcSecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	_, err := conn.CreateReplicationInstance(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DMS Replication Instance (%s): %s", replicationInstanceID, err)
+	}
+
+	d.SetId(replicationInstanceID)
+
+	if _, err := waitReplicationInstanceCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for DMS Replication Instance (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceReplicationInstanceRead(ctx, d, meta)...)
+}

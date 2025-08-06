@@ -1,0 +1,122 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appstream
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appstream"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appstream/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFleetUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppStreamClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		shouldStop := false
+		if d.HasChanges(names.AttrDescription, "domain_join_info", "enable_default_internet_access", names.AttrIAMRoleARN, names.AttrInstanceType, "max_user_duration_in_seconds", "stream_view", names.AttrVPCConfig) {
+			shouldStop = true
+		}
+
+		if shouldStop {
+			if err := stopFleet(ctx, conn, d.Id()); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+
+		input := appstream.UpdateFleetInput{
+			Name: aws.String(d.Id()),
+		}
+
+		if d.HasChange("compute_capacity") {
+			input.ComputeCapacity = expandComputeCapacity(d.Get("compute_capacity").([]any))
+		}
+
+		if d.HasChange(names.AttrDescription) {
+			input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		}
+
+		if d.HasChange("disconnect_timeout_in_seconds") {
+			input.DisconnectTimeoutInSeconds = aws.Int32(int32(d.Get("disconnect_timeout_in_seconds").(int)))
+		}
+
+		if d.HasChange(names.AttrDisplayName) {
+			input.DisplayName = aws.String(d.Get(names.AttrDisplayName).(string))
+		}
+
+		if d.HasChange("domain_join_info") {
+			input.DomainJoinInfo = expandDomainJoinInfo(d.Get("domain_join_info").([]any))
+		}
+
+		if d.HasChange("enable_default_internet_access") {
+			input.EnableDefaultInternetAccess = aws.Bool(d.Get("enable_default_internet_access").(bool))
+		}
+
+		if d.HasChange(names.AttrIAMRoleARN) {
+			input.IamRoleArn = aws.String(d.Get(names.AttrIAMRoleARN).(string))
+		}
+
+		if d.HasChange("idle_disconnect_timeout_in_seconds") {
+			input.IdleDisconnectTimeoutInSeconds = aws.Int32(int32(d.Get("idle_disconnect_timeout_in_seconds").(int)))
+		}
+
+		if d.HasChange("image_name") {
+			input.ImageName = aws.String(d.Get("image_name").(string))
+		}
+
+		if d.HasChange("image_arn") {
+			input.ImageArn = aws.String(d.Get("image_arn").(string))
+		}
+
+		if d.HasChange(names.AttrInstanceType) {
+			input.InstanceType = aws.String(d.Get(names.AttrInstanceType).(string))
+		}
+
+		if d.HasChange("max_sessions_per_instance") {
+			input.MaxSessionsPerInstance = aws.Int32(int32(d.Get("max_sessions_per_instance").(int)))
+		}
+
+		if d.HasChange("max_user_duration_in_seconds") {
+			input.MaxUserDurationInSeconds = aws.Int32(int32(d.Get("max_user_duration_in_seconds").(int)))
+		}
+
+		if d.HasChange("stream_view") {
+			input.StreamView = awstypes.StreamView(d.Get("stream_view").(string))
+		}
+
+		if d.HasChange(names.AttrVPCConfig) {
+			input.VpcConfig = expandVPCConfig(d.Get(names.AttrVPCConfig).([]any))
+		}
+
+		_, err := conn.UpdateFleet(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating AppStream Fleet (%s): %s", d.Id(), err)
+		}
+
+		if shouldStop {
+			if err := startFleet(ctx, conn, d.Id()); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	return append(diags, resourceFleetRead(ctx, d, meta)...)
+}

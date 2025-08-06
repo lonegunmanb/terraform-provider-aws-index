@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHealthCheckRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	output, err := findHealthCheckByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Route53 Health Check (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Route53 Health Check (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, healthCheckARN(ctx, meta.(*conns.AWSClient), d.Id()))
+	healthCheckConfig := output.HealthCheckConfig
+	d.Set("child_health_threshold", healthCheckConfig.HealthThreshold)
+	d.Set("child_healthchecks", healthCheckConfig.ChildHealthChecks)
+	if alarmIdentifier := healthCheckConfig.AlarmIdentifier; alarmIdentifier != nil {
+		d.Set("cloudwatch_alarm_name", alarmIdentifier.Name)
+		d.Set("cloudwatch_alarm_region", alarmIdentifier.Region)
+	}
+	d.Set("disabled", healthCheckConfig.Disabled)
+	d.Set("enable_sni", healthCheckConfig.EnableSNI)
+	d.Set("failure_threshold", healthCheckConfig.FailureThreshold)
+	d.Set("fqdn", healthCheckConfig.FullyQualifiedDomainName)
+	d.Set("insufficient_data_health_status", healthCheckConfig.InsufficientDataHealthStatus)
+	d.Set("invert_healthcheck", healthCheckConfig.Inverted)
+	d.Set(names.AttrIPAddress, healthCheckConfig.IPAddress)
+	d.Set("measure_latency", healthCheckConfig.MeasureLatency)
+	d.Set(names.AttrPort, healthCheckConfig.Port)
+	d.Set("regions", healthCheckConfig.Regions)
+	d.Set("request_interval", healthCheckConfig.RequestInterval)
+	d.Set("resource_path", healthCheckConfig.ResourcePath)
+	d.Set("routing_control_arn", healthCheckConfig.RoutingControlArn)
+	d.Set("search_string", healthCheckConfig.SearchString)
+	d.Set(names.AttrTriggers, d.Get(names.AttrTriggers))
+	d.Set(names.AttrType, healthCheckConfig.Type)
+
+	return diags
+}

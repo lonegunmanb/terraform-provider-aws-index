@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/tfresource
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math/rand"
+	"sync"
+	"time"
+
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+)
+func RetryWhen(ctx context.Context, timeout time.Duration, f func() (any, error), retryable Retryable) (any, error) {
+	var output any
+
+	err := Retry(ctx, timeout, func() *retry.RetryError {
+		var err error
+		var again bool
+
+		output, err = f()
+		again, err = retryable(err)
+
+		if again {
+			return retry.RetryableError(err)
+		}
+
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	})
+
+	if TimedOut(err) {
+		output, err = f()
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return output, nil
+}

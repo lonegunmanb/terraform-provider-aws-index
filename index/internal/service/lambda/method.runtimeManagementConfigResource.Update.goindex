@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *runtimeManagementConfigResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().LambdaClient(ctx)
+
+	var plan, state runtimeManagementConfigResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.RuntimeVersionARN.Equal(state.RuntimeVersionARN) ||
+		!plan.UpdateRuntimeOn.Equal(state.UpdateRuntimeOn) {
+		in := &lambda.PutRuntimeManagementConfigInput{}
+		resp.Diagnostics.Append(flex.Expand(ctx, plan, in)...)
+
+		out, err := conn.PutRuntimeManagementConfig(ctx, in)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.Lambda, create.ErrActionUpdating, ResNameRuntimeManagementConfig, plan.FunctionName.String(), err),
+				err.Error(),
+			)
+			return
+		}
+		if out == nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.Lambda, create.ErrActionUpdating, ResNameRuntimeManagementConfig, plan.FunctionName.String(), nil),
+				errors.New("empty output").Error(),
+			)
+			return
+		}
+
+		resp.Diagnostics.Append(flex.Flatten(ctx, out, &plan)...)
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

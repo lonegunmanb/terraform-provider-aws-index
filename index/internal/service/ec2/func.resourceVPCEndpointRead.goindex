@@ -1,0 +1,125 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVPCEndpointRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	vpce, err := findVPCEndpointByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] VPC Endpoint (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading VPC Endpoint (%s): %s", d.Id(), err)
+	}
+
+	ownerID := aws.ToString(vpce.OwnerId)
+	d.Set(names.AttrARN, vpcEndpointARN(ctx, meta.(*conns.AWSClient), ownerID, d.Id()))
+	if err := d.Set("dns_entry", flattenDNSEntries(vpce.DnsEntries)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting dns_entry: %s", err)
+	}
+	if vpce.DnsOptions != nil {
+		if err := d.Set("dns_options", []any{flattenDNSOptions(vpce.DnsOptions)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting dns_options: %s", err)
+		}
+	} else {
+		d.Set("dns_options", nil)
+	}
+	d.Set(names.AttrIPAddressType, vpce.IpAddressType)
+	d.Set("network_interface_ids", vpce.NetworkInterfaceIds)
+	d.Set(names.AttrOwnerID, ownerID)
+	d.Set("private_dns_enabled", vpce.PrivateDnsEnabled)
+	d.Set("requester_managed", vpce.RequesterManaged)
+	d.Set("resource_configuration_arn", vpce.ResourceConfigurationArn)
+	d.Set("route_table_ids", vpce.RouteTableIds)
+	d.Set(names.AttrSecurityGroupIDs, flattenSecurityGroupIdentifiers(vpce.Groups))
+	d.Set("service_network_arn", vpce.ServiceNetworkArn)
+	d.Set("service_region", vpce.ServiceRegion)
+	d.Set(names.AttrState, vpce.State)
+	d.Set(names.AttrSubnetIDs, vpce.SubnetIds)
+	// VPC endpoints don't have types in GovCloud, so set type to default if empty
+	if v := string(vpce.VpcEndpointType); v == "" {
+		d.Set("vpc_endpoint_type", awstypes.VpcEndpointTypeGateway)
+	} else {
+		d.Set("vpc_endpoint_type", v)
+	}
+	d.Set(names.AttrVPCID, vpce.VpcId)
+
+	if vpce.ServiceName != nil {
+		serviceName := aws.ToString(vpce.ServiceName)
+
+		if pl, err := findPrefixListByName(ctx, conn, serviceName); err != nil {
+			if tfresource.NotFound(err) {
+				d.Set("cidr_blocks", nil)
+			} else {
+				return sdkdiag.AppendErrorf(diags, "reading EC2 Prefix List (%s): %s", serviceName, err)
+			}
+		} else {
+			d.Set("cidr_blocks", pl.Cidrs)
+			d.Set("prefix_list_id", pl.PrefixListId)
+		}
+
+		d.Set(names.AttrServiceName, serviceName)
+	} else {
+		d.Set("cidr_blocks", nil)
+		d.Set(names.AttrServiceName, nil)
+	}
+
+	subnetConfigurations, err := findSubnetConfigurationsByNetworkInterfaceIDs(ctx, conn, vpce.NetworkInterfaceIds)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading VPC Endpoint (%s) subnet configurations: %s", d.Id(), err)
+	}
+
+	if err := d.Set("subnet_configuration", flattenSubnetConfigurations(subnetConfigurations)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting subnet_configuration: %s", err)
+	}
+
+	policyToSet, err := verify.SecondJSONUnlessEquivalent(d.Get(names.AttrPolicy).(string), aws.ToString(vpce.PolicyDocument))
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	policyToSet, err = structure.NormalizeJsonString(policyToSet)
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set(names.AttrPolicy, policyToSet)
+
+	setTagsOut(ctx, vpce.Tags)
+
+	return diags
+}

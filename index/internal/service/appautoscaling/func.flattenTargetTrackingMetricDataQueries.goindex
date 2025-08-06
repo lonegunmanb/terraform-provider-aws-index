@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenTargetTrackingMetricDataQueries(metricDataQueries []awstypes.TargetTrackingMetricDataQuery) []any {
+	metricDataQueriesSpec := make([]any, len(metricDataQueries))
+	for i := range metricDataQueriesSpec {
+		metricDataQuery := map[string]any{}
+		rawMetricDataQuery := metricDataQueries[i]
+		metricDataQuery[names.AttrID] = aws.ToString(rawMetricDataQuery.Id)
+		if rawMetricDataQuery.Expression != nil {
+			metricDataQuery[names.AttrExpression] = aws.ToString(rawMetricDataQuery.Expression)
+		}
+		if rawMetricDataQuery.Label != nil {
+			metricDataQuery["label"] = aws.ToString(rawMetricDataQuery.Label)
+		}
+		if rawMetricDataQuery.MetricStat != nil {
+			metricStatSpec := map[string]any{}
+			rawMetricStat := rawMetricDataQuery.MetricStat
+			rawMetric := rawMetricStat.Metric
+			metricSpec := map[string]any{}
+			if rawMetric.Dimensions != nil {
+				dimSpec := make([]any, len(rawMetric.Dimensions))
+				for i := range dimSpec {
+					dim := map[string]any{}
+					rawDim := rawMetric.Dimensions[i]
+					dim[names.AttrName] = aws.ToString(rawDim.Name)
+					dim[names.AttrValue] = aws.ToString(rawDim.Value)
+					dimSpec[i] = dim
+				}
+				metricSpec["dimensions"] = dimSpec
+			}
+			metricSpec[names.AttrMetricName] = aws.ToString(rawMetric.MetricName)
+			metricSpec[names.AttrNamespace] = aws.ToString(rawMetric.Namespace)
+			metricStatSpec["metric"] = []map[string]any{metricSpec}
+			metricStatSpec["stat"] = aws.ToString(rawMetricStat.Stat)
+			if rawMetricStat.Unit != nil {
+				metricStatSpec[names.AttrUnit] = aws.ToString(rawMetricStat.Unit)
+			}
+			metricDataQuery["metric_stat"] = []map[string]any{metricStatSpec}
+		}
+		if rawMetricDataQuery.ReturnData != nil {
+			metricDataQuery["return_data"] = aws.ToBool(rawMetricDataQuery.ReturnData)
+		}
+		metricDataQueriesSpec[i] = metricDataQuery
+	}
+	return metricDataQueriesSpec
+}

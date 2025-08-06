@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/verify
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	basevalidation "github.com/hashicorp/aws-sdk-go-base/v2/validation"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/timestamp"
+)
+func ValidAmazonSideASN(v any, k string) (ws []string, errors []error) {
+	value := v.(string)
+
+	// http://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_CreateVpnGateway.html
+	asn, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		errors = append(errors, fmt.Errorf("%q (%q) must be a 64-bit integer", k, v))
+		return
+	}
+
+	// https://github.com/hashicorp/terraform-provider-aws/issues/5263
+	isLegacyAsn := func(a int64) bool {
+		return a == 7224 || a == 9059 || a == 10124 || a == 17493
+	}
+
+	if !isLegacyAsn(asn) && ((asn < 64512) || (asn > 65534 && asn < 4200000000) || (asn > 4294967294)) {
+		errors = append(errors, fmt.Errorf("%q (%q) must be 7224, 9059, 10124 or 17493 or in the range 64512 to 65534 or 4200000000 to 4294967294", k, v))
+	}
+	return
+}

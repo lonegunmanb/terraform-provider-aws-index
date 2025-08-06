@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+var targetGroupAttributes = targetGroupAttributeMap(map[string]targetGroupAttributeInfo{
+	"connection_termination": {
+		apiAttributeKey:      targetGroupAttributeDeregistrationDelayConnectionTerminationEnabled,
+		tfType:               schema.TypeBool,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumInstance, awstypes.TargetTypeEnumIp},
+	},
+	"deregistration_delay": {
+		apiAttributeKey:      targetGroupAttributeDeregistrationDelayTimeoutSeconds,
+		tfType:               schema.TypeString,
+		tfNullableType:       schema.TypeInt,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumInstance, awstypes.TargetTypeEnumIp},
+	},
+	"lambda_multi_value_headers_enabled": {
+		apiAttributeKey:      targetGroupAttributeLambdaMultiValueHeadersEnabled,
+		tfType:               schema.TypeBool,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumLambda},
+	},
+	"load_balancing_algorithm_type": {
+		apiAttributeKey:      targetGroupAttributeLoadBalancingAlgorithmType,
+		tfType:               schema.TypeString,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumInstance, awstypes.TargetTypeEnumIp},
+	},
+	"load_balancing_anomaly_mitigation": {
+		apiAttributeKey:      targetGroupAttributeLoadBalancingAlgorithmAnomalyMitigation,
+		tfType:               schema.TypeString,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumInstance, awstypes.TargetTypeEnumIp},
+	},
+	"load_balancing_cross_zone_enabled": {
+		apiAttributeKey:      targetGroupAttributeLoadBalancingCrossZoneEnabled,
+		tfType:               schema.TypeString,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumInstance, awstypes.TargetTypeEnumIp},
+	},
+	"preserve_client_ip": {
+		apiAttributeKey:      targetGroupAttributePreserveClientIPEnabled,
+		tfType:               schema.TypeString,
+		tfNullableType:       schema.TypeBool,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumInstance, awstypes.TargetTypeEnumIp},
+	},
+	"proxy_protocol_v2": {
+		apiAttributeKey:      targetGroupAttributeProxyProtocolV2Enabled,
+		tfType:               schema.TypeBool,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumInstance, awstypes.TargetTypeEnumIp},
+	},
+	"slow_start": {
+		apiAttributeKey:      targetGroupAttributeSlowStartDurationSeconds,
+		tfType:               schema.TypeInt,
+		targetTypesSupported: []awstypes.TargetTypeEnum{awstypes.TargetTypeEnumInstance, awstypes.TargetTypeEnumIp},
+	},
+})

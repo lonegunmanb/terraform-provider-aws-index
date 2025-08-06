@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/memorydb
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/memorydb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/memorydb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).MemoryDBClient(ctx)
+
+	input := memorydb.DeleteClusterInput{
+		ClusterName: aws.String(d.Get(names.AttrName).(string)),
+	}
+
+	if v := d.Get("multi_region_cluster_name"); v != nil && len(v.(string)) > 0 {
+		input.MultiRegionClusterName = aws.String(v.(string))
+	}
+
+	if v := d.Get("final_snapshot_name"); v != nil && len(v.(string)) > 0 {
+		input.FinalSnapshotName = aws.String(v.(string))
+	}
+
+	log.Printf("[DEBUG] Deleting MemoryDB Cluster: (%s)", d.Get(names.AttrName).(string))
+	_, err := conn.DeleteCluster(ctx, &input)
+
+	if errs.IsA[*awstypes.ClusterNotFoundFault](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting MemoryDB Cluster (%s): %s", d.Get(names.AttrName).(string), err)
+	}
+
+	if _, err := waitClusterDeleted(ctx, conn, d.Get(names.AttrName).(string), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for MemoryDB Cluster (%s) delete: %s", d.Get(names.AttrName).(string), err)
+	}
+
+	return diags
+}

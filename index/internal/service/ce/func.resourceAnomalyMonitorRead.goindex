@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ce
+import (
+	"context"
+	"encoding/json"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/costexplorer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/costexplorer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAnomalyMonitorRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).CEClient(ctx)
+
+	monitor, err := findAnomalyMonitorByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Cost Explorer Anomaly Monitor (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Cost Explorer Anomaly Monitor (%s): %s", d.Id(), err)
+	}
+
+	if monitor.MonitorSpecification != nil {
+		specificationToJson, err := json.Marshal(monitor.MonitorSpecification)
+
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		specificationToSet, err := structure.NormalizeJsonString(string(specificationToJson))
+
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		d.Set("monitor_specification", specificationToSet)
+	}
+
+	d.Set(names.AttrARN, monitor.MonitorArn)
+	d.Set("monitor_dimension", monitor.MonitorDimension)
+	d.Set(names.AttrName, monitor.MonitorName)
+	d.Set("monitor_type", monitor.MonitorType)
+
+	return diags
+}

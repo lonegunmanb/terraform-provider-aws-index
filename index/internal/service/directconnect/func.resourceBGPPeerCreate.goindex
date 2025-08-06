@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceBGPPeerCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+	vifID := d.Get("virtual_interface_id").(string)
+	addrFamily := awstypes.AddressFamily(d.Get("address_family").(string))
+	asn := int32(d.Get("bgp_asn").(int))
+	input := &directconnect.CreateBGPPeerInput{
+		NewBGPPeer: &awstypes.NewBGPPeer{
+			AddressFamily: addrFamily,
+			Asn:           asn,
+		},
+		VirtualInterfaceId: aws.String(vifID),
+	}
+
+	if v, ok := d.GetOk("amazon_address"); ok {
+		input.NewBGPPeer.AmazonAddress = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk("bgp_auth_key"); ok {
+		input.NewBGPPeer.AuthKey = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk("customer_address"); ok {
+		input.NewBGPPeer.CustomerAddress = aws.String(v.(string))
+	}
+
+	_, err := conn.CreateBGPPeer(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Direct Connect BGP Peer: %s", err)
+	}
+
+	d.SetId(fmt.Sprintf("%s-%s-%d", vifID, addrFamily, asn))
+
+	if _, err = waitBGPPeerCreated(ctx, conn, vifID, addrFamily, asn, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Direct Connect BGP Peer (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceBGPPeerRead(ctx, d, meta)...)
+}

@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elb
+import (
+	"errors"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandListeners(tfList []any) ([]awstypes.Listener, error) {
+	apiObjects := make([]awstypes.Listener, 0)
+
+	for _, tfMapRaw := range tfList {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		apiObject := awstypes.Listener{
+			InstancePort:     aws.Int32(int32(tfMap["instance_port"].(int))),
+			InstanceProtocol: aws.String(tfMap["instance_protocol"].(string)),
+			LoadBalancerPort: int32(tfMap["lb_port"].(int)),
+			Protocol:         aws.String(tfMap["lb_protocol"].(string)),
+		}
+
+		if v, ok := tfMap["ssl_certificate_id"]; ok {
+			apiObject.SSLCertificateId = aws.String(v.(string))
+		}
+
+		var valid bool
+
+		if aws.ToString(apiObject.SSLCertificateId) != "" {
+			// validate the protocol is correct
+			for _, p := range []string{"https", "ssl"} {
+				if (strings.ToLower(aws.ToString(apiObject.InstanceProtocol)) == p) || (strings.ToLower(aws.ToString(apiObject.Protocol)) == p) {
+					valid = true
+				}
+			}
+		} else {
+			valid = true
+		}
+
+		if !valid {
+			return nil, errors.New(`"ssl_certificate_id" may be set only when "protocol" is "https" or "ssl"`)
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects, nil
+}

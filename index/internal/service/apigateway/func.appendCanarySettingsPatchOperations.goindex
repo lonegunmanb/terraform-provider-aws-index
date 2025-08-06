@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func appendCanarySettingsPatchOperations(operations []types.PatchOperation, oldCanarySettingsRaw, newCanarySettingsRaw []any) []types.PatchOperation {
+	if len(newCanarySettingsRaw) == 0 { // Schema guarantees either 0 or 1
+		return append(operations, types.PatchOperation{
+			Op:   types.Op("remove"),
+			Path: aws.String("/canarySettings"),
+		})
+	}
+	newSettings := newCanarySettingsRaw[0].(map[string]any)
+
+	var oldSettings map[string]any
+	if len(oldCanarySettingsRaw) == 1 { // Schema guarantees either 0 or 1
+		oldSettings = oldCanarySettingsRaw[0].(map[string]any)
+	} else {
+		oldSettings = map[string]any{
+			"percent_traffic":          0.0,
+			"stage_variable_overrides": make(map[string]any),
+			"use_stage_cache":          false,
+			"deployment_id":            "",
+		}
+	}
+
+	oldOverrides := oldSettings["stage_variable_overrides"].(map[string]any)
+	newOverrides := newSettings["stage_variable_overrides"].(map[string]any)
+	operations = append(operations, diffVariablesOps(oldOverrides, newOverrides, "/canarySettings/stageVariableOverrides/")...)
+
+	oldPercentTraffic := oldSettings["percent_traffic"].(float64)
+	newPercentTraffic := newSettings["percent_traffic"].(float64)
+	if oldPercentTraffic != newPercentTraffic {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/canarySettings/percentTraffic"),
+			Value: aws.String(fmt.Sprintf("%f", newPercentTraffic)),
+		})
+	}
+
+	oldUseStageCache := oldSettings["use_stage_cache"].(bool)
+	newUseStageCache := newSettings["use_stage_cache"].(bool)
+	if oldUseStageCache != newUseStageCache {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/canarySettings/useStageCache"),
+			Value: aws.String(strconv.FormatBool(newUseStageCache)),
+		})
+	}
+
+	oldDeploymentID, newDeploymentID := oldSettings["deployment_id"].(string), newSettings["deployment_id"].(string)
+	if oldDeploymentID != newDeploymentID {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/canarySettings/deploymentId"),
+			Value: aws.String(newDeploymentID),
+		})
+	}
+	return operations
+}

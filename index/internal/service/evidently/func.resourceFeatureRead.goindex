@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/evidently
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/evidently"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/evidently/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFeatureRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EvidentlyClient(ctx)
+
+	featureName, projectNameOrARN, err := FeatureParseID(d.Id())
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	feature, err := FindFeatureWithProjectNameorARN(ctx, conn, featureName, projectNameOrARN)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudWatch Evidently Feature (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudWatch Evidently Feature (%s) for Project (%s): %s", featureName, projectNameOrARN, err)
+	}
+
+	if err := d.Set("evaluation_rules", flattenEvaluationRules(feature.EvaluationRules)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting evaluation_rules: %s", err)
+	}
+
+	if err := d.Set("variations", flattenVariations(feature.Variations)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting variations: %s", err)
+	}
+
+	d.Set(names.AttrARN, feature.Arn)
+	d.Set(names.AttrCreatedTime, aws.ToTime(feature.CreatedTime).Format(time.RFC3339))
+	d.Set("default_variation", feature.DefaultVariation)
+	d.Set(names.AttrDescription, feature.Description)
+	d.Set("entity_overrides", feature.EntityOverrides)
+	d.Set("evaluation_strategy", feature.EvaluationStrategy)
+	d.Set(names.AttrLastUpdatedTime, aws.ToTime(feature.LastUpdatedTime).Format(time.RFC3339))
+	d.Set(names.AttrName, feature.Name)
+	d.Set("project", feature.Project)
+	d.Set(names.AttrStatus, feature.Status)
+	d.Set("value_type", feature.ValueType)
+
+	setTagsOut(ctx, feature.Tags)
+
+	return diags
+}

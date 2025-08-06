@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/devopsguru
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/service/devopsguru"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/devopsguru/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceCollectionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().DevOpsGuruClient(ctx)
+
+	var plan resourceCollectionResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.ID = types.StringValue(plan.Type.ValueString())
+
+	rc := &awstypes.UpdateResourceCollectionFilter{}
+	resp.Diagnostics.Append(flex.Expand(ctx, plan, rc)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.Tags.IsNull() {
+		// Fields named "Tags" are currently hardcoded to be ignored by AutoFlex. Expanding plan.Tags
+		// into the request structs Tags field is a temporary workaround until the AutoFlex
+		// options implementation can be merged.
+		//
+		// Ref: https://github.com/hashicorp/terraform-provider-aws/pull/36437
+		resp.Diagnostics.Append(flex.Expand(ctx, plan.Tags, &rc.Tags)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	in := &devopsguru.UpdateResourceCollectionInput{
+		Action:             awstypes.UpdateResourceCollectionActionAdd,
+		ResourceCollection: rc,
+	}
+
+	out, err := conn.UpdateResourceCollection(ctx, in)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.DevOpsGuru, create.ErrActionCreating, ResNameResourceCollection, plan.ID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+	if out == nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.DevOpsGuru, create.ErrActionCreating, ResNameResourceCollection, plan.ID.String(), nil),
+			errors.New("empty output").Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}

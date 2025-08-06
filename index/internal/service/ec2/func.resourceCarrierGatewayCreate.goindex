@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCarrierGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	input := ec2.CreateCarrierGatewayInput{
+		ClientToken:       aws.String(id.UniqueId()),
+		TagSpecifications: getTagSpecificationsIn(ctx, awstypes.ResourceTypeCarrierGateway),
+		VpcId:             aws.String(d.Get(names.AttrVPCID).(string)),
+	}
+
+	output, err := conn.CreateCarrierGateway(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EC2 Carrier Gateway: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.CarrierGateway.CarrierGatewayId))
+
+	if _, err := waitCarrierGatewayCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EC2 Carrier Gateway (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceCarrierGatewayRead(ctx, d, meta)...)
+}

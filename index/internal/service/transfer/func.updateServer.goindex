@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/transfer
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/transfer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/transfer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func updateServer(ctx context.Context, conn *transfer.Client, input *transfer.UpdateServerInput) error {
+	// The Transfer API will return a state of ONLINE for a server before the
+	// underlying VPC Endpoint is available and attempting to update the server
+	// will return an error until that EC2 API process is complete:
+	//   ConflictException: VPC Endpoint state is not yet available
+	// To prevent accessing the EC2 API directly to check the VPC Endpoint
+	// state, which can require confusing IAM permissions and have other
+	// eventual consistency consideration, we retry only via the Transfer API.
+	_, err := tfresource.RetryWhenIsAErrorMessageContains[*awstypes.ConflictException](ctx, tfec2.VPCEndpointCreationTimeout, func() (any, error) {
+		return conn.UpdateServer(ctx, input)
+	}, "VPC Endpoint state is not yet available")
+
+	if err != nil {
+		return fmt.Errorf("updating Transfer Server (%s): %w", aws.ToString(input.ServerId), err)
+	}
+
+	return nil
+}

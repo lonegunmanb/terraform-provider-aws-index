@@ -1,0 +1,90 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
+
+	functionName := d.Get("function_name").(string)
+	outputRaw, err := tfresource.RetryWhenNewResourceNotFound(ctx, lambdaPropagationTimeout, func() (any, error) {
+		return findPolicyStatementByTwoPartKey(ctx, conn, functionName, d.Id(), d.Get("qualifier").(string))
+	}, d.IsNewResource())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Lambda Permission (%s/%s) not found, removing from state", functionName, d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Lambda Permission (%s/%s): %s", functionName, d.Id(), err)
+	}
+
+	statement := outputRaw.(*PolicyStatement)
+	qualifier, _ := getQualifierFromAliasOrVersionARN(statement.Resource)
+
+	d.Set("qualifier", qualifier)
+
+	// Save Lambda function name in the same format
+	if strings.HasPrefix(functionName, "arn:"+meta.(*conns.AWSClient).Partition(ctx)+":lambda:") {
+		// Strip qualifier off
+		trimmed := strings.TrimSuffix(statement.Resource, ":"+qualifier)
+		d.Set("function_name", trimmed)
+	} else {
+		functionName, err := getFunctionNameFromARN(statement.Resource)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		d.Set("function_name", functionName)
+	}
+
+	d.Set(names.AttrAction, statement.Action)
+	// Check if the principal is a cross-account IAM role
+	if v, ok := statement.Principal.(map[string]any); ok {
+		if _, ok := v["AWS"]; ok {
+			d.Set(names.AttrPrincipal, v["AWS"])
+		} else {
+			d.Set(names.AttrPrincipal, v["Service"])
+		}
+	} else if v, ok := statement.Principal.(string); ok {
+		d.Set(names.AttrPrincipal, v)
+	}
+
+	if v, ok := statement.Condition["StringEquals"]; ok {
+		d.Set("event_source_token", v["lambda:EventSourceToken"])
+		d.Set("function_url_auth_type", v["lambda:FunctionUrlAuthType"])
+		d.Set("principal_org_id", v["aws:PrincipalOrgID"])
+		d.Set("source_account", v["AWS:SourceAccount"])
+	}
+
+	if v, ok := statement.Condition["ArnLike"]; ok {
+		d.Set("source_arn", v["AWS:SourceArn"])
+	}
+
+	d.Set("statement_id", statement.Sid)
+	d.Set("statement_id_prefix", create.NamePrefixFromName(statement.Sid))
+
+	return diags
+}

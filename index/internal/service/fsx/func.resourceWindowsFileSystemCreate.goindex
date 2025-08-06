@@ -1,0 +1,141 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWindowsFileSystemCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).FSxClient(ctx)
+
+	inputC := &fsx.CreateFileSystemInput{
+		ClientRequestToken: aws.String(id.UniqueId()),
+		FileSystemType:     awstypes.FileSystemTypeWindows,
+		StorageCapacity:    aws.Int32(int32(d.Get("storage_capacity").(int))),
+		SubnetIds:          flex.ExpandStringValueList(d.Get(names.AttrSubnetIDs).([]any)),
+		Tags:               getTagsIn(ctx),
+		WindowsConfiguration: &awstypes.CreateFileSystemWindowsConfiguration{
+			AutomaticBackupRetentionDays: aws.Int32(int32(d.Get("automatic_backup_retention_days").(int))),
+			CopyTagsToBackups:            aws.Bool(d.Get("copy_tags_to_backups").(bool)),
+			ThroughputCapacity:           aws.Int32(int32(d.Get("throughput_capacity").(int))),
+		},
+	}
+	inputB := &fsx.CreateFileSystemFromBackupInput{
+		ClientRequestToken: aws.String(id.UniqueId()),
+		SubnetIds:          flex.ExpandStringValueList(d.Get(names.AttrSubnetIDs).([]any)),
+		Tags:               getTagsIn(ctx),
+		WindowsConfiguration: &awstypes.CreateFileSystemWindowsConfiguration{
+			AutomaticBackupRetentionDays: aws.Int32(int32(d.Get("automatic_backup_retention_days").(int))),
+			CopyTagsToBackups:            aws.Bool(d.Get("copy_tags_to_backups").(bool)),
+			ThroughputCapacity:           aws.Int32(int32(d.Get("throughput_capacity").(int))),
+		},
+	}
+
+	if v, ok := d.GetOk("active_directory_id"); ok {
+		inputC.WindowsConfiguration.ActiveDirectoryId = aws.String(v.(string))
+		inputB.WindowsConfiguration.ActiveDirectoryId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("aliases"); ok {
+		inputC.WindowsConfiguration.Aliases = flex.ExpandStringValueSet(v.(*schema.Set))
+		inputB.WindowsConfiguration.Aliases = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("audit_log_configuration"); ok && len(v.([]any)) > 0 {
+		inputC.WindowsConfiguration.AuditLogConfiguration = expandWindowsAuditLogCreateConfiguration(v.([]any))
+		inputB.WindowsConfiguration.AuditLogConfiguration = expandWindowsAuditLogCreateConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("daily_automatic_backup_start_time"); ok {
+		inputC.WindowsConfiguration.DailyAutomaticBackupStartTime = aws.String(v.(string))
+		inputB.WindowsConfiguration.DailyAutomaticBackupStartTime = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("disk_iops_configuration"); ok && len(v.([]any)) > 0 {
+		inputC.WindowsConfiguration.DiskIopsConfiguration = expandWindowsDiskIopsConfiguration(v.([]any))
+		inputB.WindowsConfiguration.DiskIopsConfiguration = expandWindowsDiskIopsConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("deployment_type"); ok {
+		inputC.WindowsConfiguration.DeploymentType = awstypes.WindowsDeploymentType(v.(string))
+		inputB.WindowsConfiguration.DeploymentType = awstypes.WindowsDeploymentType(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
+		inputC.KmsKeyId = aws.String(v.(string))
+		inputB.KmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("preferred_subnet_id"); ok {
+		inputC.WindowsConfiguration.PreferredSubnetId = aws.String(v.(string))
+		inputB.WindowsConfiguration.PreferredSubnetId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrSecurityGroupIDs); ok {
+		inputC.SecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+		inputB.SecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("self_managed_active_directory"); ok {
+		inputC.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration = expandSelfManagedActiveDirectoryConfigurationCreate(v.([]any))
+		inputB.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration = expandSelfManagedActiveDirectoryConfigurationCreate(v.([]any))
+	}
+
+	if v, ok := d.GetOk(names.AttrStorageType); ok {
+		inputC.StorageType = awstypes.StorageType(v.(string))
+		inputB.StorageType = awstypes.StorageType(v.(string))
+	}
+
+	if v, ok := d.GetOk("weekly_maintenance_start_time"); ok {
+		inputC.WindowsConfiguration.WeeklyMaintenanceStartTime = aws.String(v.(string))
+		inputB.WindowsConfiguration.WeeklyMaintenanceStartTime = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("backup_id"); ok {
+		backupID := v.(string)
+		inputB.BackupId = aws.String(backupID)
+
+		output, err := conn.CreateFileSystemFromBackup(ctx, inputB)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating FSx for Windows File Server File System from backup (%s): %s", backupID, err)
+		}
+
+		d.SetId(aws.ToString(output.FileSystem.FileSystemId))
+	} else {
+		output, err := conn.CreateFileSystem(ctx, inputC)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "creating FSx for Windows File Server File System: %s", err)
+		}
+
+		d.SetId(aws.ToString(output.FileSystem.FileSystemId))
+	}
+
+	if _, err := waitFileSystemCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for FSx for Windows File Server File System (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceWindowsFileSystemRead(ctx, d, meta)...)
+}

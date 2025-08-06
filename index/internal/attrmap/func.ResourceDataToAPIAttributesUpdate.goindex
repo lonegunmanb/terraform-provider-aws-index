@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/attrmap
+import (
+	"fmt"
+	"log"
+	"strconv"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func (m AttributeMap[T]) ResourceDataToAPIAttributesUpdate(d *schema.ResourceData) (map[T]string, error) {
+	apiAttributes := make(map[T]string)
+
+	for tfAttributeName, attributeInfo := range m {
+		if attributeInfo.skipUpdate {
+			continue
+		}
+
+		// Purely Computed values aren't specified on update.
+		if attributeInfo.tfComputed && !attributeInfo.tfOptional {
+			continue
+		}
+
+		if d.HasChange(tfAttributeName) {
+			v := d.Get(tfAttributeName)
+
+			var apiAttributeValue string
+
+			switch t := attributeInfo.tfType; t {
+			case schema.TypeBool:
+				apiAttributeValue = strconv.FormatBool(v.(bool))
+			case schema.TypeInt:
+				apiAttributeValue = strconv.Itoa(v.(int))
+			case schema.TypeString:
+				apiAttributeValue = v.(string)
+
+				if attributeInfo.isIAMPolicy {
+					policy, err := structure.NormalizeJsonString(apiAttributeValue)
+
+					if err != nil {
+						return nil, fmt.Errorf("policy (%s) is invalid JSON: %w", apiAttributeValue, err)
+					}
+
+					apiAttributeValue = policy
+				}
+			default:
+				return nil, fmt.Errorf("attribute %s is of unsupported type: %d", tfAttributeName, t)
+			}
+
+			apiAttributes[attributeInfo.apiAttributeName] = apiAttributeValue
+		}
+	}
+
+	return apiAttributes, nil
+}

@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticbeanstalk
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticbeanstalk"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticbeanstalk/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceApplicationVersionDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElasticBeanstalkClient(ctx)
+
+	applicationName := d.Get("application").(string)
+
+	if !d.Get(names.AttrForceDelete).(bool) {
+		now := time.Now()
+		input := &elasticbeanstalk.DescribeEnvironmentsInput{
+			ApplicationName:       aws.String(applicationName),
+			IncludeDeleted:        aws.Bool(true),
+			IncludedDeletedBackTo: aws.Time(now.Add(-1 * time.Minute)),
+			VersionLabel:          aws.String(d.Id()),
+		}
+
+		environments, err := findEnvironments(ctx, conn, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Elastic Beanstalk Environments: %s", err)
+		}
+
+		environmentIDs := tfslices.ApplyToAll(environments, func(v awstypes.EnvironmentDescription) string {
+			return aws.ToString(v.EnvironmentId)
+		})
+
+		if len(environmentIDs) > 1 {
+			return sdkdiag.AppendErrorf(diags, "Elastic Beanstalk Application Version (%s) is currently in use by the following environments: %s", d.Id(), environmentIDs)
+		}
+	}
+
+	_, err := conn.DeleteApplicationVersion(ctx, &elasticbeanstalk.DeleteApplicationVersionInput{
+		ApplicationName:    aws.String(applicationName),
+		DeleteSourceBundle: aws.Bool(false),
+		VersionLabel:       aws.String(d.Id()),
+	})
+
+	// application version is pending delete, or no longer exists.
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidParameterValue) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Elastic Beanstalk Application Version (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

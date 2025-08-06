@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (e *parameterEphemeralResource) Open(ctx context.Context, request ephemeral.OpenRequest, response *ephemeral.OpenResponse) {
+	var data parameterEphemeralResourceModel
+	conn := e.Meta().SSMClient(ctx)
+
+	response.Diagnostics.Append(request.Config.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Terraform does not have the notion of planning for ephemeral resources,
+	// data sources, or providers. As a result, default handlers are not
+	// implemented for these objects in the Terraform Plugin Framework.
+	//
+	// To align with the data source data.aws_ssm_parameter,
+	// we default `with_decryption`.
+	if data.WithDecryption.IsNull() {
+		data.WithDecryption = types.BoolValue(true)
+	}
+
+	output, err := findParameterByName(ctx, conn, data.ARN.ValueString(), data.WithDecryption.ValueBool())
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.SSM, create.ErrActionReading, ERNameParameter, data.ARN.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.Result.Set(ctx, &data)...)
+}

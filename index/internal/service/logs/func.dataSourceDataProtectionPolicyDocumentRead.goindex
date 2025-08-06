@@ -1,0 +1,147 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/logs
+import (
+	"context"
+	"strconv"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataSourceDataProtectionPolicyDocumentRead(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	document := dataProtectionPolicyDocument{
+		Description: d.Get(names.AttrDescription).(string),
+		Name:        d.Get(names.AttrName).(string),
+		Version:     d.Get(names.AttrVersion).(string),
+	}
+
+	// unwrap expects v to be a configuration block -- a TypeList schema
+	// element with MaxItems: 1 and with a sub-schema.
+	unwrap := func(v any) (map[string]any, bool) {
+		if v == nil {
+			return nil, false
+		}
+
+		if tfList, ok := v.([]any); ok && len(tfList) > 0 {
+			if tfList[0] == nil {
+				// Configuration block was present, but the sub-schema is empty.
+				return map[string]any{}, true
+			}
+
+			if tfMap, ok := tfList[0].(map[string]any); ok && tfMap != nil {
+				// This should be the most typical path.
+				return tfMap, true
+			}
+		}
+
+		return nil, false
+	}
+
+	if tfMap, ok := unwrap(d.Get(names.AttrConfiguration)); ok {
+		document.Configuration = &dataProtectionPolicyStatementConfiguration{}
+
+		if tfList, ok := tfMap["custom_data_identifier"].([]any); ok && len(tfList) > 0 {
+			for _, tfMapRaw := range tfList {
+				tfMap, ok := tfMapRaw.(map[string]any)
+				if !ok {
+					continue
+				}
+
+				document.Configuration.CustomDataIdentifiers = append(document.Configuration.CustomDataIdentifiers, &dataProtectionPolicyCustomDataIdentifier{
+					Name:  tfMap[names.AttrName].(string),
+					Regex: tfMap["regex"].(string),
+				})
+			}
+		}
+	}
+
+	for _, tfMapRaw := range d.Get("statement").([]any) {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok || tfMap == nil {
+			continue
+		}
+
+		statement := &dataProtectionPolicyStatement{}
+		document.Statements = append(document.Statements, statement)
+
+		if v, ok := tfMap["sid"].(string); ok && v != "" {
+			statement.Sid = v
+		}
+
+		if v, ok := tfMap["data_identifiers"].(*schema.Set); ok && v.Len() > 0 {
+			statement.DataIdentifiers = flex.ExpandStringValueSet(v)
+		}
+
+		if tfMap, ok := unwrap(tfMap["operation"]); ok {
+			operation := &dataProtectionPolicyStatementOperation{}
+			statement.Operation = operation
+
+			if tfMap, ok := unwrap(tfMap["audit"]); ok {
+				audit := &dataProtectionPolicyStatementOperationAudit{}
+				operation.Audit = audit
+
+				if tfMap, ok := unwrap(tfMap["findings_destination"]); ok {
+					findingsDestination := &dataProtectionPolicyStatementOperationAuditFindingsDestination{}
+					audit.FindingsDestination = findingsDestination
+
+					if tfMap, ok := unwrap(tfMap[names.AttrCloudWatchLogs]); ok {
+						findingsDestination.CloudWatchLogs = &dataProtectionPolicyStatementOperationAuditFindingsDestinationCloudWatchLogs{
+							LogGroup: tfMap["log_group"].(string),
+						}
+					}
+
+					if tfMap, ok := unwrap(tfMap["firehose"]); ok {
+						findingsDestination.Firehose = &dataProtectionPolicyStatementOperationAuditFindingsDestinationFirehose{
+							DeliveryStream: tfMap["delivery_stream"].(string),
+						}
+					}
+
+					if tfMap, ok := unwrap(tfMap["s3"]); ok {
+						findingsDestination.S3 = &dataProtectionPolicyStatementOperationAuditFindingsDestinationS3{
+							Bucket: tfMap[names.AttrBucket].(string),
+						}
+					}
+				}
+			}
+
+			if tfMap, ok := unwrap(tfMap["deidentify"]); ok {
+				deidentify := &dataProtectionPolicyStatementOperationDeidentify{}
+				operation.Deidentify = deidentify
+
+				if _, ok := unwrap(tfMap["mask_config"]); ok {
+					maskConfig := &dataProtectionPolicyStatementOperationDeidentifyMaskConfig{}
+					deidentify.MaskConfig = maskConfig
+
+					// No fields in this object.
+				}
+			}
+		}
+	}
+
+	// The schema requires exactly 2 elements, which is assumed here.
+
+	if op := document.Statements[0].Operation; op.Audit == nil || op.Deidentify != nil {
+		return sdkdiag.AppendErrorf(diags, "the first policy statement must contain only the audit operation")
+	}
+
+	if op := document.Statements[1].Operation; op.Audit != nil || op.Deidentify == nil {
+		return sdkdiag.AppendErrorf(diags, "the second policy statement must contain only the deidentify operation")
+	}
+
+	jsonString, err := tfjson.EncodeToStringIndent(document, "", "  ")
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set(names.AttrJSON, jsonString)
+	d.SetId(strconv.Itoa(create.StringHashcode(jsonString)))
+
+	return diags
+}

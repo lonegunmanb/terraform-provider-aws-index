@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterEndpointCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	endpointID := d.Get("cluster_endpoint_identifier").(string)
+	input := &rds.CreateDBClusterEndpointInput{
+		DBClusterEndpointIdentifier: aws.String(endpointID),
+		DBClusterIdentifier:         aws.String(d.Get(names.AttrClusterIdentifier).(string)),
+		EndpointType:                aws.String(d.Get("custom_endpoint_type").(string)),
+		Tags:                        getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("excluded_members"); ok && v.(*schema.Set).Len() > 0 {
+		input.ExcludedMembers = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("static_members"); ok && v.(*schema.Set).Len() > 0 {
+		input.StaticMembers = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	_, err := conn.CreateDBClusterEndpoint(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating RDS Cluster Endpoint (%s): %s", endpointID, err)
+	}
+
+	d.SetId(endpointID)
+
+	const (
+		timeout = 30 * time.Minute
+	)
+	if _, err := waitClusterEndpointCreated(ctx, conn, d.Id(), timeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for RDS Cluster Endpoint (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceClusterEndpointRead(ctx, d, meta)...)
+}

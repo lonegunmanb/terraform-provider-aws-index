@@ -1,0 +1,111 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func securityGroupRuleCreateID(securityGroupID, ruleType string, ip *awstypes.IpPermission) (string, error) {
+	var buf bytes.Buffer
+
+	fmt.Fprintf(&buf, "%s-", securityGroupID)
+	if aws.ToInt32(ip.FromPort) > 0 {
+		fmt.Fprintf(&buf, "%d-", *ip.FromPort)
+	}
+	if aws.ToInt32(ip.ToPort) > 0 {
+		fmt.Fprintf(&buf, "%d-", *ip.ToPort)
+	}
+	fmt.Fprintf(&buf, "%s-", *ip.IpProtocol)
+	fmt.Fprintf(&buf, "%s-", ruleType)
+
+	// We need to make sure to sort the strings below so that we always
+	// generate the same hash code no matter what is in the set.
+	if len(ip.IpRanges) > 0 {
+		s := make([]string, len(ip.IpRanges))
+		for i, r := range ip.IpRanges {
+			s[i] = aws.ToString(r.CidrIp)
+		}
+		slices.Sort(s)
+
+		for _, v := range s {
+			fmt.Fprintf(&buf, "%s-", v)
+		}
+	}
+
+	if len(ip.Ipv6Ranges) > 0 {
+		s := make([]string, len(ip.Ipv6Ranges))
+		for i, r := range ip.Ipv6Ranges {
+			s[i] = aws.ToString(r.CidrIpv6)
+		}
+		slices.Sort(s)
+
+		for _, v := range s {
+			fmt.Fprintf(&buf, "%s-", v)
+		}
+	}
+
+	if len(ip.PrefixListIds) > 0 {
+		s := make([]string, len(ip.PrefixListIds))
+		for i, pl := range ip.PrefixListIds {
+			s[i] = aws.ToString(pl.PrefixListId)
+		}
+		slices.Sort(s)
+
+		for _, v := range s {
+			fmt.Fprintf(&buf, "%s-", v)
+		}
+	}
+
+	if len(ip.UserIdGroupPairs) > 0 {
+		var err error
+		slices.SortFunc(ip.UserIdGroupPairs, func(a, b awstypes.UserIdGroupPair) int {
+			if a.GroupId != nil && b.GroupId != nil {
+				return cmp.Compare(aws.ToString(a.GroupId), aws.ToString(b.GroupId))
+			}
+			if a.GroupName != nil && b.GroupName != nil {
+				return cmp.Compare(aws.ToString(a.GroupName), aws.ToString(b.GroupName))
+			}
+			err = errors.New("mismatched security group rules: contains both GroupId and GroupName")
+			return 0
+		})
+		if err != nil {
+			return "", err
+		}
+		for _, pair := range ip.UserIdGroupPairs {
+			if pair.GroupId != nil {
+				fmt.Fprintf(&buf, "%s-", aws.ToString(pair.GroupId))
+			} else {
+				buf.WriteString("-")
+			}
+			if pair.GroupName != nil {
+				fmt.Fprintf(&buf, "%s-", aws.ToString(pair.GroupName))
+			} else {
+				buf.WriteString("-")
+			}
+		}
+	}
+
+	return fmt.Sprintf("sgrule-%d", create.StringHashcode(buf.String())), nil
+}

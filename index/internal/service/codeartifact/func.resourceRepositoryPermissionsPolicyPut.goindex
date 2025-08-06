@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codeartifact
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codeartifact"
+	"github.com/aws/aws-sdk-go-v2/service/codeartifact/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRepositoryPermissionsPolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CodeArtifactClient(ctx)
+
+	policy, err := structure.NormalizeJsonString(d.Get("policy_document").(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	input := &codeartifact.PutRepositoryPermissionsPolicyInput{
+		Domain:         aws.String(d.Get(names.AttrDomain).(string)),
+		PolicyDocument: aws.String(policy),
+		Repository:     aws.String(d.Get("repository").(string)),
+	}
+
+	if v, ok := d.GetOk("domain_owner"); ok {
+		input.DomainOwner = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("policy_revision"); ok {
+		input.PolicyRevision = aws.String(v.(string))
+	}
+
+	output, err := conn.PutRepositoryPermissionsPolicy(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CodeArtifact Repository Permissions Policy: %s", err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(aws.ToString(output.Policy.ResourceArn))
+	}
+
+	return append(diags, resourceRepositoryPermissionsPolicyRead(ctx, d, meta)...)
+}

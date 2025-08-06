@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStackSetInstanceDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFormationClient(ctx)
+
+	parts, err := flex.ExpandResourceId(d.Id(), stackSetInstanceResourceIDPartCount, false)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	stackSetName, accountOrOrgID, region := parts[0], parts[1], parts[2]
+	input := &cloudformation.DeleteStackInstancesInput{
+		Accounts:     []string{accountOrOrgID},
+		OperationId:  aws.String(sdkid.UniqueId()),
+		Regions:      []string{region},
+		RetainStacks: aws.Bool(d.Get("retain_stack").(bool)),
+		StackSetName: aws.String(stackSetName),
+	}
+
+	callAs := d.Get("call_as").(string)
+	if v, ok := d.GetOk("call_as"); ok {
+		input.CallAs = awstypes.CallAs(v.(string))
+	}
+
+	if v, ok := d.GetOk("deployment_targets"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		dt := expandDeploymentTargets(v.([]any))
+		// For instances associated with stack sets that use a self-managed permission model,
+		// the organizational unit must be provided;
+		input.Accounts = nil
+		input.DeploymentTargets = dt
+	}
+
+	if v, ok := d.GetOk("operation_preferences"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.OperationPreferences = expandOperationPreferences(v.([]any)[0].(map[string]any))
+	}
+
+	log.Printf("[DEBUG] Deleting CloudFormation StackSet Instance: %s", d.Id())
+	outputRaw, err := tfresource.RetryWhenIsA[*awstypes.OperationInProgressException](ctx, d.Timeout(schema.TimeoutDelete), func() (any, error) {
+		return conn.DeleteStackInstances(ctx, input)
+	})
+
+	if errs.IsA[*awstypes.StackInstanceNotFoundException](err) || errs.IsA[*awstypes.StackSetNotFoundException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting CloudFormation StackSet Instance (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitStackSetOperationSucceeded(ctx, conn, stackSetName, aws.ToString(outputRaw.(*cloudformation.DeleteStackInstancesOutput).OperationId), callAs, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for CloudFormation StackSet Instance (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

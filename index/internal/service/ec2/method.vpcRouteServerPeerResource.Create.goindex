@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *vpcRouteServerPeerResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data vpcRouteServerPeerResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EC2Client(ctx)
+
+	var input ec2.CreateRouteServerPeerInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Additional fields.
+	input.TagSpecifications = getTagSpecificationsIn(ctx, awstypes.ResourceTypeRouteServerPeer)
+
+	output, err := conn.CreateRouteServerPeer(ctx, &input)
+
+	if err != nil {
+		response.Diagnostics.AddError("creating VPC Route Server Peer", err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	rsp := output.RouteServerPeer
+	id := aws.ToString(rsp.RouteServerPeerId)
+	data.ARN = r.routeServerPeerARN(ctx, id)
+	data.RouteServerPeerID = fwflex.StringValueToFramework(ctx, id)
+
+	rsp, err = waitRouteServerPeerCreated(ctx, conn, id, r.CreateTimeout(ctx, data.Timeouts))
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for VPC Route Server Peer (%s) create", id), err.Error())
+
+		return
+	}
+
+	// Set values for unknowns.
+	response.Diagnostics.Append(fwflex.Flatten(ctx, rsp, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+}

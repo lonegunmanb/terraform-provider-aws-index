@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMainRouteTableAssociationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	vpcID := d.Get(names.AttrVPCID).(string)
+	association, err := findMainRouteTableAssociationByVPCID(ctx, conn, vpcID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Main Route Table Association (%s): %s", vpcID, err)
+	}
+
+	routeTableID := d.Get("route_table_id").(string)
+	input := &ec2.ReplaceRouteTableAssociationInput{
+		AssociationId: association.RouteTableAssociationId,
+		RouteTableId:  aws.String(routeTableID),
+	}
+
+	output, err := conn.ReplaceRouteTableAssociation(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Main Route Table Association (%s): %s", routeTableID, err)
+	}
+
+	d.SetId(aws.ToString(output.NewAssociationId))
+
+	if _, err := waitRouteTableAssociationUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Main Route Table Association (%s) create: %s", d.Id(), err)
+	}
+
+	d.Set("original_route_table_id", association.RouteTableId)
+
+	return append(diags, resourceMainRouteTableAssociationRead(ctx, d, meta)...)
+}

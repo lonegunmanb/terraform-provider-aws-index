@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceCoreNetworkCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	globalNetworkID := d.Get("global_network_id").(string)
+	input := &networkmanager.CreateCoreNetworkInput{
+		ClientToken:     aws.String(id.UniqueId()),
+		GlobalNetworkId: aws.String(globalNetworkID),
+		Tags:            getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	// check if the user wants to create a base policy document
+	// this creates the core network with a starting policy document set to LIVE
+	// this is required for the first terraform apply if there attachments to the core network
+	if _, ok := d.GetOk("create_base_policy"); ok {
+		// if user supplies a full base_policy_document for maximum flexibility, use it. Otherwise, use regions list
+		// var policyDocumentTarget string
+		if v, ok := d.GetOk("base_policy_document"); ok {
+			input.PolicyDocument = aws.String(v.(string))
+		} else {
+			// If user supplies regions, use them in the base policy. Otherwise use current region.
+			regions := []any{meta.(*conns.AWSClient).Region(ctx)}
+			if v, ok := d.GetOk("base_policy_regions"); ok && v.(*schema.Set).Len() > 0 {
+				regions = v.(*schema.Set).List()
+			}
+
+			policyDocumentTarget, err := buildCoreNetworkBasePolicyDocument(regions)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "Formatting Core Network Base Policy: %s", err)
+			}
+			input.PolicyDocument = aws.String(policyDocumentTarget)
+		}
+	}
+
+	output, err := conn.CreateCoreNetwork(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Core Network: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.CoreNetwork.CoreNetworkId))
+
+	if _, err := waitCoreNetworkCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Core Network (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceCoreNetworkRead(ctx, d, meta)...)
+}

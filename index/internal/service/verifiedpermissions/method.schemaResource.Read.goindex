@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/verifiedpermissions
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/verifiedpermissions"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/verifiedpermissions/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *schemaResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	conn := r.Meta().VerifiedPermissionsClient(ctx)
+	var state schemaResourceModel
+
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	out, err := findSchemaByPolicyStoreID(ctx, conn, state.ID.ValueString())
+
+	if tfresource.NotFound(err) {
+		response.State.RemoveResource(ctx)
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.VerifiedPermissions, create.ErrActionReading, ResNamePolicyStoreSchema, state.PolicyStoreID.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	response.Diagnostics.Append(flex.Flatten(ctx, out, &state)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Misalignment between input and output data structures requires manual value assignment
+	definition, d := flattenDefinition(ctx, out)
+	response.Diagnostics.Append(d...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	state.Definition = definition
+
+	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+}

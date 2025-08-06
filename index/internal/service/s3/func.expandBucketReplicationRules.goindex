@@ -1,0 +1,110 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandBucketReplicationRules(ctx context.Context, tfList []any) []types.ReplicationRule {
+	var rules []types.ReplicationRule
+
+	for _, tfMapRaw := range tfList {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		apiObject := types.ReplicationRule{}
+
+		if v, ok := tfMap[names.AttrStatus].(string); ok && v != "" {
+			apiObject.Status = types.ReplicationRuleStatus(v)
+		} else {
+			continue
+		}
+
+		if v, ok := tfMap[names.AttrDestination].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.Destination = expandBucketDestination(v)
+		} else {
+			apiObject.Destination = &types.Destination{}
+		}
+
+		if v, ok := tfMap[names.AttrID].(string); ok && v != "" {
+			apiObject.ID = aws.String(v)
+		}
+
+		if v, ok := tfMap["source_selection_criteria"].([]any); ok && len(v) > 0 && v[0] != nil {
+			apiObject.SourceSelectionCriteria = expandBucketSourceSelectionCriteria(v)
+		}
+
+		if v, ok := tfMap[names.AttrFilter].([]any); ok && len(v) > 0 && v[0] != nil {
+			// XML schema V2.
+			tfFilterMap := v[0].(map[string]any)
+			var filter *types.ReplicationRuleFilter
+
+			if tags := Tags(tftags.New(ctx, tfFilterMap[names.AttrTags]).IgnoreAWS()); len(tags) > 0 {
+				filter = &types.ReplicationRuleFilter{
+					And: &types.ReplicationRuleAndOperator{
+						Prefix: aws.String(tfFilterMap[names.AttrPrefix].(string)),
+						Tags:   tags,
+					},
+				}
+			} else {
+				filter = &types.ReplicationRuleFilter{
+					Prefix: aws.String(tfFilterMap[names.AttrPrefix].(string)),
+				}
+			}
+
+			apiObject.Filter = filter
+			apiObject.Priority = aws.Int32(int32(tfMap[names.AttrPriority].(int)))
+
+			if v, ok := tfMap["delete_marker_replication_status"].(string); ok && v != "" {
+				apiObject.DeleteMarkerReplication = &types.DeleteMarkerReplication{
+					Status: types.DeleteMarkerReplicationStatus(v),
+				}
+			} else {
+				apiObject.DeleteMarkerReplication = &types.DeleteMarkerReplication{
+					Status: types.DeleteMarkerReplicationStatusDisabled,
+				}
+			}
+		} else {
+			// XML schema V1.
+			apiObject.Prefix = aws.String(tfMap[names.AttrPrefix].(string))
+		}
+
+		rules = append(rules, apiObject)
+	}
+
+	return rules
+}

@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appintegrations
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appintegrations"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appintegrations/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDataIntegrationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).AppIntegrationsClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &appintegrations.CreateDataIntegrationInput{
+		ClientToken:    aws.String(id.UniqueId()),
+		KmsKey:         aws.String(d.Get(names.AttrKMSKey).(string)),
+		Name:           aws.String(name),
+		ScheduleConfig: expandScheduleConfig(d.Get("schedule_config").([]any)),
+		SourceURI:      aws.String(d.Get("source_uri").(string)),
+		Tags:           getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateDataIntegration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating AppIntegrations Data Integration (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Id))
+
+	return append(diags, resourceDataIntegrationRead(ctx, d, meta)...)
+}

@@ -1,0 +1,117 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDistributionDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	if d.Get(names.AttrARN).(string) == "" {
+		diags = append(diags, resourceDistributionRead(ctx, d, meta)...)
+	}
+
+	if v := d.Get("continuous_deployment_policy_id").(string); v != "" {
+		err := disableContinuousDeploymentPolicy(ctx, conn, v)
+
+		switch {
+		case tfresource.NotFound(err):
+		case err != nil:
+			return sdkdiag.AppendFromErr(diags, err)
+		default:
+			if _, err := waitDistributionDeployed(ctx, conn, d.Id()); err != nil && !tfresource.NotFound(err) {
+				return sdkdiag.AppendErrorf(diags, "waiting for CloudFront Distribution (%s) deploy: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if err := disableDistribution(ctx, conn, d.Id()); err != nil {
+		if tfresource.NotFound(err) {
+			return diags
+		}
+
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.Get("retain_on_delete").(bool) {
+		log.Printf("[WARN] Removing CloudFront Distribution ID %q with `retain_on_delete` set. Please delete this distribution manually.", d.Id())
+		return diags
+	}
+
+	err := deleteDistribution(ctx, conn, d.Id())
+
+	if err == nil || tfresource.NotFound(err) || errs.IsA[*awstypes.NoSuchDistribution](err) {
+		return diags
+	}
+
+	// Disable distribution if it is not yet disabled and attempt deletion again.
+	// Here we update via the deployed configuration to ensure we are not submitting an out of date
+	// configuration from the Terraform configuration, should other changes have occurred manually.
+	if errs.IsA[*awstypes.DistributionNotDisabled](err) {
+		if err := disableDistribution(ctx, conn, d.Id()); err != nil {
+			if tfresource.NotFound(err) {
+				return diags
+			}
+
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		const (
+			timeout = 3 * time.Minute
+		)
+		_, err = tfresource.RetryWhenIsA[*awstypes.DistributionNotDisabled](ctx, timeout, func() (any, error) {
+			return nil, deleteDistribution(ctx, conn, d.Id())
+		})
+	}
+
+	if errs.IsA[*awstypes.PreconditionFailed](err) || errs.IsA[*awstypes.InvalidIfMatchVersion](err) {
+		const (
+			timeout = 1 * time.Minute
+		)
+		_, err = tfresource.RetryWhenIsOneOf2[*awstypes.PreconditionFailed, *awstypes.InvalidIfMatchVersion](ctx, timeout, func() (any, error) {
+			return nil, deleteDistribution(ctx, conn, d.Id())
+		})
+	}
+
+	if errs.IsA[*awstypes.DistributionNotDisabled](err) {
+		if err := disableDistribution(ctx, conn, d.Id()); err != nil {
+			if tfresource.NotFound(err) {
+				return diags
+			}
+
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		err = deleteDistribution(ctx, conn, d.Id())
+	}
+
+	if errs.IsA[*awstypes.NoSuchDistribution](err) { // nosemgrep:dgryski.semgrep-go.oddifsequence.odd-sequence-ifs
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	return diags
+}

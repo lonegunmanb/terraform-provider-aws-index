@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceStageCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayV2Client(ctx)
+
+	apiID := d.Get("api_id").(string)
+	outputGA, err := findAPIByID(ctx, conn, apiID)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading API Gateway v2 API (%s): %s", apiID, err)
+	}
+
+	name := d.Get(names.AttrName).(string)
+	protocolType := outputGA.ProtocolType
+	input := &apigatewayv2.CreateStageInput{
+		ApiId:      aws.String(apiID),
+		AutoDeploy: aws.Bool(d.Get("auto_deploy").(bool)),
+		StageName:  aws.String(name),
+		Tags:       getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("access_log_settings"); ok {
+		input.AccessLogSettings = expandAccessLogSettings(v.([]any))
+	}
+
+	if v, ok := d.GetOk("client_certificate_id"); ok {
+		input.ClientCertificateId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("default_route_settings"); ok {
+		input.DefaultRouteSettings = expandDefaultRouteSettings(v.([]any), protocolType)
+	}
+
+	if v, ok := d.GetOk("deployment_id"); ok {
+		input.DeploymentId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("route_settings"); ok {
+		input.RouteSettings = expandRouteSettings(v.(*schema.Set).List(), protocolType)
+	}
+
+	if v, ok := d.GetOk("stage_variables"); ok {
+		input.StageVariables = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	output, err := conn.CreateStage(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway v2 Stage (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.StageName))
+
+	return append(diags, resourceStageRead(ctx, d, meta)...)
+}

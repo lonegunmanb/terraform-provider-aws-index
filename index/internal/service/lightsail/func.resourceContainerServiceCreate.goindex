@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lightsail
+import (
+	"context"
+	"log"
+	"reflect"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail"
+	"github.com/aws/aws-sdk-go-v2/service/lightsail/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceContainerServiceCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).LightsailClient(ctx)
+
+	serviceName := d.Get(names.AttrName).(string)
+	input := &lightsail.CreateContainerServiceInput{
+		ServiceName: aws.String(serviceName),
+		Power:       types.ContainerServicePowerName(d.Get("power").(string)),
+		Scale:       aws.Int32(int32(d.Get("scale").(int))),
+		Tags:        getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("public_domain_names"); ok {
+		input.PublicDomainNames = expandContainerServicePublicDomainNames(v.([]any))
+	}
+
+	if v, ok := d.GetOk("private_registry_access"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.PrivateRegistryAccess = expandPrivateRegistryAccess(v.([]any)[0].(map[string]any))
+	}
+
+	_, err := conn.CreateContainerService(ctx, input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Lightsail Container Service (%s): %s", serviceName, err)
+	}
+
+	d.SetId(serviceName)
+
+	if err := waitContainerServiceCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Lightsail Container Service (%s) creation: %s", d.Id(), err)
+	}
+
+	// once container service creation and/or deployment successful (now enabled by default), disable it if "is_disabled" is true
+	if v, ok := d.GetOk("is_disabled"); ok && v.(bool) {
+		input := &lightsail.UpdateContainerServiceInput{
+			ServiceName: aws.String(d.Id()),
+			IsDisabled:  aws.Bool(true),
+		}
+
+		_, err := conn.UpdateContainerService(ctx, input)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "disabling Lightsail Container Service (%s): %s", d.Id(), err)
+		}
+
+		if err := waitContainerServiceDisabled(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Lightsail Container Service (%s) to be disabled: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceContainerServiceRead(ctx, d, meta)...)
+}

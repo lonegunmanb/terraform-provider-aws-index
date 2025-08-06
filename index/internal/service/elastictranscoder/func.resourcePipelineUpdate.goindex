@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elastictranscoder
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elastictranscoder"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elastictranscoder/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePipelineUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElasticTranscoderClient(ctx)
+
+	req := &elastictranscoder.UpdatePipelineInput{
+		Id: aws.String(d.Id()),
+	}
+
+	if d.HasChange("aws_kms_key_arn") {
+		req.AwsKmsKeyArn = aws.String(d.Get("aws_kms_key_arn").(string))
+	}
+
+	if d.HasChange("content_config") {
+		req.ContentConfig = expandETPiplineOutputConfig(d, "content_config")
+	}
+
+	if d.HasChange("input_bucket") {
+		req.InputBucket = aws.String(d.Get("input_bucket").(string))
+	}
+
+	if d.HasChange(names.AttrName) {
+		req.Name = aws.String(d.Get(names.AttrName).(string))
+	}
+
+	if d.HasChange("notifications") {
+		req.Notifications = expandETNotifications(d)
+	}
+
+	if d.HasChange(names.AttrRole) {
+		req.Role = aws.String(d.Get(names.AttrRole).(string))
+	}
+
+	if d.HasChange("thumbnail_config") {
+		req.ThumbnailConfig = expandETPiplineOutputConfig(d, "thumbnail_config")
+	}
+
+	log.Printf("[DEBUG] Updating Elastic Transcoder Pipeline: %#v", req)
+	output, err := conn.UpdatePipeline(ctx, req)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Elastic Transcoder pipeline: %s", err)
+	}
+
+	for _, w := range output.Warnings {
+		log.Printf("[WARN] Elastic Transcoder Pipeline %v: %v", aws.ToString(w.Code),
+			aws.ToString(w.Message))
+	}
+
+	return append(diags, resourcePipelineRead(ctx, d, meta)...)
+}

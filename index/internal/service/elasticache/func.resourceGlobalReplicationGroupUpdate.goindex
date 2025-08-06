@@ -1,0 +1,94 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	gversion "github.com/hashicorp/go-version"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceGlobalReplicationGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElastiCacheClient(ctx)
+
+	// Only one field can be changed per request
+	if d.HasChange("cache_node_type") {
+		if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupNodeTypeUpdater(d.Get("cache_node_type").(string)), "node type", d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange("automatic_failover_enabled") {
+		if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationAutomaticFailoverUpdater(d.Get("automatic_failover_enabled").(bool)), "automatic failover", d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange(names.AttrEngineVersion) {
+		o, n := d.GetChange(names.AttrEngineVersion)
+
+		newVersion, _ := normalizeEngineVersion(n.(string))
+		oldVersion, _ := gversion.NewVersion(o.(string))
+
+		diff := diffVersion(newVersion, oldVersion)
+		if diff[0] == 1 {
+			p := d.Get(names.AttrParameterGroupName).(string)
+			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMajorUpdater(n.(string), p), "engine version (major)", d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		} else if diff[1] == 1 {
+			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMinorUpdater(n.(string)), "engine version (minor)", d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	if d.HasChange("global_replication_group_description") {
+		if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupDescriptionUpdater(d.Get("global_replication_group_description").(string)), names.AttrDescription, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	if d.HasChange("num_node_groups") {
+		o, n := d.GetChange("num_node_groups")
+		oldNodeGroupCount, newNodeGroupCount := o.(int), n.(int)
+
+		if newNodeGroupCount != oldNodeGroupCount {
+			if newNodeGroupCount > oldNodeGroupCount {
+				if err := increaseGlobalReplicationGroupNodeGroupCount(ctx, conn, d.Id(), newNodeGroupCount, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+			} else if newNodeGroupCount < oldNodeGroupCount {
+				ids := tfslices.ApplyToAll(d.Get("global_node_groups").(*schema.Set).List(), func(tfMapRaw any) string {
+					tfMap := tfMapRaw.(map[string]any)
+					return tfMap["global_node_group_id"].(string)
+				})
+				if err := decreaseGlobalReplicationGroupNodeGroupCount(ctx, conn, d.Id(), newNodeGroupCount, ids, d.Timeout(schema.TimeoutUpdate)); err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+			}
+		}
+	}
+
+	return append(diags, resourceGlobalReplicationGroupRead(ctx, d, meta)...)
+}

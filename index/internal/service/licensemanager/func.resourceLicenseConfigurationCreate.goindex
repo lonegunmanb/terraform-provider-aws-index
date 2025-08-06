@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/licensemanager
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/licensemanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/licensemanager/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLicenseConfigurationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).LicenseManagerClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := &licensemanager.CreateLicenseConfigurationInput{
+		LicenseCountingType: awstypes.LicenseCountingType(d.Get("license_counting_type").(string)),
+		Name:                aws.String(name),
+		Tags:                getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("license_count"); ok {
+		input.LicenseCount = aws.Int64(int64(v.(int)))
+	}
+
+	if v, ok := d.GetOk("license_count_hard_limit"); ok {
+		input.LicenseCountHardLimit = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("license_rules"); ok && len(v.([]any)) > 0 {
+		input.LicenseRules = flex.ExpandStringValueList(v.([]any))
+	}
+
+	output, err := conn.CreateLicenseConfiguration(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating License Manager License Configuration (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.LicenseConfigurationArn))
+
+	return append(diags, resourceLicenseConfigurationRead(ctx, d, meta)...)
+}

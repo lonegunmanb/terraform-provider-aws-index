@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAuthorizerCustomizeDiff(_ context.Context, diff *schema.ResourceDiff, v any) error {
+	// switch type between COGNITO_USER_POOLS and TOKEN/REQUEST will create new resource.
+	if diff.HasChange(names.AttrType) {
+		o, n := diff.GetChange(names.AttrType)
+		if o.(string) == string(types.AuthorizerTypeCognitoUserPools) || n.(string) == string(types.AuthorizerTypeCognitoUserPools) {
+			if err := diff.ForceNew(names.AttrType); err != nil {
+				return err
+			}
+		}
+	}
+
+	switch authType, rawConfig := types.AuthorizerType(diff.Get(names.AttrType).(string)), diff.GetRawConfig(); authType {
+	// authorizer_uri is required for authorizer TOKEN/REQUEST.
+	case types.AuthorizerTypeRequest, types.AuthorizerTypeToken:
+		if v := rawConfig.GetAttr("authorizer_uri"); v.IsKnown() && (v.IsNull() || v.AsString() == "") {
+			return fmt.Errorf("authorizer_uri must be set non-empty when authorizer type is %s", authType)
+		}
+		// provider_arns is required for authorizer COGNITO_USER_POOLS.
+	case types.AuthorizerTypeCognitoUserPools:
+		if v := rawConfig.GetAttr("provider_arns"); v.IsKnown() && (v.IsNull() || v.AsValueSet().Length() == 0) {
+			return fmt.Errorf("provider_arns must be set non-empty when authorizer type is %s", authType)
+		}
+	}
+
+	return nil
+}

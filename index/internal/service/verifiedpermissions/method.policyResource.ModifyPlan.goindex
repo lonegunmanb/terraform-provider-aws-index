@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/verifiedpermissions
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/verifiedpermissions"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/verifiedpermissions/types"
+	cedar "github.com/cedar-policy/cedar-go/x/exp/parser"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	interflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *policyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if !req.State.Raw.IsNull() && !req.Plan.Raw.IsNull() {
+		var plan, state policyResourceModel
+		resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		if !plan.Definition.Equal(state.Definition) {
+			defPlan, diagsPlan := plan.Definition.ToPtr(ctx)
+			resp.Diagnostics.Append(diagsPlan...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			defState, diagsState := state.Definition.ToPtr(ctx)
+			resp.Diagnostics.Append(diagsState...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+
+			if !defState.Static.IsNull() && defPlan.Static.IsNull() {
+				resp.RequiresReplace = []path.Path{path.Root("definition").AtListIndex(0).AtName("static")}
+			}
+
+			if !defState.TemplateLinked.IsNull() && defPlan.TemplateLinked.IsNull() {
+				resp.RequiresReplace = []path.Path{path.Root("definition").AtListIndex(0).AtName("template_linked")}
+			}
+		}
+	}
+}

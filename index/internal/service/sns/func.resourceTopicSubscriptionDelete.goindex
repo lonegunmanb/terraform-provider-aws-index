@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sns
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
+	"github.com/davecgh/go-spew/spew"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/attrmap"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTopicSubscriptionDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SNSClient(ctx)
+
+	log.Printf("[DEBUG] Deleting SNS Topic Subscription: %s", d.Id())
+	_, err := conn.Unsubscribe(ctx, &sns.UnsubscribeInput{
+		SubscriptionArn: aws.String(d.Id()),
+	})
+
+	if errs.IsAErrorMessageContains[*types.InvalidParameterException](err, "Cannot unsubscribe a subscription that is pending confirmation") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting SNS Topic Subscription (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitSubscriptionDeleted(ctx, conn, d.Id(), subscriptionDeleteTimeout); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for SNS Topic Subscription (%s) delete: %s", d.Id(), err)
+	}
+
+	return diags
+}

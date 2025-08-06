@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRouteDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	destinationAttributeKey, destination, err := routeDestinationAttribute(d)
+
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	routeTableID := d.Get("route_table_id").(string)
+	input := &ec2.DeleteRouteInput{
+		RouteTableId: aws.String(routeTableID),
+	}
+
+	var routeFinder routeFinder
+
+	switch destination := aws.String(destination); destinationAttributeKey {
+	case routeDestinationCIDRBlock:
+		input.DestinationCidrBlock = destination
+		routeFinder = findRouteByIPv4Destination
+	case routeDestinationIPv6CIDRBlock:
+		input.DestinationIpv6CidrBlock = destination
+		routeFinder = findRouteByIPv6Destination
+	case routeDestinationPrefixListID:
+		input.DestinationPrefixListId = destination
+		routeFinder = findRouteByPrefixListIDDestination
+	default:
+		return sdkdiag.AppendErrorf(diags, "deleting Route: unexpected route destination attribute: %q", destinationAttributeKey)
+	}
+
+	log.Printf("[DEBUG] Deleting Route: %v", input)
+	_, err = tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutDelete),
+		func() (any, error) {
+			return conn.DeleteRoute(ctx, input)
+		},
+		errCodeInvalidParameterException,
+	)
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidRouteNotFound) {
+		return diags
+	}
+
+	// Local routes (which may have been imported) cannot be deleted. Remove from state.
+	if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "cannot remove local route") {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting Route in Route Table (%s) with destination (%s): %s", routeTableID, destination, err)
+	}
+
+	if _, err := waitRouteDeleted(ctx, conn, routeFinder, routeTableID, destination, d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Route in Route Table (%s) with destination (%s) delete: %s", routeTableID, destination, err)
+	}
+
+	return diags
+}

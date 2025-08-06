@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDelegationSetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	callerRef := id.UniqueId()
+	if v, ok := d.GetOk("reference_name"); ok {
+		callerRef = strings.Join([]string{
+			v.(string), "-", callerRef,
+		}, "")
+	}
+	input := &route53.CreateReusableDelegationSetInput{
+		CallerReference: aws.String(callerRef),
+	}
+
+	output, err := conn.CreateReusableDelegationSet(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Route 53 Reusable Delegation Set: %s", err)
+	}
+
+	d.SetId(cleanDelegationSetID(aws.ToString(output.DelegationSet.Id)))
+
+	return append(diags, resourceDelegationSetRead(ctx, d, meta)...)
+}

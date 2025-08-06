@@ -1,0 +1,348 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any) (diags diag.Diagnostics) {
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	// There are two ways to enable the HTTP endpoint: new way and old way.
+	// This is the new way for provisioned engine mode (covers provisioned and serverlessv2).
+	// The old way is modifying the DB cluster and setting the EnableHttpEndpoint field (below).
+	// Both need a wait for update so when it's provisioned it will do old (not necessary but does the wait) & new ways, otherwise just old way.
+	if d.HasChange("enable_http_endpoint") && d.Get("engine_mode").(string) == engineModeProvisioned {
+		o, n := d.GetChange("enable_http_endpoint")
+		if err := enableHTTPEndpointProvisioned(ctx, conn, d.Get(names.AttrARN).(string), o, n); err != nil {
+			return sdkdiag.AppendErrorf(diags, "enabling HTTP endpoint for RDS Cluster (%s): %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("replication_source_identifier") {
+		if d.Get("replication_source_identifier").(string) == "" {
+			input := rds.PromoteReadReplicaDBClusterInput{
+				DBClusterIdentifier: aws.String(d.Id()),
+			}
+			_, err := conn.PromoteReadReplicaDBCluster(ctx, &input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "promoting read replica to primary for RDS Cluster (%s): %s", d.Id(), err)
+			}
+
+			if _, err := waitDBClusterAvailable(ctx, conn, d.Id(), false, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for RDS Cluster (%s) update: %s", d.Id(), err)
+			}
+		} else {
+			return sdkdiag.AppendErrorf(diags, "promoting to standalone is not supported for RDS Cluster (%s)", d.Id())
+		}
+	}
+
+	if d.HasChangesExcept(
+		names.AttrAllowMajorVersionUpgrade,
+		"delete_automated_backups",
+		names.AttrFinalSnapshotIdentifier,
+		"global_cluster_identifier",
+		"iam_roles",
+		"replication_source_identifier",
+		"skip_final_snapshot",
+		names.AttrTags, names.AttrTagsAll) {
+		applyImmediately := d.Get(names.AttrApplyImmediately).(bool)
+		input := &rds.ModifyDBClusterInput{
+			ApplyImmediately:    aws.Bool(applyImmediately),
+			DBClusterIdentifier: aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrAllocatedStorage) {
+			input.AllocatedStorage = aws.Int32(int32(d.Get(names.AttrAllocatedStorage).(int)))
+		}
+
+		if v, ok := d.GetOk(names.AttrAllowMajorVersionUpgrade); ok {
+			input.AllowMajorVersionUpgrade = aws.Bool(v.(bool))
+		}
+
+		if d.HasChange("backtrack_window") {
+			input.BacktrackWindow = aws.Int64(int64(d.Get("backtrack_window").(int)))
+		}
+
+		if d.HasChange("backup_retention_period") {
+			input.BackupRetentionPeriod = aws.Int32(int32(d.Get("backup_retention_period").(int)))
+		}
+
+		if d.HasChange("ca_certificate_identifier") {
+			input.CACertificateIdentifier = aws.String(d.Get("ca_certificate_identifier").(string))
+		}
+
+		if d.HasChange("copy_tags_to_snapshot") {
+			input.CopyTagsToSnapshot = aws.Bool(d.Get("copy_tags_to_snapshot").(bool))
+		}
+
+		if d.HasChange("database_insights_mode") {
+			input.DatabaseInsightsMode = types.DatabaseInsightsMode(d.Get("database_insights_mode").(string))
+			input.EnablePerformanceInsights = aws.Bool(d.Get("performance_insights_enabled").(bool))
+		}
+
+		if d.HasChange("db_cluster_instance_class") {
+			input.DBClusterInstanceClass = aws.String(d.Get("db_cluster_instance_class").(string))
+		}
+
+		if d.HasChange("db_cluster_parameter_group_name") {
+			input.DBClusterParameterGroupName = aws.String(d.Get("db_cluster_parameter_group_name").(string))
+		}
+
+		// DB instance parameter group name is not currently returned from the
+		// DescribeDBClusters API. This means there is no drift detection, so when
+		// set, the configured attribute should always be sent on modify.
+		// Except, this causes an error on a minor version upgrade, so it is
+		// removed during update retry, if necessary.
+		if v, ok := d.GetOk("db_instance_parameter_group_name"); ok || d.HasChange("db_instance_parameter_group_name") {
+			input.DBInstanceParameterGroupName = aws.String(v.(string))
+		}
+
+		if d.HasChange(names.AttrDeletionProtection) {
+			input.DeletionProtection = aws.Bool(d.Get(names.AttrDeletionProtection).(bool))
+		}
+
+		if d.HasChanges(names.AttrDomain, "domain_iam_role_name") {
+			input.Domain = aws.String(d.Get(names.AttrDomain).(string))
+			input.DomainIAMRoleName = aws.String(d.Get("domain_iam_role_name").(string))
+		}
+
+		if d.HasChange("enable_global_write_forwarding") {
+			input.EnableGlobalWriteForwarding = aws.Bool(d.Get("enable_global_write_forwarding").(bool))
+		}
+
+		// for provisioned and serverlessv2 (also "provisioned"), data api must be enabled using conn.EnableHttpEndpoint() as below
+		if d.HasChange("enable_http_endpoint") && d.Get("engine_mode").(string) != engineModeProvisioned {
+			input.EnableHttpEndpoint = aws.Bool(d.Get("enable_http_endpoint").(bool))
+		}
+
+		if d.HasChange("enable_local_write_forwarding") {
+			input.EnableLocalWriteForwarding = aws.Bool(d.Get("enable_local_write_forwarding").(bool))
+		}
+
+		if d.HasChange("enabled_cloudwatch_logs_exports") {
+			o, n := d.GetChange("enabled_cloudwatch_logs_exports")
+			os, ns := o.(*schema.Set), n.(*schema.Set)
+
+			input.CloudwatchLogsExportConfiguration = &types.CloudwatchLogsExportConfiguration{
+				DisableLogTypes: flex.ExpandStringValueSet(os.Difference(ns)),
+				EnableLogTypes:  flex.ExpandStringValueSet(ns.Difference(os)),
+			}
+		}
+
+		if d.HasChange(names.AttrEngineVersion) {
+			input.EngineVersion = aws.String(d.Get(names.AttrEngineVersion).(string))
+		}
+
+		// This can happen when updates are deferred (apply_immediately = false), and
+		// multiple applies occur before the maintenance window. In this case,
+		// continue sending the desired engine_version as part of the modify request.
+		if d.Get(names.AttrEngineVersion).(string) != d.Get("engine_version_actual").(string) {
+			input.EngineVersion = aws.String(d.Get(names.AttrEngineVersion).(string))
+		}
+
+		if d.HasChange("iam_database_authentication_enabled") {
+			input.EnableIAMDatabaseAuthentication = aws.Bool(d.Get("iam_database_authentication_enabled").(bool))
+		}
+
+		if d.HasChange(names.AttrIOPS) {
+			input.Iops = aws.Int32(int32(d.Get(names.AttrIOPS).(int)))
+		}
+
+		if d.HasChange("manage_master_user_password") {
+			input.ManageMasterUserPassword = aws.Bool(d.Get("manage_master_user_password").(bool))
+		}
+
+		if d.HasChange("master_password") {
+			if v, ok := d.GetOk("master_password"); ok {
+				input.MasterUserPassword = aws.String(v.(string))
+			}
+		}
+
+		if d.HasChange("master_password_wo_version") {
+			masterPasswordWO, di := flex.GetWriteOnlyStringValue(d, cty.GetAttrPath("master_password_wo"))
+			diags = append(diags, di...)
+			if diags.HasError() {
+				return diags
+			}
+
+			if masterPasswordWO != "" {
+				input.MasterUserPassword = aws.String(masterPasswordWO)
+			}
+		}
+
+		if d.HasChange("master_user_secret_kms_key_id") {
+			if v, ok := d.GetOk("master_user_secret_kms_key_id"); ok {
+				input.MasterUserSecretKmsKeyId = aws.String(v.(string))
+			}
+		}
+
+		if d.HasChange("monitoring_interval") {
+			input.MonitoringInterval = aws.Int32(int32(d.Get("monitoring_interval").(int)))
+		}
+
+		if d.HasChange("monitoring_role_arn") {
+			input.MonitoringRoleArn = aws.String(d.Get("monitoring_role_arn").(string))
+		}
+
+		if d.HasChange("network_type") {
+			input.NetworkType = aws.String(d.Get("network_type").(string))
+		}
+
+		if d.HasChange("performance_insights_enabled") {
+			input.EnablePerformanceInsights = aws.Bool(d.Get("performance_insights_enabled").(bool))
+		}
+
+		if d.HasChange("performance_insights_kms_key_id") {
+			input.PerformanceInsightsKMSKeyId = aws.String(d.Get("performance_insights_kms_key_id").(string))
+		}
+
+		if d.HasChange("performance_insights_retention_period") {
+			input.PerformanceInsightsRetentionPeriod = aws.Int32(int32(d.Get("performance_insights_retention_period").(int)))
+		}
+
+		if d.HasChange(names.AttrPort) {
+			input.Port = aws.Int32(int32(d.Get(names.AttrPort).(int)))
+		}
+
+		if d.HasChange("preferred_backup_window") {
+			input.PreferredBackupWindow = aws.String(d.Get("preferred_backup_window").(string))
+		}
+
+		if d.HasChange(names.AttrPreferredMaintenanceWindow) {
+			input.PreferredMaintenanceWindow = aws.String(d.Get(names.AttrPreferredMaintenanceWindow).(string))
+		}
+
+		if d.HasChange("scaling_configuration") {
+			if v, ok := d.GetOk("scaling_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.ScalingConfiguration = expandScalingConfiguration(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("serverlessv2_scaling_configuration") {
+			if v, ok := d.GetOk("serverlessv2_scaling_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.ServerlessV2ScalingConfiguration = expandServerlessV2ScalingConfiguration(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange(names.AttrStorageType) {
+			input.StorageType = aws.String(d.Get(names.AttrStorageType).(string))
+		}
+
+		if d.HasChange(names.AttrVPCSecurityGroupIDs) {
+			if v, ok := d.GetOk(names.AttrVPCSecurityGroupIDs); ok && v.(*schema.Set).Len() > 0 {
+				input.VpcSecurityGroupIds = flex.ExpandStringValueSet(v.(*schema.Set))
+			} else {
+				input.VpcSecurityGroupIds = []string{}
+			}
+		}
+
+		const (
+			timeout = 5 * time.Minute
+		)
+		_, err := tfresource.RetryWhen(ctx, timeout,
+			func() (any, error) {
+				return conn.ModifyDBCluster(ctx, input)
+			},
+			func(err error) (bool, error) {
+				if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "IAM role ARN value is invalid or does not include the required permissions") {
+					return true, err
+				}
+
+				if errs.IsA[*types.InvalidDBClusterStateFault](err) {
+					return true, err
+				}
+
+				if tfawserr.ErrMessageContains(err, errCodeInvalidParameterCombination, "db-instance-parameter-group-name can only be specified for a major") {
+					input.DBInstanceParameterGroupName = nil
+					return true, err
+				}
+
+				return false, err
+			},
+		)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating RDS Cluster (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitDBClusterUpdated(ctx, conn, d.Id(), applyImmediately, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for RDS Cluster (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("global_cluster_identifier") {
+		o, n := d.GetChange("global_cluster_identifier")
+		os, ns := o.(string), n.(string)
+
+		if os == "" {
+			return sdkdiag.AppendErrorf(diags, "existing RDS Clusters cannot be added to an existing RDS Global Cluster")
+		}
+
+		if ns != "" {
+			return sdkdiag.AppendErrorf(diags, "existing RDS Clusters cannot be migrated between existing RDS Global Clusters")
+		}
+
+		clusterARN := d.Get(names.AttrARN).(string)
+		input := &rds.RemoveFromGlobalClusterInput{
+			DbClusterIdentifier:     aws.String(clusterARN),
+			GlobalClusterIdentifier: aws.String(os),
+		}
+
+		_, err := conn.RemoveFromGlobalCluster(ctx, input)
+
+		if err != nil && !errs.IsA[*types.GlobalClusterNotFoundFault](err) && !tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "is not found in global cluster") {
+			return sdkdiag.AppendErrorf(diags, "removing RDS Cluster (%s) from RDS Global Cluster: %s", d.Id(), err)
+		}
+
+		// Removal from a global cluster puts the cluster into 'promoting' state. Wait for it to become available again.
+		if _, err := waitDBClusterAvailable(ctx, conn, d.Id(), true, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for RDS Cluster (%s) available: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange("iam_roles") {
+		o, n := d.GetChange("iam_roles")
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+
+		for _, v := range ns.Difference(os).List() {
+			if err := addIAMRoleToCluster(ctx, conn, d.Id(), v.(string)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+
+		for _, v := range os.Difference(ns).List() {
+			if err := removeIAMRoleFromCluster(ctx, conn, d.Id(), v.(string)); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+	}
+
+	return append(diags, resourceClusterRead(ctx, d, meta)...)
+}

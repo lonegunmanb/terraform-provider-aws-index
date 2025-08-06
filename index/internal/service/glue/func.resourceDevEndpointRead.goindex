@@ -1,0 +1,145 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDevEndpointRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlueClient(ctx)
+
+	endpoint, err := findDevEndpointByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Glue Dev Endpoint (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	endpointARN := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "glue",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  fmt.Sprintf("devEndpoint/%s", d.Id()),
+	}.String()
+
+	if err := d.Set(names.AttrARN, endpointARN); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting arn for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("arguments", endpoint.Arguments); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting arguments for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrAvailabilityZone, endpoint.AvailabilityZone); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting availability_zone for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("extra_jars_s3_path", endpoint.ExtraJarsS3Path); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting extra_jars_s3_path for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("extra_python_libs_s3_path", endpoint.ExtraPythonLibsS3Path); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting extra_python_libs_s3_path for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("failure_reason", endpoint.FailureReason); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting failure_reason for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("glue_version", endpoint.GlueVersion); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting glue_version for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrName, endpoint.EndpointName); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting name for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("number_of_nodes", endpoint.NumberOfNodes); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting number_of_nodes for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("number_of_workers", endpoint.NumberOfWorkers); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting number_of_workers for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("private_address", endpoint.PrivateAddress); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting private_address for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("public_address", endpoint.PublicAddress); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting public_address for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrPublicKey, endpoint.PublicKey); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting public_key for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("public_keys", flex.FlattenStringValueSet(endpoint.PublicKeys)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting public_keys for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrRoleARN, endpoint.RoleArn); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting role_arn for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("security_configuration", endpoint.SecurityConfiguration); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting security_configuration for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrSecurityGroupIDs, flex.FlattenStringValueSet(endpoint.SecurityGroupIds)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting security_group_ids for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrStatus, endpoint.Status); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting status for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrSubnetID, endpoint.SubnetId); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting subnet_id for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set(names.AttrVPCID, endpoint.VpcId); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting vpc_id for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("worker_type", endpoint.WorkerType); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting worker_type for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("yarn_endpoint_address", endpoint.YarnEndpointAddress); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting yarn_endpoint_address for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	if err := d.Set("zeppelin_remote_spark_interpreter_port", endpoint.ZeppelinRemoteSparkInterpreterPort); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting zeppelin_remote_spark_interpreter_port for Glue Dev Endpoint (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

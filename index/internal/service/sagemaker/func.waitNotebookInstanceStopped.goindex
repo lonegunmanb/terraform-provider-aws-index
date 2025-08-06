@@ -1,0 +1,33 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func waitNotebookInstanceStopped(ctx context.Context, conn *sagemaker.Client, notebookName string) error {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.NotebookInstanceStatusUpdating, awstypes.NotebookInstanceStatusStopping),
+		Target:  enum.Slice(awstypes.NotebookInstanceStatusStopped),
+		Refresh: statusNotebookInstance(ctx, conn, notebookName),
+		Timeout: notebookInstanceStoppedTimeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*sagemaker.DescribeNotebookInstanceOutput); ok {
+		if output.NotebookInstanceStatus == awstypes.NotebookInstanceStatusFailed {
+			tfresource.SetLastError(err, errors.New(aws.ToString(output.FailureReason)))
+		}
+
+		return err
+	}
+
+	return err
+}

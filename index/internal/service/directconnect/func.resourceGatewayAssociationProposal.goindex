@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+)
+func resourceGatewayAssociationProposal() *schema.Resource {
+	return &schema.Resource{
+		CreateWithoutTimeout: resourceGatewayAssociationProposalCreate,
+		ReadWithoutTimeout:   resourceGatewayAssociationProposalRead,
+		DeleteWithoutTimeout: resourceGatewayAssociationProposalDelete,
+
+		Importer: &schema.ResourceImporter{
+			StateContext: resourceGatewayAssociationProposalImport,
+		},
+
+		CustomizeDiff: customdiff.Sequence(
+			// Accepting the proposal with overridden prefixes changes the returned RequestedAllowedPrefixesToDirectConnectGateway value (allowed_prefixes attribute).
+			// We only want to force a new resource if this value changes and the current proposal state is "requested".
+			customdiff.ForceNewIf("allowed_prefixes", func(ctx context.Context, d *schema.ResourceDiff, meta any) bool {
+				conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+				log.Printf("[DEBUG] CustomizeDiff for Direct Connect Gateway Association Proposal (%s) allowed_prefixes", d.Id())
+
+				output, err := findGatewayAssociationProposalByID(ctx, conn, d.Id())
+
+				if tfresource.NotFound(err) {
+					// Proposal may be end-of-life and removed by AWS.
+					return false
+				}
+
+				if err != nil {
+					log.Printf("[ERROR] Error reading Direct Connect Gateway Association Proposal (%s): %s", d.Id(), err)
+					return false
+				}
+
+				return output.ProposalState == awstypes.DirectConnectGatewayAssociationProposalStateRequested
+			}),
+		),
+
+		Schema: map[string]*schema.Schema{
+			"allowed_prefixes": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"associated_gateway_id": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"associated_gateway_owner_account_id": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"associated_gateway_type": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"dx_gateway_id": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+			"dx_gateway_owner_account_id": {
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: verify.ValidAccountID,
+			},
+		},
+	}
+}

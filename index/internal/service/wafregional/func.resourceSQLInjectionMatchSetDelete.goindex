@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafregional
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafregional"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafregional/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSQLInjectionMatchSetDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).WAFRegionalClient(ctx)
+	region := meta.(*conns.AWSClient).Region(ctx)
+
+	if oldTuples := d.Get("sql_injection_match_tuple").(*schema.Set).List(); len(oldTuples) > 0 {
+		noTuples := []any{}
+		if err := updateSQLInjectionMatchSet(ctx, conn, region, d.Id(), oldTuples, noTuples); err != nil && !errs.IsA[*awstypes.WAFNonexistentItemException](err) && !errs.IsA[*awstypes.WAFNonexistentContainerException](err) {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
+
+	_, err := newRetryer(conn, region).RetryWithToken(ctx, func(token *string) (any, error) {
+		input := &wafregional.DeleteSqlInjectionMatchSetInput{
+			ChangeToken:            token,
+			SqlInjectionMatchSetId: aws.String(d.Id()),
+		}
+
+		return conn.DeleteSqlInjectionMatchSet(ctx, input)
+	})
+
+	if errs.IsA[*awstypes.WAFNonexistentItemException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting WAF Regional SQL Injection Match Set (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

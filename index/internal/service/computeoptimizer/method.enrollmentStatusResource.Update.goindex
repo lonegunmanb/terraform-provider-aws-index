@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/computeoptimizer
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/computeoptimizer"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/computeoptimizer/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *enrollmentStatusResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var new enrollmentStatusResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().ComputeOptimizerClient(ctx)
+
+	input := &computeoptimizer.UpdateEnrollmentStatusInput{
+		Status: awstypes.Status(fwflex.StringValueFromFramework(ctx, new.Status)),
+	}
+
+	_, err := conn.UpdateEnrollmentStatus(ctx, input)
+
+	if err != nil {
+		response.Diagnostics.AddError("updating Compute Optimizer Enrollment Status", err.Error())
+
+		return
+	}
+
+	output, err := waitEnrollmentStatusUpdated(ctx, conn, string(input.Status), r.CreateTimeout(ctx, new.Timeouts))
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for Compute Optimizer Enrollment Status (%s) update", new.ID.ValueString()), err.Error())
+
+		return
+	}
+
+	new.NumberOfMemberAccountsOptedIn = fwflex.Int32ToFrameworkInt64(ctx, output.NumberOfMemberAccountsOptedIn)
+
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+}

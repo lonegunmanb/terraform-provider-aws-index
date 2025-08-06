@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"errors"
+	"log"
+	"math/big"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceUserLoginProfileDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).IAMClient(ctx)
+
+	input := &iam.DeleteLoginProfileInput{
+		UserName: aws.String(d.Id()),
+	}
+
+	log.Printf("[DEBUG] Deleting IAM User Login Profile (%s): %v", d.Id(), input)
+	// Handle IAM eventual consistency
+	err := retry.RetryContext(ctx, propagationTimeout, func() *retry.RetryError {
+		_, err := conn.DeleteLoginProfile(ctx, input)
+
+		var nse *awstypes.NoSuchEntityException
+		if tfawserr.ErrCodeEquals(err, nse.ErrorCode()) {
+			return nil
+		}
+
+		// EntityTemporarilyUnmodifiable: Login Profile for User XXX cannot be modified while login profile is being created.
+		var etu *awstypes.EntityTemporarilyUnmodifiableException
+		if tfawserr.ErrCodeEquals(err, etu.ErrorCode()) {
+			return retry.RetryableError(err)
+		}
+
+		if err != nil {
+			return retry.NonRetryableError(err)
+		}
+
+		return nil
+	})
+
+	// Handle AWS Go SDK automatic retries
+	if tfresource.TimedOut(err) {
+		_, err = conn.DeleteLoginProfile(ctx, input)
+	}
+
+	if errs.IsA[*awstypes.NoSuchEntityException](err) {
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "deleting IAM User Login Profile (%s): %s", d.Id(), err)
+	}
+
+	return diags
+}

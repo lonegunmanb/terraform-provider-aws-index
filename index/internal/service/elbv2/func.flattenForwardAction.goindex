@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenForwardAction(d *schema.ResourceData, attrName string, i int, awsAction awstypes.Action, actionMap map[string]any) {
+	// On create and update, we have a Config
+	// On refresh, we have a populated State
+	// On import, we have nothing:
+	//  - Config is known but null.
+	//  - State is known, not null, but empty.
+	//  - Plan is known but null.
+
+	// During import, it's impossible to determine from AWS's response, the config, the state, or the plan
+	// whether the target group ARN was defined at the top level or within a forward action. AWS returns
+	// ARNs in both the default action (top-level) and in at least one forward action, regardless of
+	// whether a forward is actually defined.
+
+	// You can specify both a target group list and a top-level target group ARN only if the ARNs match
+	if rawConfig := d.GetRawConfig(); rawConfig.IsKnown() && !rawConfig.IsNull() {
+		if _, ok := d.GetOk("default_action.0.target_group_arn"); ok {
+			actionMap["target_group_arn"] = aws.ToString(awsAction.TargetGroupArn)
+		}
+		if actions := rawConfig.GetAttr(attrName); actions.IsKnown() && !actions.IsNull() {
+			flattenForwardActionOneOf(actions, i, awsAction, actionMap)
+			return
+		}
+	}
+
+	if rawState := d.GetRawState(); rawState.IsKnown() && !rawState.IsNull() {
+		if _, ok := d.GetOk("default_action.0.target_group_arn"); ok {
+			actionMap["target_group_arn"] = aws.ToString(awsAction.TargetGroupArn)
+		}
+		if actions := rawState.GetAttr(attrName); actions.IsKnown() && !actions.IsNull() && actions.LengthInt() > 0 {
+			flattenForwardActionOneOf(actions, i, awsAction, actionMap)
+			return
+		}
+	}
+
+	flattenForwardActionBoth(awsAction, actionMap)
+}

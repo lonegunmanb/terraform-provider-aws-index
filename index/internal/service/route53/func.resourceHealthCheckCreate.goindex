@@ -1,0 +1,138 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHealthCheckCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Route53Client(ctx)
+
+	healthCheckType := awstypes.HealthCheckType(d.Get(names.AttrType).(string))
+	healthCheckConfig := &awstypes.HealthCheckConfig{
+		Type: healthCheckType,
+	}
+
+	if v, ok := d.GetOk("disabled"); ok {
+		healthCheckConfig.Disabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("enable_sni"); ok {
+		healthCheckConfig.EnableSNI = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("failure_threshold"); ok {
+		healthCheckConfig.FailureThreshold = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("fqdn"); ok {
+		healthCheckConfig.FullyQualifiedDomainName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("invert_healthcheck"); ok {
+		healthCheckConfig.Inverted = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk(names.AttrIPAddress); ok {
+		healthCheckConfig.IPAddress = aws.String(v.(string))
+	}
+	if v, ok := d.GetOk(names.AttrPort); ok {
+		healthCheckConfig.Port = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("request_interval"); ok {
+		healthCheckConfig.RequestInterval = aws.Int32(int32(v.(int)))
+	}
+
+	if v, ok := d.GetOk("resource_path"); ok {
+		healthCheckConfig.ResourcePath = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("search_string"); ok {
+		healthCheckConfig.SearchString = aws.String(v.(string))
+	}
+
+	switch healthCheckType {
+	case awstypes.HealthCheckTypeCalculated:
+		if v, ok := d.GetOk("child_health_threshold"); ok {
+			healthCheckConfig.HealthThreshold = aws.Int32(int32(v.(int)))
+		}
+
+		if v, ok := d.GetOk("child_healthchecks"); ok {
+			healthCheckConfig.ChildHealthChecks = flex.ExpandStringValueSet(v.(*schema.Set))
+		}
+	case awstypes.HealthCheckTypeCloudwatchMetric:
+		alarmIdentifier := &awstypes.AlarmIdentifier{}
+
+		if v, ok := d.GetOk("cloudwatch_alarm_name"); ok {
+			alarmIdentifier.Name = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk("cloudwatch_alarm_region"); ok {
+			alarmIdentifier.Region = awstypes.CloudWatchRegion(v.(string))
+		}
+
+		healthCheckConfig.AlarmIdentifier = alarmIdentifier
+
+		if v, ok := d.GetOk("insufficient_data_health_status"); ok {
+			healthCheckConfig.InsufficientDataHealthStatus = awstypes.InsufficientDataHealthStatus(v.(string))
+		}
+	case awstypes.HealthCheckTypeRecoveryControl:
+		if v, ok := d.GetOk("routing_control_arn"); ok {
+			healthCheckConfig.RoutingControlArn = aws.String(v.(string))
+		}
+		fallthrough
+	default:
+		if v, ok := d.GetOk("measure_latency"); ok {
+			healthCheckConfig.MeasureLatency = aws.Bool(v.(bool))
+		}
+	}
+
+	if v, ok := d.GetOk("regions"); ok && v.(*schema.Set).Len() > 0 {
+		healthCheckConfig.Regions = flex.ExpandStringyValueSet[awstypes.HealthCheckRegion](v.(*schema.Set))
+	}
+
+	callerRef := id.UniqueId()
+	if v, ok := d.GetOk("reference_name"); ok {
+		callerRef = fmt.Sprintf("%s-%s", v.(string), callerRef)
+	}
+
+	input := &route53.CreateHealthCheckInput{
+		CallerReference:   aws.String(callerRef),
+		HealthCheckConfig: healthCheckConfig,
+	}
+
+	output, err := conn.CreateHealthCheck(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Route53 Health Check: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.HealthCheck.Id))
+
+	if err := createTags(ctx, conn, d.Id(), string(awstypes.TagResourceTypeHealthcheck), getTagsIn(ctx)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting Route53 Health Check (%s) tags: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceHealthCheckRead(ctx, d, meta)...)
+}

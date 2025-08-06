@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/efs
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/efs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceReplicationConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EFSClient(ctx)
+
+	replication, err := findReplicationConfigurationByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EFS Replication Configuration (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EFS Replication Configuration (%s): %s", d.Id(), err)
+	}
+
+	destinations := flattenDestinations(replication.Destinations)
+
+	// availability_zone_name and kms_key_id aren't returned from the AWS Read API.
+	if v, ok := d.GetOk(names.AttrDestination); ok && len(v.([]any)) > 0 {
+		copy := func(i int, k string) {
+			destinations[i].(map[string]any)[k] = v.([]any)[i].(map[string]any)[k]
+		}
+		// Assume 1 destination.
+		copy(0, "availability_zone_name")
+		copy(0, names.AttrKMSKeyID)
+	}
+
+	d.Set(names.AttrCreationTime, aws.ToTime(replication.CreationTime).String())
+	if err := d.Set(names.AttrDestination, destinations); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting destination: %s", err)
+	}
+	d.Set("original_source_file_system_arn", replication.OriginalSourceFileSystemArn)
+	d.Set("source_file_system_arn", replication.SourceFileSystemArn)
+	d.Set("source_file_system_id", replication.SourceFileSystemId)
+	d.Set("source_file_system_region", replication.SourceFileSystemRegion)
+
+	return diags
+}

@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandBucketGrants(l []any) []types.Grant {
+	var grants []types.Grant
+
+	for _, tfMapRaw := range l {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if v, ok := tfMap[names.AttrPermissions].(*schema.Set); ok {
+			for _, rawPermission := range v.List() {
+				permission, ok := rawPermission.(string)
+				if !ok {
+					continue
+				}
+
+				grantee := &types.Grantee{}
+
+				if v, ok := tfMap[names.AttrID].(string); ok && v != "" {
+					grantee.ID = aws.String(v)
+				}
+
+				if v, ok := tfMap[names.AttrType].(string); ok && v != "" {
+					grantee.Type = types.Type(v)
+				}
+
+				if v, ok := tfMap[names.AttrURI].(string); ok && v != "" {
+					grantee.URI = aws.String(v)
+				}
+
+				grant := types.Grant{
+					Grantee:    grantee,
+					Permission: types.Permission(permission),
+				}
+
+				grants = append(grants, grant)
+			}
+		}
+	}
+
+	return grants
+}

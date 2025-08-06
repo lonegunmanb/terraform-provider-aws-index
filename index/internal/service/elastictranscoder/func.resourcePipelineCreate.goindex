@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elastictranscoder
+import (
+	"context"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elastictranscoder"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elastictranscoder/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePipelineCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ElasticTranscoderClient(ctx)
+
+	req := &elastictranscoder.CreatePipelineInput{
+		AwsKmsKeyArn:    aws.String(d.Get("aws_kms_key_arn").(string)),
+		ContentConfig:   expandETPiplineOutputConfig(d, "content_config"),
+		InputBucket:     aws.String(d.Get("input_bucket").(string)),
+		Notifications:   expandETNotifications(d),
+		Role:            aws.String(d.Get(names.AttrRole).(string)),
+		ThumbnailConfig: expandETPiplineOutputConfig(d, "thumbnail_config"),
+	}
+
+	if v, ok := d.GetOk("output_bucket"); ok {
+		req.OutputBucket = aws.String(v.(string))
+	}
+
+	if name, ok := d.GetOk(names.AttrName); ok {
+		req.Name = aws.String(name.(string))
+	} else {
+		name := id.PrefixedUniqueId("tf-et-")
+		d.Set(names.AttrName, name)
+		req.Name = aws.String(name)
+	}
+
+	if (req.OutputBucket == nil && (req.ContentConfig == nil || req.ContentConfig.Bucket == nil)) ||
+		(req.OutputBucket != nil && req.ContentConfig != nil && req.ContentConfig.Bucket != nil) {
+		return sdkdiag.AppendErrorf(diags, "you must specify only one of output_bucket or content_config.bucket")
+	}
+
+	log.Printf("[DEBUG] Elastic Transcoder Pipeline create opts: %+v", req)
+	resp, err := conn.CreatePipeline(ctx, req)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Elastic Transcoder Pipeline: %s", err)
+	}
+
+	d.SetId(aws.ToString(resp.Pipeline.Id))
+
+	for _, w := range resp.Warnings {
+		log.Printf("[WARN] Elastic Transcoder Pipeline %v: %v", *w.Code, *w.Message)
+	}
+
+	return append(diags, resourcePipelineRead(ctx, d, meta)...)
+}

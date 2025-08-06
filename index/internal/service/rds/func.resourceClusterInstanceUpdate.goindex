@@ -1,0 +1,107 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceClusterInstanceUpdate(ctx context.Context, d *schema.ResourceData, meta any) (diags diag.Diagnostics) {
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &rds.ModifyDBInstanceInput{
+			ApplyImmediately:     aws.Bool(d.Get(names.AttrApplyImmediately).(bool)),
+			DBInstanceIdentifier: aws.String(d.Id()),
+		}
+
+		if d.HasChange(names.AttrAutoMinorVersionUpgrade) {
+			input.AutoMinorVersionUpgrade = aws.Bool(d.Get(names.AttrAutoMinorVersionUpgrade).(bool))
+		}
+
+		if d.HasChange("ca_cert_identifier") {
+			input.CACertificateIdentifier = aws.String(d.Get("ca_cert_identifier").(string))
+		}
+
+		if d.HasChange("copy_tags_to_snapshot") {
+			input.CopyTagsToSnapshot = aws.Bool(d.Get("copy_tags_to_snapshot").(bool))
+		}
+
+		if d.HasChange("db_parameter_group_name") {
+			input.DBParameterGroupName = aws.String(d.Get("db_parameter_group_name").(string))
+		}
+
+		if d.HasChange("instance_class") {
+			input.DBInstanceClass = aws.String(d.Get("instance_class").(string))
+		}
+
+		if d.HasChange("monitoring_interval") {
+			input.MonitoringInterval = aws.Int32(int32(d.Get("monitoring_interval").(int)))
+		}
+
+		if d.HasChange("monitoring_role_arn") {
+			input.MonitoringRoleArn = aws.String(d.Get("monitoring_role_arn").(string))
+		}
+
+		if d.HasChanges("performance_insights_enabled", "performance_insights_kms_key_id", "performance_insights_retention_period") {
+			input.EnablePerformanceInsights = aws.Bool(d.Get("performance_insights_enabled").(bool))
+
+			if v, ok := d.GetOk("performance_insights_kms_key_id"); ok {
+				input.PerformanceInsightsKMSKeyId = aws.String(v.(string))
+			}
+
+			if v, ok := d.GetOk("performance_insights_retention_period"); ok {
+				input.PerformanceInsightsRetentionPeriod = aws.Int32(int32(v.(int)))
+			}
+		}
+
+		if d.HasChange("preferred_backup_window") {
+			input.PreferredBackupWindow = aws.String(d.Get("preferred_backup_window").(string))
+		}
+
+		if d.HasChange(names.AttrPreferredMaintenanceWindow) {
+			input.PreferredMaintenanceWindow = aws.String(d.Get(names.AttrPreferredMaintenanceWindow).(string))
+		}
+
+		if d.HasChange("promotion_tier") {
+			input.PromotionTier = aws.Int32(int32(d.Get("promotion_tier").(int)))
+		}
+
+		if d.HasChange(names.AttrPubliclyAccessible) {
+			input.PubliclyAccessible = aws.Bool(d.Get(names.AttrPubliclyAccessible).(bool))
+		}
+
+		_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout,
+			func() (any, error) {
+				return conn.ModifyDBInstance(ctx, input)
+			},
+			errCodeInvalidParameterValue, "IAM role ARN value is invalid or does not include the required permissions")
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating RDS Cluster Instance (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitDBClusterInstanceAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for RDS Cluster Instance (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceClusterInstanceRead(ctx, d, meta)...)
+}

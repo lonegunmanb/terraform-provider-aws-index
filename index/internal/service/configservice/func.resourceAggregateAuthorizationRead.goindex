@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/configservice
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+	"github.com/aws/aws-sdk-go-v2/service/configservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAggregateAuthorizationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).ConfigServiceClient(ctx)
+
+	accountID, authorizedRegion, err := aggregateAuthorizationParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	aggregationAuthorization, err := findAggregateAuthorizationByTwoPartKey(ctx, conn, accountID, authorizedRegion)
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] ConfigService Aggregate Authorization (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading ConfigService Aggregate Authorization (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrAccountID, aggregationAuthorization.AuthorizedAccountId)
+	d.Set(names.AttrARN, aggregationAuthorization.AggregationAuthorizationArn)
+	if _, ok := d.GetOk(names.AttrRegion); ok {
+		d.Set(names.AttrRegion, aggregationAuthorization.AuthorizedAwsRegion)
+	} else {
+		d.Set("authorized_aws_region", aggregationAuthorization.AuthorizedAwsRegion)
+	}
+
+	return diags
+}

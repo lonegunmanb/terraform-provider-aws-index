@@ -1,0 +1,208 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/rds
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/aws/aws-sdk-go-v2/service/rds/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceInstanceRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RDSClient(ctx)
+
+	var (
+		v   *types.DBInstance
+		err error
+	)
+
+	if d.IsNewResource() {
+		v, err = findDBInstanceByID(ctx, conn, d.Id())
+	} else {
+		v, err = findDBInstanceByID(ctx, conn, d.Id())
+		if tfresource.NotFound(err) { // nosemgrep:ci.semgrep.errors.notfound-without-err-checks
+			// Retry with `identifier`
+			v, err = findDBInstanceByID(ctx, conn, d.Get(names.AttrIdentifier).(string))
+			if tfresource.NotFound(err) { // nosemgrep:ci.semgrep.errors.notfound-without-err-checks
+				log.Printf("[WARN] RDS DB Instance (%s) not found, removing from state", d.Get(names.AttrIdentifier).(string))
+				d.SetId("")
+				return diags
+			}
+		}
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading RDS DB Instance (%s): %s", d.Get(names.AttrIdentifier).(string), err)
+	}
+
+	d.SetId(aws.ToString(v.DbiResourceId))
+	d.Set(names.AttrAllocatedStorage, v.AllocatedStorage)
+	d.Set(names.AttrARN, v.DBInstanceArn)
+	d.Set(names.AttrAutoMinorVersionUpgrade, v.AutoMinorVersionUpgrade)
+	d.Set(names.AttrAvailabilityZone, v.AvailabilityZone)
+	d.Set("backup_retention_period", v.BackupRetentionPeriod)
+	d.Set("backup_target", v.BackupTarget)
+	d.Set("backup_window", v.PreferredBackupWindow)
+	d.Set("ca_cert_identifier", v.CACertificateIdentifier)
+	d.Set("character_set_name", v.CharacterSetName)
+	d.Set("copy_tags_to_snapshot", v.CopyTagsToSnapshot)
+	d.Set("custom_iam_instance_profile", v.CustomIamInstanceProfile)
+	d.Set("customer_owned_ip_enabled", v.CustomerOwnedIpEnabled)
+	d.Set("database_insights_mode", v.DatabaseInsightsMode)
+	d.Set("db_name", v.DBName)
+	if v.DBSubnetGroup != nil {
+		d.Set("db_subnet_group_name", v.DBSubnetGroup.DBSubnetGroupName)
+	}
+	d.Set("dedicated_log_volume", v.DedicatedLogVolume)
+	d.Set(names.AttrDeletionProtection, v.DeletionProtection)
+	if len(v.DomainMemberships) > 0 {
+		v := v.DomainMemberships[0]
+		d.Set(names.AttrDomain, v.Domain)
+		d.Set("domain_auth_secret_arn", v.AuthSecretArn)
+		d.Set("domain_dns_ips", v.DnsIps)
+		d.Set("domain_fqdn", v.FQDN)
+		d.Set("domain_iam_role_name", v.IAMRoleName)
+		d.Set("domain_ou", v.OU)
+	} else {
+		d.Set(names.AttrDomain, nil)
+		d.Set("domain_auth_secret_arn", nil)
+		d.Set("domain_dns_ips", nil)
+		d.Set("domain_fqdn", nil)
+		d.Set("domain_iam_role_name", nil)
+		d.Set("domain_ou", nil)
+	}
+	d.Set("enabled_cloudwatch_logs_exports", v.EnabledCloudwatchLogsExports)
+	d.Set(names.AttrEngine, v.Engine)
+	d.Set("engine_lifecycle_support", v.EngineLifecycleSupport)
+	d.Set("iam_database_authentication_enabled", v.IAMDatabaseAuthenticationEnabled)
+	d.Set(names.AttrIdentifier, v.DBInstanceIdentifier)
+	d.Set("identifier_prefix", create.NamePrefixFromName(aws.ToString(v.DBInstanceIdentifier)))
+	d.Set("instance_class", v.DBInstanceClass)
+	d.Set(names.AttrIOPS, v.Iops)
+	d.Set(names.AttrKMSKeyID, v.KmsKeyId)
+	if v.LatestRestorableTime != nil {
+		d.Set("latest_restorable_time", aws.ToTime(v.LatestRestorableTime).Format(time.RFC3339))
+	} else {
+		d.Set("latest_restorable_time", nil)
+	}
+	d.Set("license_model", v.LicenseModel)
+	d.Set("maintenance_window", v.PreferredMaintenanceWindow)
+	// Note: the following attributes are not returned by the API
+	// when conducting a read after a create, so we rely on Terraform's
+	// implicit state passthrough, and they are treated as virtual attributes.
+	// https://hashicorp.github.io/terraform-provider-aws/data-handling-and-conversion/#implicit-state-passthrough
+	// https://hashicorp.github.io/terraform-provider-aws/data-handling-and-conversion/#virtual-attributes
+	//
+	// manage_master_user_password
+	// master_password
+	//
+	// Expose the MasterUserSecret structure as a computed attribute
+	// https://awscli.amazonaws.com/v2/documentation/api/latest/reference/rds/create-db-cluster.html#:~:text=for%20future%20use.-,MasterUserSecret,-%2D%3E%20(structure)
+	if v.MasterUserSecret != nil {
+		if err := d.Set("master_user_secret", []any{flattenManagedMasterUserSecret(v.MasterUserSecret)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting master_user_secret: %s", err)
+		}
+	} else {
+		d.Set("master_user_secret", nil)
+	}
+
+	d.Set("max_allocated_storage", v.MaxAllocatedStorage)
+	d.Set("monitoring_interval", v.MonitoringInterval)
+	d.Set("monitoring_role_arn", v.MonitoringRoleArn)
+	d.Set("multi_az", v.MultiAZ)
+	d.Set("nchar_character_set_name", v.NcharCharacterSetName)
+	d.Set("network_type", v.NetworkType)
+	if len(v.OptionGroupMemberships) > 0 {
+		d.Set("option_group_name", v.OptionGroupMemberships[0].OptionGroupName)
+	}
+	if len(v.DBParameterGroups) > 0 {
+		d.Set(names.AttrParameterGroupName, v.DBParameterGroups[0].DBParameterGroupName)
+	}
+	d.Set("performance_insights_enabled", v.PerformanceInsightsEnabled)
+	d.Set("performance_insights_kms_key_id", v.PerformanceInsightsKMSKeyId)
+	d.Set("performance_insights_retention_period", v.PerformanceInsightsRetentionPeriod)
+	d.Set(names.AttrPort, v.DbInstancePort)
+	d.Set(names.AttrPubliclyAccessible, v.PubliclyAccessible)
+	d.Set("replica_mode", v.ReplicaMode)
+	d.Set("replicas", v.ReadReplicaDBInstanceIdentifiers)
+
+	// The AWS API accepts either the identifier or ARN when setting up a replica in the same region. The AWS Console uses the ARN.
+	// However, if the replica is in the same region, it always returns the identifier.
+	// Store the ARN if the ARN was originally set.
+	var sourceDBIdentifier string
+	if v.ReadReplicaSourceDBInstanceIdentifier != nil {
+		sourceDBIdentifier = aws.ToString(v.ReadReplicaSourceDBInstanceIdentifier)
+		if original, ok := d.GetOk("replicate_source_db"); ok {
+			original := original.(string)
+			if arn.IsARN(original) {
+				if !arn.IsARN(sourceDBIdentifier) {
+					awsClient := meta.(*conns.AWSClient)
+					sourceDBIdentifier = newDBInstanceARNString(ctx, awsClient, sourceDBIdentifier)
+				}
+			}
+		}
+	}
+	d.Set("replicate_source_db", sourceDBIdentifier)
+
+	d.Set(names.AttrResourceID, v.DbiResourceId)
+	d.Set(names.AttrStatus, v.DBInstanceStatus)
+	d.Set(names.AttrStorageEncrypted, v.StorageEncrypted)
+	d.Set("storage_throughput", v.StorageThroughput)
+	d.Set(names.AttrStorageType, v.StorageType)
+	d.Set("timezone", v.Timezone)
+	d.Set(names.AttrUsername, v.MasterUsername)
+	d.Set(names.AttrVPCSecurityGroupIDs, tfslices.ApplyToAll(v.VpcSecurityGroups, func(v types.VpcSecurityGroupMembership) string {
+		return aws.ToString(v.VpcSecurityGroupId)
+	}))
+
+	if v.Endpoint != nil {
+		d.Set(names.AttrAddress, v.Endpoint.Address)
+		if v.Endpoint.Address != nil && v.Endpoint.Port != nil {
+			d.Set(names.AttrEndpoint, fmt.Sprintf("%s:%d", aws.ToString(v.Endpoint.Address), aws.ToInt32(v.Endpoint.Port)))
+		}
+		d.Set(names.AttrHostedZoneID, v.Endpoint.HostedZoneId)
+		d.Set(names.AttrPort, v.Endpoint.Port)
+	}
+
+	if v.ListenerEndpoint != nil {
+		if err := d.Set("listener_endpoint", []any{flattenEndpoint(v.ListenerEndpoint)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting listener_endpoint: %s", err)
+		}
+	} else {
+		d.Set("listener_endpoint", nil)
+	}
+
+	dbSetResourceDataEngineVersionFromInstance(d, v)
+
+	setTagsOut(ctx, v.TagList)
+
+	return diags
+}

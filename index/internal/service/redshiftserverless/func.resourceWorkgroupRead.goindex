@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshiftserverless
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceWorkgroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftServerlessClient(ctx)
+
+	out, err := findWorkgroupByName(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Redshift Serverless Workgroup (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Redshift Serverless Workgroup (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, out.WorkgroupArn)
+	d.Set("base_capacity", out.BaseCapacity)
+	if err := d.Set("config_parameter", flattenConfigParameters(out.ConfigParameters)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting config_parameter: %s", err)
+	}
+	if err := d.Set(names.AttrEndpoint, []any{flattenEndpoint(out.Endpoint)}); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting endpoint: %s", err)
+	}
+	d.Set("enhanced_vpc_routing", out.EnhancedVpcRouting)
+	d.Set(names.AttrMaxCapacity, out.MaxCapacity)
+	d.Set("namespace_name", out.NamespaceName)
+	d.Set(names.AttrPort, flattenEndpoint(out.Endpoint)[names.AttrPort])
+	if err := d.Set("price_performance_target", flattenPerformanceTarget(out.PricePerformanceTarget)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting price_performance_target: %s", err)
+	}
+	d.Set(names.AttrPubliclyAccessible, out.PubliclyAccessible)
+	d.Set(names.AttrSecurityGroupIDs, out.SecurityGroupIds)
+	d.Set(names.AttrSubnetIDs, out.SubnetIds)
+	d.Set("track_name", out.TrackName)
+	d.Set("workgroup_id", out.WorkgroupId)
+	d.Set("workgroup_name", out.WorkgroupName)
+
+	return diags
+}

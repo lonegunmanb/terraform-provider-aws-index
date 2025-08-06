@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepSpotInstanceRequests(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+
+	if err != nil {
+		return fmt.Errorf("error getting client: %s", err)
+	}
+
+	conn := client.EC2Client(ctx)
+	var sweepResources []sweep.Sweepable
+	var errs *multierror.Error
+
+	pages := ec2.NewDescribeSpotInstanceRequestsPaginator(conn, &ec2.DescribeSpotInstanceRequestsInput{})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(errs.ErrorOrNil()) {
+			log.Printf("[WARN] Skipping EC2 Spot Instance Requests sweep for %s: %s", region, errs)
+			return nil
+		}
+
+		if err != nil {
+			errs = multierror.Append(errs, fmt.Errorf("error describing EC2 Spot Instance Requests for %s: %w", region, err))
+		}
+
+		if len(page.SpotInstanceRequests) == 0 {
+			log.Print("[DEBUG] No Spot Instance Requests to sweep")
+			return nil
+		}
+
+		for _, v := range page.SpotInstanceRequests {
+			r := resourceSpotInstanceRequest()
+			d := r.Data(nil)
+			d.SetId(aws.ToString(v.SpotInstanceRequestId))
+			d.Set("spot_instance_id", v.InstanceId)
+
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
+		}
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+
+	if err != nil {
+		errs = multierror.Append(errs, fmt.Errorf("error sweeping EC2 Spot Instance Requests for %s: %w", region, err))
+	}
+
+	return errs.ErrorOrNil()
+}

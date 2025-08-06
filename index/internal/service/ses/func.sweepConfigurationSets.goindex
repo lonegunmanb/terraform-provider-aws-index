@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ses
+import (
+	"fmt"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+)
+func sweepConfigurationSets(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("getting client: %w", err)
+	}
+	conn := client.SESClient(ctx)
+	input := &ses.ListConfigurationSetsInput{}
+	var sweeperErrs *multierror.Error
+
+	for {
+		output, err := conn.ListConfigurationSets(ctx, input)
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping SES Configuration Sets sweep for %s: %s", region, err)
+			return sweeperErrs.ErrorOrNil() // In case we have completed some pages, but had errors
+		}
+		if err != nil {
+			sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("retrieving SES Configuration Sets: %w", err))
+			return sweeperErrs
+		}
+
+		for _, configurationSet := range output.ConfigurationSets {
+			name := aws.ToString(configurationSet.Name)
+
+			log.Printf("[INFO] Deleting SES Configuration Set: %s", name)
+			_, err := conn.DeleteConfigurationSet(ctx, &ses.DeleteConfigurationSetInput{
+				ConfigurationSetName: aws.String(name),
+			})
+			if errs.IsA[*awstypes.ConfigurationSetDoesNotExistException](err) {
+				continue
+			}
+			if err != nil {
+				sweeperErr := fmt.Errorf("deleting SES Configuration Set (%s): %w", name, err)
+				log.Printf("[ERROR] %s", sweeperErr)
+				sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+				continue
+			}
+		}
+
+		if aws.ToString(output.NextToken) == "" {
+			break
+		}
+		input.NextToken = output.NextToken
+	}
+
+	return sweeperErrs.ErrorOrNil()
+}

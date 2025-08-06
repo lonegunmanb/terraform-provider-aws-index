@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/globalaccelerator
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/globalaccelerator"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/globalaccelerator/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceListenerUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlobalAcceleratorClient(ctx)
+
+	acceleratorARN := d.Get("accelerator_arn").(string)
+	input := &globalaccelerator.UpdateListenerInput{
+		ClientAffinity: awstypes.ClientAffinity(d.Get("client_affinity").(string)),
+		ListenerArn:    aws.String(d.Id()),
+		PortRanges:     expandPortRanges(d.Get("port_range").(*schema.Set).List()),
+		Protocol:       awstypes.Protocol(d.Get(names.AttrProtocol).(string)),
+	}
+
+	_, err := conn.UpdateListener(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "updating Global Accelerator Listener (%s): %s", d.Id(), err)
+	}
+
+	// Updating a listener triggers the accelerator to change status to InPending.
+	if _, err := waitAcceleratorDeployed(ctx, conn, acceleratorARN, d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Global Accelerator Accelerator (%s) deploy: %s", acceleratorARN, err)
+	}
+
+	return append(diags, resourceListenerRead(ctx, d, meta)...)
+}

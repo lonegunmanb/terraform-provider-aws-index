@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directconnect
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directconnect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directconnect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceHostedConnectionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
+
+	connection, err := findHostedConnectionByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Direct Connect Hosted Connection (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Direct Connect Hosted Connection (%s): %s", d.Id(), err)
+	}
+
+	// Cannot set the following attributes from the response:
+	// - connection_id: conn.ConnectionId is this resource's ID, not the ID of the interconnect or LAG
+	// - tags: conn.Tags seems to always come back empty and DescribeTags needs to be called from the owner account
+	d.Set("aws_device", connection.AwsDeviceV2)
+	d.Set("connection_region", connection.Region)
+	d.Set("has_logical_redundancy", connection.HasLogicalRedundancy)
+	d.Set("jumbo_frame_capable", connection.JumboFrameCapable)
+	d.Set("lag_id", connection.LagId)
+	d.Set("loa_issue_time", aws.ToTime(connection.LoaIssueTime).Format(time.RFC3339))
+	d.Set(names.AttrLocation, connection.Location)
+	d.Set(names.AttrName, connection.ConnectionName)
+	d.Set(names.AttrOwnerAccountID, connection.OwnerAccount)
+	d.Set("partner_name", connection.PartnerName)
+	d.Set(names.AttrProviderName, connection.ProviderName)
+	d.Set(names.AttrRegion, connection.Region)
+	d.Set(names.AttrState, connection.ConnectionState)
+	d.Set("vlan", connection.Vlan)
+
+	return diags
+}

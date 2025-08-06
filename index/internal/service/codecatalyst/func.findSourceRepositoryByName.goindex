@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/codecatalyst
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codecatalyst"
+	"github.com/aws/aws-sdk-go-v2/service/codecatalyst/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findSourceRepositoryByName(ctx context.Context, conn *codecatalyst.Client, name string, projectName, spaceName *string) (*codecatalyst.GetSourceRepositoryOutput, error) {
+	in := &codecatalyst.GetSourceRepositoryInput{
+		Name:        aws.String(name),
+		ProjectName: projectName,
+		SpaceName:   spaceName,
+	}
+	out, err := conn.GetSourceRepository(ctx, in)
+	if errs.IsA[*types.AccessDeniedException](err) || errs.IsA[*types.ResourceNotFoundException](err) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: in,
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if out == nil || out.Name == nil {
+		return nil, tfresource.NewEmptyResultError(in)
+	}
+
+	return out, nil
+}

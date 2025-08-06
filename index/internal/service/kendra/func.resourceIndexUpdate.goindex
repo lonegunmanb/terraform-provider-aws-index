@@ -1,0 +1,91 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kendra
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kendra"
+	"github.com/aws/aws-sdk-go-v2/service/kendra/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIndexUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).KendraClient(ctx)
+
+	id := d.Id()
+
+	if d.HasChanges("capacity_units", names.AttrDescription, "document_metadata_configuration_updates", names.AttrName, names.AttrRoleARN, "user_context_policy", "user_group_resolution_configuration", "user_token_configurations") {
+		input := &kendra.UpdateIndexInput{
+			Id: aws.String(id),
+		}
+		if d.HasChange("capacity_units") {
+			input.CapacityUnits = expandCapacityUnits(d.Get("capacity_units").([]any))
+		}
+		if d.HasChange(names.AttrDescription) {
+			input.Description = aws.String(d.Get(names.AttrDescription).(string))
+		}
+		if d.HasChange("document_metadata_configuration_updates") {
+			input.DocumentMetadataConfigurationUpdates = expandDocumentMetadataConfigurationUpdates(d.Get("document_metadata_configuration_updates").(*schema.Set).List())
+		}
+		if d.HasChange(names.AttrName) {
+			input.Name = aws.String(d.Get(names.AttrName).(string))
+		}
+		if d.HasChange(names.AttrRoleARN) {
+			input.RoleArn = aws.String(d.Get(names.AttrRoleARN).(string))
+		}
+		if d.HasChange("user_context_policy") {
+			input.UserContextPolicy = types.UserContextPolicy(d.Get("user_context_policy").(string))
+		}
+		if d.HasChange("user_group_resolution_configuration") {
+			input.UserGroupResolutionConfiguration = expandUserGroupResolutionConfiguration(d.Get("user_group_resolution_configuration").([]any))
+		}
+		if d.HasChange("user_token_configurations") {
+			input.UserTokenConfigurations = expandUserTokenConfigurations(d.Get("user_token_configurations").([]any))
+		}
+
+		_, err := tfresource.RetryWhen(ctx, propagationTimeout,
+			func() (any, error) {
+				return conn.UpdateIndex(ctx, input)
+			},
+			func(err error) (bool, error) {
+				var validationException *types.ValidationException
+
+				if errors.As(err, &validationException) && strings.Contains(validationException.ErrorMessage(), validationExceptionMessage) {
+					return true, err
+				}
+
+				return false, err
+			},
+		)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Index (%s): %s", d.Id(), err)
+		}
+
+		// waiter since the status changes from UPDATING to either ACTIVE or FAILED
+		if _, err := waitIndexUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Index (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceIndexRead(ctx, d, meta)...)
+}

@@ -1,0 +1,279 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	dms "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfkms "github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DMSClient(ctx)
+
+	endpointID := d.Get("endpoint_id").(string)
+	input := &dms.CreateEndpointInput{
+		EndpointIdentifier: aws.String(endpointID),
+		EndpointType:       awstypes.ReplicationEndpointTypeValue(d.Get(names.AttrEndpointType).(string)),
+		EngineName:         aws.String(d.Get("engine_name").(string)),
+		Tags:               getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk(names.AttrCertificateARN); ok {
+		input.CertificateArn = aws.String(v.(string))
+	}
+
+	// Send ExtraConnectionAttributes in the API request for all resource types
+	// per https://github.com/hashicorp/terraform-provider-aws/issues/8009
+	if v, ok := d.GetOk("extra_connection_attributes"); ok {
+		input.ExtraConnectionAttributes = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrKMSKeyARN); ok {
+		input.KmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("ssl_mode"); ok {
+		input.SslMode = awstypes.DmsSslModeValue(v.(string))
+	}
+
+	switch d.Get("engine_name").(string) {
+	case engineNameAurora, engineNameMariadb, engineNameMySQL:
+		if _, ok := d.GetOk("secrets_manager_arn"); ok {
+			input.MySQLSettings = &awstypes.MySQLSettings{
+				SecretsManagerAccessRoleArn: aws.String(d.Get("secrets_manager_access_role_arn").(string)),
+				SecretsManagerSecretId:      aws.String(d.Get("secrets_manager_arn").(string)),
+			}
+		} else {
+			input.MySQLSettings = &awstypes.MySQLSettings{
+				Username:     aws.String(d.Get(names.AttrUsername).(string)),
+				Password:     aws.String(d.Get(names.AttrPassword).(string)),
+				ServerName:   aws.String(d.Get("server_name").(string)),
+				Port:         aws.Int32(int32(d.Get(names.AttrPort).(int))),
+				DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+
+			// Set connection info in top-level namespace as well
+			expandTopLevelConnectionInfo(d, input)
+		}
+	case engineNameAuroraPostgresql, engineNamePostgres:
+		settings := &awstypes.PostgreSQLSettings{}
+		if _, ok := d.GetOk("postgres_settings"); ok {
+			settings = expandPostgreSQLSettings(d.Get("postgres_settings").([]any)[0].(map[string]any))
+		}
+
+		if _, ok := d.GetOk("secrets_manager_arn"); ok {
+			settings.SecretsManagerAccessRoleArn = aws.String(d.Get("secrets_manager_access_role_arn").(string))
+			settings.SecretsManagerSecretId = aws.String(d.Get("secrets_manager_arn").(string))
+			settings.DatabaseName = aws.String(d.Get(names.AttrDatabaseName).(string))
+		} else {
+			settings.Username = aws.String(d.Get(names.AttrUsername).(string))
+			settings.Password = aws.String(d.Get(names.AttrPassword).(string))
+			settings.ServerName = aws.String(d.Get("server_name").(string))
+			settings.Port = aws.Int32(int32(d.Get(names.AttrPort).(int)))
+			settings.DatabaseName = aws.String(d.Get(names.AttrDatabaseName).(string))
+
+			// Set connection info in top-level namespace as well
+			expandTopLevelConnectionInfo(d, input)
+		}
+
+		input.PostgreSQLSettings = settings
+	case engineNameDynamoDB:
+		input.DynamoDbSettings = &awstypes.DynamoDbSettings{
+			ServiceAccessRoleArn: aws.String(d.Get("service_access_role").(string)),
+		}
+	case engineNameElasticsearch, engineNameOpenSearch:
+		input.ElasticsearchSettings = &awstypes.ElasticsearchSettings{
+			ServiceAccessRoleArn:    aws.String(d.Get("elasticsearch_settings.0.service_access_role_arn").(string)),
+			EndpointUri:             aws.String(d.Get("elasticsearch_settings.0.endpoint_uri").(string)),
+			ErrorRetryDuration:      aws.Int32(int32(d.Get("elasticsearch_settings.0.error_retry_duration").(int))),
+			FullLoadErrorPercentage: aws.Int32(int32(d.Get("elasticsearch_settings.0.full_load_error_percentage").(int))),
+			UseNewMappingType:       aws.Bool(d.Get("elasticsearch_settings.0.use_new_mapping_type").(bool)),
+		}
+	case engineNameKafka:
+		input.KafkaSettings = expandKafkaSettings(d.Get("kafka_settings").([]any)[0].(map[string]any))
+	case engineNameKinesis:
+		input.KinesisSettings = expandKinesisSettings(d.Get("kinesis_settings").([]any)[0].(map[string]any))
+	case engineNameMongodb:
+		var settings = &awstypes.MongoDbSettings{}
+
+		if _, ok := d.GetOk("secrets_manager_arn"); ok {
+			settings.SecretsManagerAccessRoleArn = aws.String(d.Get("secrets_manager_access_role_arn").(string))
+			settings.SecretsManagerSecretId = aws.String(d.Get("secrets_manager_arn").(string))
+		} else {
+			settings.Username = aws.String(d.Get(names.AttrUsername).(string))
+			settings.Password = aws.String(d.Get(names.AttrPassword).(string))
+			settings.ServerName = aws.String(d.Get("server_name").(string))
+			settings.Port = aws.Int32(int32(d.Get(names.AttrPort).(int)))
+
+			// Set connection info in top-level namespace as well
+			expandTopLevelConnectionInfo(d, input)
+		}
+
+		settings.DatabaseName = aws.String(d.Get(names.AttrDatabaseName).(string))
+		settings.KmsKeyId = aws.String(d.Get(names.AttrKMSKeyARN).(string))
+		settings.AuthType = awstypes.AuthTypeValue(d.Get("mongodb_settings.0.auth_type").(string))
+		settings.AuthMechanism = awstypes.AuthMechanismValue(d.Get("mongodb_settings.0.auth_mechanism").(string))
+		settings.NestingLevel = awstypes.NestingLevelValue(d.Get("mongodb_settings.0.nesting_level").(string))
+		settings.ExtractDocId = aws.String(d.Get("mongodb_settings.0.extract_doc_id").(string))
+		settings.DocsToInvestigate = aws.String(d.Get("mongodb_settings.0.docs_to_investigate").(string))
+		settings.AuthSource = aws.String(d.Get("mongodb_settings.0.auth_source").(string))
+
+		input.MongoDbSettings = settings
+	case engineNameOracle:
+		if _, ok := d.GetOk("secrets_manager_arn"); ok {
+			input.OracleSettings = &awstypes.OracleSettings{
+				SecretsManagerAccessRoleArn: aws.String(d.Get("secrets_manager_access_role_arn").(string)),
+				SecretsManagerSecretId:      aws.String(d.Get("secrets_manager_arn").(string)),
+				DatabaseName:                aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+		} else {
+			input.OracleSettings = &awstypes.OracleSettings{
+				Username:     aws.String(d.Get(names.AttrUsername).(string)),
+				Password:     aws.String(d.Get(names.AttrPassword).(string)),
+				ServerName:   aws.String(d.Get("server_name").(string)),
+				Port:         aws.Int32(int32(d.Get(names.AttrPort).(int))),
+				DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+
+			// Set connection info in top-level namespace as well
+			expandTopLevelConnectionInfo(d, input)
+		}
+	case engineNameRedis:
+		input.RedisSettings = expandRedisSettings(d.Get("redis_settings").([]any)[0].(map[string]any))
+	case engineNameRedshift:
+		var settings = &awstypes.RedshiftSettings{
+			DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+		}
+
+		if _, ok := d.GetOk("secrets_manager_arn"); ok {
+			settings.SecretsManagerAccessRoleArn = aws.String(d.Get("secrets_manager_access_role_arn").(string))
+			settings.SecretsManagerSecretId = aws.String(d.Get("secrets_manager_arn").(string))
+		} else {
+			settings.Username = aws.String(d.Get(names.AttrUsername).(string))
+			settings.Password = aws.String(d.Get(names.AttrPassword).(string))
+			settings.ServerName = aws.String(d.Get("server_name").(string))
+			settings.Port = aws.Int32(int32(d.Get(names.AttrPort).(int)))
+
+			// Set connection info in top-level namespace as well
+			expandTopLevelConnectionInfo(d, input)
+		}
+
+		if v, ok := d.GetOk("redshift_settings"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			tfMap := v.([]any)[0].(map[string]any)
+
+			if v, ok := tfMap["bucket_folder"].(string); ok && v != "" {
+				settings.BucketFolder = aws.String(v)
+			}
+
+			if v, ok := tfMap[names.AttrBucketName].(string); ok && v != "" {
+				settings.BucketName = aws.String(v)
+			}
+
+			if v, ok := tfMap["encryption_mode"].(string); ok && v != "" {
+				settings.EncryptionMode = awstypes.EncryptionModeValue(v)
+			}
+
+			if v, ok := tfMap["server_side_encryption_kms_key_id"].(string); ok && v != "" {
+				settings.ServerSideEncryptionKmsKeyId = aws.String(v)
+			}
+
+			if v, ok := tfMap["service_access_role_arn"].(string); ok && v != "" {
+				settings.ServiceAccessRoleArn = aws.String(v)
+			}
+		}
+
+		input.RedshiftSettings = settings
+	case engineNameSQLServer, engineNameBabelfish:
+		if _, ok := d.GetOk("secrets_manager_arn"); ok {
+			input.MicrosoftSQLServerSettings = &awstypes.MicrosoftSQLServerSettings{
+				SecretsManagerAccessRoleArn: aws.String(d.Get("secrets_manager_access_role_arn").(string)),
+				SecretsManagerSecretId:      aws.String(d.Get("secrets_manager_arn").(string)),
+				DatabaseName:                aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+		} else {
+			input.MicrosoftSQLServerSettings = &awstypes.MicrosoftSQLServerSettings{
+				Username:     aws.String(d.Get(names.AttrUsername).(string)),
+				Password:     aws.String(d.Get(names.AttrPassword).(string)),
+				ServerName:   aws.String(d.Get("server_name").(string)),
+				Port:         aws.Int32(int32(d.Get(names.AttrPort).(int))),
+				DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+
+			// Set connection info in top-level namespace as well
+			expandTopLevelConnectionInfo(d, input)
+		}
+	case engineNameSybase:
+		if _, ok := d.GetOk("secrets_manager_arn"); ok {
+			input.SybaseSettings = &awstypes.SybaseSettings{
+				SecretsManagerAccessRoleArn: aws.String(d.Get("secrets_manager_access_role_arn").(string)),
+				SecretsManagerSecretId:      aws.String(d.Get("secrets_manager_arn").(string)),
+				DatabaseName:                aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+		} else {
+			input.SybaseSettings = &awstypes.SybaseSettings{
+				Username:     aws.String(d.Get(names.AttrUsername).(string)),
+				Password:     aws.String(d.Get(names.AttrPassword).(string)),
+				ServerName:   aws.String(d.Get("server_name").(string)),
+				Port:         aws.Int32(int32(d.Get(names.AttrPort).(int))),
+				DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+
+			// Set connection info in top-level namespace as well
+			expandTopLevelConnectionInfo(d, input)
+		}
+	case engineNameDB2, engineNameDB2zOS:
+		if _, ok := d.GetOk("secrets_manager_arn"); ok {
+			input.IBMDb2Settings = &awstypes.IBMDb2Settings{
+				SecretsManagerAccessRoleArn: aws.String(d.Get("secrets_manager_access_role_arn").(string)),
+				SecretsManagerSecretId:      aws.String(d.Get("secrets_manager_arn").(string)),
+				DatabaseName:                aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+		} else {
+			input.IBMDb2Settings = &awstypes.IBMDb2Settings{
+				Username:     aws.String(d.Get(names.AttrUsername).(string)),
+				Password:     aws.String(d.Get(names.AttrPassword).(string)),
+				ServerName:   aws.String(d.Get("server_name").(string)),
+				Port:         aws.Int32(int32(d.Get(names.AttrPort).(int))),
+				DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+			}
+
+			// Set connection info in top-level namespace as well
+			expandTopLevelConnectionInfo(d, input)
+		}
+	default:
+		expandTopLevelConnectionInfo(d, input)
+	}
+
+	_, err := tfresource.RetryWhenIsA[*awstypes.AccessDeniedFault](ctx, d.Timeout(schema.TimeoutCreate),
+		func() (any, error) {
+			return conn.CreateEndpoint(ctx, input)
+		})
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating DMS Endpoint (%s): %s", endpointID, err)
+	}
+
+	d.SetId(endpointID)
+
+	return append(diags, resourceEndpointRead(ctx, d, meta)...)
+}

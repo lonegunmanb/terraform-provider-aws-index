@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFieldLevelEncryptionProfileRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CloudFrontClient(ctx)
+
+	output, err := findFieldLevelEncryptionProfileByID(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] CloudFront Field-level Encryption Profile (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading CloudFront Field-level Encryption Profile (%s): %s", d.Id(), err)
+	}
+
+	d.Set(names.AttrARN, fieldLevelEncryptionProfileARN(ctx, meta.(*conns.AWSClient), d.Id()))
+	apiObject := output.FieldLevelEncryptionProfile.FieldLevelEncryptionProfileConfig
+	d.Set("caller_reference", apiObject.CallerReference)
+	d.Set(names.AttrComment, apiObject.Comment)
+	if apiObject.EncryptionEntities != nil {
+		if err := d.Set("encryption_entities", []any{flattenEncryptionEntities(apiObject.EncryptionEntities)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting encryption_entities: %s", err)
+		}
+	} else {
+		d.Set("encryption_entities", nil)
+	}
+	d.Set("etag", output.ETag)
+	d.Set(names.AttrName, apiObject.Name)
+
+	return diags
+}

@@ -1,0 +1,134 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceNodeGroupUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EKSClient(ctx)
+
+	clusterName, nodeGroupName, err := NodeGroupParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	// Do any version update first.
+	if d.HasChanges(names.AttrLaunchTemplate, "release_version", names.AttrVersion) {
+		input := &eks.UpdateNodegroupVersionInput{
+			ClientRequestToken: aws.String(id.UniqueId()),
+			ClusterName:        aws.String(clusterName),
+			Force:              d.Get("force_update_version").(bool),
+			NodegroupName:      aws.String(nodeGroupName),
+		}
+
+		if v := d.Get(names.AttrLaunchTemplate).([]any); len(v) > 0 {
+			input.LaunchTemplate = expandLaunchTemplateSpecification(v)
+
+			// When returning Launch Template information, the API returns all
+			// fields. Since both the id and name are saved to the Terraform
+			// state for drift detection and the API returns the following
+			// error if both are present during update:
+			// InvalidParameterException: Either provide launch template ID or launch template name in the request.
+
+			// Remove the name if there are no changes, to prefer the ID.
+			if input.LaunchTemplate.Id != nil && input.LaunchTemplate.Name != nil && !d.HasChange("launch_template.0.name") {
+				input.LaunchTemplate.Name = nil
+			}
+
+			// Otherwise, remove the ID, but only if both are present still.
+			if input.LaunchTemplate.Id != nil && input.LaunchTemplate.Name != nil && !d.HasChange("launch_template.0.id") {
+				input.LaunchTemplate.Id = nil
+			}
+		}
+
+		if v, ok := d.GetOk("release_version"); ok && d.HasChange("release_version") {
+			input.ReleaseVersion = aws.String(v.(string))
+		}
+
+		if v, ok := d.GetOk(names.AttrVersion); ok && d.HasChange(names.AttrVersion) {
+			input.Version = aws.String(v.(string))
+		}
+
+		output, err := conn.UpdateNodegroupVersion(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EKS Node Group (%s) version: %s", d.Id(), err)
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+
+		if _, err := waitNodegroupUpdateSuccessful(ctx, conn, clusterName, nodeGroupName, updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Node Group (%s) version update (%s): %s", d.Id(), updateID, err)
+		}
+	}
+
+	if d.HasChanges("labels", "node_repair_config", "scaling_config", "taint", "update_config") {
+		oldLabelsRaw, newLabelsRaw := d.GetChange("labels")
+		oldTaintsRaw, newTaintsRaw := d.GetChange("taint")
+
+		input := &eks.UpdateNodegroupConfigInput{
+			ClientRequestToken: aws.String(id.UniqueId()),
+			ClusterName:        aws.String(clusterName),
+			Labels:             expandUpdateLabelsPayload(ctx, oldLabelsRaw, newLabelsRaw),
+			NodegroupName:      aws.String(nodeGroupName),
+			Taints:             expandUpdateTaintsPayload(oldTaintsRaw.(*schema.Set).List(), newTaintsRaw.(*schema.Set).List()),
+		}
+
+		if d.HasChange("node_repair_config") {
+			if v, ok := d.GetOk("node_repair_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.NodeRepairConfig = expandNodeRepairConfig(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("scaling_config") {
+			if v, ok := d.GetOk("scaling_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.ScalingConfig = expandNodegroupScalingConfig(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		if d.HasChange("update_config") {
+			if v, ok := d.GetOk("update_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+				input.UpdateConfig = expandNodegroupUpdateConfig(v.([]any)[0].(map[string]any))
+			}
+		}
+
+		output, err := conn.UpdateNodegroupConfig(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EKS Node Group (%s) config: %s", d.Id(), err)
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+
+		if _, err := waitNodegroupUpdateSuccessful(ctx, conn, clusterName, nodeGroupName, updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Node Group (%s) config update (%s): %s", d.Id(), updateID, err)
+		}
+	}
+
+	return append(diags, resourceNodeGroupRead(ctx, d, meta)...)
+}

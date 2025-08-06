@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cognitoidp
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceResourceServerCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).CognitoIDPClient(ctx)
+
+	identifier := d.Get(names.AttrIdentifier).(string)
+	userPoolID := d.Get(names.AttrUserPoolID).(string)
+	id := resourceServerCreateResourceID(userPoolID, identifier)
+	input := &cognitoidentityprovider.CreateResourceServerInput{
+		Identifier: aws.String(identifier),
+		Name:       aws.String(d.Get(names.AttrName).(string)),
+		UserPoolId: aws.String(userPoolID),
+	}
+
+	if v, ok := d.GetOk(names.AttrScope); ok {
+		input.Scopes = expandResourceServerScopeTypes(v.(*schema.Set).List())
+	}
+
+	_, err := conn.CreateResourceServer(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Cognito Resource Server (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	return append(diags, resourceResourceServerRead(ctx, d, meta)...)
+}

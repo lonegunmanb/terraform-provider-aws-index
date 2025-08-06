@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/efs
+import (
+	"context"
+	"log"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/efs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFileSystemPolicyPut(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EFSClient(ctx)
+
+	policy, err := structure.NormalizeJsonString(d.Get(names.AttrPolicy).(string))
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	fsID := d.Get(names.AttrFileSystemID).(string)
+	input := &efs.PutFileSystemPolicyInput{
+		BypassPolicyLockoutSafetyCheck: d.Get("bypass_policy_lockout_safety_check").(bool),
+		FileSystemId:                   aws.String(fsID),
+		Policy:                         aws.String(policy),
+	}
+
+	_, err = tfresource.RetryWhenIsAErrorMessageContains[*awstypes.InvalidPolicyException](ctx, propagationTimeout, func() (any, error) {
+		return conn.PutFileSystemPolicy(ctx, input)
+	}, "Policy contains invalid Principal block")
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "putting EFS File System Policy (%s): %s", fsID, err)
+	}
+
+	if d.IsNewResource() {
+		d.SetId(fsID)
+	}
+
+	return append(diags, resourceFileSystemPolicyRead(ctx, d, meta)...)
+}

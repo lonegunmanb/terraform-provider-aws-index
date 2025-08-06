@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findAvailabilityZoneGroupByName(ctx context.Context, conn *ec2.Client, name string) (*awstypes.AvailabilityZone, error) {
+	input := ec2.DescribeAvailabilityZonesInput{
+		AllAvailabilityZones: aws.Bool(true),
+		Filters: newAttributeFilterList(map[string]string{
+			"group-name": name,
+		}),
+	}
+
+	availabilityZones, err := findAvailabilityZones(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// An AZ group may contain more than one AZ.
+	output, err := tfresource.AssertFirstValueResult(availabilityZones)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(availabilityZones) == 0 {
+		return nil, tfresource.NewEmptyResultError(&input)
+	}
+
+	// Eventual consistency check.
+	if aws.ToString(output.GroupName) != name {
+		return nil, &retry.NotFoundError{
+			LastRequest: &input,
+		}
+	}
+
+	return output, nil
+}

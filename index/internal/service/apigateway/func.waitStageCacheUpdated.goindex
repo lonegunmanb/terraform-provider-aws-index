@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitStageCacheUpdated(ctx context.Context, conn *apigateway.Client, apiID, name string) (*types.Stage, error) {
+	const (
+		timeout = 30 * time.Minute
+	)
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(types.CacheClusterStatusCreateInProgress, types.CacheClusterStatusFlushInProgress),
+		Target: enum.Slice(
+			types.CacheClusterStatusAvailable,
+			// There's an AWS API bug (raised & confirmed in Sep 2016 by support)
+			// which causes the stage to remain in deletion state forever
+			// TODO: Check if this bug still exists in AWS SDK v2
+			types.CacheClusterStatusDeleteInProgress,
+		),
+		Refresh: stageCacheStatus(ctx, conn, apiID, name),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*types.Stage); ok {
+		return output, err
+	}
+
+	return nil, err
+}

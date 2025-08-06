@@ -1,0 +1,153 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appmesh
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appmesh"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appmesh/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandHTTPGatewayRouteMatch(vHttpRouteMatch []any) *awstypes.HttpGatewayRouteMatch {
+	if len(vHttpRouteMatch) == 0 || vHttpRouteMatch[0] == nil {
+		return nil
+	}
+
+	routeMatch := &awstypes.HttpGatewayRouteMatch{}
+
+	mRouteMatch := vHttpRouteMatch[0].(map[string]any)
+
+	if vPort, ok := mRouteMatch[names.AttrPort].(int); ok && vPort > 0 {
+		routeMatch.Port = aws.Int32(int32(vPort))
+	}
+
+	if vPrefix, ok := mRouteMatch[names.AttrPrefix].(string); ok && vPrefix != "" {
+		routeMatch.Prefix = aws.String(vPrefix)
+	}
+
+	if vHeaders, ok := mRouteMatch[names.AttrHeader].(*schema.Set); ok && vHeaders.Len() > 0 {
+		headers := []awstypes.HttpGatewayRouteHeader{}
+
+		for _, vHeader := range vHeaders.List() {
+			header := awstypes.HttpGatewayRouteHeader{}
+
+			mHeader := vHeader.(map[string]any)
+
+			if vInvert, ok := mHeader["invert"].(bool); ok {
+				header.Invert = aws.Bool(vInvert)
+			}
+			if vName, ok := mHeader[names.AttrName].(string); ok && vName != "" {
+				header.Name = aws.String(vName)
+			}
+
+			if vMatch, ok := mHeader["match"].([]any); ok && len(vMatch) > 0 && vMatch[0] != nil {
+				mMatch := vMatch[0].(map[string]any)
+
+				if vExact, ok := mMatch["exact"].(string); ok && vExact != "" {
+					header.Match = &awstypes.HeaderMatchMethodMemberExact{Value: vExact}
+				}
+				if vPrefix, ok := mMatch[names.AttrPrefix].(string); ok && vPrefix != "" {
+					header.Match = &awstypes.HeaderMatchMethodMemberPrefix{Value: vPrefix}
+				}
+				if vRegex, ok := mMatch["regex"].(string); ok && vRegex != "" {
+					header.Match = &awstypes.HeaderMatchMethodMemberRegex{Value: vRegex}
+				}
+				if vSuffix, ok := mMatch["suffix"].(string); ok && vSuffix != "" {
+					header.Match = &awstypes.HeaderMatchMethodMemberSuffix{Value: vSuffix}
+				}
+
+				if vRange, ok := mMatch["range"].([]any); ok && len(vRange) > 0 && vRange[0] != nil {
+					memberRange := awstypes.MatchRange{}
+
+					mRange := vRange[0].(map[string]any)
+
+					if vEnd, ok := mRange["end"].(int); ok && vEnd > 0 {
+						memberRange.End = aws.Int64(int64(vEnd))
+					}
+					if vStart, ok := mRange["start"].(int); ok && vStart > 0 {
+						memberRange.Start = aws.Int64(int64(vStart))
+					}
+					header.Match = &awstypes.HeaderMatchMethodMemberRange{Value: memberRange}
+				}
+			}
+
+			headers = append(headers, header)
+		}
+
+		routeMatch.Headers = headers
+	}
+
+	if vHostname, ok := mRouteMatch["hostname"].([]any); ok && len(vHostname) > 0 && vHostname[0] != nil {
+		hostnameMatch := &awstypes.GatewayRouteHostnameMatch{}
+
+		mHostname := vHostname[0].(map[string]any)
+
+		if vExact, ok := mHostname["exact"].(string); ok && vExact != "" {
+			hostnameMatch.Exact = aws.String(vExact)
+		}
+		if vSuffix, ok := mHostname["suffix"].(string); ok && vSuffix != "" {
+			hostnameMatch.Suffix = aws.String(vSuffix)
+		}
+
+		routeMatch.Hostname = hostnameMatch
+	}
+
+	if vPath, ok := mRouteMatch[names.AttrPath].([]any); ok && len(vPath) > 0 && vPath[0] != nil {
+		pathMatch := &awstypes.HttpPathMatch{}
+
+		mHostname := vPath[0].(map[string]any)
+
+		if vExact, ok := mHostname["exact"].(string); ok && vExact != "" {
+			pathMatch.Exact = aws.String(vExact)
+		}
+		if vRegex, ok := mHostname["regex"].(string); ok && vRegex != "" {
+			pathMatch.Regex = aws.String(vRegex)
+		}
+
+		routeMatch.Path = pathMatch
+	}
+
+	if vQueryParameters, ok := mRouteMatch["query_parameter"].(*schema.Set); ok && vQueryParameters.Len() > 0 {
+		queryParameters := []awstypes.HttpQueryParameter{}
+
+		for _, vQueryParameter := range vQueryParameters.List() {
+			queryParameter := awstypes.HttpQueryParameter{}
+
+			mQueryParameter := vQueryParameter.(map[string]any)
+
+			if vName, ok := mQueryParameter[names.AttrName].(string); ok && vName != "" {
+				queryParameter.Name = aws.String(vName)
+			}
+
+			if vMatch, ok := mQueryParameter["match"].([]any); ok && len(vMatch) > 0 && vMatch[0] != nil {
+				queryParameter.Match = &awstypes.QueryParameterMatch{}
+
+				mMatch := vMatch[0].(map[string]any)
+
+				if vExact, ok := mMatch["exact"].(string); ok && vExact != "" {
+					queryParameter.Match.Exact = aws.String(vExact)
+				}
+			}
+
+			queryParameters = append(queryParameters, queryParameter)
+		}
+
+		routeMatch.QueryParameters = queryParameters
+	}
+
+	return routeMatch
+}

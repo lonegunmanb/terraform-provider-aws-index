@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandQuickConnectConfig(tfList []any) *awstypes.QuickConnectConfig {
+	if len(tfList) == 0 || tfList[0] == nil {
+		return nil
+	}
+
+	tfMap, ok := tfList[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	quickConnectType := awstypes.QuickConnectType(tfMap["quick_connect_type"].(string))
+	apiObject := &awstypes.QuickConnectConfig{
+		QuickConnectType: quickConnectType,
+	}
+
+	switch quickConnectType {
+	case awstypes.QuickConnectTypePhoneNumber:
+		v := tfMap["phone_config"].([]any)
+		if len(v) == 0 || v[0] == nil {
+			log.Printf("[ERR] 'phone_config' must be set when 'quick_connect_type' is '%s'", quickConnectType)
+			return nil
+		}
+
+		tfMap := v[0].(map[string]any)
+		apiObject.PhoneConfig = &awstypes.PhoneNumberQuickConnectConfig{
+			PhoneNumber: aws.String(tfMap["phone_number"].(string)),
+		}
+
+	case awstypes.QuickConnectTypeQueue:
+		v := tfMap["queue_config"].([]any)
+		if len(v) == 0 || v[0] == nil {
+			log.Printf("[ERR] 'queue_config' must be set when 'quick_connect_type' is '%s'", quickConnectType)
+			return nil
+		}
+
+		tfMap := v[0].(map[string]any)
+		apiObject.QueueConfig = &awstypes.QueueQuickConnectConfig{
+			ContactFlowId: aws.String(tfMap["contact_flow_id"].(string)),
+			QueueId:       aws.String(tfMap["queue_id"].(string)),
+		}
+
+	case awstypes.QuickConnectTypeUser:
+		v := tfMap["user_config"].([]any)
+		if len(v) == 0 || v[0] == nil {
+			log.Printf("[ERR] 'user_config' must be set when 'quick_connect_type' is '%s'", quickConnectType)
+			return nil
+		}
+
+		tfMap := v[0].(map[string]any)
+		apiObject.UserConfig = &awstypes.UserQuickConnectConfig{
+			ContactFlowId: aws.String(tfMap["contact_flow_id"].(string)),
+			UserId:        aws.String(tfMap["user_id"].(string)),
+		}
+
+	default:
+		log.Printf("[ERR] quick_connect_type is invalid")
+		return nil
+	}
+
+	return apiObject
+}

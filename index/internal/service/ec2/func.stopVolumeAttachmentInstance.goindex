@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func stopVolumeAttachmentInstance(ctx context.Context, conn *ec2.Client, id string, force bool, timeout time.Duration) error {
+	tflog.Info(ctx, "Stopping EC2 Instance", map[string]any{
+		"ec2_instance_id": id,
+		"force":           force,
+	})
+	input := ec2.StopInstancesInput{
+		Force:       aws.Bool(force),
+		InstanceIds: []string{id},
+	}
+	_, err := conn.StopInstances(ctx, &input)
+
+	if err != nil {
+		return fmt.Errorf("stopping EC2 Instance (%s): %w", id, err)
+	}
+
+	if _, err := waitVolumeAttachmentInstanceStopped(ctx, conn, id, timeout); err != nil {
+		return fmt.Errorf("waiting for EC2 Instance (%s) stop: %w", id, err)
+	}
+
+	return nil
+}

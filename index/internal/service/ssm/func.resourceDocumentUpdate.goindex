@@ -1,0 +1,136 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDocumentUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SSMClient(ctx)
+
+	if d.HasChange(names.AttrPermissions) {
+		var oldAccountIDs, newAccountIDs itypes.Set[string]
+		o, n := d.GetChange(names.AttrPermissions)
+
+		if v := o.(map[string]any); len(v) > 0 {
+			tfMap := flex.ExpandStringValueMap(v)
+
+			if v, ok := tfMap["account_ids"]; ok && v != "" {
+				oldAccountIDs = strings.Split(v, ",")
+			}
+		}
+
+		if v := n.(map[string]any); len(v) > 0 {
+			tfMap := flex.ExpandStringValueMap(v)
+
+			if v, ok := tfMap["account_ids"]; ok && v != "" {
+				newAccountIDs = strings.Split(v, ",")
+			}
+		}
+
+		for chunk := range slices.Chunk(newAccountIDs.Difference(oldAccountIDs), documentPermissionsBatchLimit) {
+			input := &ssm.ModifyDocumentPermissionInput{
+				AccountIdsToAdd: chunk,
+				Name:            aws.String(d.Id()),
+				PermissionType:  awstypes.DocumentPermissionTypeShare,
+			}
+
+			_, err := conn.ModifyDocumentPermission(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "modifying SSM Document (%s) permissions: %s", d.Id(), err)
+			}
+		}
+
+		for chunk := range slices.Chunk(oldAccountIDs.Difference(newAccountIDs), documentPermissionsBatchLimit) {
+			input := &ssm.ModifyDocumentPermissionInput{
+				AccountIdsToRemove: chunk,
+				Name:               aws.String(d.Id()),
+				PermissionType:     awstypes.DocumentPermissionTypeShare,
+			}
+
+			_, err := conn.ModifyDocumentPermission(ctx, input)
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "modifying SSM Document (%s) permissions: %s", d.Id(), err)
+			}
+		}
+	}
+
+	if d.HasChangesExcept(names.AttrPermissions, names.AttrTags, names.AttrTagsAll) {
+		// Update for schema version 1.x is not allowed.
+		isSchemaVersion1, _ := regexp.MatchString(`^1[.][0-9]$`, d.Get("schema_version").(string))
+
+		if d.HasChange(names.AttrContent) || !isSchemaVersion1 {
+			input := &ssm.UpdateDocumentInput{
+				Content:         aws.String(d.Get(names.AttrContent).(string)),
+				DocumentFormat:  awstypes.DocumentFormat(d.Get("document_format").(string)),
+				DocumentVersion: aws.String(d.Get("default_version").(string)),
+				Name:            aws.String(d.Id()),
+			}
+
+			if v, ok := d.GetOk("attachments_source"); ok && len(v.([]any)) > 0 {
+				input.Attachments = expandAttachmentsSources(v.([]any))
+			}
+
+			if v, ok := d.GetOk("target_type"); ok {
+				input.TargetType = aws.String(v.(string))
+			}
+
+			if v, ok := d.GetOk("version_name"); ok {
+				input.VersionName = aws.String(v.(string))
+			}
+
+			var defaultVersion string
+
+			output, err := conn.UpdateDocument(ctx, input)
+
+			if errs.IsA[*awstypes.DuplicateDocumentContent](err) {
+				defaultVersion = d.Get("latest_version").(string)
+			} else if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating SSM Document (%s): %s", d.Id(), err)
+			} else {
+				defaultVersion = aws.ToString(output.DocumentDescription.DocumentVersion)
+			}
+
+			_, err = conn.UpdateDocumentDefaultVersion(ctx, &ssm.UpdateDocumentDefaultVersionInput{
+				DocumentVersion: aws.String(defaultVersion),
+				Name:            aws.String(d.Id()),
+			})
+
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating SSM Document (%s) default version: %s", d.Id(), err)
+			}
+
+			if _, err := waitDocumentActive(ctx, conn, d.Id()); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for SSM Document (%s) update: %s", d.Id(), err)
+			}
+		}
+	}
+
+	return append(diags, resourceDocumentRead(ctx, d, meta)...)
+}

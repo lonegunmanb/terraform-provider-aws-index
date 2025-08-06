@@ -1,0 +1,100 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAddonCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EKSClient(ctx)
+
+	addonName := d.Get("addon_name").(string)
+	clusterName := d.Get(names.AttrClusterName).(string)
+	id := AddonCreateResourceID(clusterName, addonName)
+	input := &eks.CreateAddonInput{
+		AddonName:          aws.String(addonName),
+		ClientRequestToken: aws.String(sdkid.UniqueId()),
+		ClusterName:        aws.String(clusterName),
+		Tags:               getTagsIn(ctx),
+	}
+
+	if v, ok := d.GetOk("addon_version"); ok {
+		input.AddonVersion = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("configuration_values"); ok {
+		input.ConfigurationValues = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("pod_identity_association"); ok && v.(*schema.Set).Len() > 0 {
+		input.PodIdentityAssociations = expandAddonPodIdentityAssociations(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("resolve_conflicts_on_create"); ok {
+		input.ResolveConflicts = types.ResolveConflicts(v.(string))
+	}
+
+	if v, ok := d.GetOk("service_account_role_arn"); ok {
+		input.ServiceAccountRoleArn = aws.String(v.(string))
+	}
+
+	_, err := tfresource.RetryWhen(ctx, propagationTimeout,
+		func() (any, error) {
+			return conn.CreateAddon(ctx, input)
+		},
+		func(err error) (bool, error) {
+			if errs.IsAErrorMessageContains[*types.InvalidParameterException](err, "CREATE_FAILED") {
+				return true, err
+			}
+
+			if errs.IsAErrorMessageContains[*types.InvalidParameterException](err, "does not exist") {
+				return true, err
+			}
+
+			return false, err
+		},
+	)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating EKS Add-On (%s): %s", id, err)
+	}
+
+	d.SetId(id)
+
+	if _, err := waitAddonCreated(ctx, conn, clusterName, addonName, d.Timeout(schema.TimeoutCreate)); err != nil {
+		// Creating addon w/o setting resolve_conflicts_on_create to "OVERWRITE"
+		// might result in a failed creation, if unmanaged version of addon is already deployed
+		// and there are configuration conflicts:
+		// ConfigurationConflict	Apply failed with 1 conflict: conflict with "kubectl"...
+		//
+		// Addon resource is tainted after failed creation, thus will be deleted and created again.
+		// Re-creating like this will resolve the error, but it will also purge any
+		// configurations that were applied by the user (that were conflicting). This might we an unwanted
+		// side effect and should be left for the user to decide how to handle it.
+		diags = sdkdiag.AppendErrorf(diags, "waiting for EKS Add-On (%s) create: %s", d.Id(), err)
+		return sdkdiag.AppendWarningf(diags, "Running terraform apply again will remove the kubernetes add-on and attempt to create it again effectively purging previous add-on configuration")
+	}
+
+	return append(diags, resourceAddonRead(ctx, d, meta)...)
+}

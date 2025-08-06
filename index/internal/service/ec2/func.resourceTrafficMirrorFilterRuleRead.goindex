@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTrafficMirrorFilterRuleRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).EC2Client(ctx)
+
+	rule, err := findTrafficMirrorFilterRuleByTwoPartKey(ctx, conn, d.Get("traffic_mirror_filter_id").(string), d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] EC2 Traffic Mirror Filter Rule %s not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading EC2 Traffic Mirror Filter Rule (%s): %s", d.Id(), err)
+	}
+
+	arn := arn.ARN{
+		Partition: meta.(*conns.AWSClient).Partition(ctx),
+		Service:   "ec2",
+		Region:    meta.(*conns.AWSClient).Region(ctx),
+		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
+		Resource:  "traffic-mirror-filter-rule/" + d.Id(),
+	}.String()
+	d.Set(names.AttrARN, arn)
+	d.Set(names.AttrDescription, rule.Description)
+	d.Set("destination_cidr_block", rule.DestinationCidrBlock)
+	if rule.DestinationPortRange != nil {
+		if err := d.Set("destination_port_range", []any{flattenTrafficMirrorPortRange(rule.DestinationPortRange)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting destination_port_range: %s", err)
+		}
+	} else {
+		d.Set("destination_port_range", nil)
+	}
+	d.Set(names.AttrProtocol, rule.Protocol)
+	d.Set("rule_action", rule.RuleAction)
+	d.Set("rule_number", rule.RuleNumber)
+	d.Set("source_cidr_block", rule.SourceCidrBlock)
+	if rule.SourcePortRange != nil {
+		if err := d.Set("source_port_range", []any{flattenTrafficMirrorPortRange(rule.SourcePortRange)}); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting source_port_range: %s", err)
+		}
+	} else {
+		d.Set("source_port_range", nil)
+	}
+	d.Set("traffic_direction", rule.TrafficDirection)
+	d.Set("traffic_mirror_filter_id", rule.TrafficMirrorFilterId)
+
+	return diags
+}

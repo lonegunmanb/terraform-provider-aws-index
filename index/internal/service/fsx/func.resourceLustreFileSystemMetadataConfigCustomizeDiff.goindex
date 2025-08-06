@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/fsx
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/fsx"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceLustreFileSystemMetadataConfigCustomizeDiff(_ context.Context, d *schema.ResourceDiff, meta any) error {
+	//metadata_configuration is only supported when deployment_type is persistent2
+	if v, ok := d.GetOk("metadata_configuration"); ok {
+		if len(v.([]any)) > 0 {
+			if deploymentType := awstypes.LustreDeploymentType(d.Get("deployment_type").(string)); deploymentType != awstypes.LustreDeploymentTypePersistent2 {
+				return fmt.Errorf("metadata_configuration can only be set when deployment type is %s", awstypes.LustreDeploymentTypePersistent2)
+			}
+		}
+	}
+
+	// we want to force a new resource if the new Iops is less than the old one
+	if d.HasChange("metadata_configuration") {
+		if v, ok := d.GetOk("metadata_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			if mode := awstypes.MetadataConfigurationMode(d.Get("metadata_configuration.0.mode").(string)); mode == awstypes.MetadataConfigurationModeUserProvisioned {
+				o, n := d.GetChange("metadata_configuration")
+
+				oldV := o.([]any)
+				newV := n.([]any)
+				var metaOld map[string]any
+				var metaNew map[string]any
+
+				for _, v := range oldV {
+					metaOld = v.(map[string]any)
+				}
+
+				for _, v := range newV {
+					metaNew = v.(map[string]any)
+				}
+
+				if len(metaNew) > 0 && len(metaOld) > 0 {
+					if metaNew[names.AttrIOPS].(int) < metaOld[names.AttrIOPS].(int) {
+						log.Printf("[DEBUG] Forcing new due to metadata iops decrease. old iops: %d new iops: %d", metaOld[names.AttrIOPS].(int), metaNew[names.AttrIOPS].(int))
+						if err := d.ForceNew("metadata_configuration.0.iops"); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}

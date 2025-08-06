@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/signer
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/signer"
+	"github.com/aws/aws-sdk-go-v2/service/signer/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceSigningProfileCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).SignerClient(ctx)
+
+	name := create.NewNameGenerator(
+		create.WithConfiguredName(d.Get(names.AttrName).(string)),
+		create.WithConfiguredPrefix(d.Get(names.AttrNamePrefix).(string)),
+		create.WithDefaultPrefix("terraform_"),
+	).Generate()
+	input := &signer.PutSigningProfileInput{
+		PlatformId:  aws.String(d.Get("platform_id").(string)),
+		ProfileName: aws.String(name),
+		Tags:        getTagsIn(ctx),
+	}
+
+	if v, exists := d.GetOk("signature_validity_period"); exists {
+		signatureValidityPeriod := v.([]any)[0].(map[string]any)
+		input.SignatureValidityPeriod = &types.SignatureValidityPeriod{
+			Value: int32(signatureValidityPeriod[names.AttrValue].(int)),
+			Type:  types.ValidityType(signatureValidityPeriod[names.AttrType].(string)),
+		}
+	}
+
+	if v, ok := d.Get("signing_material").([]any); ok && len(v) > 0 {
+		input.SigningMaterial = expandSigningMaterial(v)
+	}
+
+	_, err := conn.PutSigningProfile(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Signer Signing Profile (%s): %s", name, err)
+	}
+
+	d.SetId(name)
+
+	return append(diags, resourceSigningProfileRead(ctx, d, meta)...)
+}

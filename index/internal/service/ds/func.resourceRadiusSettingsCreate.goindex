@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func resourceRadiusSettingsCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DSClient(ctx)
+
+	directoryID := d.Get("directory_id").(string)
+	input := &directoryservice.EnableRadiusInput{
+		DirectoryId: aws.String(directoryID),
+		RadiusSettings: &awstypes.RadiusSettings{
+			AuthenticationProtocol: awstypes.RadiusAuthenticationProtocol(d.Get("authentication_protocol").(string)),
+			DisplayLabel:           aws.String(d.Get("display_label").(string)),
+			RadiusPort:             aws.Int32(int32(d.Get("radius_port").(int))),
+			RadiusRetries:          int32(d.Get("radius_retries").(int)),
+			RadiusServers:          flex.ExpandStringValueSet(d.Get("radius_servers").(*schema.Set)),
+			RadiusTimeout:          aws.Int32(int32(d.Get("radius_timeout").(int))),
+			SharedSecret:           aws.String(d.Get("shared_secret").(string)),
+			UseSameUsername:        d.Get("use_same_username").(bool),
+		},
+	}
+
+	_, err := conn.EnableRadius(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "enabling Directory Service Directory (%s) RADIUS: %s", directoryID, err)
+	}
+
+	d.SetId(directoryID)
+
+	if _, err := waitRadiusCompleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Directory Service Directory (%s) RADIUS create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceRadiusSettingsRead(ctx, d, meta)...)
+}

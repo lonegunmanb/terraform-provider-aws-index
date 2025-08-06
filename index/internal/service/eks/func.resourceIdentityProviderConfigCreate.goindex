@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceIdentityProviderConfigCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	conn := meta.(*conns.AWSClient).EKSClient(ctx)
+
+	clusterName := d.Get(names.AttrClusterName).(string)
+	configName, oidc := expandOIDCIdentityProviderConfigRequest(d.Get("oidc").([]any)[0].(map[string]any))
+	idpID := IdentityProviderConfigCreateResourceID(clusterName, configName)
+	input := &eks.AssociateIdentityProviderConfigInput{
+		ClientRequestToken: aws.String(id.UniqueId()),
+		ClusterName:        aws.String(clusterName),
+		Oidc:               oidc,
+		Tags:               getTagsIn(ctx),
+	}
+
+	_, err := conn.AssociateIdentityProviderConfig(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "associating EKS Identity Provider Config (%s): %s", idpID, err)
+	}
+
+	d.SetId(idpID)
+
+	if _, err := waitOIDCIdentityProviderConfigCreated(ctx, conn, clusterName, configName, d.Timeout(schema.TimeoutCreate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for EKS Identity Provider Config (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceIdentityProviderConfigRead(ctx, d, meta)...)
+}

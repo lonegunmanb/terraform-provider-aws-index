@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datasync
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datasync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datasync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTaskUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DataSyncClient(ctx)
+
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		input := &datasync.UpdateTaskInput{
+			TaskArn: aws.String(d.Id()),
+		}
+
+		if d.HasChanges(names.AttrCloudWatchLogGroupARN) {
+			input.CloudWatchLogGroupArn = aws.String(d.Get(names.AttrCloudWatchLogGroupARN).(string))
+		}
+
+		if d.HasChanges("excludes") {
+			input.Excludes = expandFilterRules(d.Get("excludes").([]any))
+		}
+
+		if d.HasChanges("includes") {
+			input.Includes = expandFilterRules(d.Get("includes").([]any))
+		}
+
+		if d.HasChanges(names.AttrName) {
+			input.Name = aws.String(d.Get(names.AttrName).(string))
+		}
+
+		if d.HasChanges("options") {
+			input.Options = expandOptions(d.Get("options").([]any))
+		}
+
+		if d.HasChanges(names.AttrSchedule) {
+			input.Schedule = expandTaskSchedule(d.Get(names.AttrSchedule).([]any))
+		}
+
+		if d.HasChanges("task_report_config") {
+			input.TaskReportConfig = expandTaskReportConfig(d.Get("task_report_config").([]any))
+		}
+
+		if _, err := conn.UpdateTask(ctx, input); err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating DataSync Task (%s): %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceTaskRead(ctx, d, meta)...)
+}

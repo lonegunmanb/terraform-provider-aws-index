@@ -1,0 +1,84 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func modifyVPCIPv6CIDRBlockAssociation(ctx context.Context, conn *ec2.Client, vpcID, associationID string, amazonProvidedCIDRBlock bool, cidrBlock, ipamPoolID string, netmaskLength int, networkBorderGroup string) (string, error) {
+	if associationID != "" {
+		input := &ec2.DisassociateVpcCidrBlockInput{
+			AssociationId: aws.String(associationID),
+		}
+
+		_, err := conn.DisassociateVpcCidrBlock(ctx, input)
+
+		if err != nil {
+			return "", fmt.Errorf("disassociating IPv6 CIDR block (%s): %w", associationID, err)
+		}
+
+		if err := waitVPCIPv6CIDRBlockAssociationDeleted(ctx, conn, associationID, vpcIPv6CIDRBlockAssociationDeletedTimeout); err != nil {
+			return "", fmt.Errorf("disassociating IPv6 CIDR block (%s): waiting for completion: %w", associationID, err)
+		}
+	}
+
+	if amazonProvidedCIDRBlock || cidrBlock != "" || ipamPoolID != "" {
+		input := &ec2.AssociateVpcCidrBlockInput{
+			VpcId: aws.String(vpcID),
+		}
+
+		if amazonProvidedCIDRBlock {
+			input.AmazonProvidedIpv6CidrBlock = aws.Bool(amazonProvidedCIDRBlock)
+		}
+
+		if cidrBlock != "" {
+			input.Ipv6CidrBlock = aws.String(cidrBlock)
+		}
+
+		if networkBorderGroup != "" {
+			input.Ipv6CidrBlockNetworkBorderGroup = aws.String(networkBorderGroup)
+		}
+
+		if ipamPoolID != "" {
+			input.Ipv6IpamPoolId = aws.String(ipamPoolID)
+		}
+
+		if netmaskLength > 0 {
+			input.Ipv6NetmaskLength = aws.Int32(int32(netmaskLength))
+		}
+
+		output, err := conn.AssociateVpcCidrBlock(ctx, input)
+
+		if err != nil {
+			return "", fmt.Errorf("associating IPv6 CIDR block: %w", err)
+		}
+
+		associationID = aws.ToString(output.Ipv6CidrBlockAssociation.AssociationId)
+
+		if _, err := waitVPCIPv6CIDRBlockAssociationCreated(ctx, conn, associationID, vpcIPv6CIDRBlockAssociationCreatedTimeout); err != nil {
+			return "", fmt.Errorf("associating IPv6 CIDR block: waiting for completion: %w", err)
+		}
+	}
+
+	return associationID, nil
+}

@@ -1,0 +1,123 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepRouteTables(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+
+	if err != nil {
+		return fmt.Errorf("error getting client: %w", err)
+	}
+
+	conn := client.EC2Client(ctx)
+	var sweeperErrs *multierror.Error
+	input := ec2.DescribeRouteTablesInput{}
+
+	pages := ec2.NewDescribeRouteTablesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping EC2 Route Table sweep for %s: %s", region, err)
+			return sweeperErrs.ErrorOrNil()
+		}
+
+		if err != nil {
+			sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error listing EC2 Route Tables: %w", err))
+		}
+
+		for _, routeTable := range page.RouteTables {
+			id := aws.ToString(routeTable.RouteTableId)
+			isMainRouteTableAssociation := false
+
+			for _, routeTableAssociation := range routeTable.Associations {
+				if aws.ToBool(routeTableAssociation.Main) {
+					isMainRouteTableAssociation = true
+					break
+				}
+
+				associationID := aws.ToString(routeTableAssociation.RouteTableAssociationId)
+
+				input := ec2.DisassociateRouteTableInput{
+					AssociationId: routeTableAssociation.RouteTableAssociationId,
+				}
+
+				log.Printf("[DEBUG] Deleting EC2 Route Table Association: %s", associationID)
+				_, err := conn.DisassociateRouteTable(ctx, &input)
+
+				if err != nil {
+					sweeperErr := fmt.Errorf("error deleting EC2 Route Table (%s) Association (%s): %w", id, associationID, err)
+					log.Printf("[ERROR] %s", sweeperErr)
+					sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+					continue
+				}
+			}
+
+			if isMainRouteTableAssociation {
+				for _, route := range routeTable.Routes {
+					if gatewayID := aws.ToString(route.GatewayId); gatewayID == gatewayIDLocal || gatewayID == gatewayIDVPCLattice {
+						continue
+					}
+
+					// Prevent deleting default VPC route for Internet Gateway
+					// which some testing is still reliant on operating correctly
+					if strings.HasPrefix(aws.ToString(route.GatewayId), "igw-") && aws.ToString(route.DestinationCidrBlock) == "0.0.0.0/0" {
+						continue
+					}
+
+					input := ec2.DeleteRouteInput{
+						DestinationCidrBlock:     route.DestinationCidrBlock,
+						DestinationIpv6CidrBlock: route.DestinationIpv6CidrBlock,
+						RouteTableId:             routeTable.RouteTableId,
+					}
+
+					log.Printf("[DEBUG] Deleting EC2 Route Table (%s) Route", id)
+					_, err := conn.DeleteRoute(ctx, &input)
+
+					if err != nil {
+						sweeperErr := fmt.Errorf("error deleting EC2 Route Table (%s) Route: %w", id, err)
+						log.Printf("[ERROR] %s", sweeperErr)
+						sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+						continue
+					}
+				}
+
+				continue
+			}
+
+			input := ec2.DeleteRouteTableInput{
+				RouteTableId: routeTable.RouteTableId,
+			}
+
+			log.Printf("[DEBUG] Deleting EC2 Route Table: %s", id)
+			_, err := conn.DeleteRouteTable(ctx, &input)
+
+			if err != nil {
+				sweeperErr := fmt.Errorf("error deleting EC2 Route Table (%s): %w", id, err)
+				log.Printf("[ERROR] %s", sweeperErr)
+				sweeperErrs = multierror.Append(sweeperErrs, sweeperErr)
+				continue
+			}
+		}
+	}
+
+	return sweeperErrs.ErrorOrNil()
+}

@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/globalaccelerator
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/globalaccelerator"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/globalaccelerator/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceListenerRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).GlobalAcceleratorClient(ctx)
+
+	listener, err := findListenerByARN(ctx, conn, d.Id())
+
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Global Accelerator Listener (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Global Accelerator Listener (%s): %s", d.Id(), err)
+	}
+
+	acceleratorARN, err := listenerOrEndpointGroupARNToAcceleratorARN(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set("accelerator_arn", acceleratorARN)
+	d.Set(names.AttrARN, listener.ListenerArn)
+	d.Set("client_affinity", listener.ClientAffinity)
+	if err := d.Set("port_range", flattenPortRanges(listener.PortRanges)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting port_range: %s", err)
+	}
+	d.Set(names.AttrProtocol, listener.Protocol)
+
+	return diags
+}

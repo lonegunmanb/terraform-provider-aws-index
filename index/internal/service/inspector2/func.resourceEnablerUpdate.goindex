@@ -1,0 +1,109 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/inspector2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2"
+	"github.com/aws/aws-sdk-go-v2/service/inspector2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mitchellh/mapstructure"
+)
+func resourceEnablerUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).Inspector2Client(ctx)
+
+	typeEnable := flex.ExpandStringyValueSet[types.ResourceScanType](d.Get("resource_types").(*schema.Set))
+	var typeDisable []types.ResourceScanType
+	if d.HasChange("resource_types") {
+		o, _ := d.GetChange("resource_types")
+		for _, v := range flex.ExpandStringyValueSet[types.ResourceScanType](o.(*schema.Set)) {
+			if !slices.Contains(typeEnable, v) {
+				typeDisable = append(typeDisable, v)
+			}
+		}
+	}
+
+	var acctEnable, acctRemove []string
+	acctEnable = flex.ExpandStringValueSet(d.Get("account_ids").(*schema.Set))
+	if d.HasChange("account_ids") {
+		o, n := d.GetChange("account_ids")
+		os := o.(*schema.Set)
+		ns := n.(*schema.Set)
+
+		acctRemove = flex.ExpandStringValueSet(os.Difference(ns))
+	}
+
+	id := enablerID(getAccountIDs(d), flex.ExpandStringyValueSet[types.ResourceScanType](d.Get("resource_types").(*schema.Set)))
+
+	d.SetId(id)
+
+	if len(acctEnable) > 0 {
+		if len(typeEnable) > 0 {
+			in := &inspector2.EnableInput{
+				AccountIds:    acctEnable,
+				ResourceTypes: typeEnable,
+				ClientToken:   aws.String(sdkid.UniqueId()),
+			}
+
+			out, err := conn.Enable(ctx, in)
+			if err != nil {
+				return create.AppendDiagError(diags, names.Inspector2, create.ErrActionUpdating, ResNameEnabler, id, err)
+			}
+
+			if out == nil {
+				return create.AppendDiagError(diags, names.Inspector2, create.ErrActionUpdating, ResNameEnabler, id, tfresource.NewEmptyResultError(nil))
+			}
+
+			if len(out.FailedAccounts) > 0 {
+				return create.AppendDiagError(diags, names.Inspector2, create.ErrActionUpdating, ResNameEnabler, id, errors.New("failed accounts"))
+			}
+
+			if _, err := waitEnabled(ctx, conn, acctEnable, d.Timeout(schema.TimeoutCreate)); err != nil {
+				return create.AppendDiagError(diags, names.Inspector2, create.ErrActionWaitingForUpdate, ResNameEnabler, id, err)
+			}
+		}
+
+		if len(typeDisable) > 0 {
+			in := &inspector2.DisableInput{
+				AccountIds:    acctEnable,
+				ResourceTypes: typeDisable,
+			}
+
+			_, err := conn.Disable(ctx, in)
+			if err != nil {
+				return create.AppendDiagError(diags, names.Inspector2, create.ErrActionUpdating, ResNameEnabler, id, err)
+			}
+
+			if _, err := waitEnabled(ctx, conn, acctEnable, d.Timeout(schema.TimeoutCreate)); err != nil {
+				return create.AppendDiagError(diags, names.Inspector2, create.ErrActionWaitingForUpdate, ResNameEnabler, id, err)
+			}
+		}
+	}
+
+	if len(acctRemove) > 0 {
+		diags = append(diags, disableAccounts(ctx, conn, d, acctRemove)...)
+	}
+
+	return append(diags, resourceEnablerRead(ctx, d, meta)...)
+}

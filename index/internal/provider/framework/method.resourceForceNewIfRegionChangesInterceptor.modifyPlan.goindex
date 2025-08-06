@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	dsschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	erschema "github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/resourceattribute"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r resourceForceNewIfRegionChangesInterceptor) modifyPlan(ctx context.Context, opts interceptorOptions[resource.ModifyPlanRequest, resource.ModifyPlanResponse]) diag.Diagnostics {
+	c := opts.c
+	var diags diag.Diagnostics
+
+	switch request, response, when := opts.request, opts.response, opts.when; when {
+	case Before:
+		// If the entire plan is null, the resource is planned for destruction.
+		if request.Plan.Raw.IsNull() {
+			return diags
+		}
+
+		// If the entire state is null, the resource is new.
+		if request.State.Raw.IsNull() {
+			return diags
+		}
+
+		var planRegion types.String
+		diags.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrRegion), &planRegion)...)
+		if diags.HasError() {
+			return diags
+		}
+
+		var stateRegion types.String
+		diags.Append(request.State.GetAttribute(ctx, path.Root(names.AttrRegion), &stateRegion)...)
+		if diags.HasError() {
+			return diags
+		}
+
+		providerRegion := c.AwsConfig(ctx).Region
+		if stateRegion.IsNull() && planRegion.ValueString() == providerRegion {
+			return diags
+		}
+
+		if !planRegion.Equal(stateRegion) {
+			response.RequiresReplace = path.Paths{path.Root(names.AttrRegion)}
+		}
+	}
+
+	return diags
+}

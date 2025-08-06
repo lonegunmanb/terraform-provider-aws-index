@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/neptune
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/neptune"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/neptune/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func clusterIDAndRegionFromARN(clusterARN string) (string, string, error) {
+	parsedARN, err := arn.Parse(clusterARN)
+	if err != nil {
+		return "", "", fmt.Errorf("could not parse ARN (%s): %w", clusterARN, err)
+	}
+	dbi := ""
+	if parsedARN.Resource != "" {
+		parts := strings.Split(parsedARN.Resource, ":")
+		if len(parts) < 2 {
+			return "", "", fmt.Errorf("could not get DB Cluster ID from parsing ARN (%s): %w", clusterARN, err)
+		}
+		// NOTE: Neptune DB Clusters and Instances have "rds" ARNs!
+		if (parsedARN.Service != "neptune" && parsedARN.Service != "rds") || parts[0] != "cluster" {
+			return "", "", fmt.Errorf("wrong ARN (%s) for a Neptune DB Cluster", clusterARN)
+		}
+		dbi = parts[1]
+	}
+	return dbi, parsedARN.Region, nil
+}

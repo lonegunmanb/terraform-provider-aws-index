@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/quicksight
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/quicksight"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/quicksight/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceTemplateUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).QuickSightClient(ctx)
+
+	awsAccountID, templateID, err := templateParseResourceID(d.Id())
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	if d.HasChangesExcept(names.AttrPermissions, names.AttrTags, names.AttrTagsAll) {
+		input := &quicksight.UpdateTemplateInput{
+			AwsAccountId:       aws.String(awsAccountID),
+			Name:               aws.String(d.Get(names.AttrName).(string)),
+			TemplateId:         aws.String(templateID),
+			VersionDescription: aws.String(d.Get("version_description").(string)),
+		}
+
+		// One of source_entity or definition is required for update
+		if v, ok := d.GetOk("source_entity"); ok {
+			input.SourceEntity = quicksightschema.ExpandTemplateSourceEntity(v.([]any))
+		} else {
+			input.Definition = quicksightschema.ExpandTemplateDefinition(d.Get("definition").([]any))
+		}
+
+		_, err := conn.UpdateTemplate(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QuickSight Template (%s): %s", d.Id(), err)
+		}
+
+		if _, err := waitTemplateUpdated(ctx, conn, awsAccountID, templateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for QuickSight Template (%s) update: %s", d.Id(), err)
+		}
+	}
+
+	if d.HasChange(names.AttrPermissions) {
+		o, n := d.GetChange(names.AttrPermissions)
+		os, ns := o.(*schema.Set), n.(*schema.Set)
+		toGrant, toRevoke := quicksightschema.DiffPermissions(os.List(), ns.List())
+
+		input := &quicksight.UpdateTemplatePermissionsInput{
+			AwsAccountId: aws.String(awsAccountID),
+			TemplateId:   aws.String(templateID),
+		}
+
+		if len(toGrant) > 0 {
+			input.GrantPermissions = toGrant
+		}
+
+		if len(toRevoke) > 0 {
+			input.RevokePermissions = toRevoke
+		}
+
+		_, err = conn.UpdateTemplatePermissions(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating QuickSight Template (%s) permissions: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceTemplateRead(ctx, d, meta)...)
+}

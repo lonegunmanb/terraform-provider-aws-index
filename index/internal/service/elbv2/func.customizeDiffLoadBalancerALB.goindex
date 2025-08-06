@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func customizeDiffLoadBalancerALB(_ context.Context, diff *schema.ResourceDiff, v any) error {
+	if lbType := awstypes.LoadBalancerTypeEnum(diff.Get("load_balancer_type").(string)); lbType != awstypes.LoadBalancerTypeEnumApplication {
+		return nil
+	}
+
+	if diff.Id() == "" {
+		return nil
+	}
+
+	config := diff.GetRawConfig()
+
+	// Subnet diffs.
+	// Check for changes here -- SetNewComputed will modify HasChange.
+	hasSubnetMappingChanges, hasSubnetsChanges := diff.HasChange("subnet_mapping"), diff.HasChange(names.AttrSubnets)
+	if hasSubnetMappingChanges {
+		if v := config.GetAttr("subnet_mapping"); v.IsWhollyKnown() {
+			o, n := diff.GetChange("subnet_mapping")
+			os, ns := o.(*schema.Set), n.(*schema.Set)
+
+			deltaN := ns.Len() - os.Len()
+			switch {
+			case deltaN == 0:
+				// No change in number of subnet mappings, but one of the mappings did change.
+				if err := diff.ForceNew("subnet_mapping"); err != nil {
+					return err
+				}
+			case deltaN < 0:
+				// Subnet mappings removed. Ensure that the remaining mappings didn't change.
+				if os.Intersection(ns).Len() != ns.Len() {
+					if err := diff.ForceNew("subnet_mapping"); err != nil {
+						return err
+					}
+				}
+			case deltaN > 0:
+				// Subnet mappings added. Ensure that the previous mappings didn't change.
+				if ns.Intersection(os).Len() != os.Len() {
+					if err := diff.ForceNew("subnet_mapping"); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		if err := diff.SetNewComputed(names.AttrSubnets); err != nil {
+			return err
+		}
+	}
+	if hasSubnetsChanges {
+		if err := diff.SetNewComputed("subnet_mapping"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

@@ -1,0 +1,80 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/synthetics
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/synthetics/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *runtimeVersionDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	conn := d.Meta().SyntheticsClient(ctx)
+
+	var data runtimeVersionDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	latest := data.Latest.ValueBool()
+	prefix := data.Prefix.ValueString()
+	version := data.Version.ValueString()
+
+	out, err := findRuntimeVersions(ctx, conn)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Synthetics, create.ErrActionReading, DSNameRuntimeVersion, "", err),
+			err.Error(),
+		)
+		return
+	}
+
+	var runtimeVersion *awstypes.RuntimeVersion
+	var latestReleaseDate *time.Time
+
+	for _, v := range out {
+		if strings.HasPrefix(aws.ToString(v.VersionName), prefix) {
+			if latest {
+				if latestReleaseDate == nil || aws.ToTime(v.ReleaseDate).After(*latestReleaseDate) {
+					latestReleaseDate = v.ReleaseDate
+					runtimeVersion = &v
+				}
+			} else {
+				if aws.ToString(v.VersionName) == fmt.Sprintf("%s-%s", prefix, version) {
+					runtimeVersion = &v
+					break
+				}
+			}
+		}
+	}
+
+	if runtimeVersion == nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Synthetics, create.ErrActionReading, DSNameRuntimeVersion, "", err),
+			"Query returned no results.",
+		)
+		return
+	}
+
+	data.ID = flex.StringToFramework(ctx, runtimeVersion.VersionName)
+	resp.Diagnostics.Append(flex.Flatten(ctx, runtimeVersion, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}

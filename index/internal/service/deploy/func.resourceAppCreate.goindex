@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/deploy
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/codedeploy"
+	"github.com/aws/aws-sdk-go-v2/service/codedeploy/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAppCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).DeployClient(ctx)
+
+	application := d.Get(names.AttrName).(string)
+	input := &codedeploy.CreateApplicationInput{
+		ApplicationName: aws.String(application),
+		ComputePlatform: types.ComputePlatform(d.Get("compute_platform").(string)),
+		Tags:            getTagsIn(ctx),
+	}
+
+	output, err := conn.CreateApplication(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating CodeDeploy Application (%s): %s", application, err)
+	}
+
+	// Despite giving the application a unique ID, AWS doesn't actually use
+	// it in API calls. Use it and the app name to identify the resource in
+	// the state file. This allows us to reliably detect both when the TF
+	// config file changes and when the user deletes the app without removing
+	// it first from the TF config.
+	d.SetId(appCreateResourceID(aws.ToString(output.ApplicationId), application))
+
+	return append(diags, resourceAppRead(ctx, d, meta)...)
+}

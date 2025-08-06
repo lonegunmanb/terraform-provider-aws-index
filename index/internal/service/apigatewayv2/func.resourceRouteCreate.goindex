@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceRouteCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayV2Client(ctx)
+
+	input := &apigatewayv2.CreateRouteInput{
+		ApiId:             aws.String(d.Get("api_id").(string)),
+		ApiKeyRequired:    aws.Bool(d.Get("api_key_required").(bool)),
+		AuthorizationType: awstypes.AuthorizationType(d.Get("authorization_type").(string)),
+		RouteKey:          aws.String(d.Get("route_key").(string)),
+	}
+
+	if v, ok := d.GetOk("authorization_scopes"); ok {
+		input.AuthorizationScopes = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("authorizer_id"); ok {
+		input.AuthorizerId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("model_selection_expression"); ok {
+		input.ModelSelectionExpression = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("operation_name"); ok {
+		input.OperationName = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("request_models"); ok {
+		input.RequestModels = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("request_parameter"); ok && v.(*schema.Set).Len() > 0 {
+		input.RequestParameters = expandRouteRequestParameters(v.(*schema.Set).List())
+	}
+
+	if v, ok := d.GetOk("route_response_selection_expression"); ok {
+		input.RouteResponseSelectionExpression = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrTarget); ok {
+		input.Target = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateRoute(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway v2 Route: %s", err)
+	}
+
+	d.SetId(aws.ToString(output.RouteId))
+
+	return append(diags, resourceRouteRead(ctx, d, meta)...)
+}

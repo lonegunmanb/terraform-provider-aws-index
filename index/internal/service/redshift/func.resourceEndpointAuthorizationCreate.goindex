@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceEndpointAuthorizationCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+
+	account := d.Get("account").(string)
+	input := redshift.AuthorizeEndpointAccessInput{
+		Account:           aws.String(account),
+		ClusterIdentifier: aws.String(d.Get(names.AttrClusterIdentifier).(string)),
+	}
+
+	if v, ok := d.GetOk("vpc_ids"); ok && v.(*schema.Set).Len() > 0 {
+		input.VpcIds = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	output, err := conn.AuthorizeEndpointAccess(ctx, &input)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Redshift Endpoint Authorization: %s", err)
+	}
+
+	d.SetId(fmt.Sprintf("%s:%s", account, aws.ToString(output.ClusterIdentifier)))
+	log.Printf("[INFO] Redshift Endpoint Authorization ID: %s", d.Id())
+
+	return append(diags, resourceEndpointAuthorizationRead(ctx, d, meta)...)
+}

@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceVPCLinkCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
+
+	name := d.Get(names.AttrName).(string)
+	input := apigateway.CreateVpcLinkInput{
+		Name:       aws.String(name),
+		Tags:       getTagsIn(ctx),
+		TargetArns: flex.ExpandStringValueList(d.Get("target_arns").([]any)),
+	}
+
+	if v, ok := d.GetOk(names.AttrDescription); ok {
+		input.Description = aws.String(v.(string))
+	}
+
+	output, err := conn.CreateVpcLink(ctx, &input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating API Gateway VPC Link (%s): %s", name, err)
+	}
+
+	d.SetId(aws.ToString(output.Id))
+
+	if _, err := waitVPCLinkAvailable(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for API Gateway VPC Link (%s) create: %s", d.Id(), err)
+	}
+
+	return append(diags, resourceVPCLinkRead(ctx, d, meta)...)
+}

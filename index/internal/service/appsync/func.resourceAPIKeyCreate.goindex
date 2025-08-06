@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appsync
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/appsync"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceAPIKeyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).AppSyncClient(ctx)
+
+	apiID := d.Get("api_id").(string)
+	input := &appsync.CreateApiKeyInput{
+		ApiId:       aws.String(apiID),
+		Description: aws.String(d.Get(names.AttrDescription).(string)),
+	}
+
+	if v, ok := d.GetOk("expires"); ok {
+		t, _ := time.Parse(time.RFC3339, v.(string))
+		input.Expires = t.Unix()
+	}
+
+	output, err := conn.CreateApiKey(ctx, input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "creating Appsync API Key: %s", err)
+	}
+
+	d.SetId(apiKeyCreateResourceID(apiID, aws.ToString(output.ApiKey.Id)))
+
+	return append(diags, resourceAPIKeyRead(ctx, d, meta)...)
+}

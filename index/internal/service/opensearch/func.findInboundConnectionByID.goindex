@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findInboundConnectionByID(ctx context.Context, conn *opensearch.Client, id string) (*awstypes.InboundConnection, error) {
+	input := &opensearch.DescribeInboundConnectionsInput{
+		Filters: []awstypes.Filter{
+			{
+				Name:   aws.String("connection-id"),
+				Values: []string{id},
+			},
+		},
+	}
+
+	output, err := findInboundConnection(ctx, conn, input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if output.ConnectionStatus == nil {
+		return nil, tfresource.NewEmptyResultError(input)
+	}
+
+	if status := output.ConnectionStatus.StatusCode; status == awstypes.InboundConnectionStatusCodeDeleted || status == awstypes.InboundConnectionStatusCodeRejected {
+		return nil, &retry.NotFoundError{
+			Message:     string(status),
+			LastRequest: input,
+		}
+	}
+
+	return output, err
+}
