@@ -28,26 +28,19 @@ func resourceInstanceRoleAssociationCreate(ctx context.Context, d *schema.Resour
 	dbInstanceIdentifier := d.Get("db_instance_identifier").(string)
 	roleARN := d.Get(names.AttrRoleARN).(string)
 	id := instanceRoleAssociationCreateResourceID(dbInstanceIdentifier, roleARN)
-	input := &rds.AddRoleToDBInstanceInput{
+	input := rds.AddRoleToDBInstanceInput{
 		DBInstanceIdentifier: aws.String(dbInstanceIdentifier),
 		FeatureName:          aws.String(d.Get("feature_name").(string)),
 		RoleArn:              aws.String(roleARN),
 	}
 
-	_, err := conn.AddRoleToDBInstance(ctx, input)
-
-	// check if the instance is in a valid state to add the role association
-	if errs.IsA[*types.InvalidDBInstanceStateFault](err) {
-		if _, err := waitDBInstanceAvailable(ctx, conn, dbInstanceIdentifier, d.Timeout(schema.TimeoutCreate)); err != nil {
-			return sdkdiag.AppendErrorf(diags, "waiting for RDS DB Instance (%s) available: %s", dbInstanceIdentifier, err)
-		}
-
-		_, err = conn.AddRoleToDBInstance(ctx, input)
-	}
+	_, err := tfresource.RetryWhenIsA[*types.InvalidDBInstanceStateFault](ctx, d.Timeout(schema.TimeoutCreate), func() (any, error) {
+		return conn.AddRoleToDBInstance(ctx, &input)
+	})
 
 	if tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, errIAMRolePropagationMessage) {
 		_, err = tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func() (any, error) {
-			return conn.AddRoleToDBInstance(ctx, input)
+			return conn.AddRoleToDBInstance(ctx, &input)
 		}, errCodeInvalidParameterValue, errIAMRolePropagationMessage)
 	}
 

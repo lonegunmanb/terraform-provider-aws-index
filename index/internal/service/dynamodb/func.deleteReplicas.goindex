@@ -37,6 +37,7 @@ import (
 func deleteReplicas(ctx context.Context, conn *dynamodb.Client, tableName string, tfList []any, timeout time.Duration) error {
 	var g multierror.Group
 
+	var replicaDeletes []awstypes.ReplicationGroupUpdate
 	for _, tfMapRaw := range tfList {
 		tfMap, ok := tfMapRaw.(map[string]any)
 
@@ -54,59 +55,140 @@ func deleteReplicas(ctx context.Context, conn *dynamodb.Client, tableName string
 			continue
 		}
 
-		g.Go(func() error {
-			input := &dynamodb.UpdateTableInput{
-				TableName: aws.String(tableName),
-				ReplicaUpdates: []awstypes.ReplicationGroupUpdate{
-					{
-						Delete: &awstypes.DeleteReplicationGroupMemberAction{
-							RegionName: aws.String(regionName),
-						},
+		if v, ok := tfMap["consistency_mode"].(string); ok {
+			if awstypes.MultiRegionConsistency(v) == awstypes.MultiRegionConsistencyStrong {
+				replicaDeletes = append(replicaDeletes, awstypes.ReplicationGroupUpdate{
+					Delete: &awstypes.DeleteReplicationGroupMemberAction{
+						RegionName: aws.String(regionName),
 					},
-				},
+				})
 			}
+		}
+	}
 
-			err := retry.RetryContext(ctx, updateTableTimeout, func() *retry.RetryError {
-				_, err := conn.UpdateTable(ctx, input)
-				notFoundRetries := 0
-				if err != nil {
-					if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
-						return retry.RetryableError(err)
-					}
-					if errs.IsA[*awstypes.ResourceNotFoundException](err) {
-						notFoundRetries++
-						if notFoundRetries > 3 {
-							return retry.NonRetryableError(err)
-						}
-						return retry.RetryableError(err)
-					}
-					if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
-						return retry.RetryableError(err)
-					}
-					if errs.IsA[*awstypes.ResourceInUseException](err) {
-						return retry.RetryableError(err)
-					}
-
-					return retry.NonRetryableError(err)
+	// We built an array of MultiRegionStrongConsistency replicas that need deletion.
+	// These need to all happen concurrently
+	if len(replicaDeletes) > 0 {
+		input := &dynamodb.UpdateTableInput{
+			TableName:      aws.String(tableName),
+			ReplicaUpdates: replicaDeletes,
+		}
+		err := retry.RetryContext(ctx, updateTableTimeout, func() *retry.RetryError {
+			_, err := conn.UpdateTable(ctx, input)
+			notFoundRetries := 0
+			if err != nil {
+				if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
+					return retry.RetryableError(err)
 				}
-				return nil
-			})
+				if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+					notFoundRetries++
+					if notFoundRetries > 3 {
+						return retry.NonRetryableError(err)
+					}
+					return retry.RetryableError(err)
+				}
+				if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
+					return retry.RetryableError(err)
+				}
+				if errs.IsA[*awstypes.ResourceInUseException](err) {
+					return retry.RetryableError(err)
+				}
 
-			if tfresource.TimedOut(err) {
-				_, err = conn.UpdateTable(ctx, input)
+				return retry.NonRetryableError(err)
 			}
+			return nil
+		})
 
-			if err != nil && !errs.IsA[*awstypes.ResourceNotFoundException](err) {
-				return fmt.Errorf("deleting replica (%s): %w", regionName, err)
+		if tfresource.TimedOut(err) {
+			_, err = conn.UpdateTable(ctx, input)
+		}
+
+		if err != nil && !errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return fmt.Errorf("deleting replica(s): %w", err)
+		}
+
+		for _, tfMapRaw := range tfList {
+			tfMap, ok := tfMapRaw.(map[string]any)
+			if !ok {
+				continue
 			}
-
+			var regionName = tfMap["region_name"].(string)
 			if _, err := waitReplicaDeleted(ctx, conn, tableName, regionName, timeout); err != nil {
 				return fmt.Errorf("waiting for replica (%s) deletion: %w", regionName, err)
 			}
+		}
+		return nil
+	} else {
+		for _, tfMapRaw := range tfList {
+			tfMap, ok := tfMapRaw.(map[string]any)
 
-			return nil
-		})
+			if !ok {
+				continue
+			}
+
+			var regionName string
+
+			if v, ok := tfMap["region_name"].(string); ok {
+				regionName = v
+			}
+
+			if regionName == "" {
+				continue
+			}
+
+			g.Go(func() error {
+				input := &dynamodb.UpdateTableInput{
+					TableName: aws.String(tableName),
+					ReplicaUpdates: []awstypes.ReplicationGroupUpdate{
+						{
+							Delete: &awstypes.DeleteReplicationGroupMemberAction{
+								RegionName: aws.String(regionName),
+							},
+						},
+					},
+				}
+
+				err := retry.RetryContext(ctx, updateTableTimeout, func() *retry.RetryError {
+					_, err := conn.UpdateTable(ctx, input)
+					notFoundRetries := 0
+					if err != nil {
+						if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
+							return retry.RetryableError(err)
+						}
+						if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+							notFoundRetries++
+							if notFoundRetries > 3 {
+								return retry.NonRetryableError(err)
+							}
+							return retry.RetryableError(err)
+						}
+						if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
+							return retry.RetryableError(err)
+						}
+						if errs.IsA[*awstypes.ResourceInUseException](err) {
+							return retry.RetryableError(err)
+						}
+
+						return retry.NonRetryableError(err)
+					}
+					return nil
+				})
+
+				if tfresource.TimedOut(err) {
+					_, err = conn.UpdateTable(ctx, input)
+				}
+
+				if err != nil && !errs.IsA[*awstypes.ResourceNotFoundException](err) {
+					return fmt.Errorf("deleting replica (%s): %w", regionName, err)
+				}
+
+				if _, err := waitReplicaDeleted(ctx, conn, tableName, regionName, timeout); err != nil {
+					return fmt.Errorf("waiting for replica (%s) deletion: %w", regionName, err)
+				}
+
+				return nil
+			})
+		}
+		return g.Wait().ErrorOrNil()
 	}
-
-	return g.Wait().ErrorOrNil()
 }

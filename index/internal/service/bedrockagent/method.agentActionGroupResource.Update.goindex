@@ -44,6 +44,8 @@ func (r *agentActionGroupResource) Update(ctx context.Context, request resource.
 
 	conn := r.Meta().BedrockAgentClient(ctx)
 
+	timeout := r.UpdateTimeout(ctx, new.Timeouts)
+
 	if !new.ActionGroupExecutor.Equal(old.ActionGroupExecutor) ||
 		!new.ActionGroupName.Equal(old.ActionGroupName) ||
 		!new.ActionGroupState.Equal(old.ActionGroupState) ||
@@ -57,7 +59,9 @@ func (r *agentActionGroupResource) Update(ctx context.Context, request resource.
 			return
 		}
 
-		_, err := conn.UpdateAgentActionGroup(ctx, input)
+		_, err := retryOpIfPreparing[*bedrockagent.UpdateAgentActionGroupOutput](ctx, timeout, func() (*bedrockagent.UpdateAgentActionGroupOutput, error) {
+			return conn.UpdateAgentActionGroup(ctx, input)
+		})
 
 		if err != nil {
 			response.Diagnostics.AddError(fmt.Sprintf("updating Bedrock Agent Action Group (%s)", new.ID.ValueString()), err.Error())
@@ -69,14 +73,12 @@ func (r *agentActionGroupResource) Update(ctx context.Context, request resource.
 	output, err := findAgentActionGroupByThreePartKey(ctx, conn, new.ActionGroupID.ValueString(), new.AgentID.ValueString(), new.AgentVersion.ValueString())
 	if err != nil {
 		response.Diagnostics.AddError(fmt.Sprintf("reading Bedrock Agent Action Group (%s)", new.ID.ValueString()), err.Error())
-
 		return
 	}
 
 	if new.PrepareAgent.ValueBool() {
-		if _, err := prepareAgent(ctx, conn, new.AgentID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
+		if _, err := prepareAgent(ctx, conn, new.AgentID.ValueString(), timeout); err != nil {
 			response.Diagnostics.AddError("preparing Agent", err.Error())
-
 			return
 		}
 	}

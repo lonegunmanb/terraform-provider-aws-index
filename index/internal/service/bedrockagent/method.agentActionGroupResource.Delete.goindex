@@ -46,7 +46,12 @@ func (r *agentActionGroupResource) Delete(ctx context.Context, request resource.
 		AgentVersion:           fwflex.StringFromFramework(ctx, data.AgentVersion),
 		SkipResourceInUseCheck: data.SkipResourceInUseCheck.ValueBool(),
 	}
-	_, err := conn.DeleteAgentActionGroup(ctx, &input)
+
+	timeout := r.DeleteTimeout(ctx, data.Timeouts)
+
+	_, err := retryOpIfPreparing[*bedrockagent.DeleteAgentActionGroupOutput](ctx, timeout, func() (*bedrockagent.DeleteAgentActionGroupOutput, error) {
+		return conn.DeleteAgentActionGroup(ctx, &input)
+	})
 
 	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
 		return
@@ -54,7 +59,13 @@ func (r *agentActionGroupResource) Delete(ctx context.Context, request resource.
 
 	if err != nil {
 		response.Diagnostics.AddError(fmt.Sprintf("deleting Bedrock Agent Action Group (%s)", data.ID.ValueString()), err.Error())
-
 		return
+	}
+
+	if data.PrepareAgent.ValueBool() {
+		if _, err := prepareAgent(ctx, conn, data.AgentID.ValueString(), timeout); err != nil {
+			response.Diagnostics.AddError("preparing Agent", err.Error())
+			return
+		}
 	}
 }

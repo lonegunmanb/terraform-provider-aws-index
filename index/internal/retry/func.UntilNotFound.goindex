@@ -7,7 +7,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 )
-func (o operation[T]) UntilNotFound() operation[T] {
+func (op opFunc[T]) UntilNotFound() runFunc[T] {
 	predicate := func(_ T, err error) (bool, error) {
 		if err == nil {
 			return true, nil
@@ -20,13 +20,13 @@ func (o operation[T]) UntilNotFound() operation[T] {
 		return false, err
 	}
 
-	transform := func(err error) error {
-		if errors.Is(err, inttypes.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return ErrFoundResource
+	return func(ctx context.Context, timeout time.Duration, opts ...backoff.Option) (T, error) {
+		t, err := op.If(predicate)(ctx, timeout, opts...)
+
+		if TimedOut(err) {
+			return t, ErrFoundResource
 		}
 
-		return err
+		return t, err
 	}
-
-	return o.If(predicate).withTransformRunError(transform)
 }

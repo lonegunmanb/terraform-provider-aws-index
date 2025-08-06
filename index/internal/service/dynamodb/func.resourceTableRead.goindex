@@ -36,7 +36,8 @@ import (
 )
 func resourceTableRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).DynamoDBClient(ctx)
+	c := meta.(*conns.AWSClient)
+	conn := c.DynamoDBClient(ctx)
 
 	table, err := findTableByName(ctx, conn, d.Id())
 
@@ -104,7 +105,7 @@ func resourceTableRead(ctx context.Context, d *schema.ResourceData, meta any) di
 	d.Set("stream_label", table.LatestStreamLabel)
 
 	sse := flattenTableServerSideEncryption(table.SSEDescription)
-	sse = clearSSEDefaultKey(ctx, meta.(*conns.AWSClient), sse)
+	sse = clearSSEDefaultKey(ctx, c, sse)
 
 	if err := d.Set("server_side_encryption", sse); err != nil {
 		return create.AppendDiagSettingError(diags, names.DynamoDB, resNameTable, d.Id(), "server_side_encryption", err)
@@ -121,7 +122,13 @@ func resourceTableRead(ctx context.Context, d *schema.ResourceData, meta any) di
 	}
 
 	replicas = addReplicaTagPropagates(d.Get("replica").(*schema.Set), replicas)
-	replicas = clearReplicaDefaultKeys(ctx, meta.(*conns.AWSClient), replicas)
+	replicas = clearReplicaDefaultKeys(ctx, c, replicas)
+
+	mrc := awstypes.MultiRegionConsistencyEventual
+	if table.MultiRegionConsistency != "" {
+		mrc = table.MultiRegionConsistency
+	}
+	replicas = addReplicaMultiRegionConsistency(replicas, mrc)
 
 	if err := d.Set("replica", replicas); err != nil {
 		return create.AppendDiagSettingError(diags, names.DynamoDB, resNameTable, d.Id(), "replica", err)

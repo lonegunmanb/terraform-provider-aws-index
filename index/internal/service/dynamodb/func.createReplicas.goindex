@@ -35,40 +35,51 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func createReplicas(ctx context.Context, conn *dynamodb.Client, tableName string, tfList []any, create bool, timeout time.Duration) error {
+	// Duplicating this for MRSC Adoption. If using MRSC and CreateReplicationGroupMemberAction list isn't initiated for at least 2 replicas
+	// then the update table action will fail with
+	// "Unsupported table replica count for global tables with MultiRegionConsistency set to STRONG"
+	// If this logic can be consolidated for regular Replica creation then this can be refactored
+	numReplicas := len(tfList)
+	numReplicasMRSC := 0
+	useMRSC := false
+	mrscInput := awstypes.MultiRegionConsistencyStrong
+
 	for _, tfMapRaw := range tfList {
-		tfMap, ok := tfMapRaw.(map[string]any)
+		tfMap, _ := tfMapRaw.(map[string]any)
 
-		if !ok {
-			continue
+		if v, ok := tfMap["consistency_mode"].(string); ok {
+			if awstypes.MultiRegionConsistency(v) == awstypes.MultiRegionConsistencyStrong {
+				numReplicasMRSC += 1
+			}
+		}
+	}
+
+	if numReplicasMRSC > 0 {
+		if numReplicasMRSC > 0 && numReplicasMRSC != numReplicas {
+			return fmt.Errorf("creating replicas: Using MultiRegionStrongConsistency requires all replicas to use 'consistency_mode' set to 'STRONG' ")
+		}
+		if numReplicasMRSC == 1 {
+			return fmt.Errorf("creating replicas: Using MultiRegionStrongConsistency requires exactly 2 replicas. ")
+		}
+		if numReplicasMRSC > 2 {
+			return fmt.Errorf("creating replicas: Using MultiRegionStrongConsistency supports at most 2 replicas. ")
 		}
 
-		var replicaInput = &awstypes.CreateReplicationGroupMemberAction{}
+		mrscInput = awstypes.MultiRegionConsistencyStrong
+		useMRSC = true
+	}
 
-		if v, ok := tfMap["region_name"].(string); ok && v != "" {
-			replicaInput.RegionName = aws.String(v)
-		}
+	// if MRSC or MREC is defined and meets the above criteria, then all replicas must be created in a single call to UpdateTable.
+	if useMRSC {
+		var replicaCreates []awstypes.ReplicationGroupUpdate
+		for _, tfMapRaw := range tfList {
+			tfMap, ok := tfMapRaw.(map[string]any)
+			if !ok {
+				continue
+			}
 
-		if v, ok := tfMap[names.AttrKMSKeyARN].(string); ok && v != "" {
-			replicaInput.KMSMasterKeyId = aws.String(v)
-		}
+			var replicaInput = &awstypes.CreateReplicationGroupMemberAction{}
 
-		input := &dynamodb.UpdateTableInput{
-			TableName: aws.String(tableName),
-			ReplicaUpdates: []awstypes.ReplicationGroupUpdate{
-				{
-					Create: replicaInput,
-				},
-			},
-		}
-
-		// currently this would not be needed because (replica has these arguments):
-		//   region_name can't be updated - new replica
-		//   kms_key_arn can't be updated - remove/add replica
-		//   propagate_tags - handled elsewhere
-		//   point_in_time_recovery - handled elsewhere
-		// if provisioned_throughput_override or table_class_override were added, they could be updated here
-		if !create {
-			var replicaInput = &awstypes.UpdateReplicationGroupMemberAction{}
 			if v, ok := tfMap["region_name"].(string); ok && v != "" {
 				replicaInput.RegionName = aws.String(v)
 			}
@@ -77,14 +88,15 @@ func createReplicas(ctx context.Context, conn *dynamodb.Client, tableName string
 				replicaInput.KMSMasterKeyId = aws.String(v)
 			}
 
-			input = &dynamodb.UpdateTableInput{
-				TableName: aws.String(tableName),
-				ReplicaUpdates: []awstypes.ReplicationGroupUpdate{
-					{
-						Update: replicaInput,
-					},
-				},
-			}
+			replicaCreates = append(replicaCreates, awstypes.ReplicationGroupUpdate{
+				Create: replicaInput,
+			})
+		}
+
+		input := &dynamodb.UpdateTableInput{
+			TableName:              aws.String(tableName),
+			ReplicaUpdates:         replicaCreates,
+			MultiRegionConsistency: mrscInput,
 		}
 
 		err := retry.RetryContext(ctx, max(replicaUpdateTimeout, timeout), func() *retry.RetryError {
@@ -93,8 +105,8 @@ func createReplicas(ctx context.Context, conn *dynamodb.Client, tableName string
 				if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
 					return retry.RetryableError(err)
 				}
-				if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
-					return retry.RetryableError(err)
+				if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created.") {
+					return retry.NonRetryableError(err)
 				}
 				if tfawserr.ErrMessageContains(err, errCodeValidationException, "Replica specified in the Replica Update or Replica Delete action of the request was not found") {
 					return retry.RetryableError(err)
@@ -112,27 +124,124 @@ func createReplicas(ctx context.Context, conn *dynamodb.Client, tableName string
 			_, err = conn.UpdateTable(ctx, input)
 		}
 
-		// An update that doesn't (makes no changes) returns ValidationException
-		// (same region_name and kms_key_arn as currently) throws unhelpfully worded exception:
-		// ValidationException: One or more parameter values were invalid: KMSMasterKeyId must be specified for each replica.
-
-		if create && tfawserr.ErrMessageContains(err, errCodeValidationException, "already exist") {
-			return createReplicas(ctx, conn, tableName, tfList, false, timeout)
+		if err != nil {
+			return err
 		}
 
-		if err != nil && !tfawserr.ErrMessageContains(err, errCodeValidationException, "no actions specified") {
-			return fmt.Errorf("creating replica (%s): %w", tfMap["region_name"].(string), err)
-		}
+		for _, tfMapRaw := range tfList {
+			tfMap, ok := tfMapRaw.(map[string]any)
+			if !ok {
+				continue
+			}
 
-		if _, err := waitReplicaActive(ctx, conn, tableName, tfMap["region_name"].(string), timeout, replicaDelayDefault); err != nil {
-			return fmt.Errorf("waiting for replica (%s) creation: %w", tfMap["region_name"].(string), err)
-		}
+			log.Printf("[DEBUG] Waiting for replica to be active in region (%s)\n", tfMap["region_name"])
+			if _, err := waitReplicaActive(ctx, conn, tableName, tfMap["region_name"].(string), timeout, replicaDelayDefault); err != nil {
+				return fmt.Errorf("waiting for replica (%s) creation: %w", tfMap["region_name"].(string), err)
+			}
 
-		// pitr
-		if err = updatePITR(ctx, conn, tableName, tfMap["point_in_time_recovery"].(bool), nil, tfMap["region_name"].(string), timeout); err != nil {
-			return fmt.Errorf("updating replica (%s) point in time recovery: %w", tfMap["region_name"].(string), err)
+			// pitr
+			if err = updatePITR(ctx, conn, tableName, tfMap["point_in_time_recovery"].(bool), nil, tfMap["region_name"].(string), timeout); err != nil {
+				return fmt.Errorf("updating replica (%s) point in time recovery: %w", tfMap["region_name"].(string), err)
+			}
+		}
+	} else {
+		for _, tfMapRaw := range tfList {
+			tfMap, ok := tfMapRaw.(map[string]any)
+
+			if !ok {
+				continue
+			}
+			var replicaInput = &awstypes.CreateReplicationGroupMemberAction{}
+
+			if v, ok := tfMap["region_name"].(string); ok && v != "" {
+				replicaInput.RegionName = aws.String(v)
+			}
+
+			if v, ok := tfMap[names.AttrKMSKeyARN].(string); ok && v != "" {
+				replicaInput.KMSMasterKeyId = aws.String(v)
+			}
+
+			input := &dynamodb.UpdateTableInput{
+				TableName: aws.String(tableName),
+				ReplicaUpdates: []awstypes.ReplicationGroupUpdate{
+					{
+						Create: replicaInput,
+					},
+				},
+			}
+
+			// currently this would not be needed because (replica has these arguments):
+			//   region_name can't be updated - new replica
+			//   kms_key_arn can't be updated - remove/add replica
+			//   propagate_tags - handled elsewhere
+			//   point_in_time_recovery - handled elsewhere
+			// if provisioned_throughput_override or table_class_override were added, they could be updated here
+			if !create {
+				var replicaInput = &awstypes.UpdateReplicationGroupMemberAction{}
+				if v, ok := tfMap["region_name"].(string); ok && v != "" {
+					replicaInput.RegionName = aws.String(v)
+				}
+
+				if v, ok := tfMap[names.AttrKMSKeyARN].(string); ok && v != "" {
+					replicaInput.KMSMasterKeyId = aws.String(v)
+				}
+
+				input = &dynamodb.UpdateTableInput{
+					TableName: aws.String(tableName),
+					ReplicaUpdates: []awstypes.ReplicationGroupUpdate{
+						{
+							Update: replicaInput,
+						},
+					},
+				}
+			}
+
+			err := retry.RetryContext(ctx, max(replicaUpdateTimeout, timeout), func() *retry.RetryError {
+				_, err := conn.UpdateTable(ctx, input)
+				if err != nil {
+					if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
+						return retry.RetryableError(err)
+					}
+					if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
+						return retry.RetryableError(err)
+					}
+					if tfawserr.ErrMessageContains(err, errCodeValidationException, "Replica specified in the Replica Update or Replica Delete action of the request was not found") {
+						return retry.RetryableError(err)
+					}
+					if errs.IsA[*awstypes.ResourceInUseException](err) {
+						return retry.RetryableError(err)
+					}
+
+					return retry.NonRetryableError(err)
+				}
+				return nil
+			})
+
+			if tfresource.TimedOut(err) {
+				_, err = conn.UpdateTable(ctx, input)
+			}
+
+			// An update that doesn't (makes no changes) returns ValidationException
+			// (same region_name and kms_key_arn as currently) throws unhelpfully worded exception:
+			// ValidationException: One or more parameter values were invalid: KMSMasterKeyId must be specified for each replica.
+
+			if create && tfawserr.ErrMessageContains(err, errCodeValidationException, "already exist") {
+				return createReplicas(ctx, conn, tableName, tfList, false, timeout)
+			}
+
+			if err != nil && !tfawserr.ErrMessageContains(err, errCodeValidationException, "no actions specified") {
+				return fmt.Errorf("creating replica (%s): %w", tfMap["region_name"].(string), err)
+			}
+
+			if _, err := waitReplicaActive(ctx, conn, tableName, tfMap["region_name"].(string), timeout, replicaDelayDefault); err != nil {
+				return fmt.Errorf("waiting for replica (%s) creation: %w", tfMap["region_name"].(string), err)
+			}
+
+			// pitr
+			if err = updatePITR(ctx, conn, tableName, tfMap["point_in_time_recovery"].(bool), nil, tfMap["region_name"].(string), timeout); err != nil {
+				return fmt.Errorf("updating replica (%s) point in time recovery: %w", tfMap["region_name"].(string), err)
+			}
 		}
 	}
-
 	return nil
 }
