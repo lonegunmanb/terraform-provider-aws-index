@@ -2,6 +2,7 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/ssmquickset
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,27 +18,34 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func waitConfigurationManagerCreated(ctx context.Context, conn *ssmquicksetup.Client, id string, timeout time.Duration) (*ssmquicksetup.GetConfigurationManagerOutput, error) {
+func waitConfigurationManagerCreated(ctx context.Context, conn *ssmquicksetup.Client, arn string, timeout time.Duration) (*ssmquicksetup.GetConfigurationManagerOutput, error) {
 	stateConf := &retry.StateChangeConf{
 		Pending: enum.Slice(awstypes.StatusInitializing, awstypes.StatusDeploying),
 		Target:  enum.Slice(awstypes.StatusSucceeded),
-		Refresh: statusConfigurationManager(ctx, conn, id),
+		Refresh: statusConfigurationManager(ctx, conn, arn),
 		Timeout: timeout,
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)
-	if out, ok := outputRaw.(*ssmquicksetup.GetConfigurationManagerOutput); ok {
-		return out, err
+
+	if output, ok := outputRaw.(*ssmquicksetup.GetConfigurationManagerOutput); ok {
+		for _, v := range output.StatusSummaries {
+			if v.StatusType == awstypes.StatusTypeDeployment {
+				tfresource.SetLastError(err, errors.New(aws.ToString(v.StatusMessage)))
+			}
+		}
+
+		return output, err
 	}
 
 	return nil, err
