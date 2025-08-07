@@ -7,7 +7,6 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/identity"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
-	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
@@ -18,7 +17,10 @@ func (r identityInterceptor) run(ctx context.Context, opts crudInterceptorOption
 	switch d, when, why := opts.d, opts.when, opts.why; when {
 	case After:
 		switch why {
-		case Create, Read:
+		case Create, Read, Update:
+			if why == Update && !(r.identitySpec.IsMutable && r.identitySpec.IsSetOnUpdate) {
+				break
+			}
 			if d.Id() == "" {
 				break
 			}
@@ -27,24 +29,24 @@ func (r identityInterceptor) run(ctx context.Context, opts crudInterceptorOption
 				return sdkdiag.AppendFromErr(diags, err)
 			}
 
-			for _, attr := range r.attributes {
-				switch attr {
+			for _, attr := range r.identitySpec.Attributes {
+				switch attr.Name() {
 				case names.AttrAccountID:
-					if err := identity.Set(attr, awsClient.AccountID(ctx)); err != nil {
+					if err := identity.Set(attr.Name(), awsClient.AccountID(ctx)); err != nil {
 						return sdkdiag.AppendFromErr(diags, err)
 					}
 
 				case names.AttrRegion:
-					if err := identity.Set(attr, awsClient.Region(ctx)); err != nil {
+					if err := identity.Set(attr.Name(), awsClient.Region(ctx)); err != nil {
 						return sdkdiag.AppendFromErr(diags, err)
 					}
 
 				default:
-					val, ok := getAttributeOk(d, attr)
+					val, ok := getAttributeOk(d, attr.ResourceAttributeName())
 					if !ok {
 						continue
 					}
-					if err := identity.Set(attr, val); err != nil {
+					if err := identity.Set(attr.Name(), val); err != nil {
 						return sdkdiag.AppendFromErr(diags, err)
 					}
 				}

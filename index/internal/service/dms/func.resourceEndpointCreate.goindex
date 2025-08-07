@@ -13,13 +13,13 @@ import (
 	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfkms "github.com/hashicorp/terraform-provider-aws/internal/service/kms"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
@@ -140,24 +140,29 @@ func resourceEndpointCreate(ctx context.Context, d *schema.ResourceData, meta an
 
 		input.MongoDbSettings = settings
 	case engineNameOracle:
+		var settings = &awstypes.OracleSettings{
+			DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+		}
+		if v, ok := d.GetOk("oracle_settings"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			settings.AuthenticationMethod = expandOracleSettings(v.([]any)).AuthenticationMethod
+		}
 		if _, ok := d.GetOk("secrets_manager_arn"); ok {
-			input.OracleSettings = &awstypes.OracleSettings{
-				SecretsManagerAccessRoleArn: aws.String(d.Get("secrets_manager_access_role_arn").(string)),
-				SecretsManagerSecretId:      aws.String(d.Get("secrets_manager_arn").(string)),
-				DatabaseName:                aws.String(d.Get(names.AttrDatabaseName).(string)),
-			}
+			settings.SecretsManagerAccessRoleArn = aws.String(d.Get("secrets_manager_access_role_arn").(string))
+			settings.SecretsManagerSecretId = aws.String(d.Get("secrets_manager_arn").(string))
 		} else {
-			input.OracleSettings = &awstypes.OracleSettings{
-				Username:     aws.String(d.Get(names.AttrUsername).(string)),
-				Password:     aws.String(d.Get(names.AttrPassword).(string)),
-				ServerName:   aws.String(d.Get("server_name").(string)),
-				Port:         aws.Int32(int32(d.Get(names.AttrPort).(int))),
-				DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
+			if v, ok := d.GetOk(names.AttrPassword); ok {
+				settings.Password = aws.String(v.(string))
 			}
+
+			settings.Username = aws.String(d.Get(names.AttrUsername).(string))
+			settings.ServerName = aws.String(d.Get("server_name").(string))
+			settings.Port = aws.Int32(int32(d.Get(names.AttrPort).(int)))
+			settings.DatabaseName = aws.String(d.Get(names.AttrDatabaseName).(string))
 
 			// Set connection info in top-level namespace as well
 			expandTopLevelConnectionInfo(d, &input)
 		}
+		input.OracleSettings = settings
 	case engineNameRedis:
 		input.RedisSettings = expandRedisSettings(d.Get("redis_settings").([]any)[0].(map[string]any))
 	case engineNameRedshift:

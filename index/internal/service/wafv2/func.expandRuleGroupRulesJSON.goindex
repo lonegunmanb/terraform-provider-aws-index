@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandRuleGroupRulesJSON(rawRules string) ([]awstypes.Rule, error) {
+	// Backwards compatibility.
+	if rawRules == "" {
+		return nil, errors.New("decoding JSON: unexpected end of JSON input")
+	}
+
+	var temp []any
+	err := tfjson.DecodeFromBytes([]byte(rawRules), &temp)
+	if err != nil {
+		return nil, fmt.Errorf("decoding JSON: %w", err)
+	}
+
+	for _, v := range temp {
+		walkRulesGroupJSON(reflect.ValueOf(v))
+	}
+
+	out, err := tfjson.EncodeToBytes(temp)
+	if err != nil {
+		return nil, err
+	}
+
+	var rules []awstypes.Rule
+	err = tfjson.DecodeFromBytes(out, &rules)
+	if err != nil {
+		return nil, err
+	}
+
+	for i, r := range rules {
+		if reflect.ValueOf(r).IsZero() {
+			return nil, fmt.Errorf("invalid Rule Group Rule supplied at index (%d)", i)
+		}
+	}
+	return rules, nil
+}

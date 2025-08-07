@@ -1,0 +1,180 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *bucketMetadataConfigurationResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrBucket: schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			names.AttrExpectedBucketOwner: schema.StringAttribute{
+				Optional: true,
+				Validators: []validator.String{
+					fwvalidators.AWSAccountID(),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"metadata_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[metadataConfigurationModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtLeast(1),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrDestination: framework.ResourceComputedListOfObjectsAttribute[destinationResultModel](ctx, listplanmodifier.UseStateForUnknown()),
+					},
+					Blocks: map[string]schema.Block{
+						"inventory_table_configuration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[inventoryTableConfigurationModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtLeast(1),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"configuration_state": schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.InventoryConfigurationState](),
+										Required:   true,
+									},
+									"table_arn": schema.StringAttribute{
+										Computed: true,
+									},
+									names.AttrTableName: schema.StringAttribute{
+										Computed: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									names.AttrEncryptionConfiguration: schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[metadataTableEncryptionConfigurationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrKMSKeyARN: schema.StringAttribute{
+													CustomType: fwtypes.ARNType,
+													Optional:   true,
+												},
+												"sse_algorithm": schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.TableSseAlgorithm](),
+													Required:   true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"journal_table_configuration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[journalTableConfigurationModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtLeast(1),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"table_arn": schema.StringAttribute{
+										Computed: true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseStateForUnknown(),
+										},
+									},
+									names.AttrTableName: schema.StringAttribute{
+										Computed: true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseStateForUnknown(),
+										},
+									},
+								},
+								Blocks: map[string]schema.Block{
+									names.AttrEncryptionConfiguration: schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[metadataTableEncryptionConfigurationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrKMSKeyARN: schema.StringAttribute{
+													CustomType: fwtypes.ARNType,
+													Optional:   true,
+												},
+												"sse_algorithm": schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.TableSseAlgorithm](),
+													Required:   true,
+												},
+											},
+										},
+									},
+									"record_expiration": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[recordExpirationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.IsRequired(),
+											listvalidator.SizeAtLeast(1),
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"days": schema.Int32Attribute{
+													Optional: true,
+													Validators: []validator.Int32{
+														int32validator.Between(7, 2147483647),
+													},
+												},
+												"expiration": schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.ExpirationState](),
+													Required:   true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+			}),
+		},
+	}
+}

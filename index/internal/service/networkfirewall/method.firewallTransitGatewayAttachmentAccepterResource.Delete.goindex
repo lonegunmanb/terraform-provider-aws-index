@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkfirewall
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/networkfirewall"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkfirewall/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *firewallTransitGatewayAttachmentAccepterResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data firewallTransitGatewayAttachmentAccepterResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().NetworkFirewallClient(ctx)
+
+	tgwAttachmentID := fwflex.StringValueFromFramework(ctx, data.TransitGatewayAttachmentID)
+	input := networkfirewall.DeleteNetworkFirewallTransitGatewayAttachmentInput{
+		TransitGatewayAttachmentId: aws.String(tgwAttachmentID),
+	}
+
+	_, err := conn.DeleteNetworkFirewallTransitGatewayAttachment(ctx, &input)
+
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("deleting NetworkFirewall Firewall Transit Gateway Attachment (%s)", tgwAttachmentID), err.Error())
+
+		return
+	}
+
+	if _, err := tfec2.WaitTransitGatewayAttachmentDeleted(ctx, r.Meta().EC2Client(ctx), tgwAttachmentID, r.DeleteTimeout(ctx, data.Timeouts)); err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for NetworkFirewall Firewall Transit Gateway Attachment (%s) delete", tgwAttachmentID), err.Error())
+
+		return
+	}
+}

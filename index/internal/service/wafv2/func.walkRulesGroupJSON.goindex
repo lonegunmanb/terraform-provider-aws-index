@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	itypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func walkRulesGroupJSON(v reflect.Value) {
+	m := map[string][]struct {
+		key        string
+		outputType any
+	}{
+		"ByteMatchStatement": {
+			{key: "SearchString", outputType: []byte{}},
+		},
+	}
+
+	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+
+	switch v.Kind() {
+	case reflect.Map:
+		for _, k := range v.MapKeys() {
+			if val, ok := m[k.String()]; ok {
+				st := v.MapIndex(k).Interface().(map[string]any)
+				for _, va := range val {
+					if st[va.key] == nil {
+						continue
+					}
+					str := st[va.key]
+					switch reflect.ValueOf(va.outputType).Kind() {
+					case reflect.Slice, reflect.Array:
+						switch reflect.ValueOf(va.outputType).Type().Elem().Kind() {
+						case reflect.Uint8:
+							base64String := itypes.Base64Encode([]byte(str.(string)))
+							st[va.key] = base64String
+						default:
+						}
+					default:
+					}
+				}
+			} else {
+				walkRulesGroupJSON(v.MapIndex(k))
+			}
+		}
+	case reflect.Array, reflect.Slice:
+		for i := range v.Len() {
+			walkRulesGroupJSON(v.Index(i))
+		}
+	default:
+	}
+}

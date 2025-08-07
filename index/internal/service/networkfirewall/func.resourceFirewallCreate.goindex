@@ -30,9 +30,15 @@ func resourceFirewallCreate(ctx context.Context, d *schema.ResourceData, meta an
 	input := networkfirewall.CreateFirewallInput{
 		FirewallName:      aws.String(name),
 		FirewallPolicyArn: aws.String(d.Get("firewall_policy_arn").(string)),
-		SubnetMappings:    expandSubnetMappings(d.Get("subnet_mapping").(*schema.Set).List()),
 		Tags:              getTagsIn(ctx),
-		VpcId:             aws.String(d.Get(names.AttrVPCID).(string)),
+	}
+
+	if v, ok := d.GetOk("availability_zone_change_protection"); ok {
+		input.AvailabilityZoneChangeProtection = v.(bool)
+	}
+
+	if v := d.Get("availability_zone_mapping").(*schema.Set); v.Len() > 0 {
+		input.AvailabilityZoneMappings = expandAvailabilityZoneMapping(v.List())
 	}
 
 	if v, ok := d.GetOk("delete_protection"); ok {
@@ -59,6 +65,18 @@ func resourceFirewallCreate(ctx context.Context, d *schema.ResourceData, meta an
 		input.SubnetChangeProtection = v.(bool)
 	}
 
+	if v := d.Get("subnet_mapping").(*schema.Set); v.Len() > 0 {
+		input.SubnetMappings = expandSubnetMappings(v.List())
+	}
+
+	if v, ok := d.GetOk(names.AttrTransitGatewayID); ok {
+		input.TransitGatewayId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk(names.AttrVPCID); ok {
+		input.VpcId = aws.String(v.(string))
+	}
+
 	output, err := conn.CreateFirewall(ctx, &input)
 
 	if err != nil {
@@ -67,9 +85,14 @@ func resourceFirewallCreate(ctx context.Context, d *schema.ResourceData, meta an
 
 	d.SetId(aws.ToString(output.Firewall.FirewallArn))
 
-	if _, err := waitFirewallCreated(ctx, conn, d.Timeout(schema.TimeoutCreate), d.Id()); err != nil {
-		return sdkdiag.AppendErrorf(diags, "waiting for NetworkFirewall Firewall (%s) create: %s", d.Id(), err)
+	if output.Firewall.TransitGatewayId != nil {
+		if _, err := waitFirewallTransitGatewayAttachmentCreated(ctx, conn, d.Timeout(schema.TimeoutCreate), d.Id()); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for NetworkFirewall Firewall Transit Gateway Attachment (%s) create: %s", d.Id(), err)
+		}
+	} else {
+		if _, err := waitFirewallCreated(ctx, conn, d.Timeout(schema.TimeoutCreate), d.Id()); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for NetworkFirewall Firewall (%s) create: %s", d.Id(), err)
+		}
 	}
-
 	return append(diags, resourceFirewallRead(ctx, d, meta)...)
 }

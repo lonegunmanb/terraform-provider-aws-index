@@ -1,0 +1,127 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *bucketMetadataConfigurationResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new bucketMetadataConfigurationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().S3Client(ctx)
+
+	bucket, expectedBucketOwner := fwflex.StringValueFromFramework(ctx, new.Bucket), fwflex.StringValueFromFramework(ctx, new.ExpectedBucketOwner)
+
+	newMetadataConfigurationModel, diags := new.MetadataConfiguration.ToPtr(ctx)
+	response.Diagnostics.Append(diags...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	oldMetadataConfigurationModel, diags := old.MetadataConfiguration.ToPtr(ctx)
+	response.Diagnostics.Append(diags...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if !newMetadataConfigurationModel.InventoryTableConfiguration.Equal(oldMetadataConfigurationModel.InventoryTableConfiguration) {
+		var input s3.UpdateBucketMetadataInventoryTableConfigurationInput
+		response.Diagnostics.Append(fwflex.Expand(ctx, new.MetadataConfiguration, &input)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+		input.Bucket = aws.String(bucket)
+		if expectedBucketOwner != "" {
+			input.ExpectedBucketOwner = aws.String(expectedBucketOwner)
+		}
+
+		_, err := conn.UpdateBucketMetadataInventoryTableConfiguration(ctx, &input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating S3 Bucket Metadata inventory table configuration (%s)", bucket), err.Error())
+
+			return
+		}
+	}
+
+	if !newMetadataConfigurationModel.JournalTableConfiguration.Equal(oldMetadataConfigurationModel.JournalTableConfiguration) {
+		var input s3.UpdateBucketMetadataJournalTableConfigurationInput
+		response.Diagnostics.Append(fwflex.Expand(ctx, new.MetadataConfiguration, &input)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+		input.Bucket = aws.String(bucket)
+		if expectedBucketOwner != "" {
+			input.ExpectedBucketOwner = aws.String(expectedBucketOwner)
+		}
+
+		_, err := conn.UpdateBucketMetadataJournalTableConfiguration(ctx, &input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating S3 Bucket Metadata journal table configuration (%s)", bucket), err.Error())
+
+			return
+		}
+	}
+
+	// Set values for unknowns.
+	output, err := findBucketMetadataConfigurationByTwoPartKey(ctx, conn, bucket, expectedBucketOwner)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading S3 Bucket Metadata Configuration (%s)", bucket), err.Error())
+
+		return
+	}
+
+	// Encryption configurations are not returned via the API.
+	// Propagate from Plan.
+	inventoryEncryptionConfiguration, journalEncryptionConfiguration, diags := getMetadataTableEncryptionConfigurationModels(ctx, &new)
+	response.Diagnostics.Append(diags...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output, &new.MetadataConfiguration, fwflex.WithFieldNameSuffix("Result"))...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	diags = setMetadataTableEncryptionConfigurationModels(ctx, &new, inventoryEncryptionConfiguration, journalEncryptionConfiguration)
+	response.Diagnostics.Append(diags...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, new)...)
+}

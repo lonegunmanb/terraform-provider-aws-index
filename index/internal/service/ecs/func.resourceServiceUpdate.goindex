@@ -227,6 +227,7 @@ func resourceServiceUpdate(ctx context.Context, d *schema.ResourceData, meta any
 			serviceUpdateTimeout = 2 * time.Minute
 			timeout              = propagationTimeout + serviceUpdateTimeout
 		)
+		operationTime := time.Now().UTC()
 		_, err := tfresource.RetryWhen(ctx, timeout,
 			func() (any, error) {
 				return conn.UpdateService(ctx, &input)
@@ -248,11 +249,11 @@ func resourceServiceUpdate(ctx context.Context, d *schema.ResourceData, meta any
 			return sdkdiag.AppendErrorf(diags, "updating ECS Service (%s): %s", d.Id(), err)
 		}
 
-		fn := waitServiceActive
 		if d.Get("wait_for_steady_state").(bool) {
-			fn = waitServiceStable
-		}
-		if _, err := fn(ctx, conn, d.Id(), cluster, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			if _, err := waitServiceStable(ctx, conn, d.Id(), cluster, operationTime, d.Timeout(schema.TimeoutUpdate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for ECS Service (%s) update: %s", d.Id(), err)
+			}
+		} else if _, err := waitServiceActive(ctx, conn, d.Id(), cluster, d.Timeout(schema.TimeoutUpdate)); err != nil {
 			return sdkdiag.AppendErrorf(diags, "waiting for ECS Service (%s) update: %s", d.Id(), err)
 		}
 	}

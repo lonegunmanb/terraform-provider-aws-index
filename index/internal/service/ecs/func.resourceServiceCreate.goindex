@@ -169,6 +169,7 @@ func resourceServiceCreate(ctx context.Context, d *schema.ResourceData, meta any
 		input.VolumeConfigurations = expandServiceVolumeConfigurations(ctx, v.([]any))
 	}
 
+	operationTime := time.Now().UTC()
 	output, err := retryServiceCreate(ctx, conn, &input)
 
 	// Some partitions (e.g. ISO) may not support tag-on-create.
@@ -185,11 +186,11 @@ func resourceServiceCreate(ctx context.Context, d *schema.ResourceData, meta any
 	d.SetId(aws.ToString(output.Service.ServiceArn))
 	d.Set(names.AttrARN, output.Service.ServiceArn)
 
-	fn := waitServiceActive
 	if d.Get("wait_for_steady_state").(bool) {
-		fn = waitServiceStable
-	}
-	if _, err := fn(ctx, conn, d.Id(), d.Get("cluster").(string), d.Timeout(schema.TimeoutCreate)); err != nil {
+		if _, err := waitServiceStable(ctx, conn, d.Id(), d.Get("cluster").(string), operationTime, d.Timeout(schema.TimeoutCreate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for ECS Service (%s) create: %s", d.Id(), err)
+		}
+	} else if _, err := waitServiceActive(ctx, conn, d.Id(), d.Get("cluster").(string), d.Timeout(schema.TimeoutCreate)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "waiting for ECS Service (%s) create: %s", d.Id(), err)
 	}
 
