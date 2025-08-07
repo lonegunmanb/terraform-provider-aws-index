@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/connect
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findPhoneNumberContactFlowAssociationByThreePartKey(ctx context.Context, conn *connect.Client, phoneNumberID, instanceID, contactFlowID string) (*awstypes.FlowAssociationSummary, error) {
+	phoneNumber, err := findPhoneNumberByID(ctx, conn, phoneNumberID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	contactFlow, err := findContactFlowByTwoPartKey(ctx, conn, instanceID, contactFlowID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	input := connect.ListFlowAssociationsInput{
+		InstanceId:   aws.String(instanceID),
+		ResourceType: awstypes.ListFlowAssociationResourceTypeVoicePhoneNumber,
+	}
+
+	return findFlowAssociation(ctx, conn, &input, func(v *awstypes.FlowAssociationSummary) bool {
+		return aws.ToString(v.ResourceId) == aws.ToString(phoneNumber.PhoneNumberArn) && aws.ToString(v.FlowId) == aws.ToString(contactFlow.Arn)
+	})
+}

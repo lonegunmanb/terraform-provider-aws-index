@@ -1,7 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/bedrock
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -35,6 +35,12 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *guardrailResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	const (
+		filtersConfigThresholdMin = 0.000000
+	)
+	guardrailNameRegex := regexache.MustCompile("^[0-9a-zA-Z-_]+$")
+	topicsConfigNameRegex := regexache.MustCompile("^[0-9a-zA-Z-_ !?.]+$")
+
 	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
 			"blocked_input_messaging": schema.StringAttribute{
@@ -99,14 +105,17 @@ func (r *guardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 		},
 		Blocks: map[string]schema.Block{
 			"content_policy_config": schema.ListNestedBlock{
-				CustomType: fwtypes.NewListNestedObjectTypeOf[contentPolicyConfig](ctx),
+				CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailContentPolicyConfigModel](ctx),
 				Validators: []validator.List{
 					listvalidator.SizeAtMost(1),
 				},
 				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"tier_config": framework.ResourceOptionalComputedListOfObjectsAttribute[guardrailContentFiltersTierConfigModel](ctx, 1, nil, listplanmodifier.UseStateForUnknown()),
+					},
 					Blocks: map[string]schema.Block{
 						"filters_config": schema.SetNestedBlock{
-							CustomType: fwtypes.NewSetNestedObjectTypeOf[filtersConfig](ctx),
+							CustomType: fwtypes.NewSetNestedObjectTypeOf[guardrailContentFilterConfigModel](ctx),
 							NestedObject: schema.NestedBlockObject{
 								Attributes: map[string]schema.Attribute{
 									"input_strength": schema.StringAttribute{
@@ -150,6 +159,20 @@ func (r *guardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 									},
 								},
 							},
+						},
+					},
+				},
+			},
+			"cross_region_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailCrossRegionConfigModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"guardrail_profile_identifier": schema.StringAttribute{
+							CustomType: fwtypes.ARNType,
+							Required:   true,
 						},
 					},
 				},
@@ -213,14 +236,17 @@ func (r *guardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 				},
 			},
 			"topic_policy_config": schema.ListNestedBlock{
-				CustomType: fwtypes.NewListNestedObjectTypeOf[topicPolicyConfig](ctx),
+				CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailTopicPolicyConfigModel](ctx),
 				Validators: []validator.List{
 					listvalidator.SizeAtMost(1),
 				},
 				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"tier_config": framework.ResourceOptionalComputedListOfObjectsAttribute[guardrailTopicsTierConfigModel](ctx, 1, nil, listplanmodifier.UseStateForUnknown()),
+					},
 					Blocks: map[string]schema.Block{
 						"topics_config": schema.ListNestedBlock{
-							CustomType: fwtypes.NewListNestedObjectTypeOf[topicsConfig](ctx),
+							CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailTopicConfigModel](ctx),
 							Validators: []validator.List{
 								listvalidator.SizeAtLeast(1),
 							},
@@ -233,9 +259,10 @@ func (r *guardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 										},
 									},
 									"examples": schema.ListAttribute{
-										ElementType: types.StringType,
+										CustomType:  fwtypes.ListOfStringType,
 										Optional:    true,
 										Computed:    true,
+										ElementType: types.StringType,
 										Validators: []validator.List{
 											listvalidator.SizeAtLeast(0),
 											listvalidator.ValueStringsAre(

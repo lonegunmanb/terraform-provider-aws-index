@@ -1,7 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/bedrock
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -35,8 +35,6 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *guardrailResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	conn := r.Meta().BedrockClient(ctx)
-
 	var plan, state guardrailResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -44,25 +42,28 @@ func (r *guardrailResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
+	conn := r.Meta().BedrockClient(ctx)
+
 	if !plan.BlockedInputMessaging.Equal(state.BlockedInputMessaging) ||
 		!plan.BlockedOutputsMessaging.Equal(state.BlockedOutputsMessaging) ||
-		!plan.KmsKeyId.Equal(state.KmsKeyId) ||
 		!plan.ContentPolicy.Equal(state.ContentPolicy) ||
 		!plan.ContextualGroundingPolicy.Equal(state.ContextualGroundingPolicy) ||
+		!plan.CrossRegionConfig.Equal(state.CrossRegionConfig) ||
+		!plan.Description.Equal(state.Description) ||
+		!plan.KmsKeyId.Equal(state.KmsKeyId) ||
+		!plan.Name.Equal(state.Name) ||
 		!plan.SensitiveInformationPolicy.Equal(state.SensitiveInformationPolicy) ||
 		!plan.TopicPolicy.Equal(state.TopicPolicy) ||
-		!plan.WordPolicy.Equal(state.WordPolicy) ||
-		!plan.Name.Equal(state.Name) ||
-		!plan.Description.Equal(state.Description) {
-		in := &bedrock.UpdateGuardrailInput{
+		!plan.WordPolicy.Equal(state.WordPolicy) {
+		in := bedrock.UpdateGuardrailInput{
 			GuardrailIdentifier: plan.GuardrailID.ValueStringPointer(),
 		}
-		resp.Diagnostics.Append(fwflex.Expand(ctx, plan, in, flexOpt)...)
+		resp.Diagnostics.Append(fwflex.Expand(ctx, plan, &in, r.flexOpt)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
 
-		out, err := conn.UpdateGuardrail(ctx, in)
+		_, err := conn.UpdateGuardrail(ctx, &in)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				create.ProblemStandardMessage(names.Bedrock, create.ErrActionUpdating, ResNameGuardrail, plan.GuardrailID.String(), err),
@@ -70,15 +71,6 @@ func (r *guardrailResource) Update(ctx context.Context, req resource.UpdateReque
 			)
 			return
 		}
-		if out == nil || out.GuardrailArn == nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.Bedrock, create.ErrActionUpdating, ResNameGuardrail, plan.GuardrailID.String(), nil),
-				errors.New("empty output").Error(),
-			)
-			return
-		}
-		plan.GuardrailArn = fwflex.StringToFramework(ctx, out.GuardrailArn)
-		plan.GuardrailID = fwflex.StringToFramework(ctx, out.GuardrailId)
 
 		updateTimeout := r.UpdateTimeout(ctx, plan.Timeouts)
 		if _, err := waitGuardrailUpdated(ctx, conn, plan.GuardrailID.ValueString(), state.Version.ValueString(), updateTimeout); err != nil {
@@ -89,7 +81,7 @@ func (r *guardrailResource) Update(ctx context.Context, req resource.UpdateReque
 			return
 		}
 
-		output, err := findGuardrailByTwoPartKey(ctx, conn, plan.GuardrailID.ValueString(), plan.Version.ValueString())
+		guardrail, err := findGuardrailByTwoPartKey(ctx, conn, plan.GuardrailID.ValueString(), plan.Version.ValueString())
 		if err != nil {
 			resp.Diagnostics.AddError(
 				create.ProblemStandardMessage(names.Bedrock, create.ErrActionSetting, ResNameGuardrail, plan.GuardrailID.String(), err),
@@ -97,7 +89,12 @@ func (r *guardrailResource) Update(ctx context.Context, req resource.UpdateReque
 			)
 			return
 		}
-		plan.Status = fwtypes.StringEnumValue(output.Status)
+
+		// Set values for unknowns.
+		resp.Diagnostics.Append(fwflex.Flatten(ctx, guardrail, &plan, r.flexOpt)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)

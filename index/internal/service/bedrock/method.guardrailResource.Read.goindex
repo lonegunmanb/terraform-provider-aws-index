@@ -1,7 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/bedrock
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -35,13 +35,14 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *guardrailResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	conn := r.Meta().BedrockClient(ctx)
-
 	var state guardrailResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	conn := r.Meta().BedrockClient(ctx)
+
 	out, err := findGuardrailByTwoPartKey(ctx, conn, state.GuardrailID.ValueString(), state.Version.ValueString())
 
 	if tfresource.NotFound(err) {
@@ -55,10 +56,25 @@ func (r *guardrailResource) Read(ctx context.Context, req resource.ReadRequest, 
 		)
 		return
 	}
-	resp.Diagnostics.Append(fwflex.Flatten(ctx, out, &state, flexOpt)...)
-	state.KmsKeyId = fwflex.StringToFramework(ctx, out.KmsKeyArn)
+	resp.Diagnostics.Append(fwflex.Flatten(ctx, out, &state, r.flexOpt)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	state.KmsKeyId = fwflex.StringToFramework(ctx, out.KmsKeyArn)
+
+	// Different field name on Read.
+	if out.CrossRegionDetails != nil && out.CrossRegionDetails.GuardrailProfileArn != nil {
+		cr := guardrailCrossRegionConfigModel{
+			GuardrailProfileIdentifier: fwflex.StringToFrameworkARN(ctx, out.CrossRegionDetails.GuardrailProfileArn),
+		}
+
+		var diags diag.Diagnostics
+		state.CrossRegionConfig, diags = fwtypes.NewListNestedObjectValueOfPtr(ctx, &cr)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)

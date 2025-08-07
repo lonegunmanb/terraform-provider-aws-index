@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -23,7 +24,7 @@ func resourceBusCreate(ctx context.Context, d *schema.ResourceData, meta any) di
 	conn := meta.(*conns.AWSClient).EventsClient(ctx)
 
 	eventBusName := d.Get(names.AttrName).(string)
-	input := &eventbridge.CreateEventBusInput{
+	input := eventbridge.CreateEventBusInput{
 		Name: aws.String(eventBusName),
 		Tags: getTagsIn(ctx),
 	}
@@ -44,13 +45,17 @@ func resourceBusCreate(ctx context.Context, d *schema.ResourceData, meta any) di
 		input.KmsKeyIdentifier = aws.String(v.(string))
 	}
 
-	output, err := conn.CreateEventBus(ctx, input)
+	if v, ok := d.GetOk("log_config"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.LogConfig = expandLogConfig(v.([]any)[0].(map[string]any))
+	}
+
+	output, err := conn.CreateEventBus(ctx, &input)
 
 	// Some partitions (e.g. ISO) may not support tag-on-create.
 	if input.Tags != nil && errs.IsUnsupportedOperationInPartitionError(meta.(*conns.AWSClient).Partition(ctx), err) {
 		input.Tags = nil
 
-		output, err = conn.CreateEventBus(ctx, input)
+		output, err = conn.CreateEventBus(ctx, &input)
 	}
 
 	if err != nil {
