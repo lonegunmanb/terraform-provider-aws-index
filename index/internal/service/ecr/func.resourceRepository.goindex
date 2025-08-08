@@ -1,15 +1,20 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/ecr
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
@@ -33,6 +38,8 @@ func resourceRepository() *schema.Resource {
 		Timeouts: &schema.ResourceTimeout{
 			Delete: schema.DefaultTimeout(20 * time.Minute),
 		},
+
+		CustomizeDiff: validateImageTagMutabilityExclusionFilterUsage,
 
 		Schema: map[string]*schema.Schema{
 			names.AttrARN: {
@@ -85,6 +92,32 @@ func resourceRepository() *schema.Resource {
 				Optional:         true,
 				Default:          types.ImageTagMutabilityMutable,
 				ValidateDiagFunc: enum.Validate[types.ImageTagMutability](),
+			},
+			"image_tag_mutability_exclusion_filter": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 5,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrFilter: {
+							Type:     schema.TypeString,
+							Required: true,
+							ValidateDiagFunc: validation.AllDiag(
+								validation.ToDiagFunc(validation.StringLenBetween(1, 128)),
+								validation.ToDiagFunc(validation.StringMatch(
+									regexache.MustCompile(`^[a-zA-Z0-9._*-]+$`),
+									"must contain only letters, numbers, and special characters (._*-)",
+								)),
+								validateImageTagMutabilityExclusionFilter(),
+							),
+						},
+						"filter_type": {
+							Type:             schema.TypeString,
+							Required:         true,
+							ValidateDiagFunc: enum.Validate[types.ImageTagMutabilityExclusionFilterType](),
+						},
+					},
+				},
 			},
 			names.AttrName: {
 				Type:     schema.TypeString,

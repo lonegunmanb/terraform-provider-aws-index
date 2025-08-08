@@ -1,58 +1,98 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/wafv2"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfcloudfront "github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func dataSourceWebACLRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).WAFV2Client(ctx)
+
 	name := d.Get(names.AttrName).(string)
+	resourceArn := d.Get(names.AttrResourceARN).(string)
+	scope := awstypes.Scope(d.Get(names.AttrScope).(string))
 
-	var foundWebACL awstypes.WebACLSummary
-	input := &wafv2.ListWebACLsInput{
-		Scope: awstypes.Scope(d.Get(names.AttrScope).(string)),
-		Limit: aws.Int32(100),
-	}
+	var webACL *awstypes.WebACL
+	var err error
 
-	for {
-		resp, err := conn.ListWebACLs(ctx, input)
+	if resourceArn != "" {
+		// Check if this is a CloudFront distribution ARN and scope is CLOUDFRONT
+		if scope == awstypes.ScopeCloudfront && isCloudFrontDistributionARN(resourceArn) {
+			webACL, err = findWebACLByCloudFrontDistributionARN(ctx, meta.(*conns.AWSClient), resourceArn)
+		} else {
+			// Use GetWebACLForResource API for regional resources
+			webACL, err = findWebACLByResourceARN(ctx, conn, resourceArn)
+		}
 		if err != nil {
-			return sdkdiag.AppendErrorf(diags, "reading WAFv2 WebACLs: %s", err)
-		}
-
-		if resp == nil || resp.WebACLs == nil {
-			return sdkdiag.AppendErrorf(diags, "reading WAFv2 WebACLs")
-		}
-
-		for _, webACL := range resp.WebACLs {
-			if aws.ToString(webACL.Name) == name {
-				foundWebACL = webACL
-				break
+			if retry.NotFound(err) {
+				return sdkdiag.AppendErrorf(diags, "WAFv2 WebACL not found for resource_arn: %s", resourceArn)
 			}
+			return sdkdiag.AppendErrorf(diags, "reading WAFv2 WebACL for resource_arn (%s): %s", resourceArn, err)
+		}
+	} else {
+		// Use existing ListWebACLs + filter by name logic
+		var foundWebACL awstypes.WebACLSummary
+		input := wafv2.ListWebACLsInput{
+			Scope: scope,
+			Limit: aws.Int32(100),
 		}
 
-		if resp.NextMarker == nil {
-			break
+		err := listWebACLsPages(ctx, conn, &input, func(page *wafv2.ListWebACLsOutput, lastPage bool) bool {
+			if page == nil {
+				return !lastPage
+			}
+
+			for _, acl := range page.WebACLs {
+				if aws.ToString(acl.Name) == name {
+					foundWebACL = acl
+					return false
+				}
+			}
+
+			return !lastPage
+		})
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "list WAFv2 WebACLs: %s", err)
 		}
-		input.NextMarker = resp.NextMarker
+
+		if foundWebACL.Id == nil {
+			return sdkdiag.AppendErrorf(diags, "WAFv2 WebACL not found for name: %s", name)
+		}
+
+		// Get full WebACL details using GetWebACL
+		getResp, err := findWebACLByThreePartKey(ctx, conn, aws.ToString(foundWebACL.Id), aws.ToString(foundWebACL.Name), string(scope))
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading WAFv2 WebACL (%s): %s", aws.ToString(foundWebACL.Id), err)
+		}
+
+		webACL = getResp.WebACL
 	}
 
-	if foundWebACL.Id == nil {
-		return sdkdiag.AppendErrorf(diags, "WAFv2 WebACL not found for name: %s", name)
+	if webACL == nil {
+		return sdkdiag.AppendErrorf(diags, "WAFv2 WebACL not found")
 	}
 
-	d.SetId(aws.ToString(foundWebACL.Id))
-	d.Set(names.AttrARN, foundWebACL.ARN)
-	d.Set(names.AttrDescription, foundWebACL.Description)
+	d.SetId(aws.ToString(webACL.Id))
+	d.Set(names.AttrARN, webACL.ARN)
+	d.Set(names.AttrDescription, webACL.Description)
+	d.Set(names.AttrName, webACL.Name)
 
 	return diags
 }

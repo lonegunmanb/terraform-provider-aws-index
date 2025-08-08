@@ -1,15 +1,20 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/ecr
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
@@ -23,11 +28,15 @@ func resourceRepositoryUpdate(ctx context.Context, d *schema.ResourceData, meta 
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).ECRClient(ctx)
 
-	if d.HasChange("image_tag_mutability") {
+	if d.HasChanges("image_tag_mutability", "image_tag_mutability_exclusion_filter") {
 		input := &ecr.PutImageTagMutabilityInput{
 			ImageTagMutability: types.ImageTagMutability((d.Get("image_tag_mutability").(string))),
 			RegistryId:         aws.String(d.Get("registry_id").(string)),
 			RepositoryName:     aws.String(d.Id()),
+		}
+
+		if v, ok := d.GetOk("image_tag_mutability_exclusion_filter"); ok && len(v.([]any)) > 0 {
+			input.ImageTagMutabilityExclusionFilters = expandImageTagMutabilityExclusionFilters(v.([]any))
 		}
 
 		_, err := conn.PutImageTagMutability(ctx, input)

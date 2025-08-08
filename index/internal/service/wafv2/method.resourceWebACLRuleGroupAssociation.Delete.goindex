@@ -1,0 +1,122 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceWebACLRuleGroupAssociation) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state resourceWebACLRuleGroupAssociationModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().WAFV2Client(ctx)
+
+	// Use attributes directly instead of parsing ID
+	webACLARN := state.WebACLARN.ValueString()
+	ruleName := state.RuleName.ValueString()
+
+	// Parse Web ACL ARN to get ID, name, and scope
+	webACLID, webACLName, webACLScope, err := parseWebACLARN(webACLARN)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Deleting WAFv2 Web ACL Rule Group Association",
+			fmt.Sprintf("Error parsing Web ACL ARN: %s", err),
+		)
+		return
+	}
+
+	// Get the Web ACL
+	webACL, err := findWebACLByThreePartKey(ctx, conn, webACLID, webACLName, webACLScope)
+	if err != nil {
+		if retry.NotFound(err) {
+			// Web ACL is already gone, nothing to do
+			return
+		}
+
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.WAFV2, create.ErrActionDeleting, ResNameWebACLRuleGroupAssociation, state.RuleName.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	// Filter out the rule we want to remove
+	var updatedRules []awstypes.Rule
+	ruleFound := false
+	for _, rule := range webACL.WebACL.Rules {
+		if aws.ToString(rule.Name) != ruleName {
+			updatedRules = append(updatedRules, rule)
+		} else {
+			ruleFound = true
+		}
+	}
+
+	if !ruleFound {
+		// Rule is already gone, nothing to do
+		return
+	}
+
+	// Update the Web ACL without the rule
+	updateInput := &wafv2.UpdateWebACLInput{
+		Id:                   aws.String(webACLID),
+		Name:                 aws.String(webACLName),
+		Scope:                awstypes.Scope(webACLScope),
+		DefaultAction:        webACL.WebACL.DefaultAction,
+		Rules:                updatedRules,
+		VisibilityConfig:     webACL.WebACL.VisibilityConfig,
+		LockToken:            webACL.LockToken,
+		AssociationConfig:    webACL.WebACL.AssociationConfig,
+		CaptchaConfig:        webACL.WebACL.CaptchaConfig,
+		ChallengeConfig:      webACL.WebACL.ChallengeConfig,
+		CustomResponseBodies: webACL.WebACL.CustomResponseBodies,
+		TokenDomains:         webACL.WebACL.TokenDomains,
+	}
+
+	// Only set description if it's not empty
+	if webACL.WebACL.Description != nil && aws.ToString(webACL.WebACL.Description) != "" {
+		updateInput.Description = webACL.WebACL.Description
+	}
+
+	const timeout = 5 * time.Minute
+	_, err = tfresource.RetryWhenIsA[*awstypes.WAFUnavailableEntityException](ctx, timeout, func() (any, error) {
+		return conn.UpdateWebACL(ctx, updateInput)
+	})
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.WAFV2, create.ErrActionDeleting, ResNameWebACLRuleGroupAssociation, state.RuleName.String(), err),
+			err.Error(),
+		)
+		return
+	}
+}

@@ -11,44 +11,43 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *roleMembershipResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	conn := r.Meta().QuickSightClient(ctx)
-
-	var state roleMembershipResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
+func (r *roleMembershipResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data roleMembershipResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
-	input := quicksight.DeleteRoleMembershipInput{
-		AwsAccountId: state.AWSAccountID.ValueStringPointer(),
-		MemberName:   state.MemberName.ValueStringPointer(),
-		Namespace:    state.Namespace.ValueStringPointer(),
-		Role:         state.Role.ValueEnum(),
+	conn := r.Meta().QuickSightClient(ctx)
+
+	var input quicksight.DeleteRoleMembershipInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
+		return
 	}
 
 	_, err := conn.DeleteRoleMembership(ctx, &input)
-	if err != nil {
-		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
-			return
-		}
 
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.QuickSight, create.ErrActionDeleting, ResNameRoleMembership, state.MemberName.String(), err),
-			err.Error(),
-		)
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("deleting Quicksight Role (%s) Membership (%s)", data.Role.ValueString(), data.MemberName.ValueString()), err.Error())
+
 		return
 	}
 }

@@ -27,34 +27,34 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	quicksightschema "github.com/hashicorp/terraform-provider-aws/internal/service/quicksight/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *refreshScheduleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data refreshScheduleResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if data.AWSAccountID.IsUnknown() {
+		data.AWSAccountID = fwflex.StringValueToFramework(ctx, r.Meta().AccountID(ctx))
+	}
+
 	conn := r.Meta().QuickSightClient(ctx)
 
-	var plan refreshScheduleResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	if plan.AWSAccountID.IsUnknown() || plan.AWSAccountID.IsNull() {
-		plan.AWSAccountID = types.StringValue(r.Meta().AccountID(ctx))
-	}
-	awsAccountID, dataSetID, scheduleID := flex.StringValueFromFramework(ctx, plan.AWSAccountID), flex.StringValueFromFramework(ctx, plan.DataSetID), flex.StringValueFromFramework(ctx, plan.ScheduleID)
-
+	awsAccountID, dataSetID, scheduleID := fwflex.StringValueFromFramework(ctx, data.AWSAccountID), fwflex.StringValueFromFramework(ctx, data.DataSetID), fwflex.StringValueFromFramework(ctx, data.ScheduleID)
 	var in quicksight.CreateRefreshScheduleInput
-	resp.Diagnostics.Append(flex.Expand(ctx, plan, &in)...)
+	resp.Diagnostics.Append(fwflex.Expand(ctx, data, &in)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	in.Schedule.ScheduleId = plan.ScheduleID.ValueStringPointer()
+	in.Schedule.ScheduleId = data.ScheduleID.ValueStringPointer()
 
 	// Because StartAfterDateTime is a string and not a time type, we have to handle it outside of AutoFlex
-	schedule, diags := plan.Schedule.ToPtr(ctx)
+	schedule, diags := data.Schedule.ToPtr(ctx)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -67,32 +67,32 @@ func (r *refreshScheduleResource) Create(ctx context.Context, req resource.Creat
 	out, err := conn.CreateRefreshSchedule(ctx, &in)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.QuickSight, create.ErrActionCreating, resNameRefreshSchedule, plan.ScheduleID.String(), nil),
+			create.ProblemStandardMessage(names.QuickSight, create.ErrActionCreating, resNameRefreshSchedule, data.ScheduleID.String(), nil),
 			err.Error(),
 		)
 		return
 	}
 	if out == nil {
 		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.QuickSight, create.ErrActionCreating, resNameRefreshSchedule, plan.ScheduleID.String(), nil),
+			create.ProblemStandardMessage(names.QuickSight, create.ErrActionCreating, resNameRefreshSchedule, data.ScheduleID.String(), nil),
 			errors.New("empty output").Error(),
 		)
 		return
 	}
 
-	plan.ID = flex.StringValueToFramework(ctx, refreshScheduleCreateResourceID(awsAccountID, dataSetID, scheduleID))
+	data.ID = fwflex.StringValueToFramework(ctx, refreshScheduleCreateResourceID(awsAccountID, dataSetID, scheduleID))
 
 	_, outFind, err := findRefreshScheduleByThreePartKey(ctx, conn, awsAccountID, dataSetID, scheduleID)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.QuickSight, create.ErrActionReading, resNameRefreshSchedule, plan.ID.String(), nil),
+			create.ProblemStandardMessage(names.QuickSight, create.ErrActionReading, resNameRefreshSchedule, data.ID.String(), nil),
 			err.Error(),
 		)
 		return
 	}
 
-	resp.Diagnostics.Append(plan.refreshFromRead(ctx, out.Arn, outFind)...)
+	resp.Diagnostics.Append(data.refreshFromRead(ctx, out.Arn, outFind)...)
 	// resp.Diagnostics.Append(flex.Flatten(ctx, outFind, &plan)...)
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }

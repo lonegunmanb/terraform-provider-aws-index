@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
 	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -294,6 +295,31 @@ func resourceCluster() *schema.Resource {
 					"snapshot_identifier",
 				},
 			},
+			"serverless_v2_scaling_configuration": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						names.AttrMaxCapacity: {
+							Type:     schema.TypeFloat,
+							Required: true,
+							ValidateFunc: validation.All(
+								validation.FloatBetween(1.0, 256.0),
+								validateServerlessCapacity,
+							),
+						},
+						"min_capacity": {
+							Type:     schema.TypeFloat,
+							Required: true,
+							ValidateFunc: validation.All(
+								validation.FloatBetween(0.5, 256.0),
+								validateServerlessCapacity,
+							),
+						},
+					},
+				},
+			},
 			"skip_final_snapshot": {
 				Type:     schema.TypeBool,
 				Optional: true,
@@ -339,5 +365,17 @@ func resourceCluster() *schema.Resource {
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 		},
+		CustomizeDiff: customdiff.All(
+			// if serverless_v2_scaling_configuration is newly set or deleted, ForceNew is required
+			customdiff.ForceNewIfChange("serverless_v2_scaling_configuration",
+				func(_ context.Context, old, new, meta any) bool {
+					o := old != nil && len(old.([]any)) > 0
+					n := new != nil && len(new.([]any)) > 0
+					if (o && n) || (!o && !n) {
+						return false
+					}
+					return true
+				}),
+		),
 	}
 }

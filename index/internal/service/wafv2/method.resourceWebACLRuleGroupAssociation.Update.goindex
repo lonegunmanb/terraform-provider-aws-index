@@ -1,0 +1,196 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceWebACLRuleGroupAssociation) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state resourceWebACLRuleGroupAssociationModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().WAFV2Client(ctx)
+
+	// Parse Web ACL ARN to get ID, name, and scope
+	webACLARN := plan.WebACLARN.ValueString()
+	webACLID, webACLName, webACLScope, err := parseWebACLARN(webACLARN)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.WAFV2, create.ErrActionUpdating, ResNameWebACLRuleGroupAssociation, plan.RuleName.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	// Get current Web ACL configuration
+	webACL, err := findWebACLByThreePartKey(ctx, conn, webACLID, webACLName, webACLScope)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.WAFV2, create.ErrActionUpdating, ResNameWebACLRuleGroupAssociation, plan.RuleName.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	// Find the rule to update
+	ruleName := plan.RuleName.ValueString()
+	ruleFound := false
+	for i, rule := range webACL.WebACL.Rules {
+		if aws.ToString(rule.Name) == ruleName {
+			ruleFound = true
+
+			// Update the rule's priority
+			webACL.WebACL.Rules[i].Priority = plan.Priority.ValueInt32()
+
+			// Update override action
+			overrideAction := plan.OverrideAction.ValueString()
+			if overrideAction == "" {
+				overrideAction = overrideActionNone // Default value
+			}
+
+			switch overrideAction {
+			case overrideActionNone:
+				webACL.WebACL.Rules[i].OverrideAction = &awstypes.OverrideAction{
+					None: &awstypes.NoneAction{},
+				}
+			case overrideActionCount:
+				webACL.WebACL.Rules[i].OverrideAction = &awstypes.OverrideAction{
+					Count: &awstypes.CountAction{},
+				}
+			}
+
+			// Update rule action overrides from nested structure (both custom and managed)
+			var overrides []awstypes.RuleActionOverride
+			if !plan.RuleGroupReference.IsNull() && !plan.RuleGroupReference.IsUnknown() {
+				ruleGroupRefs := plan.RuleGroupReference.Elements()
+				if len(ruleGroupRefs) > 0 {
+					var ruleGroupRefModel ruleGroupReferenceModel
+					resp.Diagnostics.Append(ruleGroupRefs[0].(fwtypes.ObjectValueOf[ruleGroupReferenceModel]).As(ctx, &ruleGroupRefModel, basetypes.ObjectAsOptions{})...)
+					if resp.Diagnostics.HasError() {
+						return
+					}
+
+					if !ruleGroupRefModel.RuleActionOverride.IsNull() && !ruleGroupRefModel.RuleActionOverride.IsUnknown() {
+						resp.Diagnostics.Append(fwflex.Expand(ctx, ruleGroupRefModel.RuleActionOverride, &overrides)...)
+						if resp.Diagnostics.HasError() {
+							return
+						}
+					}
+				}
+			} else if !plan.ManagedRuleGroup.IsNull() && !plan.ManagedRuleGroup.IsUnknown() {
+				managedRuleGroups := plan.ManagedRuleGroup.Elements()
+				if len(managedRuleGroups) > 0 {
+					var managedRuleGroupRef managedRuleGroupModel
+					resp.Diagnostics.Append(managedRuleGroups[0].(fwtypes.ObjectValueOf[managedRuleGroupModel]).As(ctx, &managedRuleGroupRef, basetypes.ObjectAsOptions{})...)
+					if resp.Diagnostics.HasError() {
+						return
+					}
+
+					if !managedRuleGroupRef.RuleActionOverride.IsNull() && !managedRuleGroupRef.RuleActionOverride.IsUnknown() {
+						resp.Diagnostics.Append(fwflex.Expand(ctx, managedRuleGroupRef.RuleActionOverride, &overrides)...)
+						if resp.Diagnostics.HasError() {
+							return
+						}
+					}
+				}
+			}
+
+			// Update the appropriate statement type with new overrides
+			if webACL.WebACL.Rules[i].Statement != nil {
+				if webACL.WebACL.Rules[i].Statement.RuleGroupReferenceStatement != nil {
+					webACL.WebACL.Rules[i].Statement.RuleGroupReferenceStatement.RuleActionOverrides = overrides
+				} else if webACL.WebACL.Rules[i].Statement.ManagedRuleGroupStatement != nil {
+					webACL.WebACL.Rules[i].Statement.ManagedRuleGroupStatement.RuleActionOverrides = overrides
+				}
+			}
+
+			break
+		}
+	}
+
+	if !ruleFound {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.WAFV2, create.ErrActionUpdating, ResNameWebACLRuleGroupAssociation, plan.RuleName.String(), nil),
+			fmt.Sprintf("Rule %s not found in Web ACL", ruleName),
+		)
+		return
+	}
+
+	// Check for priority conflicts with other rules
+	for _, rule := range webACL.WebACL.Rules {
+		if aws.ToString(rule.Name) != ruleName && rule.Priority == plan.Priority.ValueInt32() {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.WAFV2, create.ErrActionUpdating, ResNameWebACLRuleGroupAssociation, plan.RuleName.String(), nil),
+				fmt.Sprintf("Rule with priority %d already exists in Web ACL", plan.Priority.ValueInt32()),
+			)
+			return
+		}
+	}
+
+	// Update the Web ACL with the modified rule
+	updateInput := &wafv2.UpdateWebACLInput{
+		Id:                   aws.String(webACLID),
+		Name:                 aws.String(webACLName),
+		Scope:                awstypes.Scope(webACLScope),
+		DefaultAction:        webACL.WebACL.DefaultAction,
+		Rules:                webACL.WebACL.Rules,
+		VisibilityConfig:     webACL.WebACL.VisibilityConfig,
+		LockToken:            webACL.LockToken,
+		AssociationConfig:    webACL.WebACL.AssociationConfig,
+		CaptchaConfig:        webACL.WebACL.CaptchaConfig,
+		ChallengeConfig:      webACL.WebACL.ChallengeConfig,
+		CustomResponseBodies: webACL.WebACL.CustomResponseBodies,
+		TokenDomains:         webACL.WebACL.TokenDomains,
+	}
+
+	// Only set description if it's not empty
+	if webACL.WebACL.Description != nil && aws.ToString(webACL.WebACL.Description) != "" {
+		updateInput.Description = webACL.WebACL.Description
+	}
+
+	updateTimeout := r.UpdateTimeout(ctx, plan.Timeouts)
+	_, err = tfresource.RetryWhenIsA[*awstypes.WAFUnavailableEntityException](ctx, updateTimeout, func() (any, error) {
+		return conn.UpdateWebACL(ctx, updateInput)
+	})
+
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.WAFV2, create.ErrActionUpdating, ResNameWebACLRuleGroupAssociation, plan.RuleName.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

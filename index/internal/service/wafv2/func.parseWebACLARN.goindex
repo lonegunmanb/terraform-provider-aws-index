@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func parseWebACLARN(arn string) (id, name, scope string, err error) {
+	// ARN format: arn:aws:wafv2:region:account-id:scope/webacl/name/id
+	// or for CloudFront: arn:aws:wafv2:global:account-id:global/webacl/name/id
+	parts := strings.Split(arn, ":")
+	if len(parts) < 6 {
+		return "", "", "", fmt.Errorf("invalid Web ACL ARN format: %s", arn)
+	}
+
+	resourceParts := strings.Split(parts[5], "/")
+	if len(resourceParts) < 4 {
+		return "", "", "", fmt.Errorf("invalid Web ACL ARN resource format: %s", parts[5])
+	}
+
+	// Validate that this is a webacl ARN
+	if resourceParts[1] != "webacl" {
+		return "", "", "", fmt.Errorf("invalid Web ACL ARN: expected webacl resource type, got %s", resourceParts[1])
+	}
+
+	// Determine scope
+	scopeValue := "REGIONAL"
+	if parts[3] == "global" || resourceParts[0] == "global" {
+		scopeValue = "CLOUDFRONT"
+	}
+
+	// Extract name and ID
+	nameIndex := len(resourceParts) - 2
+	idIndex := len(resourceParts) - 1
+
+	return resourceParts[idIndex], resourceParts[nameIndex], scopeValue, nil
+}
