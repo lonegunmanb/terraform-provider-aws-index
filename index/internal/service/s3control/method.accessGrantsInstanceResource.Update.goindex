@@ -16,7 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -25,44 +25,32 @@ import (
 )
 func (r *accessGrantsInstanceResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	var old, new accessGrantsInstanceResourceModel
-
 	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
-
 	if response.Diagnostics.HasError() {
 		return
 	}
-
 	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
-
 	if response.Diagnostics.HasError() {
 		return
 	}
 
 	conn := r.Meta().S3ControlClient(ctx)
 
-	if oldARN, newARN := old.IdentityCenterARN, new.IdentityCenterARN; !newARN.Equal(oldARN) {
+	if accountID, oldARN, newARN := fwflex.StringValueFromFramework(ctx, new.AccountID), old.IdentityCenterARN, new.IdentityCenterARN; !newARN.Equal(oldARN) {
 		if !oldARN.IsNull() {
-			if err := disassociateAccessGrantsInstanceIdentityCenterInstance(ctx, conn, old.ID.ValueString()); err != nil {
-				response.Diagnostics.AddError(fmt.Sprintf("dissociating S3 Access Grants Instance (%s) IAM Identity Center instance", old.ID.ValueString()), err.Error())
+			if err := disassociateAccessGrantsInstanceIdentityCenterInstance(ctx, conn, accountID); err != nil {
+				response.Diagnostics.AddError(fmt.Sprintf("dissociating S3 Access Grants Instance (%s) IAM Identity Center instance", accountID), err.Error())
 
 				return
 			}
 		}
 
 		if !newARN.IsNull() {
-			if err := associateAccessGrantsInstanceIdentityCenterInstance(ctx, conn, new.ID.ValueString(), newARN.ValueString()); err != nil {
-				response.Diagnostics.AddError(fmt.Sprintf("associating S3 Access Grants Instance (%s) IAM Identity Center instance (%s)", new.ID.ValueString(), newARN.ValueString()), err.Error())
+			if err := associateAccessGrantsInstanceIdentityCenterInstance(ctx, conn, accountID, newARN.ValueString()); err != nil {
+				response.Diagnostics.AddError(fmt.Sprintf("associating S3 Access Grants Instance (%s) IAM Identity Center instance (%s)", accountID, newARN.ValueString()), err.Error())
 
 				return
 			}
-		}
-	}
-
-	if oldTagsAll, newTagsAll := old.TagsAll, new.TagsAll; !newTagsAll.Equal(oldTagsAll) {
-		if err := updateTags(ctx, conn, new.AccessGrantsInstanceARN.ValueString(), new.AccountID.ValueString(), oldTagsAll, newTagsAll); err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("updating tags for S3 Access Grants Instance (%s)", new.ID.ValueString()), err.Error())
-
-			return
 		}
 	}
 

@@ -26,28 +26,27 @@ import (
 )
 func (r *accessGrantsLocationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	var data accessGrantsLocationResourceModel
-
 	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
-
 	if response.Diagnostics.HasError() {
 		return
+	}
+	if data.AccountID.IsUnknown() {
+		data.AccountID = fwflex.StringValueToFramework(ctx, r.Meta().AccountID(ctx))
 	}
 
 	conn := r.Meta().S3ControlClient(ctx)
 
-	if data.AccountID.ValueString() == "" {
-		data.AccountID = types.StringValue(r.Meta().AccountID(ctx))
-	}
-	input := &s3control.CreateAccessGrantsLocationInput{}
-	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	var input s3control.CreateAccessGrantsLocationInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
 
+	// Additional fields.
 	input.Tags = getTagsIn(ctx)
 
 	outputRaw, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, s3PropagationTimeout, func() (any, error) {
-		return conn.CreateAccessGrantsLocation(ctx, input)
+		return conn.CreateAccessGrantsLocation(ctx, &input)
 	}, errCodeInvalidIAMRole)
 
 	if err != nil {
@@ -58,14 +57,16 @@ func (r *accessGrantsLocationResource) Create(ctx context.Context, request resou
 
 	// Set values for unknowns.
 	output := outputRaw.(*s3control.CreateAccessGrantsLocationOutput)
-	data.AccessGrantsLocationARN = fwflex.StringToFramework(ctx, output.AccessGrantsLocationArn)
-	data.AccessGrantsLocationID = fwflex.StringToFramework(ctx, output.AccessGrantsLocationId)
-	id, err := data.setID()
-	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("creating S3 Access Grants Location (%s)", data.LocationScope.ValueString()), err.Error())
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output, &data)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
-	data.ID = types.StringValue(id)
+	id, err := data.setID()
+	if err != nil {
+		response.Diagnostics.Append(fwdiag.NewCreatingResourceIDErrorDiagnostic(err))
+		return
+	}
+	data.ID = fwflex.StringValueToFramework(ctx, id)
 
 	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
 }

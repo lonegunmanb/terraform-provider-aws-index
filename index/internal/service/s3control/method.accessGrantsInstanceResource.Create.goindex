@@ -16,7 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -25,37 +25,40 @@ import (
 )
 func (r *accessGrantsInstanceResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	var data accessGrantsInstanceResourceModel
-
 	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
-
 	if response.Diagnostics.HasError() {
 		return
+	}
+	if data.AccountID.IsUnknown() {
+		data.AccountID = fwflex.StringValueToFramework(ctx, r.Meta().AccountID(ctx))
 	}
 
 	conn := r.Meta().S3ControlClient(ctx)
 
-	if data.AccountID.ValueString() == "" {
-		data.AccountID = types.StringValue(r.Meta().AccountID(ctx))
-	}
-	input := &s3control.CreateAccessGrantsInstanceInput{
-		AccountId:         flex.StringFromFramework(ctx, data.AccountID),
-		IdentityCenterArn: flex.StringFromFramework(ctx, data.IdentityCenterARN),
-		Tags:              getTagsIn(ctx),
+	accountID := fwflex.StringValueFromFramework(ctx, data.AccountID)
+	var input s3control.CreateAccessGrantsInstanceInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
+		return
 	}
 
-	output, err := conn.CreateAccessGrantsInstance(ctx, input)
+	// Additional fields.
+	input.Tags = getTagsIn(ctx)
+
+	output, err := conn.CreateAccessGrantsInstance(ctx, &input)
 
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("creating S3 Access Grants Instance (%s)", data.AccountID.ValueString()), err.Error())
+		response.Diagnostics.AddError(fmt.Sprintf("creating S3 Access Grants Instance (%s)", accountID), err.Error())
 
 		return
 	}
 
 	// Set values for unknowns.
-	data.AccessGrantsInstanceARN = flex.StringToFramework(ctx, output.AccessGrantsInstanceArn)
-	data.AccessGrantsInstanceID = flex.StringToFramework(ctx, output.AccessGrantsInstanceId)
-	data.IdentityCenterApplicationARN = flex.StringToFramework(ctx, output.IdentityCenterArn)
-	data.setID()
+	data.ID = fwflex.StringValueToFramework(ctx, accountID)
+	// Backwards compatibility, don't use AutoFlEx.
+	data.AccessGrantsInstanceARN = fwflex.StringToFramework(ctx, output.AccessGrantsInstanceArn)
+	data.AccessGrantsInstanceID = fwflex.StringToFramework(ctx, output.AccessGrantsInstanceId)
+	data.IdentityCenterApplicationARN = fwflex.StringToFramework(ctx, output.IdentityCenterArn)
 
 	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
 }

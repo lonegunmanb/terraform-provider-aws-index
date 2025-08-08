@@ -16,7 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -25,33 +25,33 @@ import (
 )
 func (r *accessGrantsInstanceResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
 	var data accessGrantsInstanceResourceModel
-
 	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
-
 	if response.Diagnostics.HasError() {
 		return
 	}
 
 	conn := r.Meta().S3ControlClient(ctx)
 
+	accountID := fwflex.StringValueFromFramework(ctx, data.AccountID)
 	if !data.IdentityCenterARN.IsNull() {
-		if err := disassociateAccessGrantsInstanceIdentityCenterInstance(ctx, conn, data.ID.ValueString()); err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("dissociating S3 Access Grants Instance (%s) IAM Identity Center instance", data.ID.ValueString()), err.Error())
+		if err := disassociateAccessGrantsInstanceIdentityCenterInstance(ctx, conn, accountID); err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("dissociating S3 Access Grants Instance (%s) IAM Identity Center instance", accountID), err.Error())
 
 			return
 		}
 	}
 
-	_, err := conn.DeleteAccessGrantsInstance(ctx, &s3control.DeleteAccessGrantsInstanceInput{
-		AccountId: flex.StringFromFramework(ctx, data.AccountID),
-	})
+	input := s3control.DeleteAccessGrantsInstanceInput{
+		AccountId: aws.String(accountID),
+	}
+	_, err := conn.DeleteAccessGrantsInstance(ctx, &input)
 
 	if tfawserr.ErrHTTPStatusCodeEquals(err, http.StatusNotFound) {
 		return
 	}
 
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("deleting S3 Access Grants Instance (%s)", data.ID.ValueString()), err.Error())
+		response.Diagnostics.AddError(fmt.Sprintf("deleting S3 Access Grants Instance (%s)", accountID), err.Error())
 
 		return
 	}

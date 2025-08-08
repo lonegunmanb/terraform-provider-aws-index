@@ -16,7 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -25,22 +25,16 @@ import (
 )
 func (r *accessGrantsInstanceResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
 	var data accessGrantsInstanceResourceModel
-
 	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
-
 	if response.Diagnostics.HasError() {
 		return
 	}
-
-	if err := data.InitFromID(); err != nil {
-		response.Diagnostics.AddError("parsing resource ID", err.Error())
-
-		return
-	}
+	data.AccountID = data.ID // From import.
 
 	conn := r.Meta().S3ControlClient(ctx)
 
-	output, err := findAccessGrantsInstance(ctx, conn, data.AccountID.ValueString())
+	accountID := fwflex.StringValueFromFramework(ctx, data.AccountID)
+	output, err := findAccessGrantsInstanceByID(ctx, conn, accountID)
 
 	if tfresource.NotFound(err) {
 		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
@@ -50,25 +44,16 @@ func (r *accessGrantsInstanceResource) Read(ctx context.Context, request resourc
 	}
 
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("reading S3 Access Grants Instance (%s)", data.ID.ValueString()), err.Error())
+		response.Diagnostics.AddError(fmt.Sprintf("reading S3 Access Grants Instance (%s)", accountID), err.Error())
 
 		return
 	}
 
 	// Set attributes for import.
-	data.AccessGrantsInstanceARN = flex.StringToFramework(ctx, output.AccessGrantsInstanceArn)
-	data.AccessGrantsInstanceID = flex.StringToFramework(ctx, output.AccessGrantsInstanceId)
-	data.IdentityCenterApplicationARN = flex.StringToFramework(ctx, output.IdentityCenterArn)
-
-	tags, err := listTags(ctx, conn, data.AccessGrantsInstanceARN.ValueString(), data.AccountID.ValueString())
-
-	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("listing tags for S3 Access Grants Instance (%s)", data.ID.ValueString()), err.Error())
-
-		return
-	}
-
-	setTagsOut(ctx, svcTags(tags))
+	// Backwards compatibility, don't use AutoFlEx.
+	data.AccessGrantsInstanceARN = fwflex.StringToFramework(ctx, output.AccessGrantsInstanceArn)
+	data.AccessGrantsInstanceID = fwflex.StringToFramework(ctx, output.AccessGrantsInstanceId)
+	data.IdentityCenterApplicationARN = fwflex.StringToFramework(ctx, output.IdentityCenterArn)
 
 	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
 }
