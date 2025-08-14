@@ -5,7 +5,6 @@ import (
 	"unique"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
@@ -15,35 +14,32 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r tagsResourceInterceptor) modifyPlan(ctx context.Context, opts interceptorOptions[resource.ModifyPlanRequest, resource.ModifyPlanResponse]) diag.Diagnostics {
+func (r tagsResourceInterceptor) modifyPlan(ctx context.Context, opts interceptorOptions[resource.ModifyPlanRequest, resource.ModifyPlanResponse]) {
 	c := opts.c
-	var diags diag.Diagnostics
 
 	switch request, response, when := opts.request, opts.response, opts.when; when {
 	case Before:
 		// If the entire plan is null, the resource is planned for destruction.
 		if request.Plan.Raw.IsNull() {
-			return diags
+			return
 		}
 
 		// Calculate the new value for the `tags_all` attribute.
 		var planTags tftags.Map
-		diags.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrTags), &planTags)...)
-		if diags.HasError() {
-			return diags
+		opts.response.Diagnostics.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrTags), &planTags)...)
+		if opts.response.Diagnostics.HasError() {
+			return
 		}
 
 		if planTags.IsWhollyKnown() {
 			allTags := c.DefaultTagsConfig(ctx).MergeTags(tftags.New(ctx, planTags)).IgnoreConfig(c.IgnoreTagsConfig(ctx))
-			diags.Append(response.Plan.SetAttribute(ctx, path.Root(names.AttrTagsAll), fwflex.FlattenFrameworkStringValueMapLegacy(ctx, allTags.Map()))...)
+			opts.response.Diagnostics.Append(response.Plan.SetAttribute(ctx, path.Root(names.AttrTagsAll), fwflex.FlattenFrameworkStringValueMapLegacy(ctx, allTags.Map()))...)
 		} else {
-			diags.Append(response.Plan.SetAttribute(ctx, path.Root(names.AttrTagsAll), tftags.Unknown)...)
+			opts.response.Diagnostics.Append(response.Plan.SetAttribute(ctx, path.Root(names.AttrTagsAll), tftags.Unknown)...)
 		}
 
-		if diags.HasError() {
-			return diags
+		if opts.response.Diagnostics.HasError() {
+			return
 		}
 	}
-
-	return diags
 }

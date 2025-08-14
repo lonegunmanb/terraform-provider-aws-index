@@ -27,84 +27,83 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *tableResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+func (r *tableResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	var data tableResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
 	conn := r.Meta().S3TablesClient(ctx)
 
-	var state tableResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	name, namespace, tableBucketARN := fwflex.StringValueFromFramework(ctx, data.Name), fwflex.StringValueFromFramework(ctx, data.Namespace), fwflex.StringValueFromFramework(ctx, data.TableBucketARN)
+	outputGT, err := findTableByThreePartKey(ctx, conn, tableBucketARN, namespace, name)
 
-	out, err := findTable(ctx, conn, state.TableBucketARN.ValueString(), state.Namespace.ValueString(), state.Name.ValueString())
 	if tfresource.NotFound(err) {
-		resp.State.RemoveResource(ctx)
-		return
-	}
-	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.S3Tables, create.ErrActionReading, ResNameTable, state.Name.String(), err),
-			err.Error(),
-		)
+		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		response.State.RemoveResource(ctx)
+
 		return
 	}
 
-	resp.Diagnostics.Append(flex.Flatten(ctx, out, &state, flex.WithFieldNamePrefix("Table"))...)
-	if resp.Diagnostics.HasError() {
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading S3 Tables Table (%s)", name), err.Error())
+
 		return
 	}
-	state.Namespace = types.StringValue(out.Namespace[0])
 
-	awsMaintenanceConfig, err := conn.GetTableMaintenanceConfiguration(ctx, &s3tables.GetTableMaintenanceConfigurationInput{
-		Name:           state.Name.ValueStringPointer(),
-		Namespace:      state.Namespace.ValueStringPointer(),
-		TableBucketARN: state.TableBucketARN.ValueStringPointer(),
-	})
-	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.S3Tables, create.ErrActionReading, resNameTableBucket, state.Name.String(), err),
-			err.Error(),
-		)
-	}
-	maintenanceConfiguration, d := flattenTableMaintenanceConfiguration(ctx, awsMaintenanceConfig)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
+	response.Diagnostics.Append(fwflex.Flatten(ctx, outputGT, &data, fwflex.WithFieldNamePrefix("Table"))...)
+	if response.Diagnostics.HasError() {
 		return
 	}
-	state.MaintenanceConfiguration = maintenanceConfiguration
+	data.Namespace = types.StringValue(outputGT.Namespace[0])
 
-	awsEncryptionConfig, err := conn.GetTableEncryption(ctx, &s3tables.GetTableEncryptionInput{
-		Name:           state.Name.ValueStringPointer(),
-		Namespace:      state.Namespace.ValueStringPointer(),
-		TableBucketARN: state.TableBucketARN.ValueStringPointer(),
-	})
-	if err != nil {
-		if !errs.IsA[*awstypes.NotFoundException](err) {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.S3Tables, create.ErrActionReading, resNameTableBucket, state.Name.String(), err),
-				err.Error(),
-			)
+	outputGTMC, err := findTableMaintenanceConfigurationByThreePartKey(ctx, conn, tableBucketARN, namespace, name)
+
+	switch {
+	case tfresource.NotFound(err):
+	case err != nil:
+		response.Diagnostics.AddError(fmt.Sprintf("reading S3 Tables Table (%s) maintenance configuration", name), err.Error())
+
+		return
+	default:
+		value, diags := flattenTableMaintenanceConfiguration(ctx, outputGTMC)
+		response.Diagnostics.Append(diags...)
+		if response.Diagnostics.HasError() {
+			return
 		}
-	} else {
+		data.MaintenanceConfiguration = value
+	}
+
+	outputGTE, err := findTableEncryptionByThreePartKey(ctx, conn, tableBucketARN, namespace, name)
+
+	switch {
+	case tfresource.NotFound(err):
+	case err != nil:
+		response.Diagnostics.AddError(fmt.Sprintf("reading S3 Tables Table (%s) encryption", name), err.Error())
+
+		return
+	default:
 		var encryptionConfiguration encryptionConfigurationModel
-		resp.Diagnostics.Append(flex.Flatten(ctx, awsEncryptionConfig.EncryptionConfiguration, &encryptionConfiguration)...)
-		if resp.Diagnostics.HasError() {
+		response.Diagnostics.Append(fwflex.Flatten(ctx, outputGTE.EncryptionConfiguration, &encryptionConfiguration)...)
+		if response.Diagnostics.HasError() {
 			return
 		}
-		state.EncryptionConfiguration, d = fwtypes.NewObjectValueOf(ctx, &encryptionConfiguration)
-		resp.Diagnostics.Append(d...)
-		if resp.Diagnostics.HasError() {
+		var diags diag.Diagnostics
+		data.EncryptionConfiguration, diags = fwtypes.NewObjectValueOf(ctx, &encryptionConfiguration)
+		response.Diagnostics.Append(diags...)
+		if response.Diagnostics.HasError() {
 			return
 		}
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
 }

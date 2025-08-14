@@ -1,68 +1,50 @@
 package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
 import (
 	"context"
+	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 )
-func interceptedHandler[Request interceptedRequest, Response interceptedResponse](interceptors []interceptorFunc[Request, Response], f func(context.Context, *Request, *Response) diag.Diagnostics, c *conns.AWSClient) func(context.Context, *Request, *Response) diag.Diagnostics {
-	return func(ctx context.Context, request *Request, response *Response) diag.Diagnostics {
-		var diags diag.Diagnostics
-		// Before interceptors are run first to last.
-		forward := interceptors
+func interceptedHandler[Request interceptedRequest, Response interceptedResponse](interceptors []interceptorFunc[Request, Response], f innerFunc[Request, Response], hasError hasErrorFn[Response], c awsClient) func(context.Context, Request, *Response) {
+	return func(ctx context.Context, request Request, response *Response) {
+		opts := interceptorOptions[Request, Response]{
+			c:        c,
+			request:  &request,
+			response: response,
+		}
 
-		when := Before
-		for _, v := range forward {
-			opts := interceptorOptions[Request, Response]{
-				c:        c,
-				request:  request,
-				response: response,
-				when:     when,
-			}
-			diags.Append(v(ctx, opts)...)
+		// Before interceptors are run first to last.
+		opts.when = Before
+		for v := range slices.Values(interceptors) {
+			v(ctx, opts)
 
 			// Short circuit if any Before interceptor errors.
-			if diags.HasError() {
-				return diags
+			if hasError(response) {
+				return
 			}
 		}
+
+		f(ctx, request, response)
 
 		// All other interceptors are run last to first.
-		reverse := tfslices.Reverse(forward)
-		diags = f(ctx, request, response)
-
-		if diags.HasError() {
-			when = OnError
+		if hasError(response) {
+			opts.when = OnError
 		} else {
-			when = After
+			opts.when = After
 		}
-		for _, v := range reverse {
-			opts := interceptorOptions[Request, Response]{
-				c:        c,
-				request:  request,
-				response: response,
-				when:     when,
-			}
-			diags.Append(v(ctx, opts)...)
+		for v := range tfslices.BackwardValues(interceptors) {
+			v(ctx, opts)
 		}
 
-		when = Finally
-		for _, v := range reverse {
-			opts := interceptorOptions[Request, Response]{
-				c:        c,
-				request:  request,
-				response: response,
-				when:     when,
-			}
-			diags.Append(v(ctx, opts)...)
+		opts.when = Finally
+		for v := range tfslices.BackwardValues(interceptors) {
+			v(ctx, opts)
 		}
-
-		return diags
 	}
 }

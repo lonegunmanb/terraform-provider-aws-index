@@ -32,7 +32,7 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 
 	// Do any version update first.
 	if d.HasChange(names.AttrVersion) {
-		input := &eks.UpdateClusterVersionInput{
+		input := eks.UpdateClusterVersionInput{
 			Name:    aws.String(d.Id()),
 			Version: aws.String(d.Get(names.AttrVersion).(string)),
 		}
@@ -41,7 +41,7 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 			input.Force = v.(bool)
 		}
 
-		output, err := conn.UpdateClusterVersion(ctx, input)
+		output, err := conn.UpdateClusterVersion(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) version: %s", d.Id(), err)
@@ -56,12 +56,12 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 
 	if d.HasChange("access_config") {
 		if v, ok := d.GetOk("access_config"); ok {
-			input := &eks.UpdateClusterConfigInput{
+			input := eks.UpdateClusterConfigInput{
 				AccessConfig: expandUpdateAccessConfigRequest(v.([]any)),
 				Name:         aws.String(d.Id()),
 			}
 
-			output, err := conn.UpdateClusterConfig(ctx, input)
+			output, err := conn.UpdateClusterConfig(ctx, &input)
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) access configuration: %s", d.Id(), err)
@@ -81,15 +81,14 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 		computeConfig := expandComputeConfigRequest(d.Get("compute_config").([]any))
 		kubernetesNetworkConfig := expandKubernetesNetworkConfigRequest(d.Get("kubernetes_network_config").([]any))
 		storageConfig := expandStorageConfigRequest(d.Get("storage_config").([]any))
-
-		input := &eks.UpdateClusterConfigInput{
-			Name:                    aws.String(d.Id()),
+		input := eks.UpdateClusterConfigInput{
 			ComputeConfig:           computeConfig,
 			KubernetesNetworkConfig: kubernetesNetworkConfig,
+			Name:                    aws.String(d.Id()),
 			StorageConfig:           storageConfig,
 		}
 
-		output, err := conn.UpdateClusterConfig(ctx, input)
+		output, err := conn.UpdateClusterConfig(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) compute config: %s", d.Id(), err)
@@ -102,16 +101,20 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 		}
 	}
 
-	if d.HasChange("encryption_config") {
-		o, n := d.GetChange("encryption_config")
+	if d.HasChange(names.AttrDeletionProtection) {
+		if err := updateClusterDeletionProtection(ctx, conn, d.Id(), d.Get(names.AttrDeletionProtection).(bool), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	}
 
-		if len(o.([]any)) == 0 && len(n.([]any)) == 1 {
-			input := &eks.AssociateEncryptionConfigInput{
+	if d.HasChange("encryption_config") {
+		if o, n := d.GetChange("encryption_config"); len(o.([]any)) == 0 && len(n.([]any)) == 1 {
+			input := eks.AssociateEncryptionConfigInput{
 				ClusterName:      aws.String(d.Id()),
 				EncryptionConfig: expandEncryptionConfig(d.Get("encryption_config").([]any)),
 			}
 
-			output, err := conn.AssociateEncryptionConfig(ctx, input)
+			output, err := conn.AssociateEncryptionConfig(ctx, &input)
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "associating EKS Cluster (%s) encryption config: %s", d.Id(), err)
@@ -126,12 +129,12 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	if d.HasChange("enabled_cluster_log_types") {
-		input := &eks.UpdateClusterConfigInput{
+		input := eks.UpdateClusterConfigInput{
 			Logging: expandLogging(d.Get("enabled_cluster_log_types").(*schema.Set)),
 			Name:    aws.String(d.Id()),
 		}
 
-		output, err := conn.UpdateClusterConfig(ctx, input)
+		output, err := conn.UpdateClusterConfig(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) logging: %s", d.Id(), err)
@@ -145,12 +148,12 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	if d.HasChange("upgrade_policy") {
-		input := &eks.UpdateClusterConfigInput{
+		input := eks.UpdateClusterConfigInput{
 			Name:          aws.String(d.Id()),
 			UpgradePolicy: expandUpgradePolicy(d.Get("upgrade_policy").([]any)),
 		}
 
-		output, err := conn.UpdateClusterConfig(ctx, input)
+		output, err := conn.UpdateClusterConfig(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) upgrade policy: %s", d.Id(), err)
@@ -164,7 +167,7 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	if d.HasChanges("vpc_config.0.endpoint_private_access", "vpc_config.0.endpoint_public_access", "vpc_config.0.public_access_cidrs") {
-		config := &types.VpcConfigRequest{
+		config := types.VpcConfigRequest{
 			EndpointPrivateAccess: aws.Bool(d.Get("vpc_config.0.endpoint_private_access").(bool)),
 			EndpointPublicAccess:  aws.Bool(d.Get("vpc_config.0.endpoint_public_access").(bool)),
 		}
@@ -173,39 +176,39 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 			config.PublicAccessCidrs = flex.ExpandStringValueSet(v.(*schema.Set))
 		}
 
-		if err := updateVPCConfig(ctx, conn, d.Id(), config, d.Timeout(schema.TimeoutUpdate)); err != nil {
+		if err := updateClusterVPCConfig(ctx, conn, d.Id(), &config, d.Timeout(schema.TimeoutUpdate)); err != nil {
 			return sdkdiag.AppendFromErr(diags, err)
 		}
 	}
 
 	// API only allows one type of update at at time.
 	if d.HasChange("vpc_config.0.subnet_ids") {
-		config := &types.VpcConfigRequest{
+		config := types.VpcConfigRequest{
 			SubnetIds: flex.ExpandStringValueSet(d.Get("vpc_config.0.subnet_ids").(*schema.Set)),
 		}
 
-		if err := updateVPCConfig(ctx, conn, d.Id(), config, d.Timeout(schema.TimeoutUpdate)); err != nil {
+		if err := updateClusterVPCConfig(ctx, conn, d.Id(), &config, d.Timeout(schema.TimeoutUpdate)); err != nil {
 			return sdkdiag.AppendFromErr(diags, err)
 		}
 	}
 
 	if d.HasChange("vpc_config.0.security_group_ids") {
-		config := &types.VpcConfigRequest{
+		config := types.VpcConfigRequest{
 			SecurityGroupIds: flex.ExpandStringValueSet(d.Get("vpc_config.0.security_group_ids").(*schema.Set)),
 		}
 
-		if err := updateVPCConfig(ctx, conn, d.Id(), config, d.Timeout(schema.TimeoutUpdate)); err != nil {
+		if err := updateClusterVPCConfig(ctx, conn, d.Id(), &config, d.Timeout(schema.TimeoutUpdate)); err != nil {
 			return sdkdiag.AppendFromErr(diags, err)
 		}
 	}
 
 	if d.HasChange("zonal_shift_config") {
-		input := &eks.UpdateClusterConfigInput{
+		input := eks.UpdateClusterConfigInput{
 			Name:             aws.String(d.Id()),
 			ZonalShiftConfig: expandZonalShiftConfig(d.Get("zonal_shift_config").([]any)),
 		}
 
-		output, err := conn.UpdateClusterConfig(ctx, input)
+		output, err := conn.UpdateClusterConfig(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) zonal shift config: %s", d.Id(), err)

@@ -14,48 +14,47 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/resourceattribute"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r resourceForceNewIfRegionChangesInterceptor) modifyPlan(ctx context.Context, opts interceptorOptions[resource.ModifyPlanRequest, resource.ModifyPlanResponse]) diag.Diagnostics {
+func (r resourceForceNewIfRegionChangesInterceptor) modifyPlan(ctx context.Context, opts interceptorOptions[resource.ModifyPlanRequest, resource.ModifyPlanResponse]) {
 	c := opts.c
-	var diags diag.Diagnostics
 
 	switch request, response, when := opts.request, opts.response, opts.when; when {
 	case Before:
 		// If the entire plan is null, the resource is planned for destruction.
 		if request.Plan.Raw.IsNull() {
-			return diags
+			return
 		}
 
 		// If the entire state is null, the resource is new.
 		if request.State.Raw.IsNull() {
-			return diags
+			return
 		}
 
 		var configRegion types.String
-		diags.Append(request.Config.GetAttribute(ctx, path.Root(names.AttrRegion), &configRegion)...)
-		if diags.HasError() {
-			return diags
+		opts.response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root(names.AttrRegion), &configRegion)...)
+		if opts.response.Diagnostics.HasError() {
+			return
 		}
 
 		var planRegion types.String
-		diags.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrRegion), &planRegion)...)
-		if diags.HasError() {
-			return diags
+		opts.response.Diagnostics.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrRegion), &planRegion)...)
+		if opts.response.Diagnostics.HasError() {
+			return
 		}
 
 		var stateRegion types.String
-		diags.Append(request.State.GetAttribute(ctx, path.Root(names.AttrRegion), &stateRegion)...)
-		if diags.HasError() {
-			return diags
+		opts.response.Diagnostics.Append(request.State.GetAttribute(ctx, path.Root(names.AttrRegion), &stateRegion)...)
+		if opts.response.Diagnostics.HasError() {
+			return
 		}
 
 		if stateRegion.IsNull() {
 			// Upgrade from pre-v6.0.0 provider and '-refresh=false' in effect.
 			if configRegion.IsNull() {
-				return diags
+				return
 			}
 
 			if providerRegion := c.AwsConfig(ctx).Region; planRegion.ValueString() == providerRegion {
-				return diags
+				return
 			}
 		}
 
@@ -63,6 +62,4 @@ func (r resourceForceNewIfRegionChangesInterceptor) modifyPlan(ctx context.Conte
 			response.RequiresReplace = path.Paths{path.Root(names.AttrRegion)}
 		}
 	}
-
-	return diags
 }

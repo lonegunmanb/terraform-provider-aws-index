@@ -5,7 +5,6 @@ import (
 	"unique"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
@@ -15,25 +14,24 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r tagsResourceInterceptor) create(ctx context.Context, opts interceptorOptions[resource.CreateRequest, resource.CreateResponse]) diag.Diagnostics {
+func (r tagsResourceInterceptor) create(ctx context.Context, opts interceptorOptions[resource.CreateRequest, resource.CreateResponse]) {
 	c := opts.c
-	var diags diag.Diagnostics
 
 	if !r.Enabled() {
-		return diags
+		return
 	}
 
 	sp, _, _, tagsInContext, ok := interceptors.InfoFromContext(ctx, c)
 	if !ok {
-		return diags
+		return
 	}
 
 	switch request, response, when := opts.request, opts.response, opts.when; when {
 	case Before:
 		var planTags tftags.Map
-		diags.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrTags), &planTags)...)
-		if diags.HasError() {
-			return diags
+		opts.response.Diagnostics.Append(request.Plan.GetAttribute(ctx, path.Root(names.AttrTags), &planTags)...)
+		if opts.response.Diagnostics.HasError() {
+			return
 		}
 
 		// Merge the resource's configured tags with any provider configured default_tags.
@@ -46,11 +44,9 @@ func (r tagsResourceInterceptor) create(ctx context.Context, opts interceptorOpt
 		// Remove any provider configured ignore_tags and system tags from those passed to the service API.
 		// Computed tags_all include any provider configured default_tags.
 		stateTagsAll := fwflex.FlattenFrameworkStringValueMapLegacy(ctx, tagsInContext.TagsIn.MustUnwrap().IgnoreSystem(sp.ServicePackageName()).IgnoreConfig(c.IgnoreTagsConfig(ctx)).Map())
-		diags.Append(response.State.SetAttribute(ctx, path.Root(names.AttrTagsAll), tftags.NewMapFromMapValue(stateTagsAll))...)
-		if diags.HasError() {
-			return diags
+		opts.response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(names.AttrTagsAll), tftags.NewMapFromMapValue(stateTagsAll))...)
+		if opts.response.Diagnostics.HasError() {
+			return
 		}
 	}
-
-	return diags
 }

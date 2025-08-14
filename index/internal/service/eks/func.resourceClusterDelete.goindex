@@ -30,20 +30,19 @@ func resourceClusterDelete(ctx context.Context, d *schema.ResourceData, meta any
 
 	conn := meta.(*conns.AWSClient).EKSClient(ctx)
 
-	input := &eks.DeleteClusterInput{
-		Name: aws.String(d.Id()),
-	}
-
 	// If a cluster is scaling up due to load a delete request will fail
 	// This is a temporary workaround until EKS supports multiple parallel mutating operations
 	const (
 		timeout = 60 * time.Minute
 	)
 	log.Printf("[DEBUG] Deleting EKS Cluster: %s", d.Id())
+	input := eks.DeleteClusterInput{
+		Name: aws.String(d.Id()),
+	}
 	err := tfresource.Retry(ctx, timeout, func() *retry.RetryError {
 		var err error
 
-		_, err = conn.DeleteCluster(ctx, input)
+		_, err = conn.DeleteCluster(ctx, &input)
 
 		if errs.IsAErrorMessageContains[*types.ResourceInUseException](err, "in progress") {
 			return retry.RetryableError(err)
@@ -57,7 +56,7 @@ func resourceClusterDelete(ctx context.Context, d *schema.ResourceData, meta any
 	}, tfresource.WithDelayRand(1*time.Minute), tfresource.WithPollInterval(30*time.Second))
 
 	if tfresource.TimedOut(err) {
-		_, err = conn.DeleteCluster(ctx, input)
+		_, err = conn.DeleteCluster(ctx, &input)
 	}
 
 	if errs.IsA[*types.ResourceNotFoundException](err) {

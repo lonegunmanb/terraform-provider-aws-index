@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
@@ -105,7 +106,7 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	name := d.Get("gateway_name").(string)
-	input := &storagegateway.ActivateGatewayInput{
+	input := storagegateway.ActivateGatewayInput{
 		ActivationKey:   aws.String(activationKey),
 		GatewayRegion:   aws.String(region),
 		GatewayName:     aws.String(name),
@@ -122,7 +123,7 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any
 		input.TapeDriveType = aws.String(v.(string))
 	}
 
-	output, err := conn.ActivateGateway(ctx, input)
+	output, err := conn.ActivateGateway(ctx, &input)
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "activating Storage Gateway Gateway (%s): %s", name, err)
@@ -130,17 +131,17 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any
 
 	d.SetId(aws.ToString(output.GatewayARN))
 
-	if _, err = waitGatewayConnected(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+	if _, err := waitGatewayConnected(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "waiting for Storage Gateway Gateway (%s) connect: %s", d.Id(), err)
 	}
 
 	if v, ok := d.GetOk(names.AttrCloudWatchLogGroupARN); ok && v.(string) != "" {
-		input := &storagegateway.UpdateGatewayInformationInput{
+		input := storagegateway.UpdateGatewayInformationInput{
 			CloudWatchLogGroupARN: aws.String(v.(string)),
 			GatewayARN:            aws.String(d.Id()),
 		}
 
-		_, err := conn.UpdateGatewayInformation(ctx, input)
+		_, err := conn.UpdateGatewayInformation(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating Storage Gateway Gateway (%s) CloudWatch log group: %s", d.Id(), err)
@@ -173,12 +174,12 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	if v, ok := d.GetOk("smb_guest_password"); ok && v.(string) != "" {
-		input := &storagegateway.SetSMBGuestPasswordInput{
+		input := storagegateway.SetSMBGuestPasswordInput{
 			GatewayARN: aws.String(d.Id()),
 			Password:   aws.String(v.(string)),
 		}
 
-		_, err := conn.SetSMBGuestPassword(ctx, input)
+		_, err := conn.SetSMBGuestPassword(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "setting Storage Gateway Gateway (%s) SMB guest password: %s", d.Id(), err)
@@ -186,12 +187,12 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	if v, ok := d.GetOk("smb_security_strategy"); ok {
-		input := &storagegateway.UpdateSMBSecurityStrategyInput{
+		input := storagegateway.UpdateSMBSecurityStrategyInput{
 			GatewayARN:          aws.String(d.Id()),
 			SMBSecurityStrategy: awstypes.SMBSecurityStrategy(v.(string)),
 		}
 
-		_, err := conn.UpdateSMBSecurityStrategy(ctx, input)
+		_, err := conn.UpdateSMBSecurityStrategy(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "setting Storage Gateway Gateway (%s) SMB security strategy: %s", d.Id(), err)
@@ -199,12 +200,12 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	if v, ok := d.GetOk("smb_file_share_visibility"); ok {
-		input := &storagegateway.UpdateSMBFileShareVisibilityInput{
+		input := storagegateway.UpdateSMBFileShareVisibilityInput{
 			FileSharesVisible: aws.Bool(v.(bool)),
 			GatewayARN:        aws.String(d.Id()),
 		}
 
-		_, err := conn.UpdateSMBFileShareVisibility(ctx, input)
+		_, err := conn.UpdateSMBFileShareVisibility(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating Storage Gateway Gateway (%s) SMB file share visibility: %s", d.Id(), err)
@@ -213,7 +214,7 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any
 
 	switch d.Get("gateway_type").(string) {
 	case gatewayTypeCached, gatewayTypeStored, gatewayTypeVTL, gatewayTypeVTLSnow:
-		input := &storagegateway.UpdateBandwidthRateLimitInput{
+		input := storagegateway.UpdateBandwidthRateLimitInput{
 			GatewayARN: aws.String(d.Id()),
 		}
 
@@ -226,7 +227,7 @@ func resourceGatewayCreate(ctx context.Context, d *schema.ResourceData, meta any
 		}
 
 		if input.AverageDownloadRateLimitInBitsPerSec != nil || input.AverageUploadRateLimitInBitsPerSec != nil {
-			_, err := conn.UpdateBandwidthRateLimit(ctx, input)
+			_, err := conn.UpdateBandwidthRateLimit(ctx, &input)
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "updating Storage Gateway Gateway (%s) bandwidth rate limits: %s", d.Id(), err)
