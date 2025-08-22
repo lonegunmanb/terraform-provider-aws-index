@@ -5,25 +5,27 @@ import (
 	"fmt"
 	"iter"
 	"log"
+	"reflect"
 	"slices"
+	"sync"
+	"unique"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
+	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	empemeralschema "github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
 	"github.com/hashicorp/terraform-plugin-framework/function"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tffunction "github.com/hashicorp/terraform-provider-aws/internal/function"
-	"github.com/hashicorp/terraform-provider-aws/internal/logging"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
@@ -33,100 +35,81 @@ func (p *frameworkProvider) validateResourceSchemas(ctx context.Context) error {
 	var errs []error
 
 	for sp := range p.servicePackages {
-		for _, v := range sp.FrameworkDataSources(ctx) {
-			typeName := v.TypeName
-			ds, err := v.Factory(ctx)
+		for _, dataSourceSpec := range sp.FrameworkDataSources(ctx) {
+			typeName := dataSourceSpec.TypeName
+			inner, err := dataSourceSpec.Factory(ctx)
 
 			if err != nil {
-				errs = append(errs, fmt.Errorf("creating data source (%s): %w", typeName, err))
+				errs = append(errs, fmt.Errorf("creating data source type (%s): %w", typeName, err))
 				continue
 			}
 
 			schemaResponse := datasource.SchemaResponse{}
-			ds.Schema(ctx, datasource.SchemaRequest{}, &schemaResponse)
+			inner.Schema(ctx, datasource.SchemaRequest{}, &schemaResponse)
 
-			if v := v.Region; !tfunique.IsHandleNil(v) && v.Value().IsOverrideEnabled {
-				if _, ok := schemaResponse.Schema.Attributes[names.AttrRegion]; ok {
-					errs = append(errs, fmt.Errorf("`%s` attribute is defined: %s data source", names.AttrRegion, typeName))
-					continue
-				}
+			if err := validateSchemaRegionForDataSource(dataSourceSpec.Region, schemaResponse.Schema); err != nil {
+				errs = append(errs, fmt.Errorf("data source type %q: %w", typeName, err))
+				continue
 			}
 
-			if !tfunique.IsHandleNil(v.Tags) {
-				// The data source has opted in to transparent tagging.
-				// Ensure that the schema look OK.
-				if v, ok := schemaResponse.Schema.Attributes[names.AttrTags]; ok {
-					if !v.IsComputed() {
-						errs = append(errs, fmt.Errorf("`%s` attribute must be Computed: %s data source", names.AttrTags, typeName))
-						continue
-					}
-				} else {
-					errs = append(errs, fmt.Errorf("no `%s` attribute defined in schema: %s data source", names.AttrTags, typeName))
-					continue
-				}
+			if err := validateSchemaTagsForDataSource(dataSourceSpec.Tags, schemaResponse.Schema); err != nil {
+				errs = append(errs, fmt.Errorf("data source type %q: %w", typeName, err))
+				continue
 			}
 		}
 
 		if v, ok := sp.(conns.ServicePackageWithEphemeralResources); ok {
-			for _, v := range v.EphemeralResources(ctx) {
-				typeName := v.TypeName
-				er, err := v.Factory(ctx)
+			for _, ephemeralResourceSpec := range v.EphemeralResources(ctx) {
+				typeName := ephemeralResourceSpec.TypeName
+				inner, err := ephemeralResourceSpec.Factory(ctx)
 
 				if err != nil {
-					errs = append(errs, fmt.Errorf("creating ephemeral resource (%s): %w", typeName, err))
+					errs = append(errs, fmt.Errorf("creating ephemeral resource type (%s): %w", typeName, err))
 					continue
 				}
 
 				schemaResponse := ephemeral.SchemaResponse{}
-				er.Schema(ctx, ephemeral.SchemaRequest{}, &schemaResponse)
+				inner.Schema(ctx, ephemeral.SchemaRequest{}, &schemaResponse)
 
-				if v := v.Region; !tfunique.IsHandleNil(v) && v.Value().IsOverrideEnabled {
-					if _, ok := schemaResponse.Schema.Attributes[names.AttrRegion]; ok {
-						errs = append(errs, fmt.Errorf("`%s` attribute is defined: %s ephemeral resource", names.AttrRegion, typeName))
-						continue
-					}
+				if err := validateSchemaRegionForEphemeralResource(ephemeralResourceSpec.Region, schemaResponse.Schema); err != nil {
+					errs = append(errs, fmt.Errorf("ephemeral resource type %q: %w", typeName, err))
+					continue
 				}
 			}
 		}
 
-		for _, v := range sp.FrameworkResources(ctx) {
-			typeName := v.TypeName
-			r, err := v.Factory(ctx)
+		for _, resourceSpec := range sp.FrameworkResources(ctx) {
+			typeName := resourceSpec.TypeName
+			inner, err := resourceSpec.Factory(ctx)
 
 			if err != nil {
-				errs = append(errs, fmt.Errorf("creating resource (%s): %w", typeName, err))
+				errs = append(errs, fmt.Errorf("creating resource type (%s): %w", typeName, err))
 				continue
 			}
 
 			schemaResponse := resource.SchemaResponse{}
-			r.Schema(ctx, resource.SchemaRequest{}, &schemaResponse)
+			inner.Schema(ctx, resource.SchemaRequest{}, &schemaResponse)
 
-			if v := v.Region; !tfunique.IsHandleNil(v) && v.Value().IsOverrideEnabled {
-				if _, ok := schemaResponse.Schema.Attributes[names.AttrRegion]; ok {
-					errs = append(errs, fmt.Errorf("`%s` attribute is defined: %s resource", names.AttrRegion, typeName))
-					continue
-				}
+			if err := validateSchemaRegionForResource(resourceSpec.Region, schemaResponse.Schema); err != nil {
+				errs = append(errs, fmt.Errorf("resource type %q: %w", typeName, err))
+				continue
 			}
 
-			if !tfunique.IsHandleNil(v.Tags) {
-				// The resource has opted in to transparent tagging.
-				// Ensure that the schema look OK.
-				if v, ok := schemaResponse.Schema.Attributes[names.AttrTags]; ok {
-					if v.IsComputed() {
-						errs = append(errs, fmt.Errorf("`%s` attribute cannot be Computed: %s resource", names.AttrTags, typeName))
+			if err := validateSchemaTagsForResource(resourceSpec.Tags, schemaResponse.Schema); err != nil {
+				errs = append(errs, fmt.Errorf("resource type %q: %w", typeName, err))
+				continue
+			}
+
+			if resourceSpec.Import.WrappedImport {
+				if resourceSpec.Import.SetIDAttr {
+					if _, ok := resourceSpec.Import.ImportID.(inttypes.FrameworkImportIDCreator); !ok {
+						errs = append(errs, fmt.Errorf("resource type %q: importer sets `%s` attribute, but creator isn't configured", resourceSpec.TypeName, names.AttrID))
 						continue
 					}
-				} else {
-					errs = append(errs, fmt.Errorf("no `%s` attribute defined in schema: %s resource", names.AttrTags, typeName))
-					continue
 				}
-				if v, ok := schemaResponse.Schema.Attributes[names.AttrTagsAll]; ok {
-					if !v.IsComputed() {
-						errs = append(errs, fmt.Errorf("`%s` attribute must be Computed: %s resource", names.AttrTagsAll, typeName))
-						continue
-					}
-				} else {
-					errs = append(errs, fmt.Errorf("no `%s` attribute defined in schema: %s resource", names.AttrTagsAll, typeName))
+
+				if _, ok := inner.(framework.ImportByIdentityer); !ok {
+					errs = append(errs, fmt.Errorf("resource type %q: cannot configure importer, does not implement %q", resourceSpec.TypeName, reflect.TypeFor[framework.ImportByIdentityer]()))
 					continue
 				}
 			}

@@ -5,25 +5,27 @@ import (
 	"fmt"
 	"iter"
 	"log"
+	"reflect"
 	"slices"
+	"sync"
+	"unique"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
+	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	empemeralschema "github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
 	"github.com/hashicorp/terraform-plugin-framework/function"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tffunction "github.com/hashicorp/terraform-provider-aws/internal/function"
-	"github.com/hashicorp/terraform-provider-aws/internal/logging"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
@@ -40,27 +42,17 @@ func NewProvider(ctx context.Context, primary interface{ Meta() any }) (provider
 		servicePackages:    primary.Meta().(*conns.AWSClient).ServicePackages(ctx),
 	}
 
-	// Acceptance tests call this function multiple times, potentially in parallel.
-	// To avoid "fatal error: concurrent map writes", take a lock.
-	const (
-		mutexKVKey = "provider.New"
-	)
-	conns.GlobalMutexKV.Lock(mutexKVKey)
-	defer conns.GlobalMutexKV.Unlock(mutexKVKey)
-
 	// Because we try and share resource schemas as much as possible,
 	// we need to ensure that we only validate the resource schemas once.
-	if !resourceSchemasValidated {
-		if err := provider.validateResourceSchemas(ctx); err != nil {
-			return nil, err
-		}
-
-		resourceSchemasValidated = true
-	}
-
-	if err := provider.initialize(ctx); err != nil {
+	var err error
+	resourceSchemasValidated.Do(func() {
+		err = provider.validateResourceSchemas(ctx)
+	})
+	if err != nil {
 		return nil, err
 	}
+
+	provider.initialize(ctx)
 
 	return provider, nil
 }

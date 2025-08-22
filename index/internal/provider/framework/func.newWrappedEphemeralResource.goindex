@@ -7,17 +7,44 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/identity"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/importer"
-	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func newWrappedEphemeralResource(inner ephemeral.EphemeralResourceWithConfigure, opts wrappedEphemeralResourceOptions) ephemeral.EphemeralResourceWithConfigure {
+func newWrappedEphemeralResource(spec *inttypes.ServicePackageEphemeralResource, servicePackageName string) ephemeral.EphemeralResourceWithConfigure {
+	var isRegionOverrideEnabled bool
+	if regionSpec := spec.Region; !tfunique.IsHandleNil(regionSpec) && regionSpec.Value().IsOverrideEnabled {
+		isRegionOverrideEnabled = true
+	}
+
+	var interceptors interceptorInvocations
+
+	if isRegionOverrideEnabled {
+		v := spec.Region.Value()
+
+		interceptors = append(interceptors, ephemeralResourceInjectRegionAttribute())
+		if v.IsValidateOverrideInPartition {
+			interceptors = append(interceptors, ephemeralResourceValidateRegion())
+		}
+		interceptors = append(interceptors, ephemeralResourceSetRegionInResult())
+	}
+
+	inner, _ := spec.Factory(context.TODO())
+
 	return &wrappedEphemeralResource{
-		inner: inner,
-		opts:  opts,
+		inner:              inner,
+		servicePackageName: servicePackageName,
+		spec:               spec,
+		interceptors:       interceptors,
 	}
 }

@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/identity"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/importer"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (w *wrappedEphemeralResource) context(ctx context.Context, getAttribute getAttributeFunc, c *conns.AWSClient) (context.Context, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	var overrideRegion string
+
+	var isRegionOverrideEnabled bool
+	if regionSpec := w.spec.Region; !tfunique.IsHandleNil(regionSpec) && regionSpec.Value().IsOverrideEnabled {
+		isRegionOverrideEnabled = true
+	}
+
+	if isRegionOverrideEnabled && getAttribute != nil {
+		var target types.String
+		diags.Append(getAttribute(ctx, path.Root(names.AttrRegion), &target)...)
+		if diags.HasError() {
+			return ctx, diags
+		}
+
+		overrideRegion = target.ValueString()
+	}
+
+	ctx = conns.NewResourceContext(ctx, w.servicePackageName, w.spec.Name, overrideRegion)
+	if c != nil {
+		ctx = c.RegisterLogger(ctx)
+		ctx = fwflex.RegisterLogger(ctx)
+		ctx = logging.MaskSensitiveValuesByKey(ctx, logging.HTTPKeyRequestBody, logging.HTTPKeyResponseBody)
+	}
+
+	return ctx, diags
+}

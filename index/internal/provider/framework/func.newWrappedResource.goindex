@@ -7,17 +7,66 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/identity"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/importer"
-	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func newWrappedResource(inner resource.ResourceWithConfigure, opts wrappedResourceOptions) resource.ResourceWithConfigure {
+func newWrappedResource(spec *inttypes.ServicePackageFrameworkResource, servicePackageName string) resource.ResourceWithConfigure {
+	var isRegionOverrideEnabled bool
+	if v := spec.Region; !tfunique.IsHandleNil(v) && v.Value().IsOverrideEnabled {
+		isRegionOverrideEnabled = true
+	}
+
+	var interceptors interceptorInvocations
+
+	if isRegionOverrideEnabled {
+		v := spec.Region.Value()
+
+		interceptors = append(interceptors, resourceInjectRegionAttribute())
+		if v.IsValidateOverrideInPartition {
+			interceptors = append(interceptors, resourceValidateRegion())
+		}
+		interceptors = append(interceptors, resourceDefaultRegion())
+		interceptors = append(interceptors, resourceForceNewIfRegionChanges())
+		interceptors = append(interceptors, resourceSetRegionInState())
+		if spec.Identity.HasInherentRegion() {
+			interceptors = append(interceptors, resourceImportRegionNoDefault())
+		} else {
+			interceptors = append(interceptors, resourceImportRegion())
+		}
+	}
+
+	if !tfunique.IsHandleNil(spec.Tags) {
+		interceptors = append(interceptors, resourceTransparentTagging(spec.Tags))
+	}
+
+	if len(spec.Identity.Attributes) > 0 {
+		interceptors = append(interceptors, newIdentityInterceptor(spec.Identity.Attributes))
+	}
+
+	inner, _ := spec.Factory(context.TODO())
+
+	if spec.Import.WrappedImport {
+		if v, ok := inner.(framework.ImportByIdentityer); ok {
+			v.SetIdentitySpec(spec.Identity, spec.Import)
+		}
+		// If the resource does not implement framework.ImportByIdentityer,
+		// it will be caught by `validateResourceSchemas`, so we can ignore it here.
+	}
 	return &wrappedResource{
-		inner: inner,
-		opts:  opts,
+		inner:              inner,
+		servicePackageName: servicePackageName,
+		spec:               spec,
+		interceptors:       interceptors,
 	}
 }

@@ -7,31 +7,37 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/identity"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/importer"
-	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (w *wrappedEphemeralResource) Schema(ctx context.Context, request ephemeral.SchemaRequest, response *ephemeral.SchemaResponse) {
-	ctx, diags := w.opts.bootstrapContext(ctx, nil, w.meta)
+	ctx, diags := w.context(ctx, nil, w.meta)
 	response.Diagnostics.Append(diags...)
 	if response.Diagnostics.HasError() {
 		return
 	}
 
-	interceptedHandler(w.opts.interceptors.ephemeralResourceSchema(), w.inner.Schema, ephemeralSchemaHasError, w.meta)(ctx, request, response)
+	interceptedHandler(w.interceptors.ephemeralResourceSchema(), w.inner.Schema, ephemeralSchemaHasError, w.meta)(ctx, request, response)
 
 	// Validate the ephemeral resource's model against the schema.
 	if v, ok := w.inner.(framework.EphemeralResourceValidateModel); ok {
 		response.Diagnostics.Append(v.ValidateModel(ctx, &response.Schema)...)
 		if response.Diagnostics.HasError() {
-			response.Diagnostics.AddError("ephemeral resource model validation error", w.opts.typeName)
+			response.Diagnostics.AddError("ephemeral resource model validation error", w.spec.TypeName)
 			return
 		}
 	} else {
-		response.Diagnostics.AddError("missing framework.EphemeralResourceValidateModel", w.opts.typeName)
+		response.Diagnostics.AddError("missing framework.EphemeralResourceValidateModel", w.spec.TypeName)
 	}
 }
