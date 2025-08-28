@@ -1,0 +1,119 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3tables
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3tables"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3tables/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func emptyTableBucket(ctx context.Context, conn *s3tables.Client, tableBucketARN string) error {
+	tflog.Debug(ctx, "Starting to empty table bucket", map[string]any{
+		"table_bucket_arn": tableBucketARN,
+	})
+
+	// First, list all namespaces in the table bucket.
+	input := s3tables.ListNamespacesInput{
+		TableBucketARN: aws.String(tableBucketARN),
+	}
+	pages := s3tables.NewListNamespacesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if err != nil {
+			return fmt.Errorf("listing S3 Tables Table Bucket (%s) namespaces: %w", tableBucketARN, err)
+		}
+
+		// For each namespace, list and delete all tables.
+		for _, v := range page.Namespaces {
+			namespace := v.Namespace[0]
+			tflog.Debug(ctx, "Processing namespace", map[string]any{
+				names.AttrNamespace: namespace,
+			})
+
+			inputLT := s3tables.ListTablesInput{
+				Namespace:      aws.String(namespace),
+				TableBucketARN: aws.String(tableBucketARN),
+			}
+			pages := s3tables.NewListTablesPaginator(conn, &inputLT)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+
+				if err != nil {
+					return fmt.Errorf("listing S3 Tables Table Bucket (%s,%s) tables: %w", tableBucketARN, namespace, err)
+				}
+
+				// Delete each table.
+				for _, v := range page.Tables {
+					name := aws.ToString(v.Name)
+					tflog.Debug(ctx, "Deleting table", map[string]any{
+						names.AttrName:      name,
+						names.AttrNamespace: namespace,
+					})
+
+					input := s3tables.DeleteTableInput{
+						Name:           aws.String(name),
+						Namespace:      aws.String(namespace),
+						TableBucketARN: aws.String(tableBucketARN),
+					}
+					_, err := conn.DeleteTable(ctx, &input)
+
+					if errs.IsA[*awstypes.NotFoundException](err) {
+						continue
+					}
+
+					if err != nil {
+						return fmt.Errorf("deleting S3 Tables Table Bucket (%s,%s) table (%s): %w", tableBucketARN, namespace, name, err)
+					}
+				}
+			}
+
+			// After deleting all tables in the namespace, delete the namespace itself.
+			tflog.Debug(ctx, "Deleting namespace", map[string]any{
+				names.AttrNamespace: namespace,
+			})
+
+			inputDN := s3tables.DeleteNamespaceInput{
+				Namespace:      aws.String(namespace),
+				TableBucketARN: aws.String(tableBucketARN),
+			}
+			_, err = conn.DeleteNamespace(ctx, &inputDN)
+
+			if errs.IsA[*awstypes.NotFoundException](err) {
+				continue
+			}
+
+			if err != nil {
+				return fmt.Errorf("deleting S3 Tables Table Bucket (%s) namespace (%s): %w", tableBucketARN, namespace, err)
+			}
+		}
+	}
+
+	tflog.Debug(ctx, "Successfully emptied table bucket", map[string]any{
+		"table_bucket_arn": tableBucketARN,
+	})
+
+	return nil
+}

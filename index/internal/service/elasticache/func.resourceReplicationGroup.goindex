@@ -115,7 +115,7 @@ func resourceReplicationGroup() *schema.Resource {
 			names.AttrEngine: {
 				Type:     schema.TypeString,
 				Optional: true,
-				Default:  engineRedis,
+				Computed: true,
 				ValidateDiagFunc: validation.AllDiag(
 					validation.ToDiagFunc(validation.StringInSlice([]string{engineRedis, engineValkey}, true)),
 					// While the existing validator makes it technically possible to provide an
@@ -125,6 +125,7 @@ func resourceReplicationGroup() *schema.Resource {
 					// practitioners that stricter validation will be enforced in v7.0.0.
 					verify.CaseInsensitiveMatchDeprecation([]string{engineRedis, engineValkey}),
 				),
+				DiffSuppressFunc: suppressDiffIfBelongsToGlobalReplicationGroup,
 			},
 			names.AttrEngineVersion: {
 				Type:     schema.TypeString,
@@ -134,6 +135,7 @@ func resourceReplicationGroup() *schema.Resource {
 					validRedisVersionString,
 					validValkeyVersionString,
 				),
+				DiffSuppressFunc: suppressDiffIfBelongsToGlobalReplicationGroup,
 			},
 			"engine_version_actual": {
 				Type:     schema.TypeString,
@@ -255,7 +257,7 @@ func resourceReplicationGroup() *schema.Resource {
 				Optional: true,
 				Computed: true,
 				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
-					return strings.HasPrefix(old, "global-datastore-")
+					return suppressDiffIfBelongsToGlobalReplicationGroup(k, old, new, d)
 				},
 			},
 			names.AttrPort: {
@@ -404,15 +406,7 @@ func resourceReplicationGroup() *schema.Resource {
 		CustomizeDiff: customdiff.All(
 			replicationGroupValidateMultiAZAutomaticFailover,
 			customizeDiffEngineVersionForceNewOnDowngrade,
-			customdiff.ForceNewIf(names.AttrEngine, func(_ context.Context, diff *schema.ResourceDiff, meta any) bool {
-				if !diff.HasChange(names.AttrEngine) {
-					return false
-				}
-				if old, new := diff.GetChange(names.AttrEngine); old.(string) == engineRedis && new.(string) == engineValkey {
-					return false
-				}
-				return true
-			}),
+			customizeDiffEngineForceNewOnDowngrade(),
 			customdiff.ComputedIf("member_clusters", func(ctx context.Context, diff *schema.ResourceDiff, meta any) bool {
 				return diff.HasChange("num_cache_clusters") ||
 					diff.HasChange("num_node_groups") ||

@@ -23,19 +23,25 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceLifecyclePolicyCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
-	const createRetryTimeout = 2 * time.Minute
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).DLMClient(ctx)
 
 	input := dlm.CreateLifecyclePolicyInput{
 		Description:      aws.String(d.Get(names.AttrDescription).(string)),
 		ExecutionRoleArn: aws.String(d.Get(names.AttrExecutionRoleARN).(string)),
-		PolicyDetails:    expandPolicyDetails(d.Get("policy_details").([]any)),
+		PolicyDetails:    expandPolicyDetails(d.Get("policy_details").([]any), d.Get("default_policy").(string)),
 		State:            awstypes.SettablePolicyStateValues(d.Get(names.AttrState).(string)),
 		Tags:             getTagsIn(ctx),
 	}
 
-	out, err := tfresource.RetryWhenIsA[any, *awstypes.InvalidRequestException](ctx, createRetryTimeout, func(ctx context.Context) (any, error) {
+	if v, ok := d.GetOk("default_policy"); ok {
+		input.DefaultPolicy = awstypes.DefaultPolicyTypeValues(v.(string))
+	}
+
+	const (
+		timeout = 2 * time.Minute
+	)
+	output, err := tfresource.RetryWhenIsA[*dlm.CreateLifecyclePolicyOutput, *awstypes.InvalidRequestException](ctx, timeout, func(ctx context.Context) (*dlm.CreateLifecyclePolicyOutput, error) {
 		return conn.CreateLifecyclePolicy(ctx, &input)
 	})
 
@@ -43,7 +49,7 @@ func resourceLifecyclePolicyCreate(ctx context.Context, d *schema.ResourceData, 
 		return sdkdiag.AppendErrorf(diags, "creating DLM Lifecycle Policy: %s", err)
 	}
 
-	d.SetId(aws.ToString(out.(*dlm.CreateLifecyclePolicyOutput).PolicyId))
+	d.SetId(aws.ToString(output.PolicyId))
 
 	return append(diags, resourceLifecyclePolicyRead(ctx, d, meta)...)
 }

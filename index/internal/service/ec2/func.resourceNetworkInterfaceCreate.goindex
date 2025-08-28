@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -32,9 +32,8 @@ func resourceNetworkInterfaceCreate(ctx context.Context, d *schema.ResourceData,
 
 	ipv4PrefixesSpecified := false
 	ipv6PrefixesSpecified := false
-
-	input := &ec2.CreateNetworkInterfaceInput{
-		ClientToken: aws.String(id.UniqueId()),
+	input := ec2.CreateNetworkInterfaceInput{
+		ClientToken: aws.String(sdkid.UniqueId()),
 		SubnetId:    aws.String(d.Get(names.AttrSubnetID).(string)),
 	}
 
@@ -118,7 +117,7 @@ func resourceNetworkInterfaceCreate(ctx context.Context, d *schema.ResourceData,
 		input.TagSpecifications = getTagSpecificationsIn(ctx, awstypes.ResourceTypeNetworkInterface)
 	}
 
-	output, err := conn.CreateNetworkInterface(ctx, input)
+	output, err := conn.CreateNetworkInterface(ctx, &input)
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "creating EC2 Network Interface: %s", err)
@@ -136,12 +135,12 @@ func resourceNetworkInterfaceCreate(ctx context.Context, d *schema.ResourceData,
 			totalPrivateIPs := v.(*schema.Set).Len()
 			if privateIPsCount, ok := d.GetOk("private_ips_count"); ok {
 				if privateIPsCount.(int)+1 > totalPrivateIPs {
-					input := &ec2.AssignPrivateIpAddressesInput{
+					input := ec2.AssignPrivateIpAddressesInput{
 						NetworkInterfaceId:             aws.String(d.Id()),
 						SecondaryPrivateIpAddressCount: aws.Int32(int32(privateIPsCount.(int) + 1 - totalPrivateIPs)),
 					}
 
-					_, err := conn.AssignPrivateIpAddresses(ctx, input)
+					_, err := conn.AssignPrivateIpAddresses(ctx, &input)
 
 					if err != nil {
 						return sdkdiag.AppendErrorf(diags, "assigning EC2 Network Interface (%s) private IPv4 addresses: %s", d.Id(), err)
@@ -159,12 +158,12 @@ func resourceNetworkInterfaceCreate(ctx context.Context, d *schema.ResourceData,
 
 	// Default value is enabled.
 	if !d.Get("source_dest_check").(bool) {
-		input := &ec2.ModifyNetworkInterfaceAttributeInput{
+		input := ec2.ModifyNetworkInterfaceAttributeInput{
 			NetworkInterfaceId: aws.String(d.Id()),
 			SourceDestCheck:    &awstypes.AttributeBooleanValue{Value: aws.Bool(false)},
 		}
 
-		_, err := conn.ModifyNetworkInterfaceAttribute(ctx, input)
+		_, err := conn.ModifyNetworkInterfaceAttribute(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "modifying EC2 Network Interface (%s) SourceDestCheck: %s", d.Id(), err)
@@ -173,8 +172,19 @@ func resourceNetworkInterfaceCreate(ctx context.Context, d *schema.ResourceData,
 
 	if v, ok := d.GetOk("attachment"); ok && v.(*schema.Set).Len() > 0 {
 		attachment := v.(*schema.Set).List()[0].(map[string]any)
+		input := ec2.AttachNetworkInterfaceInput{
+			NetworkInterfaceId: aws.String(d.Id()),
+			InstanceId:         aws.String(attachment["instance"].(string)),
+			DeviceIndex:        aws.Int32(int32(attachment["device_index"].(int))),
+		}
 
-		_, err := attachNetworkInterface(ctx, conn, d.Id(), attachment["instance"].(string), attachment["device_index"].(int), networkInterfaceAttachedTimeout)
+		if v, ok := attachment["network_card_index"]; ok {
+			if v, ok := v.(int); ok {
+				input.NetworkCardIndex = aws.Int32(int32(v))
+			}
+		}
+
+		_, err := attachNetworkInterface(ctx, conn, &input)
 
 		if err != nil {
 			return sdkdiag.AppendFromErr(diags, err)

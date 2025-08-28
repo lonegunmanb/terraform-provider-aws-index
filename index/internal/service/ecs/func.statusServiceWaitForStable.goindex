@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -33,13 +35,14 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func statusServiceWaitForStable(ctx context.Context, conn *ecs.Client, serviceName, clusterNameOrARN string, operationTime time.Time) retry.StateRefreshFunc {
+func statusServiceWaitForStable(ctx context.Context, conn *ecs.Client, serviceName, clusterNameOrARN string, sigintConfig *rollbackState, operationTime time.Time) retry.StateRefreshFunc {
 	var primaryTaskSet *awstypes.Deployment
 	var primaryDeploymentArn *string
 	var isNewPrimaryDeployment bool
 
 	return func() (any, string, error) {
 		outputRaw, serviceStatus, err := statusService(ctx, conn, serviceName, clusterNameOrARN)()
+
 		if err != nil {
 			return nil, "", err
 		}
@@ -70,7 +73,6 @@ func statusServiceWaitForStable(ctx context.Context, conn *ecs.Client, serviceNa
 
 				var err error
 				primaryDeploymentArn, err = findPrimaryDeploymentARN(ctx, conn, primaryTaskSet, serviceArn, clusterNameOrARN, operationTime)
-
 				if err != nil {
 					return nil, "", err
 				}
@@ -78,6 +80,13 @@ func statusServiceWaitForStable(ctx context.Context, conn *ecs.Client, serviceNa
 					return output, serviceStatusPending, nil
 				}
 			}
+
+			if sigintConfig.rollbackConfigured && !sigintConfig.rollbackRoutineStarted {
+				sigintConfig.waitGroup.Add(1)
+				go rollbackRoutine(ctx, conn, sigintConfig, primaryDeploymentArn)
+				sigintConfig.rollbackRoutineStarted = true
+			}
+
 			deploymentStatus, err := findDeploymentStatus(ctx, conn, *primaryDeploymentArn)
 			if err != nil {
 				return nil, "", err

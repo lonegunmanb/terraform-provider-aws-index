@@ -1,7 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/s3tables
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3tables"
@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -19,37 +20,57 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *tableBucketResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	conn := r.Meta().S3TablesClient(ctx)
-
-	var state tableBucketResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
+func (r *tableBucketResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data tableBucketResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
-	input := &s3tables.DeleteTableBucketInput{
-		TableBucketARN: state.ARN.ValueStringPointer(),
-	}
+	conn := r.Meta().S3TablesClient(ctx)
 
-	_, err := conn.DeleteTableBucket(ctx, input)
+	name, tableBucketARN := fwflex.StringValueFromFramework(ctx, data.Name), fwflex.StringValueFromFramework(ctx, data.ARN)
+	input := s3tables.DeleteTableBucketInput{
+		TableBucketARN: aws.String(tableBucketARN),
+	}
+	_, err := conn.DeleteTableBucket(ctx, &input)
+
 	if errs.IsA[*awstypes.NotFoundException](err) {
 		return
 	}
+
+	// If deletion fails due to bucket not being empty and force_destroy is enabled.
+	if err != nil && data.ForceDestroy.ValueBool() {
+		// Check if the error indicates the bucket is not empty.
+		if errs.IsA[*awstypes.ConflictException](err) || errs.IsA[*awstypes.BadRequestException](err) {
+			tflog.Debug(ctx, "Table bucket not empty, attempting to empty it", map[string]any{
+				"table_bucket_arn": data.ARN.ValueString(),
+			})
+
+			// Empty the table bucket by deleting all tables and namespaces.
+			if err := emptyTableBucket(ctx, conn, tableBucketARN); err != nil {
+				response.Diagnostics.AddError(fmt.Sprintf("deleting S3 Tables Table Bucket (%s) (force_destroy = true)", name), err.Error())
+
+				return
+			}
+
+			// Retry deletion after emptying.
+			_, err = conn.DeleteTableBucket(ctx, &input)
+		}
+	}
+
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.S3Tables, create.ErrActionDeleting, resNameTableBucket, state.Name.String(), err),
-			err.Error(),
-		)
+		response.Diagnostics.AddError(fmt.Sprintf("deleting S3 Tables Table Bucket (%s)", name), err.Error())
+
 		return
 	}
 }

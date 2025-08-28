@@ -1,7 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/s3tables
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3tables"
@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -19,106 +20,104 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *tableBucketResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var state, plan tableBucketResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
+func (r *tableBucketResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new tableBucketResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
 	conn := r.Meta().S3TablesClient(ctx)
 
-	if !plan.EncryptionConfiguration.Equal(state.EncryptionConfiguration) {
-		ec, d := plan.EncryptionConfiguration.ToPtr(ctx)
-		resp.Diagnostics.Append(d...)
-		if resp.Diagnostics.HasError() {
+	name, tableBucketARN := fwflex.StringValueFromFramework(ctx, new.Name), fwflex.StringValueFromFramework(ctx, new.ARN)
+
+	if !new.EncryptionConfiguration.Equal(old.EncryptionConfiguration) {
+		ec, diags := new.EncryptionConfiguration.ToPtr(ctx)
+		response.Diagnostics.Append(diags...)
+		if response.Diagnostics.HasError() {
 			return
 		}
 
 		input := s3tables.PutTableBucketEncryptionInput{
-			TableBucketARN: plan.ARN.ValueStringPointer(),
+			TableBucketARN: aws.String(tableBucketARN),
 		}
 
 		var encryptionConfiguration awstypes.EncryptionConfiguration
-
-		resp.Diagnostics.Append(flex.Expand(ctx, ec, &encryptionConfiguration)...)
-		if resp.Diagnostics.HasError() {
+		response.Diagnostics.Append(fwflex.Expand(ctx, ec, &encryptionConfiguration)...)
+		if response.Diagnostics.HasError() {
 			return
 		}
-
 		input.EncryptionConfiguration = &encryptionConfiguration
 
 		_, err := conn.PutTableBucketEncryption(ctx, &input)
+
 		if err != nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.S3Tables, create.ErrActionUpdating, resNameTableBucket, plan.Name.String(), err),
-				err.Error(),
-			)
+			response.Diagnostics.AddError(fmt.Sprintf("putting S3 Tables Table Bucket (%s) encryption configuration", name), err.Error())
+
 			return
 		}
 	}
 
-	if !state.MaintenanceConfiguration.Equal(plan.MaintenanceConfiguration) {
-		mc, d := plan.MaintenanceConfiguration.ToPtr(ctx)
-		resp.Diagnostics.Append(d...)
-		if resp.Diagnostics.HasError() {
+	if !old.MaintenanceConfiguration.Equal(new.MaintenanceConfiguration) {
+		mc, d := new.MaintenanceConfiguration.ToPtr(ctx)
+		response.Diagnostics.Append(d...)
+		if response.Diagnostics.HasError() {
 			return
 		}
 
 		if !mc.IcebergUnreferencedFileRemovalSettings.IsNull() {
+			typ := awstypes.TableBucketMaintenanceTypeIcebergUnreferencedFileRemoval
 			input := s3tables.PutTableBucketMaintenanceConfigurationInput{
-				TableBucketARN: state.ARN.ValueStringPointer(),
-				Type:           awstypes.TableBucketMaintenanceTypeIcebergUnreferencedFileRemoval,
+				TableBucketARN: aws.String(tableBucketARN),
+				Type:           typ,
 			}
 
 			value, d := expandTableBucketMaintenanceIcebergUnreferencedFileRemoval(ctx, mc.IcebergUnreferencedFileRemovalSettings)
-			resp.Diagnostics.Append(d...)
-			if resp.Diagnostics.HasError() {
+			response.Diagnostics.Append(d...)
+			if response.Diagnostics.HasError() {
 				return
 			}
-
 			input.Value = &value
 
 			_, err := conn.PutTableBucketMaintenanceConfiguration(ctx, &input)
+
 			if err != nil {
-				resp.Diagnostics.AddError(
-					create.ProblemStandardMessage(names.S3Tables, create.ErrActionUpdating, resNameTableBucket, plan.Name.String(), err),
-					err.Error(),
-				)
+				response.Diagnostics.AddError(fmt.Sprintf("putting S3 Tables Table Bucket (%s) maintenance configuration (%s)", name, typ), err.Error())
+
 				return
 			}
 		}
 
-		awsMaintenanceConfig, err := findTableBucketMaintenanceConfiguration(ctx, conn, plan.ARN.ValueString())
+		outputGTBMC, err := findTableBucketMaintenanceConfigurationByARN(ctx, conn, tableBucketARN)
+
 		switch {
 		case tfresource.NotFound(err):
 		case err != nil:
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.S3Tables, create.ErrActionReading, resNameTableBucket, plan.Name.String(), err),
-				err.Error(),
-			)
+			response.Diagnostics.AddError(fmt.Sprintf("reading S3 Tables Table Bucket (%s) maintenance configuration", name), err.Error())
+
+			return
 		default:
-			maintenanceConfiguration, d := flattenTableBucketMaintenanceConfiguration(ctx, awsMaintenanceConfig)
-			resp.Diagnostics.Append(d...)
-			if resp.Diagnostics.HasError() {
+			value, d := flattenTableBucketMaintenanceConfiguration(ctx, outputGTBMC)
+			response.Diagnostics.Append(d...)
+			if response.Diagnostics.HasError() {
 				return
 			}
-			plan.MaintenanceConfiguration = maintenanceConfiguration
+			new.MaintenanceConfiguration = value
 		}
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
 }

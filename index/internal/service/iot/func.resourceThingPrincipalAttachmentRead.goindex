@@ -3,6 +3,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iot"
@@ -11,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
@@ -21,10 +23,15 @@ func resourceThingPrincipalAttachmentRead(ctx context.Context, d *schema.Resourc
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).IoTClient(ctx)
 
-	principal := d.Get(names.AttrPrincipal).(string)
-	thing := d.Get("thing").(string)
+	id := d.Id()
+	parts := strings.Split(id, "|")
+	if len(parts) != 2 {
+		return sdkdiag.AppendErrorf(diags, "unexpected format for ID (%s), expected thing|principal", id)
+	}
+	thing := parts[0]
+	principal := parts[1]
 
-	_, err := findThingPrincipalAttachmentByTwoPartKey(ctx, conn, thing, principal)
+	out, err := findThingPrincipalAttachmentByTwoPartKey(ctx, conn, thing, principal)
 
 	if !d.IsNewResource() && tfresource.NotFound(err) {
 		log.Printf("[WARN] IoT Thing Principal Attachment (%s) not found, removing from state", d.Id())
@@ -35,6 +42,10 @@ func resourceThingPrincipalAttachmentRead(ctx context.Context, d *schema.Resourc
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "reading IoT Thing Principal Attachment (%s): %s", d.Id(), err)
 	}
+
+	d.Set(names.AttrPrincipal, out.Principal)
+	d.Set("thing", thing)
+	d.Set("thing_principal_type", out.ThingPrincipalType)
 
 	return diags
 }

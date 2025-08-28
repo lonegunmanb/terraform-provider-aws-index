@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func parseBucketACLResourceID(id string) (string, string, string, error) {
+	// For only bucket name in the ID  e.g. my-bucket or My_Bucket
+	// ~> On or after 3/1/2018: Bucket names can consist of only lowercase letters, numbers, dots, and hyphens; Max 63 characters
+	// ~> Before 3/1/2018: Bucket names could consist of uppercase letters and underscores if in us-east-1; Max 255 characters
+	// Reference: https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html
+	bucketRegex := regexache.MustCompile(`^([0-9a-z.-]{1,63}|[0-9A-Za-z_.-]{1,255})$`)
+	// For bucket and accountID in the ID e.g. bucket,123456789101
+	// ~> Account IDs must consist of 12 digits
+	bucketAndOwnerRegex := regexache.MustCompile(`^([0-9a-z.-]{1,63}|[0-9A-Za-z_.-]{1,255}),\d{12}$`)
+	// For bucket and ACL in the ID e.g. bucket,public-read
+	// ~> (Canned) ACL values include: private, public-read, public-read-write, authenticated-read, aws-exec-read, and log-delivery-write
+	bucketAndAclRegex := regexache.MustCompile(`^([0-9a-z.-]{1,63}|[0-9A-Za-z_.-]{1,255}),[a-z-]+$`)
+	// For bucket, accountID, and ACL in the ID e.g. bucket,123456789101,public-read
+	bucketOwnerAclRegex := regexache.MustCompile(`^([0-9a-z.-]{1,63}|[0-9A-Za-z_.-]{1,255}),\d{12},[a-z-]+$`)
+
+	// Bucket name ONLY
+	if bucketRegex.MatchString(id) {
+		return id, "", "", nil
+	}
+
+	// Bucket and Account ID ONLY
+	if bucketAndOwnerRegex.MatchString(id) {
+		parts := strings.Split(id, bucketACLSeparator)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return "", "", "", fmt.Errorf("unexpected format for ID (%s), expected BUCKET%sEXPECTED_BUCKET_OWNER", id, bucketACLSeparator)
+		}
+		return parts[0], parts[1], "", nil
+	}
+
+	// Bucket and ACL ONLY
+	if bucketAndAclRegex.MatchString(id) {
+		parts := strings.Split(id, bucketACLSeparator)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return "", "", "", fmt.Errorf("unexpected format for ID (%s), expected BUCKET%sACL", id, bucketACLSeparator)
+		}
+		return parts[0], "", parts[1], nil
+	}
+
+	// Bucket, Account ID, and ACL
+	if bucketOwnerAclRegex.MatchString(id) {
+		parts := strings.Split(id, bucketACLSeparator)
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return "", "", "", fmt.Errorf("unexpected format for ID (%s), expected BUCKET%[2]sEXPECTED_BUCKET_OWNER%[2]sACL", id, bucketACLSeparator)
+		}
+		return parts[0], parts[1], parts[2], nil
+	}
+
+	return "", "", "", fmt.Errorf("unexpected format for ID (%s), expected BUCKET or BUCKET%[2]sEXPECTED_BUCKET_OWNER or BUCKET%[2]sACL "+
+		"or BUCKET%[2]sEXPECTED_BUCKET_OWNER%[2]sACL", id, bucketACLSeparator)
+}

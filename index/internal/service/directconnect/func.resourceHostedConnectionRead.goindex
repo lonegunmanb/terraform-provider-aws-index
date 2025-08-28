@@ -24,21 +24,24 @@ func resourceHostedConnectionRead(ctx context.Context, d *schema.ResourceData, m
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).DirectConnectClient(ctx)
 
-	connection, err := findHostedConnectionByID(ctx, conn, d.Id())
+	// Get both the hosted connection ID and the parent connection ID
+	hostedConnectionID := d.Id()
+	parentConnectionID := d.Get(names.AttrConnectionID).(string)
+
+	connection, err := findHostedConnectionByID(ctx, conn, hostedConnectionID, parentConnectionID)
 
 	if !d.IsNewResource() && tfresource.NotFound(err) {
-		log.Printf("[WARN] Direct Connect Hosted Connection (%s) not found, removing from state", d.Id())
+		log.Printf("[WARN] Direct Connect Hosted Connection (%s) not found, removing from state", hostedConnectionID)
 		d.SetId("")
 		return diags
 	}
 
 	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "reading Direct Connect Hosted Connection (%s): %s", d.Id(), err)
+		return sdkdiag.AppendErrorf(diags, "reading Direct Connect Hosted Connection (%s): %s", hostedConnectionID, err)
 	}
 
-	// Cannot set the following attributes from the response:
-	// - connection_id: conn.ConnectionId is this resource's ID, not the ID of the interconnect or LAG
-	// - tags: conn.Tags seems to always come back empty and DescribeTags needs to be called from the owner account
+	// Set the connection_id (parent/interconnect ID) and other attributes
+	d.Set(names.AttrConnectionID, parentConnectionID)
 	d.Set("aws_device", connection.AwsDeviceV2)
 	d.Set("connection_region", connection.Region)
 	d.Set("has_logical_redundancy", connection.HasLogicalRedundancy)

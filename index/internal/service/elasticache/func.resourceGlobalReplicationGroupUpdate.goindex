@@ -44,20 +44,32 @@ func resourceGlobalReplicationGroupUpdate(ctx context.Context, d *schema.Resourc
 		}
 	}
 
-	if d.HasChange(names.AttrEngineVersion) {
+	if d.HasChange(names.AttrEngine) {
+		engine := d.Get(names.AttrEngine).(string)
+		version := d.Get(names.AttrEngineVersion).(string)
+		p := d.Get(names.AttrParameterGroupName).(string)
+		if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMajorUpdater(engine, version, p), "engine version (major)", d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+	} else if d.HasChange(names.AttrEngineVersion) {
 		o, n := d.GetChange(names.AttrEngineVersion)
 
 		newVersion, _ := normalizeEngineVersion(n.(string))
 		oldVersion, _ := gversion.NewVersion(o.(string))
+		// backwards-compatibility; imply redis engine if just given engine version
+		engine, ok := d.GetOk(names.AttrEngine)
+		if !ok {
+			engine = engineRedis
+		}
 
 		diff := diffVersion(newVersion, oldVersion)
 		if diff[0] == 1 {
 			p := d.Get(names.AttrParameterGroupName).(string)
-			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMajorUpdater(n.(string), p), "engine version (major)", d.Timeout(schema.TimeoutUpdate)); err != nil {
+			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMajorUpdater(engine.(string), n.(string), p), "engine version (major)", d.Timeout(schema.TimeoutUpdate)); err != nil {
 				return sdkdiag.AppendFromErr(diags, err)
 			}
 		} else if diff[1] == 1 {
-			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMinorUpdater(n.(string)), "engine version (minor)", d.Timeout(schema.TimeoutUpdate)); err != nil {
+			if err := updateGlobalReplicationGroup(ctx, conn, d.Id(), globalReplicationGroupEngineVersionMinorUpdater(engine.(string), n.(string)), "engine version (minor)", d.Timeout(schema.TimeoutUpdate)); err != nil {
 				return sdkdiag.AppendFromErr(diags, err)
 			}
 		}
