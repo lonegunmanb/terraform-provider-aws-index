@@ -20,38 +20,37 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *namespaceResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	conn := r.Meta().S3TablesClient(ctx)
-
-	var state namespaceResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
+func (r *namespaceResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data namespaceResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
+	conn := r.Meta().S3TablesClient(ctx)
+
+	namespace, tableBucketARN := fwflex.StringValueFromFramework(ctx, data.Namespace), fwflex.StringValueFromFramework(ctx, data.TableBucketARN)
 	input := s3tables.DeleteNamespaceInput{
-		Namespace:      state.Namespace.ValueStringPointer(),
-		TableBucketARN: state.TableBucketARN.ValueStringPointer(),
+		Namespace:      aws.String(namespace),
+		TableBucketARN: aws.String(tableBucketARN),
+	}
+	_, err := conn.DeleteNamespace(ctx, &input)
+
+	if errs.IsA[*awstypes.NotFoundException](err) {
+		return
 	}
 
-	_, err := conn.DeleteNamespace(ctx, &input)
 	if err != nil {
-		if errs.IsA[*awstypes.NotFoundException](err) {
-			return
-		}
+		response.Diagnostics.AddError(fmt.Sprintf("deleting S3 Tables Namespace (%s)", namespace), err.Error())
 
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.S3Tables, create.ErrActionDeleting, resNameNamespace, state.Namespace.String(), err),
-			err.Error(),
-		)
 		return
 	}
 }

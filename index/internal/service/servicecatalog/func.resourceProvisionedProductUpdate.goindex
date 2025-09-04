@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
@@ -26,9 +27,9 @@ func resourceProvisionedProductUpdate(ctx context.Context, d *schema.ResourceDat
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).ServiceCatalogClient(ctx)
 
-	input := &servicecatalog.UpdateProvisionedProductInput{
-		UpdateToken:          aws.String(id.UniqueId()),
+	input := servicecatalog.UpdateProvisionedProductInput{
 		ProvisionedProductId: aws.String(d.Id()),
+		UpdateToken:          aws.String(id.UniqueId()),
 	}
 
 	if v, ok := d.GetOk("accept_language"); ok {
@@ -70,29 +71,43 @@ func resourceProvisionedProductUpdate(ctx context.Context, d *schema.ResourceDat
 	// to provisioned AWS objects during update if the tags don't change.
 	input.Tags = getTagsIn(ctx)
 
-	err := retry.RetryContext(ctx, d.Timeout(schema.TimeoutUpdate), func() *retry.RetryError {
-		_, err := conn.UpdateProvisionedProduct(ctx, input)
+	_, err := tfresource.RetryWhen(ctx, d.Timeout(schema.TimeoutUpdate),
+		func(ctx context.Context) (any, error) {
+			return conn.UpdateProvisionedProduct(ctx, &input)
+		},
+		func(err error) (bool, error) {
+			if errs.IsAErrorMessageContains[*awstypes.InvalidParametersException](err, "profile does not exist") {
+				return true, err
+			}
 
-		if errs.IsAErrorMessageContains[*awstypes.InvalidParametersException](err, "profile does not exist") {
-			return retry.RetryableError(err)
-		}
-
-		if err != nil {
-			return retry.NonRetryableError(err)
-		}
-
-		return nil
-	})
-
-	if tfresource.TimedOut(err) {
-		_, err = conn.UpdateProvisionedProduct(ctx, input)
-	}
+			return false, err
+		},
+	)
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "updating Service Catalog Provisioned Product (%s): %s", d.Id(), err)
 	}
 
-	if _, err := waitProvisionedProductReady(ctx, conn, d.Get("accept_language").(string), d.Id(), "", d.Timeout(schema.TimeoutUpdate)); err != nil {
+	if _, err := waitProvisionedProductReady(ctx, conn, d.Id(), d.Get("accept_language").(string), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		if failureErr, ok := errs.As[*provisionedProductFailureError](err); ok {
+			log.Printf("[WARN] Service Catalog Provisioned Product (%s) update failed with status %s, refreshing state", d.Id(), failureErr.Status)
+			refreshDiags := resourceProvisionedProductRead(ctx, d, meta)
+			if refreshDiags.HasError() {
+				// If refresh fails, return both errors
+				return append(refreshDiags, sdkdiag.AppendErrorf(diags, "waiting for Service Catalog Provisioned Product (%s) update: %s", d.Id(), err)...)
+			}
+
+			if d.HasChange("provisioning_parameters") {
+				// If parameters were changed, rollback to previous values.
+				//
+				// The read APIs used to refresh state above do not return parameter values, and therefore
+				// will not reflect that the planned updates did not take effect. Explicitly rolling back
+				// ensures the planned parameter changes are attempted again on a subsequent apply.
+				oldParams, _ := d.GetChange("provisioning_parameters")
+				d.Set("provisioning_parameters", oldParams)
+			}
+		}
+
 		return sdkdiag.AppendErrorf(diags, "waiting for Service Catalog Provisioned Product (%s) update: %s", d.Id(), err)
 	}
 

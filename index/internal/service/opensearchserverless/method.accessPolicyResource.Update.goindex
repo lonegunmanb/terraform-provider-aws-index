@@ -6,58 +6,61 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless"
-	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless/document"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *accessPolicyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	conn := r.Meta().OpenSearchServerlessClient(ctx)
-
-	var plan, state accessPolicyResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
+func (r *accessPolicyResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var new, old accessPolicyResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
-	if !plan.Description.Equal(state.Description) ||
-		!plan.Policy.Equal(state.Policy) {
-		input := &opensearchserverless.UpdateAccessPolicyInput{}
+	conn := r.Meta().OpenSearchServerlessClient(ctx)
 
-		resp.Diagnostics.Append(flex.Expand(ctx, plan, input)...)
-		if resp.Diagnostics.HasError() {
+	if !new.Description.Equal(old.Description) || !new.Policy.Equal(old.Policy) {
+		name := fwflex.StringValueFromFramework(ctx, new.ID)
+		var input opensearchserverless.UpdateAccessPolicyInput
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, &input)...)
+		if response.Diagnostics.HasError() {
 			return
 		}
 
-		input.ClientToken = aws.String(id.UniqueId())
-		input.PolicyVersion = state.PolicyVersion.ValueStringPointer() // use policy version from state since it can be recalculated on update
+		// Additional fields.
+		input.ClientToken = aws.String(sdkid.UniqueId())
+		input.PolicyVersion = old.PolicyVersion.ValueStringPointer() // use policy version from state since it can be recalculated on update
 
-		out, err := conn.UpdateAccessPolicy(ctx, input)
+		output, err := conn.UpdateAccessPolicy(ctx, &input)
+
 		if err != nil {
-			resp.Diagnostics.AddError(fmt.Sprintf("updating Security Policy (%s)", plan.Name.ValueString()), err.Error())
+			response.Diagnostics.AddError(fmt.Sprintf("updating OpenSearch Serverless Access Policy (%s)", name), err.Error())
+
 			return
 		}
 
-		resp.Diagnostics.Append(flex.Flatten(ctx, out.AccessPolicyDetail, &plan)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
+		// Set values for unknowns.
+		new.PolicyVersion = fwflex.StringToFramework(ctx, output.AccessPolicyDetail.PolicyVersion)
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
 }

@@ -1,65 +1,60 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/opensearchserverless
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless"
-	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless/document"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *securityPolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan securityPolicyResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-
-	if resp.Diagnostics.HasError() {
+func (r *securityPolicyResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data securityPolicyResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
 	conn := r.Meta().OpenSearchServerlessClient(ctx)
 
-	in := &opensearchserverless.CreateSecurityPolicyInput{}
-
-	resp.Diagnostics.Append(flex.Expand(ctx, plan, in)...)
-	if resp.Diagnostics.HasError() {
+	name := fwflex.StringValueFromFramework(ctx, data.Name)
+	var input opensearchserverless.CreateSecurityPolicyInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
-	in.ClientToken = aws.String(id.UniqueId())
+	// Additional fields.
+	input.ClientToken = aws.String(sdkid.UniqueId())
 
-	out, err := conn.CreateSecurityPolicy(ctx, in)
+	output, err := conn.CreateSecurityPolicy(ctx, &input)
+
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionCreating, ResNameSecurityPolicy, plan.Name.String(), nil),
-			err.Error(),
-		)
+		response.Diagnostics.AddError(fmt.Sprintf("creating OpenSearch Serverless Security Policy (%s)", name), err.Error())
+
 		return
 	}
 
-	state := plan
-	resp.Diagnostics.Append(flex.Flatten(ctx, out.SecurityPolicyDetail, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	// Set values for unknowns.
+	data.ID = fwflex.StringValueToFramework(ctx, name)
+	data.PolicyVersion = fwflex.StringToFramework(ctx, output.SecurityPolicyDetail.PolicyVersion)
 
-	state.ID = flex.StringToFramework(ctx, out.SecurityPolicyDetail.Name)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
 }

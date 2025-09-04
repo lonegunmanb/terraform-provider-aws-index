@@ -1,42 +1,38 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/servicecatalog
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func statusProvisionedProduct(ctx context.Context, conn *servicecatalog.Client, acceptLanguage, id, name string) retry.StateRefreshFunc {
+func statusProvisionedProduct(ctx context.Context, conn *servicecatalog.Client, id, acceptLanguage string) retry.StateRefreshFunc {
 	return func() (any, string, error) {
-		input := &servicecatalog.DescribeProvisionedProductInput{}
+		output, err := findProvisionedProductByTwoPartKey(ctx, conn, id, acceptLanguage)
 
-		if acceptLanguage != "" {
-			input.AcceptLanguage = aws.String(acceptLanguage)
-		}
-
-		// one or the other but not both
-		if id != "" {
-			input.Id = aws.String(id)
-		} else if name != "" {
-			input.Name = aws.String(name)
-		}
-
-		output, err := conn.DescribeProvisionedProduct(ctx, input)
-
-		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		if tfresource.NotFound(err) {
 			return nil, "", nil
 		}
 
 		if err != nil {
 			return nil, "", err
-		}
-
-		if output == nil || output.ProvisionedProductDetail == nil {
-			return nil, "", nil
 		}
 
 		return output, string(output.ProvisionedProductDetail.Status), err

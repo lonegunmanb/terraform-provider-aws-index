@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
@@ -34,43 +35,30 @@ func resourceProvisionedProductRead(ctx context.Context, d *schema.ResourceData,
 	// DescribeRecord is available in the data source aws_servicecatalog_record.
 
 	acceptLanguage := acceptLanguageEnglish
-
 	if v, ok := d.GetOk("accept_language"); ok {
 		acceptLanguage = v.(string)
 	}
 
-	input := &servicecatalog.DescribeProvisionedProductInput{
-		Id:             aws.String(d.Id()),
-		AcceptLanguage: aws.String(acceptLanguage),
-	}
+	outputDPP, err := findProvisionedProductByTwoPartKey(ctx, conn, d.Id(), acceptLanguage)
 
-	output, err := conn.DescribeProvisionedProduct(ctx, input)
-
-	if !d.IsNewResource() && errs.IsA[*awstypes.ResourceNotFoundException](err) {
+	if !d.IsNewResource() && tfresource.NotFound(err) {
 		log.Printf("[WARN] Service Catalog Provisioned Product (%s) not found, removing from state", d.Id())
 		d.SetId("")
 		return diags
 	}
 
 	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "describing Service Catalog Provisioned Product (%s): %s", d.Id(), err)
+		return sdkdiag.AppendErrorf(diags, "reading Service Catalog Provisioned Product (%s): %s", d.Id(), err)
 	}
 
-	if output == nil || output.ProvisionedProductDetail == nil {
-		return sdkdiag.AppendErrorf(diags, "getting Service Catalog Provisioned Product (%s): empty response", d.Id())
-	}
-
-	detail := output.ProvisionedProductDetail
-
+	detail := outputDPP.ProvisionedProductDetail
 	d.Set(names.AttrARN, detail.Arn)
-	d.Set("cloudwatch_dashboard_names", flattenCloudWatchDashboards(output.CloudWatchDashboards))
-
+	d.Set("cloudwatch_dashboard_names", flattenCloudWatchDashboards(outputDPP.CloudWatchDashboards))
 	if detail.CreatedTime != nil {
 		d.Set(names.AttrCreatedTime, detail.CreatedTime.Format(time.RFC3339))
 	} else {
 		d.Set(names.AttrCreatedTime, nil)
 	}
-
 	d.Set("last_provisioning_record_id", detail.LastProvisioningRecordId)
 	d.Set("last_record_id", detail.LastRecordId)
 	d.Set("last_successful_provisioning_record_id", detail.LastSuccessfulProvisioningRecordId)
@@ -86,31 +74,29 @@ func resourceProvisionedProductRead(ctx context.Context, d *schema.ResourceData,
 	// but this can interfere complete reads of this resource when an error occurs after initial creation
 	// or after an invalid update that returns a 'FAILED' record state. Thus, waiters are now present in the CREATE and UPDATE methods of this resource instead.
 	// Reference: https://github.com/hashicorp/terraform-provider-aws/issues/24574#issuecomment-1126339193
-	recordInput := &servicecatalog.DescribeRecordInput{
-		Id:             detail.LastProvisioningRecordId,
-		AcceptLanguage: aws.String(acceptLanguage),
+
+	recordIdToUse := aws.ToString(detail.LastProvisioningRecordId)
+	if detail.Status == awstypes.ProvisionedProductStatusTainted && detail.LastSuccessfulProvisioningRecordId != nil {
+		// For TAINTED resources, we need to get artifact details from the last successful
+		// record, as the last provisioned record may have failed.
+		recordIdToUse = aws.ToString(detail.LastSuccessfulProvisioningRecordId)
+		log.Printf("[DEBUG] Service Catalog Provisioned Product (%s) is TAINTED, using last successful record %s for parameter values", d.Id(), recordIdToUse)
 	}
+	outputDR, err := findRecordByTwoPartKey(ctx, conn, recordIdToUse, acceptLanguage)
 
-	recordOutput, err := conn.DescribeRecord(ctx, recordInput)
-
-	if !d.IsNewResource() && errs.IsA[*awstypes.ResourceNotFoundException](err) {
-		log.Printf("[WARN] Service Catalog Provisioned Product (%s) Record (%s) not found, unable to set tags", d.Id(), aws.ToString(detail.LastProvisioningRecordId))
+	if !d.IsNewResource() && tfresource.NotFound(err) {
+		log.Printf("[WARN] Service Catalog Provisioned Product (%s) Record (%s) not found, unable to set tags", d.Id(), recordIdToUse)
 		return diags
 	}
 
 	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "describing Service Catalog Provisioned Product (%s) Record (%s): %s", d.Id(), aws.ToString(detail.LastProvisioningRecordId), err)
+		return sdkdiag.AppendErrorf(diags, "reading Service Catalog Provisioned Product (%s) Record (%s): %s", d.Id(), recordIdToUse, err)
 	}
 
-	if recordOutput == nil || recordOutput.RecordDetail == nil {
-		return sdkdiag.AppendErrorf(diags, "getting Service Catalog Provisioned Product (%s) Record (%s): empty response", d.Id(), aws.ToString(detail.LastProvisioningRecordId))
-	}
-
-	// To enable debugging of potential v, log as a warning
-	// instead of exiting prematurely with an error, e.g.
-	// v can be present after update to a new version failed and the stack
-	// rolled back to the current version.
-	if v := recordOutput.RecordDetail.RecordErrors; len(v) > 0 {
+	// To enable debugging of potential issues, log as a warning instead of exiting prematurely.
+	// For example, errors can be present after a failed version update, and the stack rolled back
+	// to the current version.
+	if v := outputDR.RecordDetail.RecordErrors; len(v) > 0 {
 		var errs []error
 
 		for _, err := range v {
@@ -120,13 +106,14 @@ func resourceProvisionedProductRead(ctx context.Context, d *schema.ResourceData,
 		log.Printf("[WARN] Errors found when describing Service Catalog Provisioned Product (%s) Record (%s): %s", d.Id(), aws.ToString(detail.LastProvisioningRecordId), errors.Join(errs...))
 	}
 
-	if err := d.Set("outputs", flattenRecordOutputs(recordOutput.RecordOutputs)); err != nil {
+	if err := d.Set("outputs", flattenRecordOutputs(outputDR.RecordOutputs)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "setting outputs: %s", err)
 	}
 
-	d.Set("path_id", recordOutput.RecordDetail.PathId)
+	d.Set("path_id", outputDR.RecordDetail.PathId)
+	d.Set("provisioning_artifact_id", outputDR.RecordDetail.ProvisioningArtifactId)
 
-	setTagsOut(ctx, svcTags(recordKeyValueTags(ctx, recordOutput.RecordDetail.RecordTags)))
+	setTagsOut(ctx, svcTags(recordKeyValueTags(ctx, outputDR.RecordDetail.RecordTags)))
 
 	return diags
 }

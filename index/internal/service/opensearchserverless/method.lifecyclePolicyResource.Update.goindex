@@ -1,74 +1,66 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/opensearchserverless
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless"
-	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless/document"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (r *lifecyclePolicyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	conn := r.Meta().OpenSearchServerlessClient(ctx)
-
-	var plan, state lifecyclePolicyResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
+func (r *lifecyclePolicyResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var new, old lifecyclePolicyResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 
-	if !plan.Description.Equal(state.Description) || !plan.Policy.Equal(state.Policy) {
-		in := &opensearchserverless.UpdateLifecyclePolicyInput{}
+	conn := r.Meta().OpenSearchServerlessClient(ctx)
 
-		resp.Diagnostics.Append(flex.Expand(ctx, plan, in)...)
-
-		if resp.Diagnostics.HasError() {
+	if !new.Description.Equal(old.Description) || !new.Policy.Equal(old.Policy) {
+		name := fwflex.StringValueFromFramework(ctx, new.ID)
+		var input opensearchserverless.UpdateLifecyclePolicyInput
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, &input)...)
+		if response.Diagnostics.HasError() {
 			return
 		}
 
-		in.ClientToken = aws.String(id.UniqueId())
-		in.PolicyVersion = state.PolicyVersion.ValueStringPointer() // use policy version from state since it can be recalculated on update
+		// Additional fields.
+		input.ClientToken = aws.String(sdkid.UniqueId())
+		input.PolicyVersion = old.PolicyVersion.ValueStringPointer() // use policy version from state since it can be recalculated on update
 
-		out, err := conn.UpdateLifecyclePolicy(ctx, in)
+		output, err := conn.UpdateLifecyclePolicy(ctx, &input)
+
 		if err != nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionUpdating, ResNameLifecyclePolicy, plan.ID.ValueString(), err),
-				err.Error(),
-			)
-			return
-		}
-		if out == nil || out.LifecyclePolicyDetail == nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionUpdating, ResNameLifecyclePolicy, plan.ID.ValueString(), nil),
-				errors.New("empty output").Error(),
-			)
+			response.Diagnostics.AddError(fmt.Sprintf("updating OpenSearch Serverless Lifecycle Policy (%s)", name), err.Error())
+
 			return
 		}
 
-		resp.Diagnostics.Append(flex.Flatten(ctx, out.LifecyclePolicyDetail, &state)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
+		// Set values for unknowns.
+		new.PolicyVersion = fwflex.StringToFramework(ctx, output.LifecyclePolicyDetail.PolicyVersion)
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
 }

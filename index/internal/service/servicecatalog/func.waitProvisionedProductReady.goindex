@@ -2,20 +2,32 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/servicecata
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/servicecatalog"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/servicecatalog/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func waitProvisionedProductReady(ctx context.Context, conn *servicecatalog.Client, acceptLanguage, id, name string, timeout time.Duration) (*servicecatalog.DescribeProvisionedProductOutput, error) {
+func waitProvisionedProductReady(ctx context.Context, conn *servicecatalog.Client, id, acceptLanguage string, timeout time.Duration) (*servicecatalog.DescribeProvisionedProductOutput, error) { //nolint:unparam
 	stateConf := &retry.StateChangeConf{
 		Pending:                   enum.Slice(awstypes.ProvisionedProductStatusUnderChange, awstypes.ProvisionedProductStatusPlanInProgress),
 		Target:                    enum.Slice(awstypes.ProvisionedProductStatusAvailable),
-		Refresh:                   statusProvisionedProduct(ctx, conn, acceptLanguage, id, name),
+		Refresh:                   statusProvisionedProduct(ctx, conn, id, acceptLanguage),
 		Timeout:                   timeout,
 		ContinuousTargetOccurence: continuousTargetOccurrence,
 		NotFoundChecks:            notFoundChecks,
@@ -26,13 +38,15 @@ func waitProvisionedProductReady(ctx context.Context, conn *servicecatalog.Clien
 
 	if output, ok := outputRaw.(*servicecatalog.DescribeProvisionedProductOutput); ok {
 		if detail := output.ProvisionedProductDetail; detail != nil {
-			var foo *retry.UnexpectedStateError
-			if errors.As(err, &foo) {
+			if errs.IsA[*retry.UnexpectedStateError](err) {
 				// The statuses `ERROR` and `TAINTED` are equivalent: the application of the requested change has failed.
 				// The difference is that, in the case of `TAINTED`, there is a previous version to roll back to.
-				status := string(detail.Status)
-				if status == string(awstypes.ProvisionedProductStatusError) || status == string(awstypes.ProvisionedProductStatusTainted) {
-					return output, errors.New(aws.ToString(detail.StatusMessage))
+				if status := detail.Status; status == awstypes.ProvisionedProductStatusError || status == awstypes.ProvisionedProductStatusTainted {
+					// Create a custom error type that signals state refresh is needed
+					return output, &provisionedProductFailureError{
+						StatusMessage: aws.ToString(detail.StatusMessage),
+						Status:        status,
+					}
 				}
 			}
 		}
