@@ -1,10 +1,8 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,51 +15,64 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func flattenTargetTrackingMetricDataQueries(metricDataQueries []awstypes.TargetTrackingMetricDataQuery) []any {
-	metricDataQueriesSpec := make([]any, len(metricDataQueries))
-	for i := range metricDataQueriesSpec {
-		metricDataQuery := map[string]any{}
-		rawMetricDataQuery := metricDataQueries[i]
-		metricDataQuery[names.AttrID] = aws.ToString(rawMetricDataQuery.Id)
-		if rawMetricDataQuery.Expression != nil {
-			metricDataQuery[names.AttrExpression] = aws.ToString(rawMetricDataQuery.Expression)
+func flattenTargetTrackingMetricDataQueries(apiObjects []awstypes.TargetTrackingMetricDataQuery) []any {
+	tfList := make([]any, len(apiObjects))
+
+	for i, apiObject := range apiObjects {
+		tfMap := map[string]any{
+			names.AttrID: aws.ToString(apiObject.Id),
 		}
-		if rawMetricDataQuery.Label != nil {
-			metricDataQuery["label"] = aws.ToString(rawMetricDataQuery.Label)
+
+		if apiObject.Expression != nil {
+			tfMap[names.AttrExpression] = aws.ToString(apiObject.Expression)
 		}
-		if rawMetricDataQuery.MetricStat != nil {
-			metricStatSpec := map[string]any{}
-			rawMetricStat := rawMetricDataQuery.MetricStat
-			rawMetric := rawMetricStat.Metric
-			metricSpec := map[string]any{}
-			if rawMetric.Dimensions != nil {
-				dimSpec := make([]any, len(rawMetric.Dimensions))
-				for i := range dimSpec {
-					dim := map[string]any{}
-					rawDim := rawMetric.Dimensions[i]
-					dim[names.AttrName] = aws.ToString(rawDim.Name)
-					dim[names.AttrValue] = aws.ToString(rawDim.Value)
-					dimSpec[i] = dim
+
+		if apiObject.Label != nil {
+			tfMap["label"] = aws.ToString(apiObject.Label)
+		}
+
+		if apiObject := apiObject.MetricStat; apiObject != nil {
+			tfMapMetricStat := map[string]any{
+				"stat": aws.ToString(apiObject.Stat),
+			}
+
+			if apiObject := apiObject.Metric; apiObject != nil {
+				tfMapMetric := map[string]any{
+					names.AttrMetricName: aws.ToString(apiObject.MetricName),
+					names.AttrNamespace:  aws.ToString(apiObject.Namespace),
 				}
-				metricSpec["dimensions"] = dimSpec
+
+				tfList := make([]any, len(apiObject.Dimensions))
+				for i, apiObject := range apiObject.Dimensions {
+					tfList[i] = map[string]any{
+						names.AttrName:  aws.ToString(apiObject.Name),
+						names.AttrValue: aws.ToString(apiObject.Value),
+					}
+				}
+
+				tfMapMetric["dimensions"] = tfList
+				tfMapMetricStat["metric"] = []map[string]any{tfMapMetric}
 			}
-			metricSpec[names.AttrMetricName] = aws.ToString(rawMetric.MetricName)
-			metricSpec[names.AttrNamespace] = aws.ToString(rawMetric.Namespace)
-			metricStatSpec["metric"] = []map[string]any{metricSpec}
-			metricStatSpec["stat"] = aws.ToString(rawMetricStat.Stat)
-			if rawMetricStat.Unit != nil {
-				metricStatSpec[names.AttrUnit] = aws.ToString(rawMetricStat.Unit)
+
+			if apiObject.Unit != nil {
+				tfMapMetricStat[names.AttrUnit] = aws.ToString(apiObject.Unit)
 			}
-			metricDataQuery["metric_stat"] = []map[string]any{metricStatSpec}
+
+			tfMap["metric_stat"] = []map[string]any{tfMapMetricStat}
 		}
-		if rawMetricDataQuery.ReturnData != nil {
-			metricDataQuery["return_data"] = aws.ToBool(rawMetricDataQuery.ReturnData)
+
+		if apiObject.ReturnData != nil {
+			tfMap["return_data"] = aws.ToBool(apiObject.ReturnData)
 		}
-		metricDataQueriesSpec[i] = metricDataQuery
+
+		tfList[i] = tfMap
 	}
-	return metricDataQueriesSpec
+
+	return tfList
 }

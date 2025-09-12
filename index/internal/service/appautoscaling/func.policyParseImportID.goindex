@@ -1,10 +1,8 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,21 +15,25 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func validPolicyImportInput(id string) ([]string, error) {
-	idParts := strings.Split(id, "/")
+func policyParseImportID(id string) ([]string, error) {
+	const (
+		importIDSeparator = "/"
+	)
+	idParts := strings.Split(id, importIDSeparator)
 	if len(idParts) < 4 {
-		return nil, fmt.Errorf("unexpected format (%q), expected <service-namespace>/<resource-id>/<scalable-dimension>/<policy-name>", id)
+		return nil, fmt.Errorf("unexpected format for ID (%[1]s), expected <service-namespace>%[2]s<resource-id>%[2]s<scalable-dimension>%[2]s<policy-name>", id, importIDSeparator)
 	}
 
 	var serviceNamespace, resourceID, scalableDimension, name string
 	switch idParts[0] {
 	case "dynamodb":
 		serviceNamespace = idParts[0]
-
 		dimensionIdx := 3
 		// DynamoDB resource ID can be "/table/tableName" or "/table/tableName/index/indexName"
 		if idParts[dimensionIdx] == "index" {
@@ -57,7 +59,7 @@ func validPolicyImportInput(id string) ([]string, error) {
 	}
 
 	if serviceNamespace == "" || resourceID == "" || scalableDimension == "" || name == "" {
-		return nil, fmt.Errorf("unexpected format (%q), expected <service-namespace>/<resource-id>/<scalable-dimension>/<policy-name>", id)
+		return nil, fmt.Errorf("unexpected format for ID (%[1]s), expected <service-namespace>%[2]s<resource-id>%[2]s<scalable-dimension>%[2]s<policy-name>", id, importIDSeparator)
 	}
 
 	return []string{serviceNamespace, resourceID, scalableDimension, name}, nil

@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func suppressTableWarmThroughputDefaults(d *schema.ResourceDiff, configRaw cty.Value) error {
+	// If warm throughput is explicitly configured, don't suppress any diffs
+	if warmThroughput := configRaw.GetAttr("warm_throughput"); warmThroughput.IsKnown() && !warmThroughput.IsNull() && warmThroughput.LengthInt() > 0 {
+		return nil
+	}
+
+	// If warm throughput is not explicitly configured, suppress AWS default values
+	if !d.HasChange("warm_throughput") {
+		return nil
+	}
+
+	_, new := d.GetChange("warm_throughput")
+	newList, ok := new.([]any)
+	if !ok || len(newList) == 0 {
+		return nil
+	}
+
+	newMap, ok := newList[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	readUnits := newMap["read_units_per_second"]
+	writeUnits := newMap["write_units_per_second"]
+
+	// If AWS returns default values and no explicit config, suppress the diff
+	if (readUnits == 1 && writeUnits == 1) || (readUnits == 12000 && writeUnits == 4000) {
+		return d.Clear("warm_throughput")
+	}
+
+	return nil
+}

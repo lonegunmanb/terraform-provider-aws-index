@@ -1,10 +1,8 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,6 +15,8 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -26,7 +26,34 @@ func resourcePolicyPut(ctx context.Context, d *schema.ResourceData, meta any) di
 	conn := meta.(*conns.AWSClient).AppAutoScalingClient(ctx)
 
 	id := d.Get(names.AttrName).(string)
-	input := expandPutScalingPolicyInput(d)
+	input := applicationautoscaling.PutScalingPolicyInput{
+		PolicyName: aws.String(d.Get(names.AttrName).(string)),
+		ResourceId: aws.String(d.Get(names.AttrResourceID).(string)),
+	}
+
+	if v, ok := d.GetOk("policy_type"); ok {
+		input.PolicyType = awstypes.PolicyType(v.(string))
+	}
+
+	if v, ok := d.GetOk("predictive_scaling_policy_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.PredictiveScalingPolicyConfiguration = expandPredictiveScalingPolicyConfiguration(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("scalable_dimension"); ok {
+		input.ScalableDimension = awstypes.ScalableDimension(v.(string))
+	}
+
+	if v, ok := d.GetOk("service_namespace"); ok {
+		input.ServiceNamespace = awstypes.ServiceNamespace(v.(string))
+	}
+
+	if v, ok := d.GetOk("step_scaling_policy_configuration"); ok {
+		input.StepScalingPolicyConfiguration = expandStepScalingPolicyConfiguration(v.([]any))
+	}
+
+	if v, ok := d.GetOk("target_tracking_scaling_policy_configuration"); ok {
+		input.TargetTrackingScalingPolicyConfiguration = expandTargetTrackingScalingPolicyConfiguration(v.([]any))
+	}
 
 	_, err := tfresource.RetryWhenIsA[any, *awstypes.FailedResourceAccessException](ctx, propagationTimeout, func(ctx context.Context) (any, error) {
 		return conn.PutScalingPolicy(ctx, &input)

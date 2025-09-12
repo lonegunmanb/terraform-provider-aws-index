@@ -1,10 +1,8 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,60 +15,77 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func expandTargetTrackingMetricDataQueries(metricDataQuerySlices []any) []awstypes.TargetTrackingMetricDataQuery {
-	if len(metricDataQuerySlices) < 1 {
+func expandTargetTrackingMetricDataQueries(tfList []any) []awstypes.TargetTrackingMetricDataQuery {
+	if len(tfList) < 1 {
 		return nil
 	}
-	metricDataQueries := make([]awstypes.TargetTrackingMetricDataQuery, len(metricDataQuerySlices))
 
-	for i := range metricDataQueries {
-		metricDataQueryFlat := metricDataQuerySlices[i].(map[string]any)
-		metricDataQuery := awstypes.TargetTrackingMetricDataQuery{
-			Id: aws.String(metricDataQueryFlat[names.AttrID].(string)),
+	apiObjects := make([]awstypes.TargetTrackingMetricDataQuery, len(tfList))
+
+	for i, tfMapRaw := range tfList {
+		tfMap := tfMapRaw.(map[string]any)
+		apiObject := awstypes.TargetTrackingMetricDataQuery{
+			Id: aws.String(tfMap[names.AttrID].(string)),
 		}
-		if val, ok := metricDataQueryFlat["metric_stat"]; ok && len(val.([]any)) > 0 {
-			metricStatSpec := val.([]any)[0].(map[string]any)
-			metricSpec := metricStatSpec["metric"].([]any)[0].(map[string]any)
-			metric := &awstypes.TargetTrackingMetric{
-				MetricName: aws.String(metricSpec[names.AttrMetricName].(string)),
-				Namespace:  aws.String(metricSpec[names.AttrNamespace].(string)),
-			}
-			if v, ok := metricSpec["dimensions"]; ok {
-				dims := v.(*schema.Set).List()
-				dimList := make([]awstypes.TargetTrackingMetricDimension, len(dims))
-				for i := range dimList {
-					dim := dims[i].(map[string]any)
-					md := awstypes.TargetTrackingMetricDimension{
-						Name:  aws.String(dim[names.AttrName].(string)),
-						Value: aws.String(dim[names.AttrValue].(string)),
-					}
-					dimList[i] = md
+
+		if v, ok := tfMap[names.AttrExpression]; ok && v.(string) != "" {
+			apiObject.Expression = aws.String(v.(string))
+		}
+
+		if v, ok := tfMap["label"]; ok && v.(string) != "" {
+			apiObject.Label = aws.String(v.(string))
+		}
+
+		if v, ok := tfMap["metric_stat"]; ok && len(v.([]any)) > 0 {
+			apiObject.MetricStat = &awstypes.TargetTrackingMetricStat{}
+			tfMap := v.([]any)[0].(map[string]any)
+
+			if v, ok := tfMap["metric"]; ok && len(v.([]any)) > 0 {
+				tfMap := v.([]any)[0].(map[string]any)
+
+				metric := &awstypes.TargetTrackingMetric{
+					MetricName: aws.String(tfMap[names.AttrMetricName].(string)),
+					Namespace:  aws.String(tfMap[names.AttrNamespace].(string)),
 				}
-				metric.Dimensions = dimList
+
+				if v, ok := tfMap["dimensions"].(*schema.Set); ok && v.Len() > 0 {
+					dimensions := make([]awstypes.TargetTrackingMetricDimension, v.Len())
+
+					for i, tfMapRaw := range v.List() {
+						tfMap := tfMapRaw.(map[string]any)
+						dimensions[i] = awstypes.TargetTrackingMetricDimension{
+							Name:  aws.String(tfMap[names.AttrName].(string)),
+							Value: aws.String(tfMap[names.AttrValue].(string)),
+						}
+					}
+
+					metric.Dimensions = dimensions
+				}
+
+				apiObject.MetricStat.Metric = metric
 			}
-			metricStat := &awstypes.TargetTrackingMetricStat{
-				Metric: metric,
-				Stat:   aws.String(metricStatSpec["stat"].(string)),
+
+			if v, ok := tfMap["stat"].(string); ok && v != "" {
+				apiObject.MetricStat.Stat = aws.String(v)
 			}
-			if v, ok := metricStatSpec[names.AttrUnit]; ok && len(v.(string)) > 0 {
-				metricStat.Unit = aws.String(v.(string))
+
+			if v, ok := tfMap[names.AttrUnit].(string); ok && v != "" {
+				apiObject.MetricStat.Unit = aws.String(v)
 			}
-			metricDataQuery.MetricStat = metricStat
 		}
-		if val, ok := metricDataQueryFlat[names.AttrExpression]; ok && val.(string) != "" {
-			metricDataQuery.Expression = aws.String(val.(string))
+
+		if v, ok := tfMap["return_data"]; ok {
+			apiObject.ReturnData = aws.Bool(v.(bool))
 		}
-		if val, ok := metricDataQueryFlat["label"]; ok && val.(string) != "" {
-			metricDataQuery.Label = aws.String(val.(string))
-		}
-		if val, ok := metricDataQueryFlat["return_data"]; ok {
-			metricDataQuery.ReturnData = aws.Bool(val.(bool))
-		}
-		metricDataQueries[i] = metricDataQuery
+
+		apiObjects[i] = apiObject
 	}
-	return metricDataQueries
+
+	return apiObjects
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -42,28 +43,24 @@ func (r *catalogTableOptimizerResource) Create(ctx context.Context, request reso
 		return
 	}
 
-	err := retry.RetryContext(ctx, propagationTimeout, func() *retry.RetryError {
+	err := tfresource.Retry(ctx, propagationTimeout, func(ctx context.Context) *tfresource.RetryError {
 		_, err := conn.CreateTableOptimizer(ctx, &input)
 		if err != nil {
 			// Retry IAM propagation errors
 			if errs.IsAErrorMessageContains[*awstypes.AccessDeniedException](err, "does not have the correct trust policies and is unable to be assumed by our service") {
-				return retry.RetryableError(err)
+				return tfresource.RetryableError(err)
 			}
 			if errs.IsAErrorMessageContains[*awstypes.AccessDeniedException](err, "does not have the proper IAM permissions to call Glue APIs") {
-				return retry.RetryableError(err)
+				return tfresource.RetryableError(err)
 			}
 			if errs.IsAErrorMessageContains[*awstypes.AccessDeniedException](err, "is not authorized to perform") {
-				return retry.RetryableError(err)
+				return tfresource.RetryableError(err)
 			}
 
-			return retry.NonRetryableError(err)
+			return tfresource.NonRetryableError(err)
 		}
 		return nil
 	})
-
-	if tfresource.TimedOut(err) {
-		_, err = conn.CreateTableOptimizer(ctx, &input)
-	}
 
 	if err != nil {
 		id, _ := flex.FlattenResourceId([]string{
@@ -77,6 +74,28 @@ func (r *catalogTableOptimizerResource) Create(ctx context.Context, request reso
 			create.ProblemStandardMessage(names.Glue, create.ErrActionCreating, ResNameCatalogTableOptimizer, id, err),
 			err.Error(),
 		)
+		return
+	}
+
+	output, err := findCatalogTableOptimizer(ctx, conn, plan.CatalogID.ValueString(), plan.DatabaseName.ValueString(), plan.TableName.ValueString(), plan.Type.ValueString())
+	if err != nil {
+		id, _ := flex.FlattenResourceId([]string{
+			plan.CatalogID.ValueString(),
+			plan.DatabaseName.ValueString(),
+			plan.TableName.ValueString(),
+			plan.Type.ValueString(),
+		}, idParts, false)
+
+		response.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.Glue, create.ErrActionReading, ResNameCatalogTableOptimizer, id, err),
+			err.Error(),
+		)
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output.TableOptimizer, &plan)...)
+
+	if response.Diagnostics.HasError() {
 		return
 	}
 

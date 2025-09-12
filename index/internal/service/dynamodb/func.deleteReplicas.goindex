@@ -17,7 +17,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -73,35 +72,31 @@ func deleteReplicas(ctx context.Context, conn *dynamodb.Client, tableName string
 			TableName:      aws.String(tableName),
 			ReplicaUpdates: replicaDeletes,
 		}
-		err := retry.RetryContext(ctx, updateTableTimeout, func() *retry.RetryError {
+		err := tfresource.Retry(ctx, updateTableTimeout, func(ctx context.Context) *tfresource.RetryError {
 			_, err := conn.UpdateTable(ctx, input)
 			notFoundRetries := 0
 			if err != nil {
 				if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
-					return retry.RetryableError(err)
+					return tfresource.RetryableError(err)
 				}
 				if errs.IsA[*awstypes.ResourceNotFoundException](err) {
 					notFoundRetries++
 					if notFoundRetries > 3 {
-						return retry.NonRetryableError(err)
+						return tfresource.NonRetryableError(err)
 					}
-					return retry.RetryableError(err)
+					return tfresource.RetryableError(err)
 				}
 				if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
-					return retry.RetryableError(err)
+					return tfresource.RetryableError(err)
 				}
 				if errs.IsA[*awstypes.ResourceInUseException](err) {
-					return retry.RetryableError(err)
+					return tfresource.RetryableError(err)
 				}
 
-				return retry.NonRetryableError(err)
+				return tfresource.NonRetryableError(err)
 			}
 			return nil
 		})
-
-		if tfresource.TimedOut(err) {
-			_, err = conn.UpdateTable(ctx, input)
-		}
 
 		if err != nil && !errs.IsA[*awstypes.ResourceNotFoundException](err) {
 			return fmt.Errorf("deleting replica(s): %w", err)
@@ -148,35 +143,31 @@ func deleteReplicas(ctx context.Context, conn *dynamodb.Client, tableName string
 					},
 				}
 
-				err := retry.RetryContext(ctx, updateTableTimeout, func() *retry.RetryError {
+				err := tfresource.Retry(ctx, updateTableTimeout, func(ctx context.Context) *tfresource.RetryError {
 					_, err := conn.UpdateTable(ctx, input)
 					notFoundRetries := 0
 					if err != nil {
 						if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
-							return retry.RetryableError(err)
+							return tfresource.RetryableError(err)
 						}
 						if errs.IsA[*awstypes.ResourceNotFoundException](err) {
 							notFoundRetries++
 							if notFoundRetries > 3 {
-								return retry.NonRetryableError(err)
+								return tfresource.NonRetryableError(err)
 							}
-							return retry.RetryableError(err)
+							return tfresource.RetryableError(err)
 						}
 						if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
-							return retry.RetryableError(err)
+							return tfresource.RetryableError(err)
 						}
 						if errs.IsA[*awstypes.ResourceInUseException](err) {
-							return retry.RetryableError(err)
+							return tfresource.RetryableError(err)
 						}
 
-						return retry.NonRetryableError(err)
+						return tfresource.NonRetryableError(err)
 					}
 					return nil
 				})
-
-				if tfresource.TimedOut(err) {
-					_, err = conn.UpdateTable(ctx, input)
-				}
 
 				if err != nil && !errs.IsA[*awstypes.ResourceNotFoundException](err) {
 					return fmt.Errorf("deleting replica (%s): %w", regionName, err)

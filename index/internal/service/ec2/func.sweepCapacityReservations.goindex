@@ -11,56 +11,42 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
 	"github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func sweepCapacityReservations(region string) error {
-	ctx := sweep.Context(region)
-	client, err := sweep.SharedRegionalSweepClient(ctx, region)
-	if err != nil {
-		return fmt.Errorf("error getting client: %s", err)
-	}
+func sweepCapacityReservations(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
 	conn := client.EC2Client(ctx)
+	var input ec2.DescribeCapacityReservationsInput
+	var sweepResources []sweep.Sweepable
 
-	input := ec2.DescribeCapacityReservationsInput{}
-	resp, err := conn.DescribeCapacityReservations(ctx, &input)
+	pages := ec2.NewDescribeCapacityReservationsPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
 
-	if awsv2.SkipSweepError(err) {
-		log.Printf("[WARN] Skipping EC2 Capacity Reservation sweep for %s: %s", region, err)
-		return nil
-	}
+		if err != nil {
+			return nil, err
+		}
 
-	if err != nil {
-		return fmt.Errorf("Error retrieving EC2 Capacity Reservations: %s", err)
-	}
+		for _, v := range page.CapacityReservations {
+			id := aws.ToString(v.CapacityReservationId)
 
-	if len(resp.CapacityReservations) == 0 {
-		log.Print("[DEBUG] No EC2 Capacity Reservations to sweep")
-		return nil
-	}
-
-	for _, r := range resp.CapacityReservations {
-		if r.State != awstypes.CapacityReservationStateCancelled && r.State != awstypes.CapacityReservationStateExpired {
-			id := aws.ToString(r.CapacityReservationId)
-
-			log.Printf("[INFO] Cancelling EC2 Capacity Reservation EC2 Instance: %s", id)
-
-			input := ec2.CancelCapacityReservationInput{
-				CapacityReservationId: aws.String(id),
+			if state := v.State; state == awstypes.CapacityReservationStateCancelled || state == awstypes.CapacityReservationStateExpired {
+				log.Printf("[INFO] Skipping EC2 Capacity Reservation %s: State=%s", id, state)
+				continue
 			}
 
-			_, err := conn.CancelCapacityReservation(ctx, &input)
+			r := resourceCapacityReservation()
+			d := r.Data(nil)
+			d.SetId(id)
 
-			if err != nil {
-				log.Printf("[ERROR] Error cancelling EC2 Capacity Reservation (%s): %s", id, err)
-			}
+			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
 		}
 	}
 
-	return nil
+	return sweepResources, nil
 }
