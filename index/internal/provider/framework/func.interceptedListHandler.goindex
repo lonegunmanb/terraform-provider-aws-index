@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/hashicorp/terraform-plugin-framework/action"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	tfiter "github.com/hashicorp/terraform-provider-aws/internal/iter"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+)
+func interceptedListHandler(interceptors []listInterceptorFunc[list.ListRequest, list.ListResultsStream], f func(context.Context, list.ListRequest, *list.ListResultsStream), c awsClient) func(context.Context, list.ListRequest, *list.ListResultsStream) {
+	return func(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+		opts := interceptorOptions[list.ListRequest, list.ListResultsStream]{
+			c:        c,
+			request:  &request,
+			response: stream,
+		}
+
+		// Before interceptors are run first to last.
+		opts.when = Before
+		for v := range slices.Values(interceptors) {
+			diags := v(ctx, opts)
+			if len(diags) > 0 {
+				stream.Results = tfiter.Concat(stream.Results, list.ListResultsStreamDiagnostics(diags))
+			}
+			if diags.HasError() {
+				return
+			}
+		}
+
+		// Stash `stream.Results` so that inner function can be unaware of interceptors.
+		resultStream := stream.Results
+		stream.Results = nil
+
+		f(ctx, request, stream)
+		innerResultStream := stream.Results
+
+		stream.Results = tfiter.Concat(resultStream, func(yield func(list.ListResult) bool) {
+			var hasError bool
+			for v := range innerResultStream {
+				if v.Diagnostics.HasError() {
+					hasError = true
+				}
+				if !yield(v) {
+					return
+				}
+			}
+
+			// All other interceptors are run last to first.
+			if hasError {
+				opts.when = OnError
+			} else {
+				opts.when = After
+			}
+			for v := range tfslices.BackwardValues(interceptors) {
+				diags := v(ctx, opts)
+				if len(diags) > 0 {
+					if !yield(list.ListResult{Diagnostics: diags}) {
+						return
+					}
+				}
+			}
+
+			opts.when = Finally
+			for v := range tfslices.BackwardValues(interceptors) {
+				diags := v(ctx, opts)
+				if len(diags) > 0 {
+					if !yield(list.ListResult{Diagnostics: diags}) {
+						return
+					}
+				}
+			}
+		})
+	}
+}

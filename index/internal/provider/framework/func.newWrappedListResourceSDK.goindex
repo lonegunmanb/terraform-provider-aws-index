@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/action"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tfiter "github.com/hashicorp/terraform-provider-aws/internal/iter"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/identity"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/listresource"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	tfunique "github.com/hashicorp/terraform-provider-aws/internal/unique"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func newWrappedListResourceSDK(spec *inttypes.ServicePackageSDKListResource, servicePackageName string) inttypes.ListResourceForSDK {
+	var interceptors interceptorInvocations
+
+	if v := spec.Region; !tfunique.IsHandleNil(v) && v.Value().IsOverrideEnabled {
+		interceptors = append(interceptors, listResourceInjectRegionAttribute())
+		// TODO: validate region in partition, needs tweaked error message
+	}
+
+	inner := spec.Factory()
+
+	if v, ok := inner.(framework.WithRegionSpec); ok {
+		v.SetRegionSpec(spec.Region)
+	}
+
+	if v, ok := inner.(framework.Identityer); ok {
+		v.SetIdentitySpec(spec.Identity)
+	}
+
+	if v, ok := inner.(inttypes.SDKv2Tagger); ok {
+		if !tfunique.IsHandleNil(spec.Tags) {
+			v.SetTagsSpec(spec.Tags)
+		}
+	}
+
+	return &wrappedListResourceSDK{
+		inner:              inner,
+		servicePackageName: servicePackageName,
+		spec:               spec,
+		interceptors:       interceptors,
+	}
+}

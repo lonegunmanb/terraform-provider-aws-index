@@ -11,11 +11,14 @@ import (
 	"unique"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/action"
+	aschema "github.com/hashicorp/terraform-plugin-framework/action/schema"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
 	empemeralschema "github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
 	"github.com/hashicorp/terraform-plugin-framework/function"
+	"github.com/hashicorp/terraform-plugin-framework/list"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -73,6 +76,26 @@ func (p *frameworkProvider) validateResourceSchemas(ctx context.Context) error {
 
 				if err := validateSchemaRegionForEphemeralResource(ephemeralResourceSpec.Region, schemaResponse.Schema); err != nil {
 					errs = append(errs, fmt.Errorf("ephemeral resource type %q: %w", typeName, err))
+					continue
+				}
+			}
+		}
+
+		if v, ok := sp.(conns.ServicePackageWithActions); ok {
+			for _, actionSpec := range v.Actions(ctx) {
+				typeName := actionSpec.TypeName
+				inner, err := actionSpec.Factory(ctx)
+
+				if err != nil {
+					errs = append(errs, fmt.Errorf("creating action type (%s): %w", typeName, err))
+					continue
+				}
+
+				schemaResponse := action.SchemaResponse{}
+				inner.Schema(ctx, action.SchemaRequest{}, &schemaResponse)
+
+				if err := validateSchemaRegionForAction(actionSpec.Region, schemaResponse.Schema); err != nil {
+					errs = append(errs, fmt.Errorf("action type %q: %w", typeName, err))
 					continue
 				}
 			}

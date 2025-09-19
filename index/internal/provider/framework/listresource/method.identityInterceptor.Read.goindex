@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/provider/framework/listresource
+import (
+	"context"
+	"fmt"
+	"unique"
+
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/interceptors"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r identityInterceptor) Read(ctx context.Context, params InterceptorParams) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	awsClient := params.C
+
+	switch params.When {
+	// The Before step is not needed if Framework pre-populates the Identity as it does with CRUD operations
+	case Before:
+		identityType := params.Result.Identity.Schema.Type()
+
+		obj, d := newEmptyObject(identityType)
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+
+		diags.Append(params.Result.Identity.Set(ctx, obj)...)
+		if diags.HasError() {
+			return diags
+		}
+
+	case After:
+		for _, att := range r.attributes {
+			switch att.Name() {
+			case names.AttrAccountID:
+				diags.Append(params.Result.Identity.SetAttribute(ctx, path.Root(att.Name()), awsClient.AccountID(ctx))...)
+				if diags.HasError() {
+					return diags
+				}
+
+			case names.AttrRegion:
+				diags.Append(params.Result.Identity.SetAttribute(ctx, path.Root(att.Name()), awsClient.Region(ctx))...)
+				if diags.HasError() {
+					return diags
+				}
+
+			default:
+				var attrVal attr.Value
+				diags.Append(params.Result.Resource.GetAttribute(ctx, path.Root(att.ResourceAttributeName()), &attrVal)...)
+				if diags.HasError() {
+					return diags
+				}
+
+				diags.Append(params.Result.Identity.SetAttribute(ctx, path.Root(att.Name()), attrVal)...)
+				if diags.HasError() {
+					return diags
+				}
+			}
+		}
+	}
+
+	return diags
+}
