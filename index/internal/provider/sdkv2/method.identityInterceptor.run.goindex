@@ -18,7 +18,7 @@ func (r identityInterceptor) run(ctx context.Context, opts crudInterceptorOption
 	case After:
 		switch why {
 		case Create, Read, Update:
-			if why == Update && !(r.identitySpec.IsMutable && r.identitySpec.IsSetOnUpdate) {
+			if why == Update && !(r.identitySpec.IsMutable && r.identitySpec.IsSetOnUpdate) && !identityIsFullyNull(d, r.identitySpec) {
 				break
 			}
 			if d.Id() == "" {
@@ -48,6 +48,42 @@ func (r identityInterceptor) run(ctx context.Context, opts crudInterceptorOption
 					}
 					if err := identity.Set(attr.Name(), val); err != nil {
 						return sdkdiag.AppendFromErr(diags, err)
+					}
+				}
+			}
+		}
+	case OnError:
+		switch why {
+		case Update:
+			if identityIsFullyNull(d, r.identitySpec) {
+				if d.Id() == "" {
+					break
+				}
+				identity, err := d.Identity()
+				if err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+
+				for _, attr := range r.identitySpec.Attributes {
+					switch attr.Name() {
+					case names.AttrAccountID:
+						if err := identity.Set(attr.Name(), awsClient.AccountID(ctx)); err != nil {
+							return sdkdiag.AppendFromErr(diags, err)
+						}
+
+					case names.AttrRegion:
+						if err := identity.Set(attr.Name(), awsClient.Region(ctx)); err != nil {
+							return sdkdiag.AppendFromErr(diags, err)
+						}
+
+					default:
+						val, ok := getAttributeOk(d, attr.ResourceAttributeName())
+						if !ok {
+							continue
+						}
+						if err := identity.Set(attr.Name(), val); err != nil {
+							return sdkdiag.AppendFromErr(diags, err)
+						}
 					}
 				}
 			}
