@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
@@ -22,27 +23,29 @@ func updateAssertionRule(ctx context.Context, d *schema.ResourceData, meta any) 
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).Route53RecoveryControlConfigClient(ctx)
 
-	assertionRuleUpdate := &awstypes.AssertionRuleUpdate{
-		SafetyRuleArn: aws.String(d.Get(names.AttrARN).(string)),
+	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
+		assertionRuleUpdate := &awstypes.AssertionRuleUpdate{
+			SafetyRuleArn: aws.String(d.Get(names.AttrARN).(string)),
+		}
+
+		if d.HasChange(names.AttrName) {
+			assertionRuleUpdate.Name = aws.String(d.Get(names.AttrName).(string))
+		}
+
+		if d.HasChange("wait_period_ms") {
+			assertionRuleUpdate.WaitPeriodMs = aws.Int32(int32(d.Get("wait_period_ms").(int)))
+		}
+
+		input := &r53rcc.UpdateSafetyRuleInput{
+			AssertionRuleUpdate: assertionRuleUpdate,
+		}
+
+		_, err := conn.UpdateSafetyRule(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating Route53 Recovery Control Config Assertion Rule: %s", err)
+		}
 	}
 
-	if d.HasChange(names.AttrName) {
-		assertionRuleUpdate.Name = aws.String(d.Get(names.AttrName).(string))
-	}
-
-	if d.HasChange("wait_period_ms") {
-		assertionRuleUpdate.WaitPeriodMs = aws.Int32(int32(d.Get("wait_period_ms").(int)))
-	}
-
-	input := &r53rcc.UpdateSafetyRuleInput{
-		AssertionRuleUpdate: assertionRuleUpdate,
-	}
-
-	_, err := conn.UpdateSafetyRule(ctx, input)
-
-	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "updating Route53 Recovery Control Config Assertion Rule: %s", err)
-	}
-
-	return append(diags, sdkdiag.WrapDiagsf(resourceControlPanelRead(ctx, d, meta), "updating Route53 Recovery Control Config Assertion Rule")...)
+	return append(diags, sdkdiag.WrapDiagsf(resourceSafetyRuleRead(ctx, d, meta), "updating Route53 Recovery Control Config Assertion Rule")...)
 }

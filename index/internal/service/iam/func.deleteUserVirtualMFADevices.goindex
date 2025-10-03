@@ -21,41 +21,45 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func deleteUserVirtualMFADevices(ctx context.Context, conn *iam.Client, username string) error {
-	var VirtualMFADevices []string
-
-	listVirtualMFADevices := &iam.ListVirtualMFADevicesInput{
-		AssignmentStatus: awstypes.AssignmentStatusType("Assigned"),
+func deleteUserVirtualMFADevices(ctx context.Context, conn *iam.Client, user string) error {
+	input := iam.ListVirtualMFADevicesInput{
+		AssignmentStatus: awstypes.AssignmentStatusTypeAssigned,
 	}
+	var virtualMFADevices []string
 
-	pages := iam.NewListVirtualMFADevicesPaginator(conn, listVirtualMFADevices)
+	pages := iam.NewListVirtualMFADevicesPaginator(conn, &input)
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("removing Virtual MFA devices of user %s: %w", username, err)
+			return fmt.Errorf("listing IAM Virtual MFA Devices: %w", err)
 		}
 
-		for _, m := range page.VirtualMFADevices {
+		for _, v := range page.VirtualMFADevices {
 			// UserName is `nil` for the root user
-			if aws.ToString(m.User.UserName) == username {
-				VirtualMFADevices = append(VirtualMFADevices, *m.SerialNumber)
+			if aws.ToString(v.User.UserName) == user {
+				virtualMFADevices = append(virtualMFADevices, aws.ToString(v.SerialNumber))
 			}
 		}
 	}
 
-	for _, m := range VirtualMFADevices {
-		_, err := conn.DeactivateMFADevice(ctx, &iam.DeactivateMFADeviceInput{
-			UserName:     aws.String(username),
-			SerialNumber: aws.String(m),
-		})
-		if err != nil {
-			return fmt.Errorf("deactivating Virtual MFA device %s: %w", m, err)
+	for _, v := range virtualMFADevices {
+		inputDeactivate := iam.DeactivateMFADeviceInput{
+			SerialNumber: aws.String(v),
+			UserName:     aws.String(user),
 		}
-		_, err = conn.DeleteVirtualMFADevice(ctx, &iam.DeleteVirtualMFADeviceInput{
-			SerialNumber: aws.String(m),
-		})
+		_, err := conn.DeactivateMFADevice(ctx, &inputDeactivate)
+
 		if err != nil {
-			return fmt.Errorf("deleting Virtual MFA device %s: %w", m, err)
+			return fmt.Errorf("deactivating IAM User (%s) virtual MFA device (%s): %w", user, v, err)
+		}
+
+		inputDelete := iam.DeleteVirtualMFADeviceInput{
+			SerialNumber: aws.String(v),
+		}
+		_, err = conn.DeleteVirtualMFADevice(ctx, &inputDelete)
+
+		if err != nil {
+			return fmt.Errorf("deleting IAM Virtual MFA Device (%s): %w", v, err)
 		}
 	}
 

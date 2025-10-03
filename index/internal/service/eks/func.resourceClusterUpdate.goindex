@@ -27,7 +27,6 @@ import (
 )
 func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-
 	conn := meta.(*conns.AWSClient).EKSClient(ctx)
 
 	// Do any version update first.
@@ -77,27 +76,28 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 		}
 	}
 
+	// All three fields are required to enable/disable Auto Mode or else you receive the error:
+	// 		InvalidParameterException: For EKS Auto Mode, please ensure that all required configs,
+	// 		including computeConfig, kubernetesNetworkConfig, and blockStorage are all either fully enabled or fully disabled.
+	// In addition, when updating other Auto Mode arguments (i.e. - computeConfig.nodePools/nodeRoleARN), all 3 fields are required.
 	if d.HasChanges("compute_config", "kubernetes_network_config", "storage_config") {
-		computeConfig := expandComputeConfigRequest(d.Get("compute_config").([]any))
-		kubernetesNetworkConfig := expandKubernetesNetworkConfigRequest(d.Get("kubernetes_network_config").([]any))
-		storageConfig := expandStorageConfigRequest(d.Get("storage_config").([]any))
 		input := eks.UpdateClusterConfigInput{
-			ComputeConfig:           computeConfig,
-			KubernetesNetworkConfig: kubernetesNetworkConfig,
+			ComputeConfig:           expandComputeConfigRequest(d.Get("compute_config").([]any)),
+			KubernetesNetworkConfig: expandKubernetesNetworkConfigRequest(d.Get("kubernetes_network_config").([]any)),
 			Name:                    aws.String(d.Id()),
-			StorageConfig:           storageConfig,
+			StorageConfig:           expandStorageConfigRequest(d.Get("storage_config").([]any)),
 		}
 
 		output, err := conn.UpdateClusterConfig(ctx, &input)
 
 		if err != nil {
-			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) compute config: %s", d.Id(), err)
+			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) Auto Mode settings: %s", d.Id(), err)
 		}
 
 		updateID := aws.ToString(output.Update.Id)
 
 		if _, err = waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
-			return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) compute config update (%s): %s", d.Id(), updateID, err)
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) Auto Mode settings update (%s): %s", d.Id(), updateID, err)
 		}
 	}
 

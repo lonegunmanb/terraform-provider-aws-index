@@ -1,0 +1,137 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ecs
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenInstanceRequirementsRequest(req *awstypes.InstanceRequirementsRequest) []map[string]any {
+	if req == nil {
+		return nil
+	}
+
+	tfMap := map[string]any{
+		"bare_metal":            string(req.BareMetal),
+		"burstable_performance": string(req.BurstablePerformance),
+		"local_storage":         string(req.LocalStorage),
+		"max_spot_price_as_percentage_of_optimal_on_demand_price": aws.ToInt32(req.MaxSpotPriceAsPercentageOfOptimalOnDemandPrice),
+		"on_demand_max_price_percentage_over_lowest_price":        aws.ToInt32(req.OnDemandMaxPricePercentageOverLowestPrice),
+		"require_hibernate_support":                               aws.ToBool(req.RequireHibernateSupport),
+		"spot_max_price_percentage_over_lowest_price":             aws.ToInt32(req.SpotMaxPricePercentageOverLowestPrice),
+	}
+
+	if req.AcceleratorCount != nil {
+		tfMap["accelerator_count"] = []map[string]any{{
+			names.AttrMin: aws.ToInt32(req.AcceleratorCount.Min),
+			names.AttrMax: aws.ToInt32(req.AcceleratorCount.Max),
+		}}
+	}
+
+	if req.AcceleratorManufacturers != nil {
+		tfMap["accelerator_manufacturers"] = req.AcceleratorManufacturers
+	}
+
+	if req.AcceleratorNames != nil {
+		tfMap["accelerator_names"] = req.AcceleratorNames
+	}
+
+	if req.AcceleratorTotalMemoryMiB != nil {
+		tfMap["accelerator_total_memory_mib"] = []map[string]any{{
+			names.AttrMin: aws.ToInt32(req.AcceleratorTotalMemoryMiB.Min),
+			names.AttrMax: aws.ToInt32(req.AcceleratorTotalMemoryMiB.Max),
+		}}
+	}
+
+	if req.AcceleratorTypes != nil {
+		tfMap["accelerator_types"] = req.AcceleratorTypes
+	}
+
+	if req.AllowedInstanceTypes != nil {
+		tfMap["allowed_instance_types"] = req.AllowedInstanceTypes
+	}
+
+	if req.BaselineEbsBandwidthMbps != nil {
+		tfMap["baseline_ebs_bandwidth_mbps"] = []map[string]any{{
+			names.AttrMin: aws.ToInt32(req.BaselineEbsBandwidthMbps.Min),
+			names.AttrMax: aws.ToInt32(req.BaselineEbsBandwidthMbps.Max),
+		}}
+	}
+
+	if req.CpuManufacturers != nil {
+		tfMap["cpu_manufacturers"] = req.CpuManufacturers
+	}
+
+	if req.ExcludedInstanceTypes != nil {
+		tfMap["excluded_instance_types"] = req.ExcludedInstanceTypes
+	}
+
+	if req.InstanceGenerations != nil {
+		tfMap["instance_generations"] = req.InstanceGenerations
+	}
+
+	if req.LocalStorageTypes != nil {
+		tfMap["local_storage_types"] = req.LocalStorageTypes
+	}
+
+	if req.MemoryGiBPerVCpu != nil {
+		tfMap["memory_gib_per_vcpu"] = []map[string]any{{
+			names.AttrMin: aws.ToFloat64(req.MemoryGiBPerVCpu.Min),
+			names.AttrMax: aws.ToFloat64(req.MemoryGiBPerVCpu.Max),
+		}}
+	}
+
+	if req.MemoryMiB != nil {
+		tfMap["memory_mib"] = []map[string]any{{
+			names.AttrMin: aws.ToInt32(req.MemoryMiB.Min),
+			names.AttrMax: aws.ToInt32(req.MemoryMiB.Max),
+		}}
+	}
+
+	if req.NetworkBandwidthGbps != nil {
+		tfMap["network_bandwidth_gbps"] = []map[string]any{{
+			names.AttrMin: aws.ToFloat64(req.NetworkBandwidthGbps.Min),
+			names.AttrMax: aws.ToFloat64(req.NetworkBandwidthGbps.Max),
+		}}
+	}
+
+	if req.NetworkInterfaceCount != nil {
+		tfMap["network_interface_count"] = []map[string]any{{
+			names.AttrMin: aws.ToInt32(req.NetworkInterfaceCount.Min),
+			names.AttrMax: aws.ToInt32(req.NetworkInterfaceCount.Max),
+		}}
+	}
+
+	if req.TotalLocalStorageGB != nil {
+		tfMap["total_local_storage_gb"] = []map[string]any{{
+			names.AttrMin: aws.ToFloat64(req.TotalLocalStorageGB.Min),
+			names.AttrMax: aws.ToFloat64(req.TotalLocalStorageGB.Max),
+		}}
+	}
+
+	if req.VCpuCount != nil {
+		tfMap["vcpu_count"] = []map[string]any{{
+			names.AttrMin: aws.ToInt32(req.VCpuCount.Min),
+			names.AttrMax: aws.ToInt32(req.VCpuCount.Max),
+		}}
+	}
+
+	return []map[string]any{tfMap}
+}

@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func validateAutoModeComputeConfigCustomizeDiff(_ context.Context, diff *schema.ResourceDiff, _ any) error {
+	if diff.Id() == "" {
+		return nil
+	}
+
+	oldValue, newValue := diff.GetChange("compute_config")
+
+	oldComputeConfig := expandComputeConfigRequest(oldValue.([]any))
+	newComputeConfig := expandComputeConfigRequest(newValue.([]any))
+
+	if newComputeConfig == nil || oldComputeConfig == nil {
+		return nil
+	}
+
+	oldRoleARN := aws.ToString(oldComputeConfig.NodeRoleArn)
+	newRoleARN := aws.ToString(newComputeConfig.NodeRoleArn)
+
+	newComputeConfigEnabled := aws.ToBool(newComputeConfig.Enabled)
+
+	// Do not force new if auto mode is disabled in new config and role ARN is unset
+	if !newComputeConfigEnabled && newRoleARN == "" {
+		return nil
+	}
+
+	// Do not force new if built-in node pools are zeroed in new config and role ARN is unset
+	if len(newComputeConfig.NodePools) == 0 && newRoleARN == "" {
+		return nil
+	}
+
+	// only force new if an existing role has changed, not if a new role is added
+	if oldRoleARN != "" && oldRoleARN != newRoleARN {
+		if err := diff.ForceNew("compute_config.0.node_role_arn"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

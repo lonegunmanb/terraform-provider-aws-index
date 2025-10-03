@@ -21,32 +21,33 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func deleteUserSSHKeys(ctx context.Context, conn *iam.Client, username string) error {
-	var publicKeys []string
-
-	listSSHPublicKeys := &iam.ListSSHPublicKeysInput{
-		UserName: aws.String(username),
+func deleteUserSSHKeys(ctx context.Context, conn *iam.Client, user string) error {
+	input := iam.ListSSHPublicKeysInput{
+		UserName: aws.String(user),
 	}
+	var ids []string
 
-	pages := iam.NewListSSHPublicKeysPaginator(conn, listSSHPublicKeys)
+	pages := iam.NewListSSHPublicKeysPaginator(conn, &input)
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("removing public SSH keys of user %s: %w", username, err)
+			return fmt.Errorf("listing IAM User (%s) SSH public keys: %w", user, err)
 		}
 
-		for _, k := range page.SSHPublicKeys {
-			publicKeys = append(publicKeys, *k.SSHPublicKeyId)
+		for _, v := range page.SSHPublicKeys {
+			ids = append(ids, aws.ToString(v.SSHPublicKeyId))
 		}
 	}
 
-	for _, k := range publicKeys {
-		_, err := conn.DeleteSSHPublicKey(ctx, &iam.DeleteSSHPublicKeyInput{
-			UserName:       aws.String(username),
-			SSHPublicKeyId: aws.String(k),
-		})
+	for _, v := range ids {
+		input := iam.DeleteSSHPublicKeyInput{
+			SSHPublicKeyId: aws.String(v),
+			UserName:       aws.String(user),
+		}
+		_, err := conn.DeleteSSHPublicKey(ctx, &input)
+
 		if err != nil {
-			return fmt.Errorf("deleting public SSH key %s: %w", k, err)
+			return fmt.Errorf("deleting IAM User (%s) SSH public key (%s): %w", user, v, err)
 		}
 	}
 

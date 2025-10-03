@@ -5,16 +5,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/odb"
 	odbtypes "github.com/aws/aws-sdk-go-v2/service/odb/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
@@ -43,7 +46,7 @@ func (r *resourceCloudVmCluster) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	out, err := FindCloudVmClusterForResourceByID(ctx, conn, state.CloudVmClusterId.ValueString())
+	out, err := findCloudVmClusterForResourceByID(ctx, conn, state.CloudVmClusterId.ValueString())
 	if tfresource.NotFound(err) {
 		resp.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
 		resp.State.RemoveResource(ctx)
@@ -60,8 +63,17 @@ func (r *resourceCloudVmCluster) Read(ctx context.Context, req resource.ReadRequ
 	state.HostnamePrefix = types.StringValue(hostnamePrefix)
 	state.HostnamePrefixComputed = types.StringValue(*out.Hostname)
 	//scan listener port not returned by API directly
-	state.ScanListenerPortTcp = types.Int32PointerValue(out.ListenerPort)
-
+	state.ScanListenerPortTcp = flex.Int32ToFramework(ctx, out.ListenerPort)
+	state.GiVersionComputed = flex.StringToFramework(ctx, out.GiVersion)
+	giVersionMajor, err := getMajorGiVersion(out.GiVersion)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.ODB, create.ErrActionWaitingForCreation, ResNameCloudVmCluster, state.CloudVmClusterId.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+	state.GiVersion = flex.StringToFramework(ctx, giVersionMajor)
 	resp.Diagnostics.Append(flex.Flatten(ctx, out, &state)...)
 	if resp.Diagnostics.HasError() {
 		return

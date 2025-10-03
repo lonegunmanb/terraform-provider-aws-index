@@ -47,46 +47,11 @@ func resourceCluster() *schema.Resource {
 
 		CustomizeDiff: customdiff.Sequence(
 			validateAutoModeCustomizeDiff,
+			validateAutoModeComputeConfigCustomizeDiff,
 			customdiff.ForceNewIfChange("encryption_config", func(_ context.Context, old, new, meta any) bool {
 				// You cannot disable envelope encryption after enabling it. This action is irreversible.
 				return len(old.([]any)) == 1 && len(new.([]any)) == 0
 			}),
-			func(ctx context.Context, rd *schema.ResourceDiff, meta any) error {
-				if rd.Id() == "" {
-					return nil
-				}
-				oldValue, newValue := rd.GetChange("compute_config")
-
-				oldComputeConfig := expandComputeConfigRequest(oldValue.([]any))
-				newComputeConfig := expandComputeConfigRequest(newValue.([]any))
-
-				if newComputeConfig == nil || oldComputeConfig == nil {
-					return nil
-				}
-
-				oldRoleARN := aws.ToString(oldComputeConfig.NodeRoleArn)
-				newRoleARN := aws.ToString(newComputeConfig.NodeRoleArn)
-
-				newComputeConfigEnabled := aws.ToBool(newComputeConfig.Enabled)
-
-				// Do not force new if auto mode is disabled in new config and role ARN is unset
-				if !newComputeConfigEnabled && newRoleARN == "" {
-					return nil
-				}
-
-				// Do not force new if built-in node pools are zeroed in new config and role ARN is unset
-				if len(newComputeConfig.NodePools) == 0 && newRoleARN == "" {
-					return nil
-				}
-
-				// only force new if an existing role has changed, not if a new role is added
-				if oldRoleARN != "" && oldRoleARN != newRoleARN {
-					if err := rd.ForceNew("compute_config.0.node_role_arn"); err != nil {
-						return err
-					}
-				}
-				return nil
-			},
 		),
 
 		Timeouts: &schema.ResourceTimeout{
@@ -146,12 +111,14 @@ func resourceCluster() *schema.Resource {
 			"compute_config": {
 				Type:     schema.TypeList,
 				Optional: true,
+				Computed: true,
 				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						names.AttrEnabled: {
 							Type:     schema.TypeBool,
 							Optional: true,
+							Computed: true,
 						},
 						"node_pools": {
 							Type:     schema.TypeSet,
@@ -263,6 +230,7 @@ func resourceCluster() *schema.Resource {
 									names.AttrEnabled: {
 										Type:     schema.TypeBool,
 										Optional: true,
+										Computed: true,
 									},
 								},
 							},
@@ -404,6 +372,7 @@ func resourceCluster() *schema.Resource {
 			"storage_config": {
 				Type:     schema.TypeList,
 				Optional: true,
+				Computed: true,
 				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -416,6 +385,7 @@ func resourceCluster() *schema.Resource {
 									names.AttrEnabled: {
 										Type:     schema.TypeBool,
 										Optional: true,
+										Computed: true,
 									},
 								},
 							},

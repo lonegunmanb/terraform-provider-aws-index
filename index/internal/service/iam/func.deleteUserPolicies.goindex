@@ -21,34 +21,32 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func deleteUserPolicies(ctx context.Context, conn *iam.Client, username string) error {
-	input := &iam.ListUserPoliciesInput{
-		UserName: aws.String(username),
+func deleteUserPolicies(ctx context.Context, conn *iam.Client, user string) error {
+	input := iam.ListUserPoliciesInput{
+		UserName: aws.String(user),
 	}
+	var policies []string
 
-	output, err := conn.ListUserPolicies(ctx, input)
-	if errs.IsA[*awstypes.NoSuchEntityException](err) {
-		// user not found
-		return nil
-	}
-
-	if err != nil {
-		return fmt.Errorf("listing/deleting IAM User (%s) inline policies: %w", username, err)
-	}
-
-	for _, name := range output.PolicyNames {
-		log.Printf("[DEBUG] Deleting IAM User (%s) inline policy %q", username, name)
-
-		input := &iam.DeleteUserPolicyInput{
-			PolicyName: aws.String(name),
-			UserName:   aws.String(username),
+	pages := iam.NewListUserPoliciesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("listing IAM User (%s) policies: %w", user, err)
 		}
 
-		if _, err := conn.DeleteUserPolicy(ctx, input); err != nil {
-			if errs.IsA[*awstypes.NoSuchEntityException](err) {
-				continue
-			}
-			return fmt.Errorf("deleting IAM User (%s) inline policies: %w", username, err)
+		policies = append(policies, page.PolicyNames...)
+	}
+
+	for _, v := range policies {
+		input := iam.DeleteUserPolicyInput{
+			PolicyName: aws.String(v),
+			UserName:   aws.String(user),
+		}
+
+		_, err := conn.DeleteUserPolicy(ctx, &input)
+
+		if err != nil {
+			return fmt.Errorf("deleting IAM User (%s) policy (%s): %w", user, v, err)
 		}
 	}
 

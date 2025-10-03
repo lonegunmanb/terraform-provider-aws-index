@@ -21,32 +21,33 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func deactivateUserMFADevices(ctx context.Context, conn *iam.Client, username string) error {
-	var MFADevices []string
-
-	listMFADevices := &iam.ListMFADevicesInput{
-		UserName: aws.String(username),
+func deactivateUserMFADevices(ctx context.Context, conn *iam.Client, user string) error {
+	input := iam.ListMFADevicesInput{
+		UserName: aws.String(user),
 	}
+	var mfaDevices []string
 
-	pages := iam.NewListMFADevicesPaginator(conn, listMFADevices)
+	pages := iam.NewListMFADevicesPaginator(conn, &input)
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("removing MFA devices of user %s: %w", username, err)
+			return fmt.Errorf("listing IAM User (%s) MFA devices: %w", user, err)
 		}
 
 		for _, v := range page.MFADevices {
-			MFADevices = append(MFADevices, *v.SerialNumber)
+			mfaDevices = append(mfaDevices, aws.ToString(v.SerialNumber))
 		}
 	}
 
-	for _, m := range MFADevices {
-		_, err := conn.DeactivateMFADevice(ctx, &iam.DeactivateMFADeviceInput{
-			UserName:     aws.String(username),
-			SerialNumber: aws.String(m),
-		})
+	for _, v := range mfaDevices {
+		input := iam.DeactivateMFADeviceInput{
+			SerialNumber: aws.String(v),
+			UserName:     aws.String(user),
+		}
+		_, err := conn.DeactivateMFADevice(ctx, &input)
+
 		if err != nil {
-			return fmt.Errorf("deactivating MFA device %s: %w", m, err)
+			return fmt.Errorf("deactivating IAM User (%s) MFA device (%s): %w", user, v, err)
 		}
 	}
 

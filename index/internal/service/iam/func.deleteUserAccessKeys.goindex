@@ -21,22 +21,24 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func deleteUserAccessKeys(ctx context.Context, conn *iam.Client, username string) error {
-	accessKeys, err := findAccessKeysByUser(ctx, conn, username)
+func deleteUserAccessKeys(ctx context.Context, conn *iam.Client, user string) error {
+	accessKeys, err := findAccessKeysByUser(ctx, conn, user)
 
 	if err != nil && !tfresource.NotFound(err) {
-		return fmt.Errorf("listing access keys for IAM User (%s): %w", username, err)
+		return fmt.Errorf("listing IAM User (%s) access keys: %w", user, err)
 	}
 
 	var errs []error
+	for _, v := range accessKeys {
+		accessKeyID := aws.ToString(v.AccessKeyId)
+		input := iam.DeleteAccessKeyInput{
+			AccessKeyId: aws.String(accessKeyID),
+			UserName:    aws.String(user),
+		}
+		_, err := conn.DeleteAccessKey(ctx, &input)
 
-	for _, k := range accessKeys {
-		_, err := conn.DeleteAccessKey(ctx, &iam.DeleteAccessKeyInput{
-			UserName:    aws.String(username),
-			AccessKeyId: k.AccessKeyId,
-		})
 		if err != nil {
-			errs = append(errs, fmt.Errorf("deleting Access Key (%s) from User (%s): %w", aws.ToString(k.AccessKeyId), username, err))
+			return fmt.Errorf("deleting IAM User (%s) access key (%s): %w", user, accessKeyID, err)
 		}
 	}
 

@@ -1,6 +1,5 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/iam
-import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
-
+import (
 	"context"
 	"fmt"
 	"log"
@@ -10,33 +9,38 @@ import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceSigningCertificateDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).IAMClient(ctx)
-	log.Printf("[INFO] Deleting IAM Signing Certificate: %s", d.Id())
 
-	certId, userName, err := DecodeSigningCertificateId(d.Id())
+	certID, userName, err := signingCertificateParseResourceID(d.Id())
 	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "deleting IAM Signing Certificate (%s): %s", d.Id(), err)
+		return sdkdiag.AppendFromErr(diags, err)
 	}
 
-	input := &iam.DeleteSigningCertificateInput{
-		CertificateId: aws.String(certId),
+	log.Printf("[INFO] Deleting IAM Signing Certificate: %s", d.Id())
+	input := iam.DeleteSigningCertificateInput{
+		CertificateId: aws.String(certID),
 		UserName:      aws.String(userName),
 	}
+	_, err = conn.DeleteSigningCertificate(ctx, &input)
 
-	if _, err := conn.DeleteSigningCertificate(ctx, input); err != nil {
-		if errs.IsA[*awstypes.NoSuchEntityException](err) {
-			return diags
-		}
+	if errs.IsA[*awstypes.NoSuchEntityException](err) {
+		return diags
+	}
+
+	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "deleting IAM Signing Certificate (%s): %s", d.Id(), err)
 	}
 

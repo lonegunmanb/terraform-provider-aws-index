@@ -21,28 +21,27 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func detachUserPolicies(ctx context.Context, conn *iam.Client, username string) error {
-	input := &iam.ListAttachedUserPoliciesInput{
-		UserName: aws.String(username),
+func detachUserPolicies(ctx context.Context, conn *iam.Client, user string) error {
+	input := iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String(user),
+	}
+	var policies []string
+
+	pages := iam.NewListAttachedUserPoliciesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("listing IAM User (%s) attached policies: %w", user, err)
+		}
+
+		for _, v := range page.AttachedPolicies {
+			policies = append(policies, aws.ToString(v.PolicyArn))
+		}
 	}
 
-	output, err := conn.ListAttachedUserPolicies(ctx, input)
-	if errs.IsA[*awstypes.NoSuchEntityException](err) {
-		// user was an entity 2 nanoseconds ago, but now it's not
-		return nil
-	}
-
-	if err != nil {
-		return fmt.Errorf("listing/detaching IAM User (%s) attached policy: %w", username, err)
-	}
-
-	for _, policy := range output.AttachedPolicies {
-		policyARN := aws.ToString(policy.PolicyArn)
-
-		log.Printf("[DEBUG] Detaching IAM User (%s) attached policy: %s", username, policyARN)
-
-		if err := detachPolicyFromUser(ctx, conn, username, policyARN); err != nil {
-			return fmt.Errorf("detaching IAM User (%s) attached policy: %w", username, err)
+	for _, v := range policies {
+		if err := detachPolicyFromUser(ctx, conn, user, v); err != nil {
+			return err
 		}
 	}
 

@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/jmespath/go-jmespath"
+)
+func (ps iamPolicyStatementPrincipalSet) MarshalJSON() ([]byte, error) {
+	raw := map[string]any{}
+
+	// Although IAM documentation says that "*" and {"AWS": "*"} are equivalent
+	// (https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html),
+	// in practice they are not for IAM roles. IAM will return an error if trust
+	// policy have "*" or {"*": "*"} as principal, but will accept {"AWS": "*"}.
+	// Only {"*": "*"} should be normalized to "*".
+	if len(ps) == 1 {
+		p := ps[0]
+		if p.Type == "*" {
+			if sv, ok := p.Identifiers.(string); ok && sv == "*" {
+				return []byte(`"*"`), nil
+			}
+
+			if av, ok := p.Identifiers.([]string); ok && len(av) == 1 && av[0] == "*" {
+				return []byte(`"*"`), nil
+			}
+		}
+	}
+
+	for _, p := range ps {
+		switch i := p.Identifiers.(type) {
+		case []string:
+			switch v := raw[p.Type].(type) {
+			case nil:
+				raw[p.Type] = make([]string, 0, len(i))
+			case string:
+				// Convert to []string to prevent panic
+				raw[p.Type] = make([]string, 0, len(i)+1)
+				raw[p.Type] = append(raw[p.Type].([]string), v)
+			}
+			slices.Sort(i)
+			slices.Reverse(i)
+			raw[p.Type] = append(raw[p.Type].([]string), i...)
+		case string:
+			switch v := raw[p.Type].(type) {
+			case nil:
+				raw[p.Type] = i
+			case string:
+				// Convert to []string to stop drop of principals
+				raw[p.Type] = make([]string, 0, policyModelMarshallJSONStartSliceSize)
+				raw[p.Type] = append(raw[p.Type].([]string), v)
+				raw[p.Type] = append(raw[p.Type].([]string), i)
+			case []string:
+				raw[p.Type] = append(raw[p.Type].([]string), i)
+			}
+		default:
+			return []byte{}, fmt.Errorf("Unsupported data type %T for IAMPolicyStatementPrincipalSet", i)
+		}
+	}
+
+	return json.Marshal(&raw)
+}

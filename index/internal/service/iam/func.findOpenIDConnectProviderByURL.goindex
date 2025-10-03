@@ -1,0 +1,45 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findOpenIDConnectProviderByURL(ctx context.Context, conn *iam.Client, url string) (*awstypes.OpenIDConnectProviderListEntry, error) {
+	var input iam.ListOpenIDConnectProvidersInput
+
+	output, err := conn.ListOpenIDConnectProviders(ctx, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	for _, v := range output.OpenIDConnectProviderList {
+		if p := &v; inttypes.IsZero(p) {
+			continue
+		}
+
+		arnUrl, err := urlFromOpenIDConnectProviderARN(aws.ToString(v.Arn))
+		if err != nil {
+			return nil, err
+		}
+
+		if arnUrl == strings.TrimPrefix(url, "https://") {
+			return &v, nil
+		}
+	}
+
+	return nil, &retry.NotFoundError{}
+}

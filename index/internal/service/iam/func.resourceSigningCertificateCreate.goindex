@@ -1,6 +1,5 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/iam
-import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
-
+import (
 	"context"
 	"fmt"
 	"log"
@@ -10,42 +9,48 @@ import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceSigningCertificateCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).IAMClient(ctx)
 
-	createOpts := &iam.UploadSigningCertificateInput{
+	userName := d.Get(names.AttrUserName).(string)
+	input := iam.UploadSigningCertificateInput{
 		CertificateBody: aws.String(d.Get("certificate_body").(string)),
-		UserName:        aws.String(d.Get(names.AttrUserName).(string)),
+		UserName:        aws.String(userName),
 	}
 
-	resp, err := conn.UploadSigningCertificate(ctx, createOpts)
+	output, err := conn.UploadSigningCertificate(ctx, &input)
+
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "uploading IAM Signing Certificate: %s", err)
 	}
 
-	cert := resp.Certificate
-	certId := cert.CertificateId
-	d.SetId(fmt.Sprintf("%s:%s", aws.ToString(certId), aws.ToString(cert.UserName)))
+	cert := output.Certificate
+	certID := aws.ToString(cert.CertificateId)
+	d.SetId(signingCertificateCreateResourceID(certID, userName))
 
 	if v, ok := d.GetOk(names.AttrStatus); ok && v.(string) != string(awstypes.StatusTypeActive) {
-		updateInput := &iam.UpdateSigningCertificateInput{
-			CertificateId: certId,
-			UserName:      aws.String(d.Get(names.AttrUserName).(string)),
+		input := iam.UpdateSigningCertificateInput{
+			CertificateId: aws.String(certID),
 			Status:        awstypes.StatusType(v.(string)),
+			UserName:      aws.String(userName),
 		}
 
-		_, err := conn.UpdateSigningCertificate(ctx, updateInput)
+		_, err := conn.UpdateSigningCertificate(ctx, &input)
+
 		if err != nil {
-			return sdkdiag.AppendErrorf(diags, "settings IAM Signing Certificate status: %s", err)
+			return sdkdiag.AppendErrorf(diags, "settings IAM Signing Certificate (%s) status: %s", d.Id(), err)
 		}
 	}
 
