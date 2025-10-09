@@ -1,8 +1,8 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
 import (
 	"context"
+	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -19,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-provider-aws/internal/actionwait"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -148,13 +149,51 @@ func (a *createInvalidationAction) Invoke(ctx context.Context, req action.Invoke
 		Message: fmt.Sprintf("Invalidation %s created, waiting for completion...", invalidationID),
 	})
 
-	// Wait for invalidation to complete with periodic progress updates
-	err = a.waitForInvalidationComplete(ctx, conn, distributionID, invalidationID, timeout, resp)
+	// Wait for invalidation to complete with periodic progress updates using actionwait
+	// Use fixed interval since CloudFront invalidations have predictable timing and
+	// don't benefit from exponential backoff - status changes are infrequent and consistent
+	_, err = actionwait.WaitForStatus(ctx, func(ctx context.Context) (actionwait.FetchResult[struct{}], error) {
+		input := cloudfront.GetInvalidationInput{
+			DistributionId: aws.String(distributionID),
+			Id:             aws.String(invalidationID),
+		}
+		output, gerr := conn.GetInvalidation(ctx, &input)
+		if gerr != nil {
+			return actionwait.FetchResult[struct{}]{}, fmt.Errorf("getting invalidation status: %w", gerr)
+		}
+		status := aws.ToString(output.Invalidation.Status)
+		return actionwait.FetchResult[struct{}]{Status: actionwait.Status(status)}, nil
+	}, actionwait.Options[struct{}]{
+		Timeout:          timeout,
+		Interval:         actionwait.FixedInterval(actionwait.DefaultPollInterval),
+		ProgressInterval: 60 * time.Second,
+		SuccessStates:    []actionwait.Status{"Completed"},
+		TransitionalStates: []actionwait.Status{
+			"InProgress",
+		},
+		ProgressSink: func(fr actionwait.FetchResult[any], meta actionwait.ProgressMeta) {
+			resp.SendProgress(action.InvokeProgressEvent{Message: fmt.Sprintf("Invalidation %s is currently '%s', continuing to wait for completion...", invalidationID, fr.Status)})
+		},
+	})
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Timeout Waiting for Invalidation to Complete",
-			fmt.Sprintf("CloudFront invalidation %s did not complete within %s: %s", invalidationID, timeout, err),
-		)
+		var timeoutErr *actionwait.TimeoutError
+		var unexpectedErr *actionwait.UnexpectedStateError
+		if errors.As(err, &timeoutErr) {
+			resp.Diagnostics.AddError(
+				"Timeout Waiting for Invalidation to Complete",
+				fmt.Sprintf("CloudFront invalidation %s did not complete within %s: %s", invalidationID, timeout, err),
+			)
+		} else if errors.As(err, &unexpectedErr) {
+			resp.Diagnostics.AddError(
+				"Invalid Invalidation State",
+				fmt.Sprintf("CloudFront invalidation %s entered unexpected state: %s", invalidationID, err),
+			)
+		} else {
+			resp.Diagnostics.AddError(
+				"Failed While Waiting for Invalidation",
+				fmt.Sprintf("Error waiting for CloudFront invalidation %s: %s", invalidationID, err),
+			)
+		}
 		return
 	}
 

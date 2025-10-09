@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datazone"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepEnvironments(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.DataZoneClient(ctx)
+	var sweepResources []sweep.Sweepable
+
+	var domainsInput datazone.ListDomainsInput
+	pages := datazone.NewListDomainsPaginator(conn, &domainsInput)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, domain := range page.Items {
+			projectsInput := datazone.ListProjectsInput{
+				DomainIdentifier: domain.Id,
+			}
+			pages := datazone.NewListProjectsPaginator(conn, &projectsInput)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+				if err != nil {
+					return nil, err
+				}
+
+				for _, project := range page.Items {
+					environmentsInput := datazone.ListEnvironmentsInput{
+						DomainIdentifier:  domain.Id,
+						ProjectIdentifier: project.Id,
+					}
+					pages := datazone.NewListEnvironmentsPaginator(conn, &environmentsInput)
+					for pages.HasMorePages() {
+						page, err := pages.NextPage(ctx)
+						if err != nil {
+							return nil, err
+						}
+
+						for _, environment := range page.Items {
+							sweepResources = append(sweepResources, framework.NewSweepResource(newEnvironmentResource, client,
+								framework.NewAttribute(names.AttrID, environment.Id),
+								framework.NewAttribute("domain_identifier", domain.Id),
+							))
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return sweepResources, nil
+}

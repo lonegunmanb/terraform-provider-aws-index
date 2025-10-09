@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amp
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amp"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/amp/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourcePolicyResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data resourcePolicyResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().AMPClient(ctx)
+
+	workspaceID := fwflex.StringValueFromFramework(ctx, data.WorkspaceID)
+	input := amp.PutResourcePolicyInput{
+		ClientToken:    aws.String(sdkid.UniqueId()),
+		PolicyDocument: fwflex.StringFromFramework(ctx, data.PolicyDocument),
+		WorkspaceId:    aws.String(workspaceID),
+	}
+
+	if !data.RevisionID.IsNull() {
+		input.RevisionId = fwflex.StringFromFramework(ctx, data.RevisionID)
+	}
+
+	output, err := conn.PutResourcePolicy(ctx, &input)
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating Prometheus Workspace (%s) Resource Policy", workspaceID), err.Error())
+		return
+	}
+
+	// Set values for unknowns.
+	data.RevisionID = fwflex.StringToFramework(ctx, output.RevisionId)
+
+	if _, err := waitResourcePolicyCreated(ctx, conn, workspaceID, r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for Prometheus Workspace (%s) Resource Policy create", workspaceID), err.Error())
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

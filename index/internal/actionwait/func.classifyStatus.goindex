@@ -1,0 +1,35 @@
+package github.com/hashicorp/terraform-provider-aws/internal/actionwait
+import (
+	"context"
+	"errors"
+	"slices"
+	"time"
+
+	"github.com/hashicorp/terraform-provider-aws/internal/backoff"
+)
+func classifyStatus[T any](fr FetchResult[T], opts Options[T], successStreak *int, allowedTransient []Status) (bool, error) {
+	// Classification precedence: failure -> success -> transitional -> unexpected
+	if slices.Contains(opts.FailureStates, fr.Status) {
+		return true, &FailureStateError{Status: fr.Status}
+	}
+
+	if slices.Contains(opts.SuccessStates, fr.Status) {
+		*successStreak++
+		if *successStreak >= opts.ConsecutiveSuccess {
+			return true, nil // Success!
+		}
+		return false, nil // Continue polling for consecutive successes
+	}
+
+	// Not a success state, reset streak
+	*successStreak = 0
+
+	// Check if transitional state is allowed
+	// If TransitionalStates is specified, status must be in that list
+	// If TransitionalStates is empty, any non-success/non-failure state is allowed
+	if len(opts.TransitionalStates) > 0 && !slices.Contains(opts.TransitionalStates, fr.Status) {
+		return true, &UnexpectedStateError{Status: fr.Status, Allowed: allowedTransient}
+	}
+
+	return false, nil // Continue polling
+}

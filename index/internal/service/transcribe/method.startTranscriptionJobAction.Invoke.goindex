@@ -1,0 +1,197 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/transcribe
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/transcribe"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/transcribe/types"
+	"github.com/hashicorp/terraform-plugin-framework/action"
+	"github.com/hashicorp/terraform-plugin-framework/action/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/actionwait"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (a *startTranscriptionJobAction) Invoke(ctx context.Context, req action.InvokeRequest, resp *action.InvokeResponse) {
+	var config startTranscriptionJobActionModel
+
+	// Parse configuration
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Get AWS client
+	conn := a.Meta().TranscribeClient(ctx)
+
+	transcriptionJobName := config.TranscriptionJobName.ValueString()
+	mediaFileUri := config.MediaFileUri.ValueString()
+
+	// Set default timeout
+	timeout := 5 * time.Minute
+	if !config.Timeout.IsNull() {
+		timeout = time.Duration(config.Timeout.ValueInt64()) * time.Second
+	}
+
+	tflog.Info(ctx, "Starting transcription job action", map[string]any{
+		"transcription_job_name": transcriptionJobName,
+		"media_file_uri":         mediaFileUri,
+		"timeout_seconds":        int64(timeout.Seconds()),
+	})
+
+	// Send initial progress update
+	resp.SendProgress(action.InvokeProgressEvent{
+		Message: fmt.Sprintf("Starting transcription job %s...", transcriptionJobName),
+	})
+
+	// Build the start transcription job input
+	input := &transcribe.StartTranscriptionJobInput{
+		TranscriptionJobName: aws.String(transcriptionJobName),
+		Media: &awstypes.Media{
+			MediaFileUri: aws.String(mediaFileUri),
+		},
+	}
+
+	// Validate language configuration - exactly one must be specified
+	languageOptions := []bool{
+		!config.LanguageCode.IsNull() && !config.LanguageCode.IsUnknown(),
+		!config.IdentifyLanguage.IsNull() && config.IdentifyLanguage.ValueBool(),
+		!config.IdentifyMultipleLanguages.IsNull() && config.IdentifyMultipleLanguages.ValueBool(),
+	}
+
+	activeCount := 0
+	for _, active := range languageOptions {
+		if active {
+			activeCount++
+		}
+	}
+
+	switch activeCount {
+	case 0:
+		resp.Diagnostics.AddError(
+			"Missing Language Configuration",
+			"You must specify exactly one of: language_code, identify_language, or identify_multiple_languages",
+		)
+		return
+	case 1:
+		// Valid - continue
+	default:
+		resp.Diagnostics.AddError(
+			"Conflicting Language Configuration",
+			"You can only specify one of: language_code, identify_language, or identify_multiple_languages",
+		)
+		return
+	}
+
+	// Set language configuration
+	if languageOptions[0] {
+		input.LanguageCode = config.LanguageCode.ValueEnum()
+	}
+	if languageOptions[1] {
+		input.IdentifyLanguage = aws.Bool(true)
+	}
+	if languageOptions[2] {
+		input.IdentifyMultipleLanguages = aws.Bool(true)
+	}
+
+	// Set optional parameters
+	if !config.MediaFormat.IsNull() && !config.MediaFormat.IsUnknown() {
+		input.MediaFormat = config.MediaFormat.ValueEnum()
+	}
+
+	if !config.MediaSampleRateHertz.IsNull() {
+		input.MediaSampleRateHertz = aws.Int32(int32(config.MediaSampleRateHertz.ValueInt64()))
+	}
+
+	if !config.OutputBucketName.IsNull() {
+		input.OutputBucketName = config.OutputBucketName.ValueStringPointer()
+	}
+
+	if !config.OutputKey.IsNull() {
+		input.OutputKey = config.OutputKey.ValueStringPointer()
+	}
+
+	// Start the transcription job
+	_, err := conn.StartTranscriptionJob(ctx, input)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Failed to Start Transcription Job",
+			fmt.Sprintf("Could not start transcription job %s: %s", transcriptionJobName, err),
+		)
+		return
+	}
+
+	// Wait for job to move beyond QUEUED: treat IN_PROGRESS or COMPLETED as success, FAILED as failure, QUEUED transitional.
+	fr, err := actionwait.WaitForStatus(ctx, func(ctx context.Context) (actionwait.FetchResult[*awstypes.TranscriptionJob], error) {
+		input := transcribe.GetTranscriptionJobInput{TranscriptionJobName: aws.String(transcriptionJobName)}
+		getOutput, gerr := conn.GetTranscriptionJob(ctx, &input)
+		if gerr != nil {
+			return actionwait.FetchResult[*awstypes.TranscriptionJob]{}, fmt.Errorf("get transcription job: %w", gerr)
+		}
+		if getOutput.TranscriptionJob == nil {
+			return actionwait.FetchResult[*awstypes.TranscriptionJob]{}, fmt.Errorf("transcription job %s not found", transcriptionJobName)
+		}
+		status := getOutput.TranscriptionJob.TranscriptionJobStatus
+		return actionwait.FetchResult[*awstypes.TranscriptionJob]{Status: actionwait.Status(status), Value: getOutput.TranscriptionJob}, nil
+	}, actionwait.Options[*awstypes.TranscriptionJob]{
+		Timeout:          timeout,
+		Interval:         actionwait.FixedInterval(transcriptionJobPollInterval),
+		ProgressInterval: transcriptionJobProgressInterval,
+		SuccessStates: []actionwait.Status{
+			actionwait.Status(awstypes.TranscriptionJobStatusInProgress),
+			actionwait.Status(awstypes.TranscriptionJobStatusCompleted),
+		},
+		TransitionalStates: []actionwait.Status{
+			actionwait.Status(awstypes.TranscriptionJobStatusQueued),
+		},
+		FailureStates: []actionwait.Status{
+			actionwait.Status(awstypes.TranscriptionJobStatusFailed),
+		},
+		ProgressSink: func(fr actionwait.FetchResult[any], meta actionwait.ProgressMeta) {
+			resp.SendProgress(action.InvokeProgressEvent{Message: fmt.Sprintf("Transcription job %s is currently %s", transcriptionJobName, fr.Status)})
+		},
+	})
+	if err != nil {
+		var timeoutErr *actionwait.TimeoutError
+		var failureErr *actionwait.FailureStateError
+		var unexpectedErr *actionwait.UnexpectedStateError
+
+		if errors.As(err, &timeoutErr) {
+			resp.Diagnostics.AddError(
+				"Timeout Waiting for Transcription Job",
+				fmt.Sprintf("Transcription job %s did not reach a running state within %v", transcriptionJobName, timeout),
+			)
+		} else if errors.As(err, &failureErr) {
+			resp.Diagnostics.AddError(
+				"Transcription Job Failed",
+				fmt.Sprintf("Transcription job %s failed: %s", transcriptionJobName, failureErr.Status),
+			)
+		} else if errors.As(err, &unexpectedErr) {
+			resp.Diagnostics.AddError(
+				"Unexpected Transcription Job Status",
+				fmt.Sprintf("Transcription job %s entered unexpected status: %s", transcriptionJobName, unexpectedErr.Status),
+			)
+		} else {
+			resp.Diagnostics.AddError(
+				"Error Waiting for Transcription Job",
+				fmt.Sprintf("Error while waiting for transcription job %s: %s", transcriptionJobName, err),
+			)
+		}
+		return
+	}
+
+	resp.SendProgress(action.InvokeProgressEvent{Message: fmt.Sprintf("Transcription job %s started successfully and is %s", transcriptionJobName, fr.Status)})
+	logFields := map[string]any{
+		"transcription_job_name": transcriptionJobName,
+		"job_status":             fr.Status,
+	}
+	if fr.Value != nil {
+		logFields[names.AttrCreationTime] = fr.Value.CreationTime
+	}
+	tflog.Info(ctx, "Transcription job started successfully", logFields)
+}

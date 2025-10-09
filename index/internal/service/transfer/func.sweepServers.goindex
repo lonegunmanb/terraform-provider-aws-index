@@ -1,54 +1,37 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/transfer
 import (
-	"fmt"
-	"log"
+	"context"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/transfer"
-	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func sweepServers(region string) error {
-	ctx := sweep.Context(region)
-	client, err := sweep.SharedRegionalSweepClient(ctx, region)
-	if err != nil {
-		return fmt.Errorf("getting client: %w", err)
-	}
+func sweepServers(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
 	conn := client.TransferClient(ctx)
-	input := &transfer.ListServersInput{}
+	var input transfer.ListServersInput
 	sweepResources := make([]sweep.Sweepable, 0)
 
-	pages := transfer.NewListServersPaginator(conn, input)
+	pages := transfer.NewListServersPaginator(conn, &input)
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
-
-		if awsv2.SkipSweepError(err) {
-			log.Printf("[WARN] Skipping Transfer Server sweep for %s: %s", region, err)
-			return nil
-		}
-
 		if err != nil {
-			return fmt.Errorf("error listing Transfer Servers (%s): %w", region, err)
+			return nil, err
 		}
 
-		for _, server := range page.Servers {
+		for _, v := range page.Servers {
 			r := resourceServer()
 			d := r.Data(nil)
-			d.SetId(aws.ToString(server.ServerId))
+			d.SetId(aws.ToString(v.ServerId))
 			d.Set(names.AttrForceDestroy, true) // In lieu of an aws_transfer_user sweeper.
-			d.Set("identity_provider_type", server.IdentityProviderType)
+			d.Set("identity_provider_type", v.IdentityProviderType)
 
 			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
 		}
 	}
 
-	err = sweep.SweepOrchestrator(ctx, sweepResources)
-
-	if err != nil {
-		return fmt.Errorf("error sweeping Transfer Servers (%s): %w", region, err)
-	}
-
-	return nil
+	return sweepResources, nil
 }
