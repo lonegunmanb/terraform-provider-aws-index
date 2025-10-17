@@ -41,6 +41,45 @@ func flattenStruct(ctx context.Context, sourcePath path.Path, from any, targetPa
 	typeFrom := valFrom.Type()
 	typeTo := valTo.Type()
 
+	// Special handling: Check if the entire source struct is an XML wrapper
+	// and should be flattened to a target field with wrapper tag
+	if isXMLWrapperStruct(typeFrom) {
+		for toField := range tfreflect.ExportedStructFields(typeTo) {
+			toFieldName := toField.Name
+			_, toOpts := autoflexTags(toField)
+			if wrapperField := toOpts.WrapperField(); wrapperField != "" {
+				toFieldVal := valTo.FieldByIndex(toField.Index)
+				if !toFieldVal.CanSet() {
+					continue
+				}
+
+				tflog.SubsystemTrace(ctx, subsystemName, "Converting entire XML wrapper struct to collection field", map[string]any{
+					logAttrKeySourceType:      typeFrom.String(),
+					logAttrKeyTargetFieldname: toFieldName,
+					"wrapper_field":           wrapperField,
+				})
+
+				valTo, ok := toFieldVal.Interface().(attr.Value)
+				if !ok {
+					tflog.SubsystemError(ctx, subsystemName, "Target field does not implement attr.Value")
+					diags.Append(diagFlatteningTargetDoesNotImplementAttrValue(reflect.TypeOf(toFieldVal.Interface())))
+					return diags
+				}
+
+				if f, ok := flexer.(*autoFlattener); ok {
+					diags.Append(f.xmlWrapperFlatten(ctx, valFrom, valTo.Type(ctx), toFieldVal, wrapperField)...)
+				} else {
+					diags.Append(DiagFlatteningIncompatibleTypes(valFrom.Type(), reflect.TypeOf(toFieldVal.Interface())))
+				}
+				if diags.HasError() {
+					return diags
+				}
+				// Successfully handled as XML wrapper, don't process individual fields
+				return diags
+			}
+		}
+	}
+
 	for fromField := range flattenSourceFields(ctx, typeFrom, flexer.getOptions()) {
 		fromFieldName := fromField.Name
 
@@ -82,6 +121,35 @@ func flattenStruct(ctx context.Context, sourcePath path.Path, from any, targetPa
 			logAttrKeySourceFieldname: fromFieldName,
 			logAttrKeyTargetFieldname: toFieldName,
 		})
+
+		// Check if target has wrapper tag and source is an XML wrapper struct
+		if wrapperField := toOpts.WrapperField(); wrapperField != "" {
+			fromFieldVal := valFrom.FieldByIndex(fromField.Index)
+			if isXMLWrapperStruct(fromFieldVal.Type()) {
+				tflog.SubsystemTrace(ctx, subsystemName, "Converting XML wrapper struct to collection", map[string]any{
+					logAttrKeySourceFieldname: fromFieldName,
+					logAttrKeyTargetFieldname: toFieldName,
+					"wrapper_field":           wrapperField,
+				})
+
+				valTo, ok := toFieldVal.Interface().(attr.Value)
+				if !ok {
+					tflog.SubsystemError(ctx, subsystemName, "Target field does not implement attr.Value")
+					diags.Append(diagFlatteningTargetDoesNotImplementAttrValue(reflect.TypeOf(toFieldVal.Interface())))
+					break
+				}
+
+				if f, ok := flexer.(*autoFlattener); ok {
+					diags.Append(f.xmlWrapperFlatten(ctx, fromFieldVal, valTo.Type(ctx), toFieldVal, wrapperField)...)
+				} else {
+					diags.Append(DiagFlatteningIncompatibleTypes(fromFieldVal.Type(), reflect.TypeOf(toFieldVal.Interface())))
+				}
+				if diags.HasError() {
+					break
+				}
+				continue
+			}
+		}
 
 		opts := fieldOpts{
 			legacy:    toOpts.Legacy(),

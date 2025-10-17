@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagentcore
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func convertToJSONSchemaDefinition(sd *awstypes.SchemaDefinition) *jsonSchemaDefinition {
+	if sd == nil {
+		return nil
+	}
+
+	jsd := &jsonSchemaDefinition{
+		Type: string(sd.Type), // Convert SchemaType enum to string
+	}
+
+	// Only set non-nil values to avoid null fields in JSON
+	if sd.Description != nil && aws.ToString(sd.Description) != "" {
+		jsd.Description = sd.Description
+	}
+	if len(sd.Required) > 0 {
+		jsd.Required = sd.Required
+	}
+
+	if sd.Items != nil {
+		jsd.Items = convertToJSONSchemaDefinition(sd.Items)
+	}
+
+	if sd.Properties != nil {
+		jsd.Properties = make(map[string]*jsonSchemaDefinition)
+		for k, v := range sd.Properties {
+			if converted := convertToJSONSchemaDefinition(&v); converted != nil {
+				jsd.Properties[k] = converted
+			}
+		}
+		// If no properties were added, don't include the properties field
+		if len(jsd.Properties) == 0 {
+			jsd.Properties = nil
+		}
+	}
+
+	return jsd
+}
