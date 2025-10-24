@@ -1,0 +1,38 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/observabilityadmin
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/observabilityadmin"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/vcr"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (p *servicePackage) NewClient(ctx context.Context, config map[string]any) (*observabilityadmin.Client, error) {
+	cfg := *(config["aws_sdkv2_config"].(*aws.Config))
+	optFns := []func(*observabilityadmin.Options){
+		observabilityadmin.WithEndpointResolverV2(newEndpointResolverV2()),
+		withBaseEndpoint(config[names.AttrEndpoint].(string)),
+		func(o *observabilityadmin.Options) {
+			if region := config[names.AttrRegion].(string); o.Region != region {
+				tflog.Info(ctx, "overriding provider-configured AWS API region", map[string]any{
+					"service":         p.ServicePackageName(),
+					"original_region": o.Region,
+					"override_region": region,
+				})
+				o.Region = region
+			}
+		},
+		func(o *observabilityadmin.Options) {
+			if inContext, ok := conns.FromContext(ctx); ok && inContext.VCREnabled() {
+				tflog.Info(ctx, "overriding retry behavior to immediately return VCR errors")
+				o.Retryer = conns.AddIsErrorRetryables(cfg.Retryer().(aws.RetryerV2), vcr.InteractionNotFoundRetryableFunc)
+			}
+		},
+		withExtraOptions(ctx, p, config),
+	}
+
+	return observabilityadmin.NewFromConfig(cfg, optFns...), nil
+}
