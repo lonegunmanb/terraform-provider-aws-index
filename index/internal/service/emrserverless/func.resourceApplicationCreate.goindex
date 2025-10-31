@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/emrserverless"
 	"github.com/aws/aws-sdk-go-v2/service/emrserverless/types"
@@ -29,7 +30,7 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, meta
 	conn := meta.(*conns.AWSClient).EMRServerlessClient(ctx)
 
 	name := d.Get(names.AttrName).(string)
-	input := &emrserverless.CreateApplicationInput{
+	input := emrserverless.CreateApplicationInput{
 		ClientToken:  aws.String(id.UniqueId()),
 		ReleaseLabel: aws.String(d.Get("release_label").(string)),
 		Name:         aws.String(name),
@@ -65,8 +66,16 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, meta
 		input.MaximumCapacity = expandMaximumCapacity(v.([]any)[0].(map[string]any))
 	}
 
+	if v, ok := d.GetOk("monitoring_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.MonitoringConfiguration = expandMonitoringConfiguration(v.([]any)[0].(map[string]any))
+	}
+
 	if v, ok := d.GetOk(names.AttrNetworkConfiguration); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
 		input.NetworkConfiguration = expandNetworkConfiguration(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("runtime_configuration"); ok && len(v.([]any)) > 0 {
+		input.RuntimeConfiguration = expandRuntimeConfiguration(v.([]any))
 	}
 
 	// Empty block (len(v.([]any)) > 0 but v.([]any)[0] == nil) is allowed to enable scheduler_configuration with default values
@@ -74,8 +83,7 @@ func resourceApplicationCreate(ctx context.Context, d *schema.ResourceData, meta
 		input.SchedulerConfiguration = expandSchedulerConfiguration(v.([]any))
 	}
 
-	output, err := conn.CreateApplication(ctx, input)
-
+	output, err := conn.CreateApplication(ctx, &input)
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "creating EMR Serveless Application (%s): %s", name, err)
 	}

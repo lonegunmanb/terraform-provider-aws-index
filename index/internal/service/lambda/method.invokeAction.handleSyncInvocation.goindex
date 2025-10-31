@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-framework/action"
+	"github.com/hashicorp/terraform-plugin-framework/action/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (a *invokeAction) handleSyncInvocation(resp *action.InvokeResponse, functionName string, output *lambda.InvokeOutput, logType awstypes.LogType) {
+	statusCode := output.StatusCode
+	payloadLength := len(output.Payload)
+
+	// Send success message
+	resp.SendProgress(action.InvokeProgressEvent{
+		Message: fmt.Sprintf("Lambda function %s invoked successfully (status: %d, payload: %d bytes)",
+			functionName, statusCode, payloadLength),
+	})
+
+	// Output logs if available
+	if logType != awstypes.LogTypeTail || output.LogResult == nil {
+		return
+	}
+
+	logData, err := base64.StdEncoding.DecodeString(aws.ToString(output.LogResult))
+	if err != nil {
+		resp.SendProgress(action.InvokeProgressEvent{
+			Message: fmt.Sprintf("Failed to decode Lambda logs: %s", err),
+		})
+		return
+	}
+
+	resp.SendProgress(action.InvokeProgressEvent{
+		Message: fmt.Sprintf("Lambda function logs:\n%s", string(logData)),
+	})
+}
