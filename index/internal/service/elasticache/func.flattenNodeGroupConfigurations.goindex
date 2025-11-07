@@ -1,0 +1,93 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-cty/cty/gocty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenNodeGroupConfigurations(apiObjects []awstypes.NodeGroup) []any {
+	var tfList []any
+
+	for _, apiObject := range apiObjects {
+		tfMap := map[string]any{}
+
+		if v := apiObject.NodeGroupId; v != nil {
+			tfMap["node_group_id"] = aws.ToString(v)
+		}
+		if len(apiObject.NodeGroupMembers) > 1 {
+			tfMap["replica_count"] = len(apiObject.NodeGroupMembers) - 1
+		}
+		if v := apiObject.Slots; v != nil {
+			tfMap["slots"] = aws.ToString(v)
+		}
+
+		// Extract availability zones and outpost ARNs from node group members
+		// Since CurrentRole is not reliably set by AWS API, use member position
+		// First member is typically the primary, rest are replicas
+		var primaryAZ string
+		var primaryOutpostArn string
+		var replicaAZs []string
+		var replicaOutpostArns []string
+
+		for j, member := range apiObject.NodeGroupMembers {
+			if j == 0 {
+				// First member is primary
+				if member.PreferredAvailabilityZone != nil {
+					primaryAZ = aws.ToString(member.PreferredAvailabilityZone)
+				}
+				if member.PreferredOutpostArn != nil {
+					primaryOutpostArn = aws.ToString(member.PreferredOutpostArn)
+				}
+			} else {
+				// Remaining members are replicas
+				if member.PreferredAvailabilityZone != nil {
+					replicaAZs = append(replicaAZs, aws.ToString(member.PreferredAvailabilityZone))
+				}
+				if member.PreferredOutpostArn != nil {
+					replicaOutpostArns = append(replicaOutpostArns, aws.ToString(member.PreferredOutpostArn))
+				}
+			}
+		}
+
+		// Always set computed fields to ensure consistent state during import
+		tfMap["primary_availability_zone"] = primaryAZ
+		tfMap["primary_outpost_arn"] = primaryOutpostArn
+		tfMap["replica_availability_zones"] = replicaAZs
+		tfMap["replica_outpost_arns"] = replicaOutpostArns
+
+		tfList = append(tfList, tfMap)
+	}
+
+	return tfList
+}

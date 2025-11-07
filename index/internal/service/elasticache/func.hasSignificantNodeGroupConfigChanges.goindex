@@ -1,0 +1,92 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-cty/cty/gocty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func hasSignificantNodeGroupConfigChanges(oldSet, newSet *schema.Set) bool {
+	// Convert sets to maps for easier comparison
+	oldConfigs := make(map[string]map[string]any)
+	newConfigs := make(map[string]map[string]any)
+
+	for _, item := range oldSet.List() {
+		config := item.(map[string]any)
+		nodeGroupID := config["node_group_id"].(string)
+		oldConfigs[nodeGroupID] = config
+	}
+
+	for _, item := range newSet.List() {
+		config := item.(map[string]any)
+		nodeGroupID := config["node_group_id"].(string)
+		newConfigs[nodeGroupID] = config
+	}
+
+	// Check if node groups were added or removed
+	if len(oldConfigs) != len(newConfigs) {
+		return true
+	}
+
+	// Check each node group for significant changes
+	for nodeGroupID, oldConfig := range oldConfigs {
+		newConfig, exists := newConfigs[nodeGroupID]
+		if !exists {
+			return true // Node group removed
+		}
+
+		// Check for changes in fields that require ForceNew
+		significantFields := []string{"node_group_id", "replica_count", "slots"}
+		for _, field := range significantFields {
+			if oldConfig[field] != newConfig[field] {
+				return true
+			}
+		}
+
+		// Check AZ changes only if they were explicitly set in old config
+		if oldPrimaryAZ, ok := oldConfig["primary_availability_zone"].(string); ok && oldPrimaryAZ != "" {
+			if newPrimaryAZ, ok := newConfig["primary_availability_zone"].(string); ok && oldPrimaryAZ != newPrimaryAZ {
+				return true
+			}
+		}
+
+		if oldReplicaAZs, ok := oldConfig["replica_availability_zones"].([]any); ok && len(oldReplicaAZs) > 0 {
+			newReplicaAZs, _ := newConfig["replica_availability_zones"].([]any)
+			if !slices.Equal(oldReplicaAZs, newReplicaAZs) {
+				return true
+			}
+		}
+	}
+
+	return false
+}

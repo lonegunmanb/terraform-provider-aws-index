@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/appsync"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
@@ -19,13 +20,15 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	autoflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	intretry "github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
@@ -33,34 +36,32 @@ func (r *sourceAPIAssociationResource) Read(ctx context.Context, request resourc
 	conn := r.Meta().AppSyncClient(ctx)
 
 	var state sourceAPIAssociationResourceModel
-	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.State.Get(ctx, &state))
 	if response.Diagnostics.HasError() {
 		return
 	}
 
 	if err := state.InitFromID(); err != nil {
-		response.Diagnostics.AddError("parsing resource ID", err.Error())
+		smerr.AddError(ctx, &response.Diagnostics, err)
 
 		return
 	}
 
 	out, err := findSourceAPIAssociationByTwoPartKey(ctx, conn, state.AssociationID.ValueString(), state.MergedAPIID.ValueString())
-	if tfresource.NotFound(err) {
+	if intretry.NotFound(err) {
+		smerr.AddOne(ctx, &response.Diagnostics, fwdiag.NewResourceNotFoundWarningDiagnostic(err))
 		response.State.RemoveResource(ctx)
 		return
 	}
 	if err != nil {
-		response.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.AppSync, create.ErrActionSetting, resNameSourceAPIAssociation, state.ID.String(), err),
-			err.Error(),
-		)
+		smerr.AddError(ctx, &response.Diagnostics, err)
 		return
 	}
 
-	response.Diagnostics.Append(flex.Flatten(ctx, out, &state)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, flex.Flatten(ctx, out, &state))
 	if response.Diagnostics.HasError() {
 		return
 	}
 
-	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, &state))
 }

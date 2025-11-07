@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceJobCustomizeDiff(_ context.Context, diff *schema.ResourceDiff, v any) error {
+	if command := expandJobCommand(diff.Get("command").([]any)); command != nil {
+		commandName := aws.ToString(command.Name)
+		// Allow 0 timeout for streaming jobs.
+		var minVal int64
+		if !strings.EqualFold(jobCommandNameApacheSparkStreamingETL, commandName) {
+			minVal = 1
+		}
+
+		key := names.AttrTimeout
+		if v := diff.GetRawConfig().GetAttr(key); v.IsKnown() && !v.IsNull() {
+			// InvalidInputException: Timeout not supported for Ray jobs.
+			if strings.EqualFold(jobCommandNameRay, commandName) {
+				return fmt.Errorf("%s must not be configured for Ray jobs", key)
+			}
+
+			if v, _ := v.AsBigFloat().Int64(); v < minVal {
+				return fmt.Errorf("expected %s to be at least (%d), got %d", key, minVal, v)
+			}
+		}
+	}
+
+	return nil
+}

@@ -1,0 +1,119 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *allowedImagesSettingsResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrState: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.AllowedImagesSettingsEnabledState](),
+				Required:   true,
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"image_criterion": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[imageCriterionModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(10),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"image_names": schema.SetAttribute{
+							CustomType:  fwtypes.SetOfStringType,
+							Optional:    true,
+							ElementType: types.StringType,
+							Validators: []validator.Set{
+								setvalidator.SizeAtMost(50),
+								setvalidator.ValueStringsAre(
+									stringvalidator.LengthBetween(1, 128),
+									stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z0-9\-\._/\?\[\]@'\(\)\*\w]+$`), "can only contain valid characters"),
+								),
+							},
+						},
+						"image_providers": schema.SetAttribute{
+							CustomType:  fwtypes.SetOfStringType,
+							Optional:    true,
+							ElementType: types.StringType,
+							Validators: []validator.Set{
+								setvalidator.SizeAtMost(200),
+								setvalidator.ValueStringsAre(
+									stringvalidator.Any(
+										stringvalidator.OneOf("amazon", "aws-marketplace", "aws-backup-vault", "none"),
+										fwvalidators.AWSAccountID(),
+									),
+								),
+							},
+						},
+						"marketplace_product_codes": schema.SetAttribute{
+							CustomType:  fwtypes.SetOfStringType,
+							Optional:    true,
+							ElementType: types.StringType,
+							Validators: []validator.Set{
+								setvalidator.SizeAtMost(50),
+								setvalidator.ValueStringsAre(
+									stringvalidator.LengthBetween(1, 25),
+									stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z0-9]+$`), "must be a valid marketplace product code"),
+								),
+							},
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"creation_date_condition": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[creationDateConditionModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"maximum_days_since_created": schema.Int32Attribute{
+										Optional: true,
+										Validators: []validator.Int32{
+											int32validator.AtLeast(0),
+										},
+									},
+								},
+							},
+						},
+						"deprecation_time_condition": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[deprecationTimeConditionModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"maximum_days_since_deprecated": schema.Int32Attribute{
+										Optional: true,
+										Validators: []validator.Int32{
+											int32validator.AtLeast(0),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

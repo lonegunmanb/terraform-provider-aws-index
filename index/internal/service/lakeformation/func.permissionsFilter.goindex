@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lakeformation
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func permissionsFilter(d *schema.ResourceData) PermissionsFilter {
+	principalIdentifier := d.Get(names.AttrPrincipal).(string)
+
+	if _, ok := d.GetOk("catalog_resource"); ok {
+		return filterCatalogPermissions(principalIdentifier)
+	}
+	if _, ok := d.GetOk("data_cells_filter"); ok {
+		return filterDataCellsFilter(principalIdentifier)
+	}
+	if v, ok := d.GetOk("data_location"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		return filterDataLocationPermissions(principalIdentifier)
+	}
+	if v, ok := d.GetOk(names.AttrDatabase); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		return filterDatabasePermissions(principalIdentifier)
+	}
+	if v, ok := d.GetOk("lf_tag"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		return filterLFTagPermissions(principalIdentifier)
+	}
+	if v, ok := d.GetOk("lf_tag_policy"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		return filterLFTagPolicyPermissions(principalIdentifier)
+	}
+	if v, ok := d.GetOk("table"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		return filterTablePermissions(principalIdentifier, ExpandTableResource(v.([]any)[0].(map[string]any)))
+	}
+	if v, ok := d.GetOk("table_with_columns"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		var columnNames []string
+		if v, ok := d.GetOk("table_with_columns.0.column_names"); ok {
+			if v, ok := v.(*schema.Set); ok && v.Len() > 0 {
+				columnNames = flex.ExpandStringValueSet(v)
+			}
+		}
+
+		var excludedColumnNames []string
+		if v, ok := d.GetOk("table_with_columns.0.excluded_column_names"); ok {
+			if v, ok := v.(*schema.Set); ok && v.Len() > 0 {
+				excludedColumnNames = flex.ExpandStringValueSet(v)
+			}
+		}
+
+		var columnWildcard bool
+		if v, ok := d.GetOk("table_with_columns.0.wildcard"); ok {
+			columnWildcard = v.(bool)
+		}
+
+		return filterTableWithColumnsPermissions(principalIdentifier, ExpandTableWithColumnsResourceAsTable(v.([]any)[0].(map[string]any)), columnNames, excludedColumnNames, columnWildcard)
+	}
+	return nil
+}

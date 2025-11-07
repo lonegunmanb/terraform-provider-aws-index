@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/appsync"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/appsync/types"
@@ -19,13 +20,15 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	autoflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	intretry "github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
@@ -33,14 +36,14 @@ func (r *sourceAPIAssociationResource) Create(ctx context.Context, request resou
 	conn := r.Meta().AppSyncClient(ctx)
 
 	var plan sourceAPIAssociationResourceModel
-	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &plan))
 	if response.Diagnostics.HasError() {
 		return
 	}
 
 	in := &appsync.AssociateSourceGraphqlApiInput{}
 
-	response.Diagnostics.Append(flex.Expand(ctx, plan, in)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, flex.Expand(ctx, plan, in))
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -63,17 +66,11 @@ func (r *sourceAPIAssociationResource) Create(ctx context.Context, request resou
 
 	out, err := conn.AssociateSourceGraphqlApi(ctx, in)
 	if err != nil {
-		response.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.AppSync, create.ErrActionCreating, resNameSourceAPIAssociation, plan.MergedAPIID.String(), err),
-			err.Error(),
-		)
+		smerr.AddError(ctx, &response.Diagnostics, err)
 		return
 	}
 	if out == nil || out.SourceApiAssociation == nil {
-		response.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.AppSync, create.ErrActionCreating, resNameSourceAPIAssociation, plan.MergedAPIID.String(), nil),
-			errors.New("empty output").Error(),
-		)
+		smerr.AddError(ctx, &response.Diagnostics, errors.New("empty output"))
 		return
 	}
 
@@ -81,10 +78,7 @@ func (r *sourceAPIAssociationResource) Create(ctx context.Context, request resou
 	plan.MergedAPIID = flex.StringToFramework(ctx, out.SourceApiAssociation.MergedApiId)
 	id, err := plan.setID()
 	if err != nil {
-		response.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.AppSync, create.ErrActionFlatteningResourceId, resNameSourceAPIAssociation, plan.MergedAPIID.String(), err),
-			err.Error(),
-		)
+		smerr.AddError(ctx, &response.Diagnostics, err)
 		return
 	}
 	plan.ID = types.StringValue(id)
@@ -92,17 +86,14 @@ func (r *sourceAPIAssociationResource) Create(ctx context.Context, request resou
 	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
 	_, err = waitSourceAPIAssociationCreated(ctx, conn, plan.AssociationID.ValueString(), aws.ToString(out.SourceApiAssociation.MergedApiArn), createTimeout)
 	if err != nil {
-		response.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.AppSync, create.ErrActionWaitingForCreation, resNameSourceAPIAssociation, plan.MergedAPIID.String(), err),
-			err.Error(),
-		)
+		smerr.AddError(ctx, &response.Diagnostics, err)
 		return
 	}
 
-	response.Diagnostics.Append(flex.Flatten(ctx, out.SourceApiAssociation, &plan)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, flex.Flatten(ctx, out.SourceApiAssociation, &plan))
 	if response.Diagnostics.HasError() {
 		return
 	}
 
-	response.Diagnostics.Append(response.State.Set(ctx, plan)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, plan))
 }
