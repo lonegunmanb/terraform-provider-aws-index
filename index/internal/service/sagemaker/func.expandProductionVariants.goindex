@@ -2,6 +2,7 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
 import (
 	"context"
 	"log"
+	"strings"
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -31,8 +32,25 @@ func expandProductionVariants(configured []any) []awstypes.ProductionVariant {
 	for _, lRaw := range configured {
 		data := lRaw.(map[string]any)
 
-		l := awstypes.ProductionVariant{
-			ModelName: aws.String(data["model_name"].(string)),
+		l := awstypes.ProductionVariant{}
+
+		// Traditional endpoint: set ModelName
+		// IC endpoint: omit ModelName
+		// Special traditional/IC handling
+		if v, ok := data["model_name"].(string); ok && v != "" {
+			l.ModelName = aws.String(v)
+
+			// Traditional endpoint: set InitialVariantWeight
+			// IC endpoint: must not be set but pre-existing default value of 1
+			if v, ok := data["initial_variant_weight"].(float64); ok {
+				l.InitialVariantWeight = aws.Float32(float32(v))
+			}
+
+			// Traditional endpoint: set EnableSSMAccess
+			// IC endpoints: must not be set
+			if v, ok := data["enable_ssm_access"].(bool); ok {
+				l.EnableSSMAccess = aws.Bool(v)
+			}
 		}
 
 		if v, ok := data["initial_instance_count"].(int); ok && v > 0 {
@@ -61,10 +79,6 @@ func expandProductionVariants(configured []any) []awstypes.ProductionVariant {
 			l.VariantName = aws.String(id.UniqueId())
 		}
 
-		if v, ok := data["initial_variant_weight"].(float64); ok {
-			l.InitialVariantWeight = aws.Float32(float32(v))
-		}
-
 		if v, ok := data["accelerator_type"].(string); ok && v != "" {
 			l.AcceleratorType = awstypes.ProductionVariantAcceleratorType(v)
 		}
@@ -79,10 +93,6 @@ func expandProductionVariants(configured []any) []awstypes.ProductionVariant {
 
 		if v, ok := data["core_dump_config"].([]any); ok && len(v) > 0 {
 			l.CoreDumpConfig = expandCoreDumpConfig(v)
-		}
-
-		if v, ok := data["enable_ssm_access"].(bool); ok {
-			l.EnableSSMAccess = aws.Bool(v)
 		}
 
 		if v, ok := data["managed_instance_scaling"].([]any); ok && len(v) > 0 {

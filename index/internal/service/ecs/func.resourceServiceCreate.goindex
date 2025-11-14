@@ -91,18 +91,44 @@ func resourceServiceCreate(ctx context.Context, d *schema.ResourceData, meta any
 		if strategy, ok := config["strategy"].(string); ok && strategy != "" {
 			input.DeploymentConfiguration.Strategy = awstypes.DeploymentStrategy(strategy)
 
-			if awstypes.DeploymentStrategy(strategy) == awstypes.DeploymentStrategyBlueGreen {
-				if v, ok := config["bake_time_in_minutes"].(string); ok {
-					bakeTime := nullable.Int(v)
-					if !bakeTime.IsNull() {
-						value, _, err := bakeTime.ValueInt32()
+			if v, ok := config["bake_time_in_minutes"].(string); ok {
+				bt, err := expandBakeTimeInMinutes(v)
+				if err != nil {
+					return sdkdiag.AppendFromErr(diags, err)
+				}
+				input.DeploymentConfiguration.BakeTimeInMinutes = bt
+			}
+
+			if awstypes.DeploymentStrategy(strategy) == awstypes.DeploymentStrategyLinear {
+				if v, ok := config["linear_configuration"].([]any); ok && len(v) > 0 {
+					if linearConfig, ok := v[0].(map[string]any); ok {
+						sp, sbtm, err := expandLinearConfiguration(linearConfig)
 						if err != nil {
 							return sdkdiag.AppendFromErr(diags, err)
 						}
-						input.DeploymentConfiguration.BakeTimeInMinutes = aws.Int32(value)
+						input.DeploymentConfiguration.LinearConfiguration = &awstypes.LinearConfiguration{
+							StepPercent:           sp,
+							StepBakeTimeInMinutes: sbtm,
+						}
 					}
 				}
 			}
+
+			if awstypes.DeploymentStrategy(strategy) == awstypes.DeploymentStrategyCanary {
+				if v, ok := config["canary_configuration"].([]any); ok && len(v) > 0 {
+					if canaryConfig, ok := v[0].(map[string]any); ok {
+						cp, cbtm, err := expandCanaryConfiguration(canaryConfig)
+						if err != nil {
+							return sdkdiag.AppendFromErr(diags, err)
+						}
+						input.DeploymentConfiguration.CanaryConfiguration = &awstypes.CanaryConfiguration{
+							CanaryPercent:           cp,
+							CanaryBakeTimeInMinutes: cbtm,
+						}
+					}
+				}
+			}
+
 			if hooks := config["lifecycle_hook"].(*schema.Set).List(); len(hooks) > 0 {
 				input.DeploymentConfiguration.LifecycleHooks = expandLifecycleHooks(hooks)
 			}
