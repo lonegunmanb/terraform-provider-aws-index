@@ -45,7 +45,6 @@ func (r *resourceCloudVmCluster) Read(ctx context.Context, req resource.ReadRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	out, err := findCloudVmClusterForResourceByID(ctx, conn, state.CloudVmClusterId.ValueString())
 	if tfresource.NotFound(err) {
 		resp.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
@@ -59,8 +58,8 @@ func (r *resourceCloudVmCluster) Read(ctx context.Context, req resource.ReadRequ
 		)
 		return
 	}
-	hostnamePrefix := strings.Split(*out.Hostname, "-")[0]
-	state.HostnamePrefix = types.StringValue(hostnamePrefix)
+	hostnamePrefix := computeHostnamePrefix(out.Hostname)
+	state.HostnamePrefix = flex.StringToFramework(ctx, hostnamePrefix)
 	state.HostnamePrefixComputed = types.StringValue(*out.Hostname)
 	//scan listener port not returned by API directly
 	state.ScanListenerPortTcp = flex.Int32ToFramework(ctx, out.ListenerPort)
@@ -74,6 +73,32 @@ func (r *resourceCloudVmCluster) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 	state.GiVersion = flex.StringToFramework(ctx, giVersionMajor)
+	getOdbNetworkInput := odb.GetOdbNetworkInput{
+		OdbNetworkId: out.OdbNetworkId,
+	}
+	odbNetworkOutput, err := conn.GetOdbNetwork(ctx, &getOdbNetworkInput)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.ODB, create.ErrActionWaitingForCreation, ResNameCloudVmCluster, state.CloudVmClusterId.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+	state.OdbNetworkId = flex.StringToFramework(ctx, odbNetworkOutput.OdbNetwork.OdbNetworkId)
+	state.OdbNetworkArn = flex.StringToFramework(ctx, odbNetworkOutput.OdbNetwork.OdbNetworkArn)
+	getCloudExadataInfraInput := odb.GetCloudExadataInfrastructureInput{
+		CloudExadataInfrastructureId: out.CloudExadataInfrastructureId,
+	}
+	cloudExadataInfraOutput, err := conn.GetCloudExadataInfrastructure(ctx, &getCloudExadataInfraInput)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.ODB, create.ErrActionWaitingForCreation, ResNameCloudVmCluster, state.CloudVmClusterId.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+	state.CloudExadataInfrastructureId = flex.StringToFramework(ctx, cloudExadataInfraOutput.CloudExadataInfrastructure.CloudExadataInfrastructureId)
+	state.CloudExadataInfrastructureArn = flex.StringToFramework(ctx, cloudExadataInfraOutput.CloudExadataInfrastructure.CloudExadataInfrastructureArn)
 	resp.Diagnostics.Append(flex.Flatten(ctx, out, &state)...)
 	if resp.Diagnostics.HasError() {
 		return

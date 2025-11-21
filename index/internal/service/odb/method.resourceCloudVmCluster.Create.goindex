@@ -45,12 +45,21 @@ func (r *resourceCloudVmCluster) Create(ctx context.Context, req resource.Create
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
+	odbNetwork := plan.OdbNetworkId
+	if odbNetwork.IsNull() || odbNetwork.IsUnknown() {
+		odbNetwork = plan.OdbNetworkArn
+	}
+	cloudExadataInfra := plan.CloudExadataInfrastructureId
+	if cloudExadataInfra.IsNull() || cloudExadataInfra.IsUnknown() {
+		cloudExadataInfra = plan.CloudExadataInfrastructureArn
+	}
 	input := odb.CreateCloudVmClusterInput{
 		Tags: getTagsIn(ctx),
 		//Underlying API treats Hostname as hostname prefix.
 		Hostname: plan.HostnamePrefix.ValueStringPointer(),
 	}
+	input.OdbNetworkId = odbNetwork.ValueStringPointer()
+	input.CloudExadataInfrastructureId = cloudExadataInfra.ValueStringPointer()
 	resp.Diagnostics.Append(flex.Expand(ctx, plan, &input)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -81,8 +90,7 @@ func (r *resourceCloudVmCluster) Create(ctx context.Context, req resource.Create
 		)
 		return
 	}
-	hostnamePrefix := strings.Split(*input.Hostname, "-")[0]
-	plan.HostnamePrefix = flex.StringValueToFramework(ctx, hostnamePrefix)
+	plan.HostnamePrefix = flex.StringToFramework(ctx, input.Hostname)
 	plan.HostnamePrefixComputed = flex.StringToFramework(ctx, createdVmCluster.Hostname)
 	//scan listener port not returned by API directly
 	plan.ScanListenerPortTcp = flex.Int32ToFramework(ctx, createdVmCluster.ListenerPort)
@@ -96,6 +104,40 @@ func (r *resourceCloudVmCluster) Create(ctx context.Context, req resource.Create
 		return
 	}
 	plan.GiVersion = flex.StringToFramework(ctx, giVersionMajor)
+	odbNetwork = plan.OdbNetworkId
+	if odbNetwork.IsNull() || odbNetwork.IsUnknown() {
+		odbNetwork = plan.OdbNetworkArn
+	}
+	getOdbNetworkInput := odb.GetOdbNetworkInput{
+		OdbNetworkId: odbNetwork.ValueStringPointer(),
+	}
+	odbNetworkOutput, err := conn.GetOdbNetwork(ctx, &getOdbNetworkInput)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.ODB, create.ErrActionWaitingForCreation, ResNameCloudVmCluster, plan.CloudVmClusterId.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+	plan.OdbNetworkId = flex.StringToFramework(ctx, odbNetworkOutput.OdbNetwork.OdbNetworkId)
+	plan.OdbNetworkArn = flex.StringToFramework(ctx, odbNetworkOutput.OdbNetwork.OdbNetworkArn)
+	cloudExadataInfra = plan.CloudExadataInfrastructureId
+	if cloudExadataInfra.IsNull() || cloudExadataInfra.IsUnknown() {
+		cloudExadataInfra = plan.CloudExadataInfrastructureArn
+	}
+	getCloudExadataInfraInput := odb.GetCloudExadataInfrastructureInput{
+		CloudExadataInfrastructureId: cloudExadataInfra.ValueStringPointer(),
+	}
+	cloudExadataInfraOutput, err := conn.GetCloudExadataInfrastructure(ctx, &getCloudExadataInfraInput)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.ODB, create.ErrActionWaitingForCreation, ResNameCloudVmCluster, plan.CloudVmClusterId.ValueString(), err),
+			err.Error(),
+		)
+		return
+	}
+	plan.CloudExadataInfrastructureId = flex.StringToFramework(ctx, cloudExadataInfraOutput.CloudExadataInfrastructure.CloudExadataInfrastructureId)
+	plan.CloudExadataInfrastructureArn = flex.StringToFramework(ctx, cloudExadataInfraOutput.CloudExadataInfrastructure.CloudExadataInfrastructureArn)
 	resp.Diagnostics.Append(flex.Flatten(ctx, createdVmCluster, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return

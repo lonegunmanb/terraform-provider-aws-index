@@ -33,7 +33,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func deleteReplicas(ctx context.Context, conn *dynamodb.Client, tableName string, tfList []any, timeout time.Duration) error {
+func deleteReplicas(ctx context.Context, conn *dynamodb.Client, tableName string, tfList []any, globalTableWitnessRegionName string, timeout time.Duration) error {
 	var g multierror.Group
 
 	var replicaDeletes []awstypes.ReplicationGroupUpdate
@@ -68,12 +68,22 @@ func deleteReplicas(ctx context.Context, conn *dynamodb.Client, tableName string
 	// We built an array of MultiRegionStrongConsistency replicas that need deletion.
 	// These need to all happen concurrently
 	if len(replicaDeletes) > 0 {
-		input := &dynamodb.UpdateTableInput{
-			TableName:      aws.String(tableName),
-			ReplicaUpdates: replicaDeletes,
+		var witnessDeletes []awstypes.GlobalTableWitnessGroupUpdate
+		if globalTableWitnessRegionName != "" {
+			witnessDeletes = append(witnessDeletes, awstypes.GlobalTableWitnessGroupUpdate{
+				Delete: &awstypes.DeleteGlobalTableWitnessGroupMemberAction{
+					RegionName: aws.String(globalTableWitnessRegionName),
+				},
+			})
+		}
+
+		input := dynamodb.UpdateTableInput{
+			GlobalTableWitnessUpdates: witnessDeletes,
+			ReplicaUpdates:            replicaDeletes,
+			TableName:                 aws.String(tableName),
 		}
 		err := tfresource.Retry(ctx, updateTableTimeout, func(ctx context.Context) *tfresource.RetryError {
-			_, err := conn.UpdateTable(ctx, input)
+			_, err := conn.UpdateTable(ctx, &input)
 			notFoundRetries := 0
 			if err != nil {
 				if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {

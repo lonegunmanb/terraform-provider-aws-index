@@ -1,0 +1,46 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"crypto/md5"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func invocationParseResourceID(id string) (string, string, string, error) {
+	parts, err := flex.ExpandResourceId(id, invocationResourceIDPartCount, false)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	functionName := parts[0]
+	qualifier := parts[1]
+	resultHash := parts[2]
+
+	// Validate qualifier format
+	if qualifier != "$LATEST" && !regexache.MustCompile(`^[0-9]+$`).MatchString(qualifier) {
+		return "", "", "", fmt.Errorf("invalid qualifier format: %s, expected $LATEST or numeric version", qualifier)
+	}
+
+	// Validate hash format (should be MD5 - 32 hex chars)
+	if !regexache.MustCompile(`^[a-f0-9]{32}$`).MatchString(resultHash) {
+		return "", "", "", fmt.Errorf("invalid result hash format: %s, expected 32-character MD5 hash", resultHash)
+	}
+
+	return functionName, qualifier, resultHash, nil
+}

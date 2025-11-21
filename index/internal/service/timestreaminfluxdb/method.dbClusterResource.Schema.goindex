@@ -15,6 +15,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -22,7 +24,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -42,15 +43,16 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
 			names.AttrAllocatedStorage: schema.Int64Attribute{
-				Required: true,
+				Optional: true,
 				Validators: []validator.Int64{
 					int64validator.Between(20, 16384),
 				},
-				Description: `The amount of storage to allocate for your DB storage type in GiB (gibibytes).`,
+				Description: `The amount of storage to allocate for your DB storage type in GiB (gibibytes).
+					This field is forbidden for InfluxDB V3 clusters (when using an InfluxDB V3 db parameter group).`,
 			},
 			names.AttrARN: framework.ARNAttributeComputedOnly(),
 			names.AttrBucket: schema.StringAttribute{
-				Required: true,
+				Optional: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -61,9 +63,12 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 						"",
 					),
 				},
-				Description: `The name of the initial InfluxDB bucket. All InfluxDB data is stored in a bucket. 
-					A bucket combines the concept of a database and a retention period (the duration of time 
-					that each data point persists). A bucket belongs to an organization.`,
+				Description: `Name of the initial InfluxDB bucket. All InfluxDB data is stored in a bucket.
+					A bucket combines the concept of a database and a retention period (the duration of time
+					that each data point persists). A bucket belongs to an organization. Along with organization,
+					username, and password, this argument will be stored in the secret referred to by the
+					influx_auth_parameters_secret_arn attribute. This field is forbidden for InfluxDB V3 clusters
+					(when using an InfluxDB V3 db parameter group).`,
 			},
 			"db_instance_type": schema.StringAttribute{
 				CustomType:  fwtypes.StringEnumType[awstypes.DbInstanceType](),
@@ -105,12 +110,19 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 				CustomType: fwtypes.StringEnumType[awstypes.ClusterDeploymentType](),
 				Optional:   true,
 				Computed:   true,
-				Default:    stringdefault.StaticString(string(awstypes.ClusterDeploymentTypeMultiNodeReadReplicas)),
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.RequiresReplaceIfConfigured(),
 					stringplanmodifier.UseStateForUnknown(),
 				},
-				Description: `Specifies the type of cluster to create.`,
+				Description: `Specifies the type of cluster to create. This field is forbidden for InfluxDB V3 clusters
+					(when using an InfluxDB V3 db parameter group).`,
+			},
+			"engine_type": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+				Description: `The database engine type of the DB cluster.`,
 			},
 			names.AttrEndpoint: schema.StringAttribute{
 				Computed: true,
@@ -136,9 +148,9 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 					stringplanmodifier.UseStateForUnknown(),
 				},
 				Description: `The Amazon Resource Name (ARN) of the AWS Secrets Manager secret containing the 
-					initial InfluxDB authorization parameters. The secret value is a JSON formatted 
-					key-value pair holding InfluxDB authorization values: organization, bucket, 
-					username, and password.`,
+					initial InfluxDB authorization parameters. For InfluxDB V2 clusters, the secret value is a JSON
+					formatted key-value pair holding InfluxDB authorization values: organization, bucket,
+					username, and password. For InfluxDB V3 clusters, the secret contains the InfluxDB admin token.`,
 			},
 			names.AttrName: schema.StringAttribute{
 				Required: true,
@@ -172,18 +184,21 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 			names.AttrTags:    tftags.TagsAttribute(),
 			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
 			"organization": schema.StringAttribute{
-				Required: true,
+				Optional: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
 					stringvalidator.LengthBetween(1, 64),
 				},
-				Description: `The name of the initial organization for the initial admin user in InfluxDB. An 
-					InfluxDB organization is a workspace for a group of users.`,
+				Description: `Name of the initial organization for the initial admin user in InfluxDB. An
+					InfluxDB organization is a workspace for a group of users. Along with bucket, username,
+					and password, this argument will be stored in the secret referred to by the
+					influx_auth_parameters_secret_arn attribute. This field is forbidden for InfluxDB V3 clusters
+					(when using an InfluxDB V3 db parameter group).`,
 			},
 			names.AttrPassword: schema.StringAttribute{
-				Required:  true,
+				Optional:  true,
 				Sensitive: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -192,10 +207,12 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 					stringvalidator.LengthBetween(8, 64),
 					stringvalidator.RegexMatches(regexache.MustCompile("^[a-zA-Z0-9]+$"), ""),
 				},
-				Description: `The password of the initial admin user created in InfluxDB. This password will 
-					allow you to access the InfluxDB UI to perform various administrative tasks and 
-					also use the InfluxDB CLI to create an operator token. These attributes will be 
-					stored in a Secret created in AWS SecretManager in your account.`,
+				Description: `Password of the initial admin user created in InfluxDB. This password will
+					allow you to access the InfluxDB UI to perform various administrative tasks and
+					also use the InfluxDB CLI to create an operator token. Along with bucket, username,
+					and organization, this argument will be stored in the secret referred to by the
+					influx_auth_parameters_secret_arn attribute. This field is forbidden for InfluxDB V3 clusters
+					(when using an InfluxDB V3 db parameter group) as the AWS API rejects it.`,
 			},
 			names.AttrPort: schema.Int32Attribute{
 				Optional: true,
@@ -227,7 +244,7 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 					read-only operations.`,
 			},
 			names.AttrUsername: schema.StringAttribute{
-				Required: true,
+				Optional: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -238,13 +255,12 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 						consecutive hyphens`,
 					),
 				},
-				Description: `The username of the initial admin user created in InfluxDB. 
-					Must start with a letter and can't end with a hyphen or contain two 
-					consecutive hyphens. For example, my-user1. This username will allow 
-					you to access the InfluxDB UI to perform various administrative tasks 
-					and also use the InfluxDB CLI to create an operator token. These 
-					attributes will be stored in a Secret created in Amazon Secrets 
-					Manager in your account.`,
+				Description: `Username of the initial admin user created in InfluxDB. Must start with a letter
+					and can't end with a hyphen or contain two consecutive hyphens. This username will allow
+					you to access the InfluxDB UI to perform various administrative tasks and also use the
+					InfluxDB CLI to create an operator token. Along with bucket, organization, and password,
+					this argument will be stored in the secret referred to by the influx_auth_parameters_secret_arn
+					attribute. This field is forbidden for InfluxDB V3 clusters (when using an InfluxDB V3 db parameter group).`,
 			},
 			names.AttrVPCSecurityGroupIDs: schema.SetAttribute{
 				CustomType: fwtypes.SetOfStringType,
