@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/kafka"
@@ -31,7 +32,7 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 	conn := meta.(*conns.AWSClient).KafkaClient(ctx)
 
 	name := d.Get(names.AttrClusterName).(string)
-	input := &kafka.CreateClusterInput{
+	input := kafka.CreateClusterInput{
 		ClusterName:         aws.String(name),
 		KafkaVersion:        aws.String(d.Get("kafka_version").(string)),
 		NumberOfBrokerNodes: aws.Int32(int32(d.Get("number_of_broker_nodes").(int))),
@@ -72,11 +73,15 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 		input.OpenMonitoring = expandOpenMonitoringInfo(v.([]any)[0].(map[string]any))
 	}
 
+	if v, ok := d.GetOk("rebalancing"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.Rebalancing = expandRebalancing(v.([]any)[0].(map[string]any))
+	}
+
 	if v, ok := d.GetOk("storage_mode"); ok {
 		input.StorageMode = types.StorageMode(v.(string))
 	}
 
-	output, err := conn.CreateCluster(ctx, input)
+	output, err := conn.CreateCluster(ctx, &input)
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "creating MSK Cluster (%s): %s", name, err)
@@ -91,7 +96,7 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	if vpcConnectivity != nil {
-		input := &kafka.UpdateConnectivityInput{
+		input := kafka.UpdateConnectivityInput{
 			ClusterArn: aws.String(d.Id()),
 			ConnectivityInfo: &types.ConnectivityInfo{
 				VpcConnectivity: vpcConnectivity,
@@ -99,7 +104,7 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 			CurrentVersion: cluster.CurrentVersion,
 		}
 
-		output, err := conn.UpdateConnectivity(ctx, input)
+		output, err := conn.UpdateConnectivity(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating MSK Cluster (%s) broker connectivity: %s", d.Id(), err)
