@@ -1,0 +1,114 @@
+package github.com/hashicorp/terraform-provider-aws/internal/generate/common
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	namesgen "github.com/hashicorp/terraform-provider-aws/names/generate"
+)
+func ParseResourceIdentity(annotationName string, args Args, implementation Implementation, d *ResourceIdentity, goImports *[]GoImport) error {
+	switch annotationName {
+	case "ArnIdentity":
+		d.isARNIdentity = true
+		if len(args.Positional) == 0 {
+			d.identityAttributeName = "arn"
+		} else {
+			d.identityAttributeName = args.Positional[0]
+		}
+
+		parseIdentityDuplicateAttrNames(args, implementation, d)
+
+	case "CustomInherentRegionIdentity":
+		d.isCustomInherentRegionIdentity = true
+
+		if len(args.Positional) < 2 {
+			return errors.New("CustomInherentRegionIdentity missing required parameters")
+		}
+
+		d.identityAttributeName = args.Positional[0]
+
+		parseIdentityDuplicateAttrNames(args, implementation, d)
+
+		attr := args.Positional[1]
+		if funcName, importSpec, err := ParseIdentifierSpec(attr); err != nil {
+			return fmt.Errorf("%q: %w", attr, err)
+		} else {
+			d.CustomInherentRegionParser = funcName
+			if importSpec != nil {
+				*goImports = append(*goImports, *importSpec)
+			}
+		}
+
+	case "IdentityAttribute":
+		if len(args.Positional) == 0 {
+			return errors.New("no Identity attribute name")
+		}
+
+		identityAttribute := IdentityAttribute{
+			Name_: args.Positional[0],
+		}
+
+		if attr, ok := args.Keyword["optional"]; ok {
+			if b, err := ParseBoolAttr("optional", attr); err != nil {
+				return err
+			} else {
+				identityAttribute.Optional = b
+			}
+		}
+
+		if attr, ok := args.Keyword["resourceAttributeName"]; ok {
+			identityAttribute.ResourceAttributeName_ = attr
+		}
+
+		if attr, ok := args.Keyword["testNotNull"]; ok {
+			if b, err := ParseBoolAttr("testNotNull", attr); err != nil {
+				return err
+			} else {
+				identityAttribute.TestNotNull = b
+			}
+		}
+
+		d.IdentityAttributes = append(d.IdentityAttributes, identityAttribute)
+
+	case "IdentityVersion":
+		attr := args.Positional[0]
+		if i, err := strconv.ParseInt(attr, 10, 64); err != nil {
+			return fmt.Errorf("invalid IdentityVersion value: %q. Should be integer value.", attr)
+		} else {
+			d.IdentityVersion = i
+		}
+
+		if attr, ok := args.Keyword["sdkV2IdentityUpgraders"]; ok {
+			attrs := strings.Split(attr, ";")
+			d.SDKv2IdentityUpgraders = attrs
+		}
+
+	case "MutableIdentity":
+		d.MutableIdentity = true
+
+	case "SingletonIdentity":
+		d.isSingletonIdentity = true
+
+		// FIXME: Not actually for Global, but the value is never used
+		d.identityAttributeName = "region"
+
+		parseIdentityDuplicateAttrNames(args, implementation, d)
+
+	// TODO: allow underscore?
+	case "V60SDKv2Fix":
+		d.HasV6_0NullValuesError = true
+
+		if attr, ok := args.Keyword["v60RefreshError"]; ok {
+			if b, err := ParseBoolAttr("v60RefreshError", attr); err != nil {
+				return err
+			} else {
+				d.HasV6_0RefreshError = b
+			}
+		}
+	}
+
+	return nil
+}

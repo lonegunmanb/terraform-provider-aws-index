@@ -1,0 +1,101 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func vpcEncryptionControlModify(ctx context.Context, conn *ec2.Client, plan resourceVPCEncryptionControlModel, timeout time.Duration, diags *diag.Diagnostics) *awstypes.VpcEncryptionControl {
+	err := waitVPCEncryptionControlMigratableResourcesMigrated(ctx, conn, plan.VPCID.ValueString(), timeout)
+	if err != nil {
+		smerr.AddError(ctx, diags, err, names.AttrVPCID, plan.VPCID.String())
+		return nil
+	}
+
+	var modifyInput ec2.ModifyVpcEncryptionControlInput
+	expandForModify(ctx, plan, &modifyInput)
+
+	out, err := conn.ModifyVpcEncryptionControl(ctx, &modifyInput)
+	if tfawserr.ErrCodeEquals(err, "VpcEncryptionControlStateTransitionFailed") {
+		blockers, _ := encryptionEnforcementBlockers(ctx, conn, plan.VPCID.ValueString())
+		if len(blockers) > 0 {
+			var buf strings.Builder
+			for _, ncr := range blockers {
+				fmt.Fprintf(&buf, "* Type: %q, Id: %q, Description: %q, IsExcludable: %t\n",
+					aws.ToString(ncr.Type),
+					aws.ToString(ncr.Id),
+					aws.ToString(ncr.Description),
+					aws.ToBool(ncr.IsExcludable),
+				)
+			}
+			smerr.AddError(ctx, diags, fmt.Errorf("The following resources prevented enforcement:\n\n%s", buf.String()), names.AttrVPCID, plan.VPCID.String())
+			return nil
+		}
+	}
+	if err != nil {
+		smerr.AddError(ctx, diags, err, names.AttrVPCID, plan.VPCID.String())
+		return nil
+	}
+	if out == nil || out.VpcEncryptionControl == nil {
+		smerr.AddError(ctx, diags, errors.New("empty output"), names.AttrVPCID, plan.VPCID.String())
+		return nil
+	}
+
+	ec, err := waitVPCEncryptionControlAvailable(ctx, conn, plan.ID.ValueString(), timeout)
+	if use, ok := errs.As[*retry.UnexpectedStateError](err); ok && use.State == string(awstypes.VpcEncryptionControlStateEnforceFailed) {
+		// Ignore errors here and fall through to the outer error
+		blockers, _ := encryptionEnforcementBlockers(ctx, conn, plan.VPCID.ValueString())
+		if len(blockers) > 0 {
+			var buf strings.Builder
+			for _, ncr := range blockers {
+				fmt.Fprintf(&buf, "* Type: %q, Id: %q, Description: %q, IsExcludable: %t\n",
+					aws.ToString(ncr.Type),
+					aws.ToString(ncr.Id),
+					aws.ToString(ncr.Description),
+					aws.ToBool(ncr.IsExcludable),
+				)
+			}
+			smerr.AddError(ctx, diags, fmt.Errorf("The following resources prevented enforcement:\n\n%s", buf.String()), names.AttrVPCID, plan.VPCID.String())
+			return nil
+		}
+	}
+	if err != nil {
+		smerr.AddError(ctx, diags, err, names.AttrVPCID, plan.VPCID.String())
+		return nil
+	}
+
+	if ec.ResourceExclusions != nil {
+		ec, err = waitVPCEncryptionControlExclusionsApplied(ctx, conn, plan.ID.ValueString(), timeout)
+		if err != nil {
+			smerr.AddError(ctx, diags, err, names.AttrVPCID, plan.VPCID.String())
+			return nil
+		}
+	}
+
+	return ec
+}
