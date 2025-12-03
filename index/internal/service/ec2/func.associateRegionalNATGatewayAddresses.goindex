@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func associateRegionalNATGatewayAddresses(ctx context.Context, conn *ec2.Client, d *schema.ResourceData, az string, allocationIDs *schema.Set) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	input := &ec2.AssociateNatGatewayAddressInput{
+		AllocationIds: flex.ExpandStringValueSet(allocationIDs),
+		NatGatewayId:  aws.String(d.Id()),
+	}
+
+	if az != "" {
+		input.AvailabilityZone = aws.String(az)
+	}
+	if _, err := conn.AssociateNatGatewayAddress(ctx, input); err != nil {
+		return sdkdiag.AppendErrorf(diags, "associating EC2 NAT Gateway (%s) allocation IDs for AZ %s: %s", d.Id(), az, err)
+	}
+
+	for _, allocationID := range flex.ExpandStringValueSet(allocationIDs) {
+		if _, err := waitNATGatewayAddressAssociated(ctx, conn, d.Id(), allocationID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) allocation ID (%s) associate: %s", d.Id(), allocationID, err)
+		}
+	}
+
+	return diags
+}

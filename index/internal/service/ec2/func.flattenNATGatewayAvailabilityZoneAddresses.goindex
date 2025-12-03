@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func flattenNATGatewayAvailabilityZoneAddresses(addresses []awstypes.NatGatewayAddress) []map[string]any {
+	var result []map[string]any
+
+	type azAddress struct {
+		allocationIDs []string
+	}
+	mmap := make(map[string]azAddress)
+
+	for _, addr := range addresses {
+		if addr.Status != awstypes.NatGatewayAddressStatusSucceeded {
+			continue
+		}
+
+		azKey := aws.ToString(addr.AvailabilityZone) + ":" + aws.ToString(addr.AvailabilityZoneId)
+
+		azAddr := mmap[azKey]
+		azAddr.allocationIDs = append(azAddr.allocationIDs, aws.ToString(addr.AllocationId))
+		mmap[azKey] = azAddr
+	}
+
+	// Sort by AZ name for deterministic ordering
+	var azKeys []string
+	for azKey := range mmap {
+		azKeys = append(azKeys, azKey)
+	}
+	slices.Sort(azKeys)
+
+	for _, azKey := range azKeys {
+		azAddr := mmap[azKey]
+		m := make(map[string]any)
+		parts := strings.Split(azKey, ":")
+		m[names.AttrAvailabilityZone], m["availability_zone_id"] = parts[0], parts[1]
+		m["allocation_ids"] = flex.FlattenStringValueSet(azAddr.allocationIDs)
+		result = append(result, m)
+	}
+
+	return result
+}

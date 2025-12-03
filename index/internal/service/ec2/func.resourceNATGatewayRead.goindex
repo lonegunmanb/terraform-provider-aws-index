@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -38,31 +39,51 @@ func resourceNATGatewayRead(ctx context.Context, d *schema.ResourceData, meta an
 		return sdkdiag.AppendErrorf(diags, "reading EC2 NAT Gateway (%s): %s", d.Id(), err)
 	}
 
-	var secondaryAllocationIDs, secondaryPrivateIPAddresses []string
+	d.Set("availability_mode", natGateway.AvailabilityMode)
+	d.Set("connectivity_type", natGateway.ConnectivityType)
+	d.Set(names.AttrVPCID, natGateway.VpcId)
 
-	for _, natGatewayAddress := range natGateway.NatGatewayAddresses {
-		// Length check guarantees the attributes are always set (#30865).
-		if isPrimary := aws.ToBool(natGatewayAddress.IsPrimary); isPrimary || len(natGateway.NatGatewayAddresses) == 1 {
-			d.Set("allocation_id", natGatewayAddress.AllocationId)
-			d.Set(names.AttrAssociationID, natGatewayAddress.AssociationId)
-			d.Set(names.AttrNetworkInterfaceID, natGatewayAddress.NetworkInterfaceId)
-			d.Set("private_ip", natGatewayAddress.PrivateIp)
-			d.Set("public_ip", natGatewayAddress.PublicIp)
-		} else if !isPrimary {
-			if allocationID := aws.ToString(natGatewayAddress.AllocationId); allocationID != "" {
-				secondaryAllocationIDs = append(secondaryAllocationIDs, allocationID)
-			}
-			if privateIP := aws.ToString(natGatewayAddress.PrivateIp); privateIP != "" {
-				secondaryPrivateIPAddresses = append(secondaryPrivateIPAddresses, privateIP)
+	switch natGateway.AvailabilityMode {
+	case awstypes.AvailabilityModeZonal:
+		var secondaryAllocationIDs, secondaryPrivateIPAddresses []string
+
+		for _, natGatewayAddress := range natGateway.NatGatewayAddresses {
+			// Length check guarantees the attributes are always set (#30865).
+			if isPrimary := aws.ToBool(natGatewayAddress.IsPrimary); isPrimary || len(natGateway.NatGatewayAddresses) == 1 {
+				d.Set("allocation_id", natGatewayAddress.AllocationId)
+				d.Set(names.AttrAssociationID, natGatewayAddress.AssociationId)
+				d.Set(names.AttrNetworkInterfaceID, natGatewayAddress.NetworkInterfaceId)
+				d.Set("private_ip", natGatewayAddress.PrivateIp)
+				d.Set("public_ip", natGatewayAddress.PublicIp)
+			} else if !isPrimary {
+				if allocationID := aws.ToString(natGatewayAddress.AllocationId); allocationID != "" {
+					secondaryAllocationIDs = append(secondaryAllocationIDs, allocationID)
+				}
+				if privateIP := aws.ToString(natGatewayAddress.PrivateIp); privateIP != "" {
+					secondaryPrivateIPAddresses = append(secondaryPrivateIPAddresses, privateIP)
+				}
 			}
 		}
-	}
+		d.Set("secondary_allocation_ids", secondaryAllocationIDs)
+		d.Set("secondary_private_ip_address_count", len(secondaryPrivateIPAddresses))
+		d.Set("secondary_private_ip_addresses", secondaryPrivateIPAddresses)
+		d.Set(names.AttrSubnetID, natGateway.SubnetId)
 
-	d.Set("connectivity_type", natGateway.ConnectivityType)
-	d.Set("secondary_allocation_ids", secondaryAllocationIDs)
-	d.Set("secondary_private_ip_address_count", len(secondaryPrivateIPAddresses))
-	d.Set("secondary_private_ip_addresses", secondaryPrivateIPAddresses)
-	d.Set(names.AttrSubnetID, natGateway.SubnetId)
+	case awstypes.AvailabilityModeRegional:
+		d.Set("auto_provision_zones", natGateway.AutoProvisionZones)
+		d.Set("auto_scaling_ips", natGateway.AutoScalingIps)
+		if natGateway.AutoProvisionZones == awstypes.AutoProvisionZonesStateEnabled {
+			d.Set("availability_zone_address", nil)
+		} else if err := d.Set("availability_zone_address", flattenNATGatewayAvailabilityZoneAddresses(natGateway.NatGatewayAddresses)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting availability_zone_address: %s", err)
+		}
+
+		if err := d.Set("regional_nat_gateway_address", flattenRegionalNATGatewayAddress(natGateway.NatGatewayAddresses)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting regional_nat_gateway_address: %s", err)
+		}
+		d.Set("regional_nat_gateway_auto_mode", natGateway.AutoProvisionZones)
+		d.Set("route_table_id", natGateway.RouteTableId)
+	}
 
 	setTagsOut(ctx, natGateway.Tags)
 

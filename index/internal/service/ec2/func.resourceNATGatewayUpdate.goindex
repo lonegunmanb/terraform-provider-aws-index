@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -26,114 +27,190 @@ func resourceNATGatewayUpdate(ctx context.Context, d *schema.ResourceData, meta 
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).EC2Client(ctx)
 
-	switch awstypes.ConnectivityType(d.Get("connectivity_type").(string)) {
-	case awstypes.ConnectivityTypePrivate:
-		if d.HasChanges("secondary_private_ip_addresses") {
-			o, n := d.GetChange("secondary_private_ip_addresses")
-			os, ns := o.(*schema.Set), n.(*schema.Set)
+	var availabilityMode awstypes.AvailabilityMode
+	if v, ok := d.Get("availability_mode").(string); ok {
+		availabilityMode = awstypes.AvailabilityMode(v)
+	} else {
+		availabilityMode = awstypes.AvailabilityModeZonal
+	}
 
-			if add := ns.Difference(os); add.Len() > 0 {
-				input := &ec2.AssignPrivateNatGatewayAddressInput{
-					NatGatewayId:       aws.String(d.Id()),
-					PrivateIpAddresses: flex.ExpandStringValueSet(add),
+	switch availabilityMode {
+	case awstypes.AvailabilityModeZonal:
+		switch awstypes.ConnectivityType(d.Get("connectivity_type").(string)) {
+		case awstypes.ConnectivityTypePrivate:
+			if d.HasChanges("secondary_private_ip_addresses") {
+				o, n := d.GetChange("secondary_private_ip_addresses")
+				os, ns := o.(*schema.Set), n.(*schema.Set)
+
+				if add := ns.Difference(os); add.Len() > 0 {
+					input := &ec2.AssignPrivateNatGatewayAddressInput{
+						NatGatewayId:       aws.String(d.Id()),
+						PrivateIpAddresses: flex.ExpandStringValueSet(add),
+					}
+
+					_, err := conn.AssignPrivateNatGatewayAddress(ctx, input)
+
+					if err != nil {
+						return sdkdiag.AppendErrorf(diags, "assigning EC2 NAT Gateway (%s) private IP addresses: %s", d.Id(), err)
+					}
+
+					for _, privateIP := range flex.ExpandStringValueSet(add) {
+						if _, err := waitNATGatewayAddressAssigned(ctx, conn, d.Id(), privateIP, d.Timeout(schema.TimeoutUpdate)); err != nil {
+							return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) private IP address (%s) assign: %s", d.Id(), privateIP, err)
+						}
+					}
 				}
 
-				_, err := conn.AssignPrivateNatGatewayAddress(ctx, input)
+				if del := os.Difference(ns); del.Len() > 0 {
+					input := &ec2.UnassignPrivateNatGatewayAddressInput{
+						NatGatewayId:       aws.String(d.Id()),
+						PrivateIpAddresses: flex.ExpandStringValueSet(del),
+					}
 
-				if err != nil {
-					return sdkdiag.AppendErrorf(diags, "assigning EC2 NAT Gateway (%s) private IP addresses: %s", d.Id(), err)
-				}
+					_, err := conn.UnassignPrivateNatGatewayAddress(ctx, input)
 
-				for _, privateIP := range flex.ExpandStringValueSet(add) {
-					if _, err := waitNATGatewayAddressAssigned(ctx, conn, d.Id(), privateIP, d.Timeout(schema.TimeoutUpdate)); err != nil {
-						return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) private IP address (%s) assign: %s", d.Id(), privateIP, err)
+					if err != nil {
+						return sdkdiag.AppendErrorf(diags, "unassigning EC2 NAT Gateway (%s) private IP addresses: %s", d.Id(), err)
+					}
+
+					for _, privateIP := range flex.ExpandStringValueSet(del) {
+						if _, err := waitNATGatewayAddressUnassigned(ctx, conn, d.Id(), privateIP, d.Timeout(schema.TimeoutUpdate)); err != nil {
+							return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) private IP address (%s) unassign: %s", d.Id(), privateIP, err)
+						}
 					}
 				}
 			}
+		case awstypes.ConnectivityTypePublic:
+			if !d.GetRawConfig().GetAttr("secondary_allocation_ids").IsNull() && d.HasChanges("secondary_allocation_ids") {
+				o, n := d.GetChange("secondary_allocation_ids")
+				os, ns := o.(*schema.Set), n.(*schema.Set)
 
-			if del := os.Difference(ns); del.Len() > 0 {
-				input := &ec2.UnassignPrivateNatGatewayAddressInput{
-					NatGatewayId:       aws.String(d.Id()),
-					PrivateIpAddresses: flex.ExpandStringValueSet(del),
+				if add := ns.Difference(os); add.Len() > 0 {
+					input := &ec2.AssociateNatGatewayAddressInput{
+						AllocationIds: flex.ExpandStringValueSet(add),
+						NatGatewayId:  aws.String(d.Id()),
+					}
+
+					if d.HasChanges("secondary_private_ip_addresses") {
+						o, n := d.GetChange("secondary_private_ip_addresses")
+						os, ns := o.(*schema.Set), n.(*schema.Set)
+
+						if add := ns.Difference(os); add.Len() > 0 {
+							input.PrivateIpAddresses = flex.ExpandStringValueSet(add)
+						}
+					}
+
+					_, err := conn.AssociateNatGatewayAddress(ctx, input)
+
+					if err != nil {
+						return sdkdiag.AppendErrorf(diags, "associating EC2 NAT Gateway (%s) allocation IDs: %s", d.Id(), err)
+					}
+
+					for _, allocationID := range flex.ExpandStringValueSet(add) {
+						if _, err := waitNATGatewayAddressAssociated(ctx, conn, d.Id(), allocationID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+							return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) allocation ID (%s) associate: %s", d.Id(), allocationID, err)
+						}
+					}
 				}
 
-				_, err := conn.UnassignPrivateNatGatewayAddress(ctx, input)
+				if del := os.Difference(ns); del.Len() > 0 {
+					natGateway, err := findNATGatewayByID(ctx, conn, d.Id())
 
-				if err != nil {
-					return sdkdiag.AppendErrorf(diags, "unassigning EC2 NAT Gateway (%s) private IP addresses: %s", d.Id(), err)
-				}
+					if err != nil {
+						return sdkdiag.AppendErrorf(diags, "reading EC2 NAT Gateway (%s): %s", d.Id(), err)
+					}
 
-				for _, privateIP := range flex.ExpandStringValueSet(del) {
-					if _, err := waitNATGatewayAddressUnassigned(ctx, conn, d.Id(), privateIP, d.Timeout(schema.TimeoutUpdate)); err != nil {
-						return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) private IP address (%s) unassign: %s", d.Id(), privateIP, err)
+					allocationIDs := flex.ExpandStringValueSet(del)
+					var associationIDs []string
+
+					for _, natGatewayAddress := range natGateway.NatGatewayAddresses {
+						if allocationID := aws.ToString(natGatewayAddress.AllocationId); slices.Contains(allocationIDs, allocationID) {
+							associationIDs = append(associationIDs, aws.ToString(natGatewayAddress.AssociationId))
+						}
+					}
+
+					input := &ec2.DisassociateNatGatewayAddressInput{
+						AssociationIds: associationIDs,
+						NatGatewayId:   aws.String(d.Id()),
+					}
+
+					_, err = conn.DisassociateNatGatewayAddress(ctx, input)
+
+					if err != nil {
+						return sdkdiag.AppendErrorf(diags, "disassociating EC2 NAT Gateway (%s) allocation IDs: %s", d.Id(), err)
+					}
+
+					for _, allocationID := range allocationIDs {
+						if _, err := waitNATGatewayAddressDisassociated(ctx, conn, d.Id(), allocationID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+							return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) allocation ID (%s) disassociate: %s", d.Id(), allocationID, err)
+						}
 					}
 				}
 			}
 		}
-	case awstypes.ConnectivityTypePublic:
-		if !d.GetRawConfig().GetAttr("secondary_allocation_ids").IsNull() && d.HasChanges("secondary_allocation_ids") {
-			o, n := d.GetChange("secondary_allocation_ids")
+	case awstypes.AvailabilityModeRegional:
+		if d.HasChanges("availability_zone_address") {
+			o, n := d.GetChange("availability_zone_address")
 			os, ns := o.(*schema.Set), n.(*schema.Set)
 
-			if add := ns.Difference(os); add.Len() > 0 {
-				input := &ec2.AssociateNatGatewayAddressInput{
-					AllocationIds: flex.ExpandStringValueSet(add),
-					NatGatewayId:  aws.String(d.Id()),
-				}
-
-				if d.HasChanges("secondary_private_ip_addresses") {
-					o, n := d.GetChange("secondary_private_ip_addresses")
-					os, ns := o.(*schema.Set), n.(*schema.Set)
-
-					if add := ns.Difference(os); add.Len() > 0 {
-						input.PrivateIpAddresses = flex.ExpandStringValueSet(add)
-					}
-				}
-
-				_, err := conn.AssociateNatGatewayAddress(ctx, input)
-
+			// Pre-fetch AZ ID→Name map once if needed to avoid redundant API calls
+			var azIDtoNameMap map[string]string
+			if needsAZIDtoNameMap(os) || needsAZIDtoNameMap(ns) {
+				var err error
+				azIDtoNameMap, err = makeAZIDtoNameMap(ctx, conn)
 				if err != nil {
-					return sdkdiag.AppendErrorf(diags, "associating EC2 NAT Gateway (%s) allocation IDs: %s", d.Id(), err)
-				}
-
-				for _, allocationID := range flex.ExpandStringValueSet(add) {
-					if _, err := waitNATGatewayAddressAssociated(ctx, conn, d.Id(), allocationID, d.Timeout(schema.TimeoutUpdate)); err != nil {
-						return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) allocation ID (%s) associate: %s", d.Id(), allocationID, err)
-					}
+					return sdkdiag.AppendErrorf(diags, "retrieving availability zone ID to name map: %s", err)
 				}
 			}
 
-			if del := os.Difference(ns); del.Len() > 0 {
-				natGateway, err := findNATGatewayByID(ctx, conn, d.Id())
+			oldMap, err := processAZAddressSet(os, azIDtoNameMap)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "processing old availability zone address set: %s", err)
+			}
+			newMap, err := processAZAddressSet(ns, azIDtoNameMap)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "processing new availability zone address set: %s", err)
+			}
 
-				if err != nil {
-					return sdkdiag.AppendErrorf(diags, "reading EC2 NAT Gateway (%s): %s", d.Id(), err)
+			// Collect all unique AZ keys
+			allKeys := make(map[string]bool)
+			for az := range oldMap {
+				allKeys[az] = true
+			}
+			for az := range newMap {
+				allKeys[az] = true
+			}
+
+			var removedAllAZ []string
+			for az := range allKeys {
+				var oldSet, newSet *schema.Set
+				if v, ok := oldMap[az]; ok {
+					oldSet = v
+				} else {
+					oldSet = schema.NewSet(schema.HashString, []any{})
+				}
+				if v, ok := newMap[az]; ok {
+					newSet = v
+				} else {
+					newSet = schema.NewSet(schema.HashString, []any{})
 				}
 
-				allocationIDs := flex.ExpandStringValueSet(del)
-				var associationIDs []string
+				added := newSet.Difference(oldSet)
+				removed := oldSet.Difference(newSet)
 
-				for _, natGatewayAddress := range natGateway.NatGatewayAddresses {
-					if allocationID := aws.ToString(natGatewayAddress.AllocationId); slices.Contains(allocationIDs, allocationID) {
-						associationIDs = append(associationIDs, aws.ToString(natGatewayAddress.AssociationId))
+				if added.Len() > 0 {
+					if err := associateRegionalNATGatewayAddresses(ctx, conn, d, az, added); err != nil {
+						return append(diags, err...)
 					}
 				}
 
-				input := &ec2.DisassociateNatGatewayAddressInput{
-					AssociationIds: associationIDs,
-					NatGatewayId:   aws.String(d.Id()),
+				if removed.Len() > 0 {
+					removedAllAZ = append(removedAllAZ, flex.ExpandStringValueSet(removed)...)
 				}
-
-				_, err = conn.DisassociateNatGatewayAddress(ctx, input)
-
-				if err != nil {
-					return sdkdiag.AppendErrorf(diags, "disassociating EC2 NAT Gateway (%s) allocation IDs: %s", d.Id(), err)
-				}
-
-				for _, allocationID := range allocationIDs {
-					if _, err := waitNATGatewayAddressDisassociated(ctx, conn, d.Id(), allocationID, d.Timeout(schema.TimeoutUpdate)); err != nil {
-						return sdkdiag.AppendErrorf(diags, "waiting for EC2 NAT Gateway (%s) allocation ID (%s) disassociate: %s", d.Id(), allocationID, err)
-					}
+			}
+			if len(removedAllAZ) > 0 {
+				if err := disassociateRegionalNATGatewayAddresses(ctx, conn, d, removedAllAZ); err != nil {
+					return append(diags, err...)
 				}
 			}
 		}
