@@ -130,6 +130,26 @@ func resourceFunction() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
+			"durable_config": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"execution_timeout": {
+							Type:         schema.TypeInt,
+							Required:     true,
+							ValidateFunc: validation.IntBetween(1, 31622400),
+						},
+						names.AttrRetentionPeriod: {
+							Type:         schema.TypeInt,
+							Optional:     true,
+							Default:      14,
+							ValidateFunc: validation.IntBetween(1, 90),
+						},
+					},
+				},
+			},
 			names.AttrEnvironment: {
 				Type:     schema.TypeList,
 				Optional: true,
@@ -509,6 +529,13 @@ func resourceFunction() *schema.Resource {
 		CustomizeDiff: customdiff.Sequence(
 			checkHandlerRuntimeForZipFunction,
 			updateComputedAttributesOnPublish,
+			customdiff.ForceNewIfChange("durable_config", func(_ context.Context, old, new, meta any) bool {
+				// Force new when durable_config is being added (from empty to non-empty) or removed (from non-empty to empty)
+				// Allow updates to execution_timeout and retention_period when durable_config already exists
+				oldLen := len(old.([]any))
+				newLen := len(new.([]any))
+				return (oldLen == 0 && newLen > 0) || (oldLen > 0 && newLen == 0)
+			}),
 		),
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceProfileUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -22,8 +23,12 @@ func resourceProfileUpdate(ctx context.Context, d *schema.ResourceData, meta any
 	conn := meta.(*conns.AWSClient).RolesAnywhereClient(ctx)
 
 	if d.HasChangesExcept(names.AttrTags, names.AttrTagsAll) {
-		input := &rolesanywhere.UpdateProfileInput{
+		input := rolesanywhere.UpdateProfileInput{
 			ProfileId: aws.String(d.Id()),
+		}
+
+		if d.HasChange("accept_role_session_name") {
+			input.AcceptRoleSessionName = aws.Bool(d.Get("accept_role_session_name").(bool))
 		}
 
 		if d.HasChange("duration_seconds") {
@@ -46,22 +51,21 @@ func resourceProfileUpdate(ctx context.Context, d *schema.ResourceData, meta any
 			input.SessionPolicy = aws.String(d.Get("session_policy").(string))
 		}
 
-		log.Printf("[DEBUG] Updating RolesAnywhere Profile (%s): %#v", d.Id(), input)
-		_, err := conn.UpdateProfile(ctx, input)
+		_, err := conn.UpdateProfile(ctx, &input)
+
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating RolesAnywhere Profile (%s): %s", d.Id(), err)
 		}
 	}
 
 	if d.HasChange(names.AttrEnabled) {
-		_, n := d.GetChange(names.AttrEnabled)
-		if n == true {
-			err := enableProfile(ctx, d.Id(), meta)
+		if _, n := d.GetChange(names.AttrEnabled); n == true {
+			err := enableProfile(ctx, conn, d.Id())
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "enabling RolesAnywhere Profile (%s): %s", d.Id(), err)
 			}
 		} else {
-			err := disableProfile(ctx, d.Id(), meta)
+			err := disableProfile(ctx, conn, d.Id())
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "disabling RolesAnywhere Profile (%s): %s", d.Id(), err)
 			}

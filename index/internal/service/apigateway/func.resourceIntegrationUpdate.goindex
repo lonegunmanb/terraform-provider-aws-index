@@ -3,7 +3,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceIntegrationUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -152,25 +152,6 @@ func resourceIntegrationUpdate(ctx context.Context, d *schema.ResourceData, meta
 		})
 	}
 
-	// The documentation https://docs.aws.amazon.com/apigateway/api-reference/link-relation/integration-update/ says
-	// that uri changes are only supported for non-mock types. Because the uri value is not used in mock
-	// resources, it means that the uri can always be updated
-	if d.HasChange(names.AttrURI) {
-		operations = append(operations, types.PatchOperation{
-			Op:    types.OpReplace,
-			Path:  aws.String("/uri"),
-			Value: aws.String(d.Get(names.AttrURI).(string)),
-		})
-	}
-
-	if d.HasChange("content_handling") {
-		operations = append(operations, types.PatchOperation{
-			Op:    types.OpReplace,
-			Path:  aws.String("/contentHandling"),
-			Value: aws.String(d.Get("content_handling").(string)),
-		})
-	}
-
 	if d.HasChange("connection_type") {
 		operations = append(operations, types.PatchOperation{
 			Op:    types.OpReplace,
@@ -184,6 +165,34 @@ func resourceIntegrationUpdate(ctx context.Context, d *schema.ResourceData, meta
 			Op:    types.OpReplace,
 			Path:  aws.String("/connectionId"),
 			Value: aws.String(d.Get(names.AttrConnectionID).(string)),
+		})
+	}
+
+	if d.HasChange("content_handling") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/contentHandling"),
+			Value: aws.String(d.Get("content_handling").(string)),
+		})
+	}
+
+	if d.HasChange("integration_target") {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/integrationTarget"),
+			Value: aws.String(d.Get("integration_target").(string)),
+		})
+	}
+
+	if d.HasChange("response_transfer_mode") {
+		responseTransferMode := d.Get("response_transfer_mode").(string)
+		if responseTransferMode == "" {
+			responseTransferMode = string(types.ResponseTransferModeBuffered)
+		}
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/responseTransferMode"),
+			Value: aws.String(responseTransferMode),
 		})
 	}
 
@@ -205,6 +214,17 @@ func resourceIntegrationUpdate(ctx context.Context, d *schema.ResourceData, meta
 				Value: aws.String(strconv.FormatBool(m["insecure_skip_verification"].(bool))),
 			})
 		}
+	}
+
+	// The documentation https://docs.aws.amazon.com/apigateway/api-reference/link-relation/integration-update/ says
+	// that uri changes are only supported for non-mock types. Because the uri value is not used in mock
+	// resources, it means that the uri can always be updated
+	if d.HasChange(names.AttrURI) {
+		operations = append(operations, types.PatchOperation{
+			Op:    types.OpReplace,
+			Path:  aws.String("/uri"),
+			Value: aws.String(d.Get(names.AttrURI).(string)),
+		})
 	}
 
 	// Updating, Stage 1: Everything except cache key parameters

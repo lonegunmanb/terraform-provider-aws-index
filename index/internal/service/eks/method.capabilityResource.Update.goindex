@@ -1,0 +1,112 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
+	set "github.com/hashicorp/go-set/v3"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *capabilityResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new capabilityResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EKSClient(ctx)
+
+	diff, d := fwflex.Diff(ctx, new, old)
+	response.Diagnostics.Append(d...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		clusterName, capabilityName := fwflex.StringValueFromFramework(ctx, new.ClusterName), fwflex.StringValueFromFramework(ctx, new.CapabilityName)
+		var input eks.UpdateCapabilityInput
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, &input, fwflex.WithIgnoredFieldNamesAppend("RbacRoleMappings"))...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		// Additional fields.
+		input.ClientRequestToken = aws.String(sdkid.UniqueId())
+
+		// argo_cd block can only be modified in-place (not added or removed).
+		var oldConfiguration, newConfiguration awstypes.CapabilityConfigurationRequest
+		response.Diagnostics.Append(fwflex.Expand(ctx, old.Configuration, &oldConfiguration)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+		response.Diagnostics.Append(fwflex.Expand(ctx, new.Configuration, &newConfiguration)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		if oldArgoCD, newArgoCD := oldConfiguration.ArgoCd, newConfiguration.ArgoCd; oldArgoCD != nil && newArgoCD != nil {
+			add, remove, update, _ := intflex.DiffSlicesWithModify(oldArgoCD.RbacRoleMappings, newArgoCD.RbacRoleMappings,
+				func(a, b awstypes.ArgoCdRoleMapping) bool {
+					hashIdentity := func(v awstypes.SsoIdentity) string {
+						return string(v.Type) + ":" + aws.ToString(v.Id)
+					}
+					return a.Role == b.Role && set.HashSetFromFunc(a.Identities, hashIdentity).Equal(set.HashSetFromFunc(b.Identities, hashIdentity))
+				}, func(a, b awstypes.ArgoCdRoleMapping) bool {
+					return a.Role == b.Role
+				})
+
+			input.Configuration.ArgoCd.RbacRoleMappings = &awstypes.UpdateRoleMappings{}
+			if addOrUpdate := append(add, update...); len(addOrUpdate) > 0 { //nolint:gocritic // append re-assign is intentional
+				input.Configuration.ArgoCd.RbacRoleMappings.AddOrUpdateRoleMappings = addOrUpdate
+			}
+			if len(remove) > 0 {
+				input.Configuration.ArgoCd.RbacRoleMappings.RemoveRoleMappings = remove
+			}
+		}
+
+		output, err := conn.UpdateCapability(ctx, &input)
+
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating EKS Capability (%s,%s)", clusterName, capabilityName), err.Error())
+
+			return
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+		if _, err := waitCapabilityUpdateSuccessful(ctx, conn, clusterName, capabilityName, updateID, r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("waiting for EKS Capability (%s,%s) update (%s)", clusterName, capabilityName, updateID), err.Error())
+
+			return
+		}
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+}

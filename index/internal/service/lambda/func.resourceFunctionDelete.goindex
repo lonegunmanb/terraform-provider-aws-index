@@ -45,6 +45,13 @@ func resourceFunctionDelete(ctx context.Context, d *schema.ResourceData, meta an
 		}
 	}
 
+	// Stop any running durable executions before deleting the function
+	if v, ok := d.GetOk("durable_config"); ok && len(v.([]any)) > 0 {
+		if err := stopDurableExecutions(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "stopping durable executions for Lambda Function (%s): %s", d.Id(), err)
+		}
+	}
+
 	log.Printf("[INFO] Deleting Lambda Function: %s", d.Id())
 	input := lambda.DeleteFunctionInput{
 		FunctionName: aws.String(d.Id()),
@@ -59,6 +66,10 @@ func resourceFunctionDelete(ctx context.Context, d *schema.ResourceData, meta an
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "deleting Lambda Function (%s): %s", d.Id(), err)
+	}
+
+	if _, err := waitFunctionDeleted(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Lambda Function (%s) delete: %s", d.Id(), err)
 	}
 
 	return diags
