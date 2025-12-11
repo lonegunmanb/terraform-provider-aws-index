@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	tfio "github.com/hashicorp/terraform-provider-aws/internal/io"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
 	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -251,6 +252,30 @@ func resourceFunction() *schema.Resource {
 							Optional: true,
 						},
 					},
+				},
+				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+					if old == "0" && new == "1" {
+						imageConfigPlan := d.GetRawPlan().GetAttr("image_config")
+						if !imageConfigPlan.IsNull() {
+							icSlice := imageConfigPlan.AsValueSlice()[0]
+							if !icSlice.IsNull() {
+								var suppressCommand, suppressEntryPoint, suppressWorkingDirectory bool
+								icMap := icSlice.AsValueMap()
+								if v, ok := icMap["command"]; ok && (v.IsNull() || len(v.AsValueSlice()) == 0) {
+									suppressCommand = true
+								}
+								if v, ok := icMap["entry_point"]; ok && (v.IsNull() || len(v.AsValueSlice()) == 0) {
+									suppressEntryPoint = true
+								}
+								if v, ok := icMap["working_directory"]; ok && (v.IsNull() || len(v.AsString()) == 0) {
+									suppressWorkingDirectory = true
+								}
+
+								return suppressCommand && suppressEntryPoint && suppressWorkingDirectory
+							}
+						}
+					}
+					return false
 				},
 			},
 			"image_uri": {
