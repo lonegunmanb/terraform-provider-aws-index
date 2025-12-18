@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -52,6 +54,45 @@ func (expander autoExpander) convert(ctx context.Context, sourcePath path.Path, 
 
 	// No need to set the target value if there's no source value.
 	if vFrom.IsNull() {
+		// Special case: if target is XML wrapper struct and no omitempty, create zero-value
+		if vTo.Kind() == reflect.Ptr && !fieldOpts.omitempty {
+			targetType := vTo.Type().Elem()
+			if targetType.Kind() == reflect.Struct && potentialXMLWrapperStruct(targetType) {
+				tflog.SubsystemDebug(ctx, subsystemName, "Source is null but target is XML wrapper without omitempty - creating zero-value struct")
+				zeroStruct := reflect.New(targetType)
+				// Initialize Items slice and Quantity
+				wrapperFieldName := getXMLWrapperSliceFieldName(targetType)
+				itemsField := zeroStruct.Elem().FieldByName(wrapperFieldName)
+				if itemsField.IsValid() && itemsField.Kind() == reflect.Slice {
+					itemsField.Set(reflect.MakeSlice(itemsField.Type(), 0, 0))
+				}
+				quantityField := zeroStruct.Elem().FieldByName(xmlWrapperFieldQuantity)
+				if quantityField.IsValid() && quantityField.Kind() == reflect.Ptr {
+					zero := int32(0)
+					quantityField.Set(reflect.ValueOf(&zero))
+				}
+				// Set zero values for other pointer fields
+				for i := 0; i < zeroStruct.Elem().NumField(); i++ {
+					field := zeroStruct.Elem().Field(i)
+					fieldType := targetType.Field(i)
+					if fieldType.Name == wrapperFieldName || fieldType.Name == xmlWrapperFieldQuantity {
+						continue
+					}
+					if field.Kind() == reflect.Ptr && field.CanSet() && field.IsNil() {
+						switch fieldType.Type.Elem().Kind() {
+						case reflect.Bool:
+							falseVal := false
+							field.Set(reflect.ValueOf(&falseVal))
+						case reflect.Int32:
+							zeroVal := int32(0)
+							field.Set(reflect.ValueOf(&zeroVal))
+						}
+					}
+				}
+				vTo.Set(zeroStruct)
+				return diags
+			}
+		}
 		tflog.SubsystemTrace(ctx, subsystemName, "Expanding null value")
 		return diags
 	}

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -30,6 +32,19 @@ func (expander autoExpander) nestedObjectToStruct(ctx context.Context, sourcePat
 		diags.Append(expandStruct(ctx, sourcePath, from, targetPath, to.Interface(), expander)...)
 		if diags.HasError() {
 			return diags
+		}
+
+		// Rule 2 XML wrapper: After expanding nested object, check if any field had xmlwrapper tag
+		// and set Quantity field if target is XML wrapper struct
+		fromVal := reflect.ValueOf(from).Elem()
+		for i := 0; i < fromVal.NumField(); i++ {
+			field := fromVal.Type().Field(i)
+			_, fieldOpts := autoflexTags(field)
+			if wrapperField := fieldOpts.XMLWrapperField(); wrapperField != "" {
+				// Found xmlwrapper tag - set Quantity in target
+				setXMLWrapperQuantity(to, wrapperField)
+				break
+			}
 		}
 	}
 

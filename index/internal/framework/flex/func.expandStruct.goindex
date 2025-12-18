@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -49,9 +51,33 @@ func expandStruct(ctx context.Context, sourcePath path.Path, from any, targetPat
 	typeFrom := valFrom.Type()
 	typeTo := valTo.Type()
 
+	// Handle XML wrapper collapse patterns where multiple source fields
+	// need to be combined into a single complex target field
+	processedFields := make(map[string]bool)
+	diags.Append(flexer.handleXMLWrapperCollapse(ctx, sourcePath, valFrom, targetPath, valTo, typeFrom, typeTo, processedFields)...)
+	if diags.HasError() {
+		return diags
+	}
+
 	for fromField := range expandSourceFields(ctx, typeFrom, flexer.getOptions()) {
 		fromFieldName := fromField.Name
 		_, fromFieldOpts := autoflexTags(fromField)
+
+		// TRACE: Log XML wrapper tag detection
+		if xmlWrapperField := fromFieldOpts.XMLWrapperField(); xmlWrapperField != "" {
+			tflog.SubsystemTrace(ctx, subsystemName, "TRACE: Found xmlwrapper tag", map[string]any{
+				logAttrKeySourceFieldname: fromFieldName,
+				"xmlWrapperField":         xmlWrapperField,
+			})
+		}
+
+		// Skip fields that were already processed by XML wrapper collapse
+		if processedFields[fromFieldName] {
+			tflog.SubsystemTrace(ctx, subsystemName, "Skipping field already processed by XML wrapper collapse", map[string]any{
+				logAttrKeySourceFieldname: fromFieldName,
+			})
+			continue
+		}
 
 		toField, ok := (&fuzzyFieldFinder{}).findField(ctx, fromFieldName, typeFrom, typeTo, flexer)
 		if !ok {
@@ -78,8 +104,10 @@ func expandStruct(ctx context.Context, sourcePath path.Path, from any, targetPat
 		})
 
 		opts := fieldOpts{
-			legacy:     fromFieldOpts.Legacy(),
-			xmlWrapper: fromFieldOpts.XMLWrapperField() != "",
+			legacy:          fromFieldOpts.Legacy(),
+			omitempty:       fromFieldOpts.OmitEmpty(),
+			xmlWrapper:      fromFieldOpts.XMLWrapperField() != "",
+			xmlWrapperField: fromFieldOpts.XMLWrapperField(),
 		}
 
 		diags.Append(flexer.convert(ctx, sourcePath.AtName(fromFieldName), valFrom.FieldByIndex(fromField.Index), targetPath.AtName(toFieldName), toFieldVal, opts)...)

@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	smithydocument "github.com/aws/smithy-go/document"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
+	"github.com/shopspring/decimal"
+)
+func (flattener autoFlattener) convertXMLWrapperFieldToCollection(ctx context.Context, sourcePath path.Path, sourceFieldVal reflect.Value, targetPath path.Path, toFieldVal reflect.Value, opts tagOptions) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Check if source is an XML wrapper struct (has slice field + Quantity)
+	if sourceFieldVal.Kind() == reflect.Struct && potentialXMLWrapperStruct(sourceFieldVal.Type()) {
+		wrapperFieldName := getXMLWrapperSliceFieldName(sourceFieldVal.Type())
+		tflog.SubsystemTrace(ctx, subsystemName, "Converting XML wrapper struct to collection", map[string]any{
+			"source_type":   sourceFieldVal.Type().String(),
+			"wrapper_field": wrapperFieldName,
+		})
+
+		// Use existing XML wrapper flatten logic
+		if valTo, ok := toFieldVal.Interface().(attr.Value); ok {
+			diags.Append(flattener.xmlWrapperFlatten(ctx, sourceFieldVal, valTo.Type(ctx), toFieldVal, opts)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	} else if sourceFieldVal.Kind() == reflect.Pointer && !sourceFieldVal.IsNil() && potentialXMLWrapperStruct(sourceFieldVal.Type().Elem()) {
+		wrapperFieldName := getXMLWrapperSliceFieldName(sourceFieldVal.Type().Elem())
+		tflog.SubsystemTrace(ctx, subsystemName, "Converting pointer to XML wrapper struct to collection", map[string]any{
+			"source_type":   sourceFieldVal.Type().String(),
+			"wrapper_field": wrapperFieldName,
+		})
+
+		// Use existing XML wrapper flatten logic
+		if valTo, ok := toFieldVal.Interface().(attr.Value); ok {
+			diags.Append(flattener.xmlWrapperFlatten(ctx, sourceFieldVal.Elem(), valTo.Type(ctx), toFieldVal, opts)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	} else {
+		tflog.SubsystemTrace(ctx, subsystemName, "Converting non-XML wrapper field", map[string]any{
+			"source_type": sourceFieldVal.Type().String(),
+		})
+
+		// For non-XML wrapper fields, use regular conversion
+		fieldOpts := fieldOpts{}
+		diags.Append(flattener.convert(ctx, sourcePath, sourceFieldVal, targetPath, toFieldVal, fieldOpts)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+
+	return diags
+}

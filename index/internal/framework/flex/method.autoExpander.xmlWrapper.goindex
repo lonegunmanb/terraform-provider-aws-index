@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -14,101 +16,29 @@ import (
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
 )
-func (expander autoExpander) xmlWrapper(ctx context.Context, vFrom valueWithElementsAs, vTo reflect.Value, wrapperField string) diag.Diagnostics {
+func (expander *autoExpander) xmlWrapper(ctx context.Context, vFrom valueWithElementsAs, vTo reflect.Value, wrapperField string) diag.Diagnostics {
 	var diags diag.Diagnostics
 
-	// Verify target is a struct with Items and Quantity fields
-	if !isXMLWrapperStruct(vTo.Type()) {
-		tflog.SubsystemError(ctx, subsystemName, "Target is not a valid XML wrapper struct", map[string]any{
-			"target_type": vTo.Type().String(),
-		})
-		diags.Append(diagExpandingIncompatibleTypes(reflect.TypeOf(vFrom), vTo.Type()))
+	// Validate target structure
+	itemsField, quantityField, d := expander.validateXMLWrapperTarget(vTo, wrapperField)
+	diags.Append(d...)
+	if diags.HasError() {
 		return diags
 	}
 
-	// Get the Items and Quantity fields
-	itemsField := vTo.FieldByName("Items")
-	quantityField := vTo.FieldByName("Quantity")
-
-	if !itemsField.IsValid() || !quantityField.IsValid() {
-		tflog.SubsystemError(ctx, subsystemName, "XML wrapper struct missing required fields")
-		diags.Append(diagExpandingIncompatibleTypes(reflect.TypeOf(vFrom), vTo.Type()))
+	// Convert elements to slice
+	itemsSlice, d := expander.convertElementsToXMLWrapperSlice(ctx, vFrom.Elements(), itemsField.Type())
+	diags.Append(d...)
+	if diags.HasError() {
 		return diags
 	}
 
-	// Convert the collection elements to a slice
-	elements := vFrom.Elements()
-	itemsSliceType := itemsField.Type()
-	itemsSlice := reflect.MakeSlice(itemsSliceType, len(elements), len(elements))
-
-	// Convert each element
-	for i, elem := range elements {
-		itemValue := itemsSlice.Index(i)
-		if !itemValue.CanSet() {
-			continue
-		}
-
-		// Handle different element types
-		switch elemTyped := elem.(type) {
-		case basetypes.StringValuable:
-			if itemsSliceType.Elem().Kind() == reflect.String {
-				strVal, d := elemTyped.ToStringValue(ctx)
-				diags.Append(d...)
-				if !diags.HasError() {
-					itemValue.SetString(strVal.ValueString())
-				}
-			}
-		case basetypes.Int64Valuable:
-			if elemKind := itemsSliceType.Elem().Kind(); elemKind == reflect.Int32 {
-				int64Val, d := elemTyped.ToInt64Value(ctx)
-				diags.Append(d...)
-				if !diags.HasError() {
-					itemValue.SetInt(int64(int32(int64Val.ValueInt64())))
-				}
-			} else if elemKind == reflect.Int64 {
-				int64Val, d := elemTyped.ToInt64Value(ctx)
-				diags.Append(d...)
-				if !diags.HasError() {
-					itemValue.SetInt(int64Val.ValueInt64())
-				}
-			}
-		case basetypes.Int32Valuable:
-			if itemsSliceType.Elem().Kind() == reflect.Int32 {
-				int32Val, d := elemTyped.ToInt32Value(ctx)
-				diags.Append(d...)
-				if !diags.HasError() {
-					itemValue.SetInt(int64(int32Val.ValueInt32()))
-				}
-			}
-		default:
-			// For complex types, try direct assignment if types are compatible
-			if elem != nil && !elem.IsNull() && !elem.IsUnknown() {
-				if itemValue.Type().AssignableTo(reflect.TypeOf(elem)) {
-					itemValue.Set(reflect.ValueOf(elem))
-				}
-			}
-		}
+	// Set fields
+	itemsField.Set(itemsSlice)
+	if err := setXMLWrapperQuantityField(quantityField, int32(len(vFrom.Elements()))); err != nil {
+		diags.Append(diagExpandingIncompatibleTypes(reflect.TypeOf(vFrom), vTo.Type()))
+		return diags
 	}
-
-	// Set the Items field
-	if itemsField.CanSet() {
-		itemsField.Set(itemsSlice)
-	}
-
-	// Set the Quantity field
-	if quantityField.CanSet() && quantityField.Type().Kind() == reflect.Pointer {
-		quantity := int32(len(elements))
-		quantityPtr := reflect.New(quantityField.Type().Elem())
-		quantityPtr.Elem().Set(reflect.ValueOf(quantity))
-		quantityField.Set(quantityPtr)
-	}
-
-	tflog.SubsystemTrace(ctx, subsystemName, "Successfully expanded to XML wrapper", map[string]any{
-		"source_type":   reflect.TypeOf(vFrom).String(),
-		"target_type":   vTo.Type().String(),
-		"items_count":   len(elements),
-		"wrapper_field": wrapperField,
-	})
 
 	return diags
 }

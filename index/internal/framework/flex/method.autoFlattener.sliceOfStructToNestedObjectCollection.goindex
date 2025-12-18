@@ -43,7 +43,7 @@ func (flattener autoFlattener) sliceOfStructToNestedObjectCollection(ctx context
 		}
 	} else {
 		if vFrom.IsNil() {
-			tflog.SubsystemTrace(ctx, subsystemName, "Flattening with NullValue")
+			tflog.SubsystemTrace(ctx, subsystemName, "Flattening with NullValue (for nested object collection)")
 			val, d := tTo.NullValue(ctx)
 			diags.Append(d...)
 			if diags.HasError() {
@@ -60,7 +60,34 @@ func (flattener autoFlattener) sliceOfStructToNestedObjectCollection(ctx context
 
 	tflog.SubsystemTrace(ctx, subsystemName, "Flattening nested object collection", map[string]any{
 		logAttrKeySourceSize: n,
+		"source_type":        vFrom.Type().String(),
+		"target_type":        tTo.String(),
 	})
+
+	// DEBUG: Log the source struct fields for the first element
+	if n > 0 {
+		firstElem := vFrom.Index(0)
+		tflog.SubsystemDebug(ctx, subsystemName, "DEBUG: First element of nested object collection", map[string]any{
+			"element_type": firstElem.Type().String(),
+		})
+
+		// Log exported fields only
+		if firstElem.Kind() == reflect.Struct {
+			for i := 0; i < firstElem.NumField(); i++ {
+				field := firstElem.Type().Field(i)
+				if !field.IsExported() {
+					continue
+				}
+				fieldVal := firstElem.Field(i)
+				tflog.SubsystemDebug(ctx, subsystemName, "DEBUG: Struct field", map[string]any{
+					"field_name": field.Name,
+					"field_type": fieldVal.Type().String(),
+					"is_nil":     fieldVal.Kind() == reflect.Pointer && fieldVal.IsNil(),
+					"is_zero":    fieldVal.IsZero(),
+				})
+			}
+		}
+	}
 
 	to, d := tTo.NewObjectSlice(ctx, n, n)
 	diags.Append(d...)

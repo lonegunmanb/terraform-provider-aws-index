@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandCoreNetworkPolicyAttachmentRoutingPolicyRules(tfList []any, version string) ([]*coreNetworkPolicyAttachmentRoutingPolicyRule, error) {
+	if len(tfList) > 0 && version != "2025.11" {
+		return nil, fmt.Errorf("attachment_routing_policy_rules requires version 2025.11")
+	}
+
+	apiObjects := make([]*coreNetworkPolicyAttachmentRoutingPolicyRule, 0)
+	ruleMap := make(map[int]struct{})
+
+	for _, tfMapRaw := range tfList {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		apiObject := &coreNetworkPolicyAttachmentRoutingPolicyRule{}
+
+		if v, ok := tfMap["rule_number"].(int); ok {
+			if _, ok := ruleMap[v]; ok {
+				return nil, fmt.Errorf("duplicate Rule Number (%d). Remove the Rule Number or ensure the Rule Number is unique", v)
+			}
+			apiObject.RuleNumber = v
+			ruleMap[apiObject.RuleNumber] = struct{}{}
+		}
+
+		if v, ok := tfMap[names.AttrDescription].(string); ok && v != "" {
+			apiObject.Description = v
+		}
+
+		if v := tfMap["edge_locations"].(*schema.Set).List(); len(v) > 0 {
+			apiObject.EdgeLocations = coreNetworkPolicyExpandStringList(v)
+		}
+
+		apiObject.Conditions = expandCoreNetworkPolicyAttachmentRoutingPolicyRulesConditions(tfMap["conditions"].([]any))
+
+		apiObject.Action = expandCoreNetworkPolicyAttachmentRoutingPolicyRulesAction(tfMap[names.AttrAction].([]any))
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects, nil
+}

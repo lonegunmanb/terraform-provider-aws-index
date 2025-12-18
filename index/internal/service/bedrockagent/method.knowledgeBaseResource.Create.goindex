@@ -12,12 +12,17 @@ import (
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/objectvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -44,8 +49,8 @@ func (r *knowledgeBaseResource) Create(ctx context.Context, request resource.Cre
 
 	conn := r.Meta().BedrockAgentClient(ctx)
 
-	input := &bedrockagent.CreateKnowledgeBaseInput{}
-	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	var input bedrockagent.CreateKnowledgeBaseInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -57,13 +62,18 @@ func (r *knowledgeBaseResource) Create(ctx context.Context, request resource.Cre
 	var output *bedrockagent.CreateKnowledgeBaseOutput
 	var err error
 	err = tfresource.Retry(ctx, propagationTimeout, func(ctx context.Context) *tfresource.RetryError {
-		output, err = conn.CreateKnowledgeBase(ctx, input)
+		output, err = conn.CreateKnowledgeBase(ctx, &input)
 
 		// IAM propagation
 		if tfawserr.ErrMessageContains(err, errCodeValidationException, "cannot assume role") {
 			return tfresource.RetryableError(err)
 		}
 		if tfawserr.ErrMessageContains(err, errCodeValidationException, "unable to assume the given role") {
+			return tfresource.RetryableError(err)
+		}
+
+		// Kendra access propagation
+		if tfawserr.ErrMessageContains(err, errCodeValidationException, "Encountered AccessDeniedException from Kendra") {
 			return tfresource.RetryableError(err)
 		}
 
@@ -85,13 +95,14 @@ func (r *knowledgeBaseResource) Create(ctx context.Context, request resource.Cre
 	}
 
 	kb := output.KnowledgeBase
+	knowledgeBaseID := aws.ToString(kb.KnowledgeBaseId)
 	data.KnowledgeBaseARN = fwflex.StringToFramework(ctx, kb.KnowledgeBaseArn)
-	data.KnowledgeBaseID = fwflex.StringToFramework(ctx, kb.KnowledgeBaseId)
+	data.KnowledgeBaseID = fwflex.StringValueToFramework(ctx, knowledgeBaseID)
 
-	kb, err = waitKnowledgeBaseCreated(ctx, conn, data.KnowledgeBaseID.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
+	kb, err = waitKnowledgeBaseCreated(ctx, conn, knowledgeBaseID, r.CreateTimeout(ctx, data.Timeouts))
 
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("waiting for Bedrock Agent Knowledge Base (%s) create", data.KnowledgeBaseID.ValueString()), err.Error())
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for Bedrock Agent Knowledge Base (%s) create", knowledgeBaseID), err.Error())
 		return
 	}
 

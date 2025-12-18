@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -20,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceConnectPeerRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -39,10 +39,14 @@ func resourceConnectPeerRead(ctx context.Context, d *schema.ResourceData, meta a
 	}
 
 	d.Set(names.AttrARN, connectPeerARN(ctx, meta.(*conns.AWSClient), d.Id()))
-	d.Set("bgp_options", []any{map[string]any{
-		"peer_asn": connectPeer.Configuration.BgpConfigurations[0].PeerAsn,
-	}})
-	d.Set(names.AttrConfiguration, []any{flattenPeerConfiguration(connectPeer.Configuration)})
+	if len(connectPeer.Configuration.BgpConfigurations) > 0 {
+		d.Set("bgp_options", []any{map[string]any{
+			"peer_asn": flex.Int64ToStringValue(connectPeer.Configuration.BgpConfigurations[0].PeerAsn),
+		}})
+	} else {
+		d.Set("bgp_options", nil)
+	}
+	d.Set(names.AttrConfiguration, []any{flattenConnectPeerConfiguration(connectPeer.Configuration)})
 	d.Set("connect_peer_id", connectPeer.ConnectPeerId)
 	d.Set("core_network_id", connectPeer.CoreNetworkId)
 	if connectPeer.CreatedAt != nil {

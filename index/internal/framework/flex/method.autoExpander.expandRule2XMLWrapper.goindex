@@ -1,0 +1,87 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func (expander *autoExpander) expandRule2XMLWrapper(ctx context.Context, nestedObjPtr reflect.Value, vTo reflect.Value, wrapperField string) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	tflog.SubsystemTrace(ctx, subsystemName, "Expanding Rule 2 XML wrapper (items + additional fields)")
+
+	// Get target fields
+	itemsField := expander.getCachedFieldValue(vTo, wrapperField)
+	quantityField := expander.getCachedFieldValue(vTo, xmlWrapperFieldQuantity)
+
+	if !itemsField.IsValid() || !quantityField.IsValid() {
+		diags.Append(diagExpandingIncompatibleTypes(nestedObjPtr.Type(), vTo.Type()))
+		return diags
+	}
+
+	// Get the struct from the pointer
+	nestedObj := nestedObjPtr.Elem()
+
+	// Extract wrapper field from nested object
+	itemsSourceField := expander.getCachedFieldValue(nestedObj, wrapperField)
+	if !itemsSourceField.IsValid() {
+		diags.AddError("Missing items field", fmt.Sprintf("Rule 2 XML wrapper requires '%s' field", wrapperField))
+		return diags
+	}
+
+	// Convert items collection to Items slice using existing logic
+	if itemsAttr, ok := itemsSourceField.Interface().(attr.Value); ok {
+		if collectionValue, ok := itemsAttr.(valueWithElementsAs); ok {
+			diags.Append(expander.convertCollectionToXMLWrapperFields(ctx, collectionValue, itemsField, quantityField)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	}
+
+	// Handle additional fields (e.g., Enabled, CachedMethods)
+	for i := 0; i < vTo.NumField(); i++ {
+		targetField := vTo.Field(i)
+		targetFieldType := vTo.Type().Field(i)
+		fieldName := targetFieldType.Name
+
+		// Skip wrapper field and Quantity (already handled)
+		if fieldName == wrapperField || fieldName == xmlWrapperFieldQuantity {
+			continue
+		}
+
+		// Look for matching field in nested object
+		sourceField := nestedObj.FieldByName(fieldName)
+		if sourceField.IsValid() && targetField.CanAddr() {
+			// Check if source field has xmlwrapper tag
+			sourceFieldType, ok := nestedObj.Type().FieldByName(fieldName)
+			if !ok {
+				continue
+			}
+			_, sourceFieldOpts := autoflexTags(sourceFieldType)
+
+			// Convert TF field to AWS field with fieldOpts
+			opts := fieldOpts{
+				xmlWrapper:      sourceFieldOpts.XMLWrapperField() != "",
+				xmlWrapperField: sourceFieldOpts.XMLWrapperField(),
+			}
+			diags.Append(expander.convert(ctx, path.Empty(), sourceField, path.Empty(), targetField, opts)...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	}
+
+	return diags
+}

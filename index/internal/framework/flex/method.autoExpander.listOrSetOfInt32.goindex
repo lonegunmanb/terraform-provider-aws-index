@@ -1,0 +1,90 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func (expander autoExpander) listOrSetOfInt32(ctx context.Context, vFrom valueWithElementsAs, vTo reflect.Value, fieldOpts fieldOpts) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	switch vTo.Kind() {
+	case reflect.Struct:
+		// Check if target is an XML wrapper struct
+		if fieldOpts.xmlWrapper {
+			diags.Append(expander.xmlWrapper(ctx, vFrom, vTo, fieldOpts.xmlWrapperField)...)
+			return diags
+		}
+
+	case reflect.Slice:
+		switch tSliceElem := vTo.Type().Elem(); tSliceElem.Kind() {
+		case reflect.Int32:
+			//
+			// types.Set(OfInt32) -> []int32
+			//
+			tflog.SubsystemTrace(ctx, subsystemName, "Expanding with ElementsAs", map[string]any{
+				logAttrKeySourceSize: len(vFrom.Elements()),
+			})
+			var to []int32
+			diags.Append(vFrom.ElementsAs(ctx, &to, false)...)
+			if diags.HasError() {
+				return diags
+			}
+
+			vTo.Set(reflect.ValueOf(to))
+			return diags
+
+		case reflect.Pointer:
+			switch tSliceElem.Elem().Kind() {
+			case reflect.Int32:
+				//
+				// types.Set(OfInt32) -> []*int32
+				//
+				tflog.SubsystemTrace(ctx, subsystemName, "Expanding with ElementsAs", map[string]any{
+					logAttrKeySourceSize: len(vFrom.Elements()),
+				})
+				var to []*int32
+				diags.Append(vFrom.ElementsAs(ctx, &to, false)...)
+				if diags.HasError() {
+					return diags
+				}
+
+				vTo.Set(reflect.ValueOf(to))
+				return diags
+			}
+		}
+
+	case reflect.Pointer:
+		switch tElem := vTo.Type().Elem(); tElem.Kind() {
+		case reflect.Struct:
+			// Check if target is a pointer to an XML wrapper struct
+			if fieldOpts.xmlWrapper {
+				// Create new instance of the XML wrapper struct
+				newStruct := reflect.New(tElem).Elem()
+				diags.Append(expander.xmlWrapper(ctx, vFrom, newStruct, fieldOpts.xmlWrapperField)...)
+				if !diags.HasError() {
+					vTo.Set(newStruct.Addr())
+				}
+				return diags
+			}
+		}
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "AutoFlex Expand; incompatible types", map[string]any{
+		"from": "Set[Int32]",
+		"to":   vTo.Kind(),
+	})
+
+	return diags
+}

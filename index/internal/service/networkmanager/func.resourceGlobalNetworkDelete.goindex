@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -22,7 +21,6 @@ import (
 )
 func resourceGlobalNetworkDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-
 	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
 
 	if diags := disassociateCustomerGateways(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); diags.HasError() {
@@ -38,11 +36,12 @@ func resourceGlobalNetworkDelete(ctx context.Context, d *schema.ResourceData, me
 	}
 
 	log.Printf("[DEBUG] Deleting Network Manager Global Network: %s", d.Id())
+	input := networkmanager.DeleteGlobalNetworkInput{
+		GlobalNetworkId: aws.String(d.Id()),
+	}
 	_, err := tfresource.RetryWhen(ctx, globalNetworkValidationExceptionTimeout,
 		func(ctx context.Context) (any, error) {
-			return conn.DeleteGlobalNetwork(ctx, &networkmanager.DeleteGlobalNetworkInput{
-				GlobalNetworkId: aws.String(d.Id()),
-			})
+			return conn.DeleteGlobalNetwork(ctx, &input)
 		},
 		func(err error) (bool, error) {
 			if errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "cannot be deleted due to existing devices, sites, or links") {

@@ -9,8 +9,8 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
@@ -41,11 +41,11 @@ func resourceVPCAttachmentDelete(ctx context.Context, d *schema.ResourceData, me
 	d.Set(names.AttrState, output.Attachment.State)
 
 	if state := awstypes.AttachmentState(d.Get(names.AttrState).(string)); state == awstypes.AttachmentStatePendingAttachmentAcceptance || state == awstypes.AttachmentStatePendingTagAcceptance {
-		input := &networkmanager.RejectAttachmentInput{
+		input := networkmanager.RejectAttachmentInput{
 			AttachmentId: aws.String(d.Id()),
 		}
 
-		_, err := conn.RejectAttachment(ctx, input)
+		_, err := conn.RejectAttachment(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "rejecting Network Manager VPC Attachment (%s): %s", d.Id(), err)
@@ -58,12 +58,14 @@ func resourceVPCAttachmentDelete(ctx context.Context, d *schema.ResourceData, me
 
 	log.Printf("[DEBUG] Deleting Network Manager VPC Attachment: %s", d.Id())
 	const (
-		timeout = 5 * time.Minute
+		// Match at least the default value of aws_networkmanager_connect_attachment's Delete timeout.
+		timeout = 10 * time.Minute
 	)
+	input := networkmanager.DeleteAttachmentInput{
+		AttachmentId: aws.String(d.Id()),
+	}
 	_, err = tfresource.RetryWhenIsAErrorMessageContains[any, *awstypes.ValidationException](ctx, timeout, func(ctx context.Context) (any, error) {
-		return conn.DeleteAttachment(ctx, &networkmanager.DeleteAttachmentInput{
-			AttachmentId: aws.String(d.Id()),
-		})
+		return conn.DeleteAttachment(ctx, &input)
 	}, "cannot be deleted due to existing Connect attachment")
 
 	if errs.IsA[*awstypes.ResourceNotFoundException](err) {

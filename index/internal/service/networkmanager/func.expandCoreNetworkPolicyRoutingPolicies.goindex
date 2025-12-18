@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strconv"
+
+	"github.com/YakDriver/regexache"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandCoreNetworkPolicyRoutingPolicies(tfList []any, version string) ([]*coreNetworkPolicyRoutingPolicy, error) {
+	if len(tfList) > 0 && version != "2025.11" {
+		return nil, fmt.Errorf("routing_policies requires version 2025.11")
+	}
+
+	apiObjects := make([]*coreNetworkPolicyRoutingPolicy, 0)
+	nameMap := make(map[string]struct{})
+
+	for _, tfMapRaw := range tfList {
+		tfMap, ok := tfMapRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		apiObject := &coreNetworkPolicyRoutingPolicy{}
+
+		if v, ok := tfMap["routing_policy_name"].(string); ok {
+			if _, ok := nameMap[v]; ok {
+				return nil, fmt.Errorf("duplicate routing_policy_name (%s). Remove the name or ensure it is unique", v)
+			}
+			apiObject.RoutingPolicyName = v
+			if len(apiObject.RoutingPolicyName) > 0 {
+				nameMap[apiObject.RoutingPolicyName] = struct{}{}
+			}
+		}
+
+		if v, ok := tfMap["routing_policy_description"].(string); ok && v != "" {
+			apiObject.RoutingPolicyDescription = v
+		}
+
+		if v, ok := tfMap["routing_policy_direction"].(string); ok {
+			apiObject.RoutingPolicyDirection = v
+		}
+
+		if v, ok := tfMap["routing_policy_number"].(int); ok {
+			apiObject.RoutingPolicyNumber = v
+		}
+
+		rules, err := expandCoreNetworkPolicyRoutingPolicyRules(tfMap["routing_policy_rules"].([]any))
+		if err != nil {
+			return nil, err
+		}
+		apiObject.RoutingPolicyRules = rules
+
+		// Validate that summarize action is only used with outbound policies
+		if apiObject.RoutingPolicyDirection == "inbound" {
+			for _, rule := range rules {
+				if rule.RuleDefinition != nil && rule.RuleDefinition.Action != nil && rule.RuleDefinition.Action.Type == "summarize" {
+					return nil, fmt.Errorf("summarize action cannot be used for inbound routing policies (routing_policy_name: %s, rule_number: %d)", apiObject.RoutingPolicyName, rule.RuleNumber)
+				}
+			}
+		}
+
+		apiObjects = append(apiObjects, apiObject)
+	}
+
+	return apiObjects, nil
+}

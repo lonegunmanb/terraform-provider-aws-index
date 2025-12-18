@@ -1,0 +1,105 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func (expander autoExpander) convertCollectionToXMLWrapperFields(ctx context.Context, vFrom valueWithElementsAs, itemsField, quantityField reflect.Value) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Get the source elements
+	elements := vFrom.Elements()
+	itemsCount := len(elements)
+
+	// Create the Items slice
+	if itemsField.CanSet() {
+		itemsType := itemsField.Type()
+		itemsSlice := reflect.MakeSlice(itemsType, itemsCount, itemsCount)
+
+		// Convert each element - use the same logic as xmlWrapper
+		for i, elem := range elements {
+			itemValue := itemsSlice.Index(i)
+			if !itemValue.CanSet() {
+				continue
+			}
+
+			// Handle different element types
+			switch elemTyped := elem.(type) {
+			case basetypes.StringValuable:
+				// Check if target is a pointer to the enum type and source is StringEnum
+				if itemsType.Elem().Kind() == reflect.Pointer {
+					// Try to extract StringEnum value for pointer slice conversion
+					strVal, d := elemTyped.ToStringValue(ctx)
+					diags.Append(d...)
+					if !diags.HasError() && !strVal.IsNull() {
+						enumValue := strVal.ValueString()
+
+						// Create a pointer to the enum type
+						enumPtr := reflect.New(itemsType.Elem().Elem())
+						enumPtr.Elem().SetString(enumValue)
+						itemValue.Set(enumPtr)
+					}
+				} else if itemsType.Elem().Kind() == reflect.String {
+					strVal, d := elemTyped.ToStringValue(ctx)
+					diags.Append(d...)
+					if !diags.HasError() {
+						itemValue.SetString(strVal.ValueString())
+					}
+				}
+			case basetypes.Int64Valuable:
+				if elemKind := itemsType.Elem().Kind(); elemKind == reflect.Int32 {
+					int64Val, d := elemTyped.ToInt64Value(ctx)
+					diags.Append(d...)
+					if !diags.HasError() {
+						itemValue.SetInt(int64(int32(int64Val.ValueInt64())))
+					}
+				} else if elemKind == reflect.Int64 {
+					int64Val, d := elemTyped.ToInt64Value(ctx)
+					diags.Append(d...)
+					if !diags.HasError() {
+						itemValue.SetInt(int64Val.ValueInt64())
+					}
+				}
+			case basetypes.Int32Valuable:
+				if itemsType.Elem().Kind() == reflect.Int32 {
+					int32Val, d := elemTyped.ToInt32Value(ctx)
+					diags.Append(d...)
+					if !diags.HasError() {
+						itemValue.SetInt(int64(int32Val.ValueInt32()))
+					}
+				}
+			default:
+				// For complex types, try direct assignment if types are compatible
+				if elem != nil && !elem.IsNull() && !elem.IsUnknown() {
+					if itemValue.Type().AssignableTo(reflect.TypeOf(elem)) {
+						itemValue.Set(reflect.ValueOf(elem))
+					}
+				}
+			}
+		}
+
+		itemsField.Set(itemsSlice)
+	}
+
+	// Set the Quantity field
+	if quantityField.CanSet() && quantityField.Type().Kind() == reflect.Pointer {
+		quantity := int32(itemsCount)
+		quantityPtr := reflect.New(quantityField.Type().Elem())
+		quantityPtr.Elem().Set(reflect.ValueOf(quantity))
+		quantityField.Set(quantityPtr)
+	}
+
+	return diags
+}

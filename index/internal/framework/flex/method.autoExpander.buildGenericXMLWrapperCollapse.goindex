@@ -1,0 +1,317 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func (expander autoExpander) buildGenericXMLWrapperCollapse(ctx context.Context, sourcePath path.Path, valFrom reflect.Value, targetPath path.Path, toFieldVal reflect.Value, typeFrom, targetStructType reflect.Type, isPointer bool, processedFields map[string]bool) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Create the target struct
+	targetStruct := reflect.New(targetStructType)
+	targetStructVal := targetStruct.Elem()
+
+	tflog.SubsystemTrace(ctx, subsystemName, "Building generic XML wrapper collapse struct", map[string]any{
+		"target_type": targetStructType.String(),
+	})
+
+	// Track if we should create the struct (will be set to true if shouldCreateZeroValue)
+	var forceCreateStruct bool
+
+	// Check for null handling - if all source collection fields are null and target is pointer, set to nil
+	if isPointer {
+		allFieldsNull := true
+		hasCollectionFields := false
+
+		for i := 0; i < typeFrom.NumField(); i++ {
+			sourceField := typeFrom.Field(i)
+			sourceFieldVal := valFrom.FieldByName(sourceField.Name)
+
+			if sourceValue, ok := sourceFieldVal.Interface().(attr.Value); ok {
+				switch sourceValue.(type) {
+				case basetypes.SetValuable, basetypes.ListValuable:
+					hasCollectionFields = true
+					if !sourceValue.IsNull() {
+						allFieldsNull = false
+						break
+					}
+				}
+			}
+		}
+
+		if hasCollectionFields && allFieldsNull {
+			// Check if any collection field has omitempty=false (should create zero-value)
+			shouldCreateZeroValue := false
+			for i := 0; i < typeFrom.NumField(); i++ {
+				sourceField := typeFrom.Field(i)
+				sourceFieldVal := valFrom.FieldByName(sourceField.Name)
+				if sourceValue, ok := sourceFieldVal.Interface().(attr.Value); ok {
+					switch sourceValue.(type) {
+					case basetypes.SetValuable, basetypes.ListValuable:
+						_, sourceFieldOpts := autoflexTags(sourceField)
+						if !sourceFieldOpts.OmitEmpty() {
+							shouldCreateZeroValue = true
+							break
+						}
+					}
+				}
+			}
+
+			if !shouldCreateZeroValue {
+				// All collection fields are null and have omitempty - set to nil
+				toFieldVal.SetZero()
+
+				// Mark all collection fields as processed
+				for i := 0; i < typeFrom.NumField(); i++ {
+					sourceField := typeFrom.Field(i)
+					sourceFieldVal := valFrom.FieldByName(sourceField.Name)
+					if sourceValue, ok := sourceFieldVal.Interface().(attr.Value); ok {
+						switch sourceValue.(type) {
+						case basetypes.SetValuable, basetypes.ListValuable:
+							processedFields[sourceField.Name] = true
+						}
+					}
+				}
+
+				tflog.SubsystemTrace(ctx, subsystemName, "All source collection fields null with omitempty - setting target to nil")
+				return diags
+			}
+			tflog.SubsystemTrace(ctx, subsystemName, "All source collection fields null but no omitempty - will create zero-value struct")
+			// Force creation of zero-value struct even if no source fields are found
+			forceCreateStruct = true
+		}
+	}
+
+	// First, identify which source field should populate Items/Quantity
+	// This is typically the field that matches the target field name or the "main" collection
+	var mainSourceFieldName string
+
+	// Try to find a source field that matches the target field name
+	targetFieldName := targetPath.String()
+	if lastDot := strings.LastIndex(targetFieldName, "."); lastDot >= 0 {
+		targetFieldName = targetFieldName[lastDot+1:]
+	}
+
+	if _, found := typeFrom.FieldByName(targetFieldName); found {
+		mainSourceFieldName = targetFieldName
+	}
+	// Remove the fallback logic that incorrectly picks any collection field
+	// This was causing the wrong field data to be used for XML wrappers
+
+	tflog.SubsystemTrace(ctx, subsystemName, "Identified main source field", map[string]any{
+		"main_source_field": mainSourceFieldName,
+	})
+
+	// Process Items and Quantity from the main source field
+	hasMainSourceField := false
+	wrapperFieldName := getXMLWrapperSliceFieldName(targetStructType)
+
+	if mainSourceFieldName != "" {
+		sourceFieldVal := valFrom.FieldByName(mainSourceFieldName)
+
+		// Check if source is a NestedObjectCollectionValue (Rule 2 pattern)
+		if sourceValue, ok := sourceFieldVal.Interface().(attr.Value); ok {
+			if !sourceValue.IsNull() && !sourceValue.IsUnknown() {
+				if nestedObjCollection, ok := sourceValue.(fwtypes.NestedObjectCollectionValue); ok {
+					// This is Rule 2: single nested object with items + additional fields
+					// Delegate to nestedObjectCollectionToXMLWrapper which handles Rule 2
+					tflog.SubsystemTrace(ctx, subsystemName, "Detected Rule 2 pattern - delegating to nestedObjectCollectionToXMLWrapper")
+					diags.Append(expander.nestedObjectCollectionToXMLWrapper(ctx, sourcePath.AtName(mainSourceFieldName), nestedObjCollection, targetPath, targetStructVal, wrapperFieldName)...)
+					if diags.HasError() {
+						return diags
+					}
+					processedFields[mainSourceFieldName] = true
+
+					// Set the populated struct to the target field
+					if isPointer {
+						toFieldVal.Set(targetStruct)
+					} else {
+						toFieldVal.Set(targetStructVal)
+					}
+					return diags
+				}
+			} else {
+				// Rule 2 field is null - check omitempty
+				sourceFieldType, _ := typeFrom.FieldByName(mainSourceFieldName)
+				_, sourceFieldOpts := autoflexTags(sourceFieldType)
+				if !sourceFieldOpts.OmitEmpty() {
+					// Create zero-value struct for round-trip consistency
+					tflog.SubsystemDebug(ctx, subsystemName, "Rule 2 field is null but no omitempty - creating zero-value struct", map[string]any{
+						"source_field": mainSourceFieldName,
+					})
+					// Set empty Items and Quantity
+					itemsField := targetStructVal.FieldByName(wrapperFieldName)
+					quantityField := targetStructVal.FieldByName(xmlWrapperFieldQuantity)
+					if itemsField.IsValid() && itemsField.Kind() == reflect.Slice {
+						itemsField.Set(reflect.MakeSlice(itemsField.Type(), 0, 0))
+					}
+					if quantityField.IsValid() && quantityField.Kind() == reflect.Ptr && quantityField.Type().Elem().Kind() == reflect.Int32 {
+						zero := int32(0)
+						quantityField.Set(reflect.ValueOf(&zero))
+					}
+					// Set zero values for other fields (e.g., Enabled)
+					for i := 0; i < targetStructVal.NumField(); i++ {
+						field := targetStructVal.Field(i)
+						fieldType := targetStructType.Field(i)
+						fieldName := fieldType.Name
+						// Skip Items and Quantity (already handled)
+						if fieldName == wrapperFieldName || fieldName == xmlWrapperFieldQuantity {
+							continue
+						}
+						// Set zero value for pointer fields
+						if field.Kind() == reflect.Ptr && field.CanSet() && field.IsNil() {
+							switch fieldType.Type.Elem().Kind() {
+							case reflect.Bool:
+								falseVal := false
+								field.Set(reflect.ValueOf(&falseVal))
+							case reflect.Int32:
+								zeroVal := int32(0)
+								field.Set(reflect.ValueOf(&zeroVal))
+							}
+						}
+					}
+					processedFields[mainSourceFieldName] = true
+
+					// Set the struct to the target field
+					if isPointer {
+						toFieldVal.Set(targetStruct)
+					} else {
+						toFieldVal.Set(targetStructVal)
+					}
+					return diags
+				}
+			}
+		}
+
+		// Get the wrapper fields in the target
+		itemsField := targetStructVal.FieldByName(wrapperFieldName)
+		quantityField := targetStructVal.FieldByName(xmlWrapperFieldQuantity)
+
+		if itemsField.IsValid() && quantityField.IsValid() {
+			// Check if the source field is actually usable (not null/unknown)
+			if sourceValue, ok := sourceFieldVal.Interface().(attr.Value); ok {
+				if !sourceValue.IsNull() && !sourceValue.IsUnknown() {
+					// Convert the collection to wrapper slice and Quantity
+					diags.Append(expander.convertCollectionToItemsQuantity(ctx, sourceFieldVal, itemsField, quantityField)...)
+					if diags.HasError() {
+						return diags
+					}
+					hasMainSourceField = true
+				} else {
+					// Check if source field has omitempty tag
+					sourceFieldType, _ := typeFrom.FieldByName(mainSourceFieldName)
+					_, sourceFieldOpts := autoflexTags(sourceFieldType)
+					if sourceFieldOpts.OmitEmpty() {
+						tflog.SubsystemDebug(ctx, subsystemName, "Main source field is null and has omitempty - skipping XML wrapper creation", map[string]any{
+							"source_field": mainSourceFieldName,
+						})
+					} else {
+						// Create zero-value struct for round-trip consistency
+						tflog.SubsystemDebug(ctx, subsystemName, "Main source field is null but no omitempty - creating zero-value XML wrapper", map[string]any{
+							"source_field": mainSourceFieldName,
+						})
+						// Set Items to empty slice and Quantity to 0
+						if itemsField.Kind() == reflect.Slice {
+							itemsField.Set(reflect.MakeSlice(itemsField.Type(), 0, 0))
+						}
+						if quantityField.Kind() == reflect.Ptr && quantityField.Type().Elem().Kind() == reflect.Int32 {
+							zero := int32(0)
+							quantityField.Set(reflect.ValueOf(&zero))
+						}
+						hasMainSourceField = true
+					}
+				}
+			}
+		}
+
+		// Mark main source field as processed
+		processedFields[mainSourceFieldName] = true
+	}
+
+	// Track if we found any fields to populate
+	hasAnySourceFields := hasMainSourceField
+
+	// Now process each remaining field in the target struct
+	for i := 0; i < targetStructType.NumField(); i++ {
+		targetField := targetStructType.Field(i)
+		targetFieldName := targetField.Name
+		targetFieldVal := targetStructVal.Field(i)
+
+		// Skip wrapper field and Quantity as they were handled above
+		if targetFieldName == wrapperFieldName || targetFieldName == xmlWrapperFieldQuantity {
+			continue
+		}
+
+		if !targetFieldVal.CanSet() {
+			continue
+		}
+
+		tflog.SubsystemTrace(ctx, subsystemName, "Processing additional target field", map[string]any{
+			"target_field": targetFieldName,
+			"target_type":  targetField.Type.String(),
+		})
+
+		// Look for a source field with the same name
+		if _, found := typeFrom.FieldByName(targetFieldName); found {
+			sourceFieldVal := valFrom.FieldByName(targetFieldName)
+
+			tflog.SubsystemTrace(ctx, subsystemName, "Found matching source field", map[string]any{
+				"source_field": targetFieldName,
+				"target_field": targetFieldName,
+			})
+
+			// Check if we need special XML wrapper conversion
+			if expander.shouldConvertToXMLWrapper(sourceFieldVal, targetFieldVal) {
+				// Convert collection to XML wrapper structure
+				diags.Append(expander.convertToXMLWrapper(ctx, sourceFieldVal, targetFieldVal)...)
+				if diags.HasError() {
+					return diags
+				}
+			} else {
+				// Regular field conversion
+				opts := fieldOpts{}
+				diags.Append(expander.convert(ctx, sourcePath.AtName(targetFieldName), sourceFieldVal, targetPath.AtName(targetFieldName), targetFieldVal, opts)...)
+				if diags.HasError() {
+					return diags
+				}
+			}
+
+			// Mark source field as processed and track that we found fields
+			processedFields[targetFieldName] = true
+			hasAnySourceFields = true
+		} else {
+			tflog.SubsystemDebug(ctx, subsystemName, "No source field found for target field", map[string]any{
+				"target_field": targetFieldName,
+			})
+		}
+	}
+
+	// Only set the constructed struct if we found source fields to populate it OR if we're forcing creation
+	if hasAnySourceFields || forceCreateStruct {
+		// Set the constructed struct into the target field
+		if isPointer {
+			toFieldVal.Set(targetStruct)
+		} else {
+			toFieldVal.Set(targetStruct.Elem())
+		}
+
+		tflog.SubsystemTrace(ctx, subsystemName, "Successfully built generic XML wrapper collapse struct")
+	} else {
+		tflog.SubsystemDebug(ctx, subsystemName, "No source fields found for XML wrapper collapse target - leaving as nil/zero value")
+		// Leave the field as nil/zero value (don't set anything)
+	}
+
+	return diags
+}

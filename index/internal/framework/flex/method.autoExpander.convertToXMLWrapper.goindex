@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func (expander autoExpander) convertToXMLWrapper(ctx context.Context, sourceFieldVal reflect.Value, targetFieldVal reflect.Value) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	sourceValue, ok := sourceFieldVal.Interface().(attr.Value)
+	if !ok {
+		tflog.SubsystemError(ctx, subsystemName, "Source field is not an attr.Value", map[string]any{
+			"source_type": sourceFieldVal.Type().String(),
+		})
+		return diags
+	}
+
+	// Handle conversion based on source type
+	switch vFrom := sourceValue.(type) {
+	case basetypes.SetValuable:
+		if setValue, ok := vFrom.(valueWithElementsAs); ok {
+			diags.Append(expander.listOrSetOfString(ctx, setValue, targetFieldVal, fieldOpts{})...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	case basetypes.ListValuable:
+		if listValue, ok := vFrom.(valueWithElementsAs); ok {
+			diags.Append(expander.listOrSetOfString(ctx, listValue, targetFieldVal, fieldOpts{})...)
+			if diags.HasError() {
+				return diags
+			}
+		}
+	default:
+		tflog.SubsystemError(ctx, subsystemName, "Unsupported source type for XML wrapper conversion", map[string]any{
+			"source_type": fmt.Sprintf("%T", vFrom),
+		})
+	}
+
+	return diags
+}

@@ -19,7 +19,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
@@ -53,26 +52,34 @@ func (r *domainResource) Create(ctx context.Context, request resource.CreateRequ
 	const (
 		timeout = 30 * time.Second
 	)
-	output, err := tfresource.RetryWhenAWSErrCodeContains(ctx, timeout, func(ctx context.Context) (*datazone.CreateDomainOutput, error) {
+	out, err := tfresource.RetryWhenAWSErrCodeContains(ctx, timeout, func(ctx context.Context) (*datazone.CreateDomainOutput, error) {
 		return conn.CreateDomain(ctx, &input)
 	}, errCodeAccessDenied)
 
 	if err != nil {
 		response.Diagnostics.AddError(fmt.Sprintf("creating DataZone Domain (%s)", name), err.Error())
+		return
+	}
+
+	data.ID = fwflex.StringToFramework(ctx, out.Id)
+
+	output, err := waitDomainCreated(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
+	if err != nil {
+		response.State.SetAttribute(ctx, path.Root(names.AttrID), data.ID) // Set 'id' so as to taint the resource.
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for DataZone Domain (%s) create", data.ID.ValueString()), err.Error())
 
 		return
 	}
 
-	// Set values for unknowns.
-	data.ARN = fwflex.StringToFramework(ctx, output.Arn)
-	data.ID = fwflex.StringToFramework(ctx, output.Id)
-	data.PortalURL = fwflex.StringToFramework(ctx, output.PortalUrl)
-	data.DomainVersion = fwtypes.StringEnumValue[awstypes.DomainVersion](output.DomainVersion)
+	// Do not set single sign on in state if it was null and response is DISABLED as this is equivalent.
+	if output != nil {
+		if output.SingleSignOn != nil && output.SingleSignOn.Type == awstypes.AuthTypeDisabled && data.SingleSignOn.IsNull() {
+			output.SingleSignOn = nil
+		}
+	}
 
-	if _, err := waitDomainCreated(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts)); err != nil {
-		response.State.SetAttribute(ctx, path.Root(names.AttrID), data.ID) // Set 'id' so as to taint the resource.
-		response.Diagnostics.AddError(fmt.Sprintf("waiting for DataZone Domain (%s) create", data.ID.ValueString()), err.Error())
-
+	response.Diagnostics.Append(fwflex.Flatten(ctx, output, &data)...)
+	if response.Diagnostics.HasError() {
 		return
 	}
 

@@ -2,9 +2,9 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/verifiedper
 import (
 	"context"
 	"fmt"
-	"log"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/verifiedpermissions"
@@ -20,7 +20,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
@@ -45,16 +44,16 @@ func (r *identitySourceResource) Update(ctx context.Context, request resource.Up
 	}
 
 	if !plan.Configuration.Equal(state.Configuration) || !plan.PolicyStoreID.Equal(state.PolicyStoreID) || !plan.PrincipalEntityType.Equal(state.PrincipalEntityType) {
-		input := &verifiedpermissions.UpdateIdentitySourceInput{
+		input := verifiedpermissions.UpdateIdentitySourceInput{
 			IdentitySourceId: flex.StringFromFramework(ctx, plan.ID),
 		}
 
-		response.Diagnostics.Append(flex.Expand(context.WithValue(ctx, operationType, updateOperation), plan, input)...)
+		response.Diagnostics.Append(flex.Expand(ctx, plan, &input, flex.WithFieldNamePrefix("Update"))...)
 		if response.Diagnostics.HasError() {
 			return
 		}
 
-		_, err := conn.UpdateIdentitySource(ctx, input)
+		_, err := conn.UpdateIdentitySource(ctx, &input)
 
 		if err != nil {
 			response.Diagnostics.AddError(
@@ -75,12 +74,6 @@ func (r *identitySourceResource) Update(ctx context.Context, request resource.Up
 		}
 
 		response.Diagnostics.Append(flex.Flatten(ctx, out, &plan)...)
-		configuration, d := flattenConfiguration(ctx, out.Configuration)
-		response.Diagnostics.Append(d...)
-		if response.Diagnostics.HasError() {
-			return
-		}
-		plan.Configuration = configuration
 	}
 
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)

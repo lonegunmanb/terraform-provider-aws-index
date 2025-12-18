@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -43,7 +42,8 @@ func resourceConnectAttachmentRead(ctx context.Context, d *schema.ResourceData, 
 	d.Set("attachment_id", attachment.AttachmentId)
 	d.Set("attachment_type", attachment.AttachmentType)
 	d.Set("core_network_arn", attachment.CoreNetworkArn)
-	d.Set("core_network_id", attachment.CoreNetworkId)
+	coreNetworkID := aws.ToString(attachment.CoreNetworkId)
+	d.Set("core_network_id", coreNetworkID)
 	d.Set("edge_location", attachment.EdgeLocation)
 	if connectAttachment.Options != nil {
 		if err := d.Set("options", []any{flattenConnectAttachmentOptions(connectAttachment.Options)}); err != nil {
@@ -54,6 +54,11 @@ func resourceConnectAttachmentRead(ctx context.Context, d *schema.ResourceData, 
 	}
 	d.Set(names.AttrOwnerAccountID, attachment.OwnerAccountId)
 	d.Set(names.AttrResourceARN, attachment.ResourceArn)
+	if routingPolicyLabel, err := findRoutingPolicyLabelByTwoPartKey(ctx, conn, coreNetworkID, d.Id()); err != nil && !retry.NotFound(err) {
+		return sdkdiag.AppendErrorf(diags, "reading Network Manager Connect Attachment (%s) routing policy label: %s", d.Id(), err)
+	} else {
+		d.Set("routing_policy_label", routingPolicyLabel)
+	}
 	d.Set("segment_name", attachment.SegmentName)
 	d.Set(names.AttrState, attachment.State)
 	d.Set("transport_attachment_id", connectAttachment.TransportAttachmentId)

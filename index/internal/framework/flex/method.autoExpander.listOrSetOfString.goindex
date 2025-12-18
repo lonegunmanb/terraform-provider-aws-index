@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -20,8 +22,8 @@ func (expander autoExpander) listOrSetOfString(ctx context.Context, vFrom valueW
 	switch vTo.Kind() {
 	case reflect.Struct:
 		// Check if target is an XML wrapper struct
-		if fieldOpts.xmlWrapper && isXMLWrapperStruct(vTo.Type()) {
-			diags.Append(expander.xmlWrapper(ctx, vFrom, vTo, "Items")...)
+		if fieldOpts.xmlWrapper {
+			diags.Append(expander.xmlWrapper(ctx, vFrom, vTo, fieldOpts.xmlWrapperField)...)
 			return diags
 		}
 
@@ -65,6 +67,21 @@ func (expander autoExpander) listOrSetOfString(ctx context.Context, vFrom valueW
 				}
 
 				vTo.Set(reflect.ValueOf(to))
+				return diags
+			}
+		}
+
+	case reflect.Pointer:
+		switch tElem := vTo.Type().Elem(); tElem.Kind() {
+		case reflect.Struct:
+			// Check if target is a pointer to an XML wrapper struct
+			if fieldOpts.xmlWrapper {
+				// Create new instance of the XML wrapper struct
+				newStruct := reflect.New(tElem).Elem()
+				diags.Append(expander.xmlWrapper(ctx, vFrom, newStruct, fieldOpts.xmlWrapperField)...)
+				if !diags.HasError() {
+					vTo.Set(newStruct.Addr())
+				}
 				return diags
 			}
 		}

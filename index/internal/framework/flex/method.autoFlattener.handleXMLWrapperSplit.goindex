@@ -1,0 +1,146 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	smithydocument "github.com/aws/smithy-go/document"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
+	"github.com/shopspring/decimal"
+)
+func (flattener autoFlattener) handleXMLWrapperSplit(ctx context.Context, sourcePath path.Path, sourceStructVal reflect.Value, targetPath path.Path, valTo reflect.Value, sourceStructType, typeTo reflect.Type, isNil bool) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	tflog.SubsystemTrace(ctx, subsystemName, "Handling XML wrapper split", map[string]any{
+		logAttrKeySourceType: sourceStructType.String(),
+		logAttrKeyTargetType: typeTo.String(),
+	})
+
+	// If source is nil, find and set the matching target field to null
+	if isNil {
+		// Extract source field name from path
+		sourceFieldName := ""
+		sourcePathStr := sourcePath.String()
+		if lastDot := strings.LastIndex(sourcePathStr, "."); lastDot >= 0 {
+			sourceFieldName = sourcePathStr[lastDot+1:]
+		}
+
+		// Find matching target field
+		if sourceFieldName != "" {
+			if targetField, ok := (&fuzzyFieldFinder{}).findField(ctx, sourceFieldName, reflect.StructOf([]reflect.StructField{{Name: sourceFieldName, Type: reflect.TypeOf(""), PkgPath: ""}}), typeTo, flattener); ok {
+				toFieldVal := valTo.FieldByIndex(targetField.Index)
+				if toFieldVal.CanSet() {
+					if valTo, ok := toFieldVal.Interface().(attr.Value); ok {
+						switch tTo := valTo.Type(ctx).(type) {
+						case basetypes.SetTypable, basetypes.ListTypable:
+							tflog.SubsystemTrace(ctx, subsystemName, "Setting target collection field to null", map[string]any{
+								logAttrKeyTargetFieldname: targetField.Name,
+							})
+
+							var elemType attr.Type = types.StringType
+							if tToWithElem, ok := tTo.(attr.TypeWithElementType); ok {
+								elemType = tToWithElem.ElementType()
+							}
+
+							var nullVal attr.Value
+							var d diag.Diagnostics
+							if setType, ok := tTo.(basetypes.SetTypable); ok {
+								nullVal, d = setType.ValueFromSet(ctx, types.SetNull(elemType))
+							} else if listType, ok := tTo.(basetypes.ListTypable); ok {
+								nullVal, d = listType.ValueFromList(ctx, types.ListNull(elemType))
+							}
+							diags.Append(d...)
+							if !diags.HasError() {
+								toFieldVal.Set(reflect.ValueOf(nullVal))
+							}
+						}
+					}
+				}
+			}
+		}
+		return diags
+	}
+
+	// Map each field in the source struct to corresponding target fields
+	for i := 0; i < sourceStructType.NumField(); i++ {
+		sourceField := sourceStructType.Field(i)
+		sourceFieldName := sourceField.Name
+		sourceFieldVal := sourceStructVal.Field(i)
+
+		tflog.SubsystemTrace(ctx, subsystemName, "Processing source field for split", map[string]any{
+			"source_field": sourceFieldName,
+			"source_type":  sourceField.Type.String(),
+		})
+
+		// Map the source field to target field(s)
+		wrapperFieldName := getXMLWrapperSliceFieldName(sourceStructType)
+		if sourceFieldName == wrapperFieldName || sourceFieldName == xmlWrapperFieldQuantity {
+			// Items and Quantity should map to the main collection field
+			// Find a target field that matches the parent source field name
+			mainTargetFieldName := flattener.findMainTargetFieldForSplit(ctx, sourcePath, typeTo)
+			if mainTargetFieldName != "" {
+				if _, found := typeTo.FieldByName(mainTargetFieldName); found {
+					toFieldVal := valTo.FieldByName(mainTargetFieldName)
+					if toFieldVal.CanSet() {
+						tflog.SubsystemTrace(ctx, subsystemName, "Mapping Items/Quantity to main target field", map[string]any{
+							"source_field": sourceFieldName,
+							"target_field": mainTargetFieldName,
+						})
+
+						// Only process this for the Items field, skip Quantity
+						if sourceFieldName == wrapperFieldName {
+							// Extract tagOptions from target field
+							opts := tagOptions("")
+							if targetField, ok := typeTo.FieldByName(mainTargetFieldName); ok {
+								if tag := targetField.Tag.Get("autoflex"); tag != "" {
+									_, opts = parseTag(tag)
+								}
+							}
+							diags.Append(flattener.convertXMLWrapperFieldToCollection(ctx, sourcePath, sourceStructVal, targetPath.AtName(mainTargetFieldName), toFieldVal, opts)...)
+							if diags.HasError() {
+								return diags
+							}
+						}
+					}
+				}
+			}
+		} else {
+			// Other fields should map directly by name
+			if targetField, found := typeTo.FieldByName(sourceFieldName); found {
+				toFieldVal := valTo.FieldByName(sourceFieldName)
+				if toFieldVal.CanSet() {
+					tflog.SubsystemTrace(ctx, subsystemName, "Mapping additional field by name", map[string]any{
+						"source_field": sourceFieldName,
+						"target_field": sourceFieldName,
+					})
+
+					// Extract tagOptions from target field
+					opts := tagOptions("")
+					if tag := targetField.Tag.Get("autoflex"); tag != "" {
+						_, opts = parseTag(tag)
+					}
+
+					// Convert the source field to target field
+					diags.Append(flattener.convertXMLWrapperFieldToCollection(ctx, sourcePath.AtName(sourceFieldName), sourceFieldVal, targetPath.AtName(sourceFieldName), toFieldVal, opts)...)
+					if diags.HasError() {
+						return diags
+					}
+				}
+			}
+		}
+	}
+
+	return diags
+}

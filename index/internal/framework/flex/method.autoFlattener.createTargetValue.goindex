@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	smithydocument "github.com/aws/smithy-go/document"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
+	"github.com/shopspring/decimal"
+)
+func (flattener autoFlattener) createTargetValue(ctx context.Context, sourceValue types.String, targetType attr.Type) (attr.Value, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	// Check what type of target we have
+	switch targetType := targetType.(type) {
+	case basetypes.StringTypable:
+		// Regular string type
+		val, d := targetType.ValueFromString(ctx, sourceValue)
+		diags.Append(d...)
+		return val, diags
+	default:
+		// For StringEnum types or other complex types, try to use regular conversion
+		// This is a bit of a hack, but StringEnum types should accept string values
+		targetTypeStr := targetType.String()
+		if strings.Contains(targetTypeStr, "StringEnum") {
+			// Create a zero value of the target type and try to set it
+			targetVal := reflect.New(reflect.TypeOf(targetType.ValueType(ctx))).Elem()
+
+			// Try to convert using the AutoFlex conversion logic
+			diags.Append(flattener.convert(ctx, path.Empty(), reflect.ValueOf(sourceValue), path.Empty(), targetVal, fieldOpts{})...)
+			if diags.HasError() {
+				return nil, diags
+			}
+
+			if attrVal, ok := targetVal.Interface().(attr.Value); ok {
+				return attrVal, diags
+			}
+		}
+
+		// Fallback to string value
+		return sourceValue, diags
+	}
+}

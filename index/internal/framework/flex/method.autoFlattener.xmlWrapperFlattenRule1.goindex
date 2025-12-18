@@ -1,0 +1,376 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	smithydocument "github.com/aws/smithy-go/document"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
+	"github.com/shopspring/decimal"
+)
+func (flattener *autoFlattener) xmlWrapperFlattenRule1(ctx context.Context, vFrom reflect.Value, tTo attr.Type, vTo reflect.Value) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Get the Items field from the source wrapper struct
+	wrapperFieldName := getXMLWrapperSliceFieldName(vFrom.Type())
+	itemsField := vFrom.FieldByName(wrapperFieldName)
+	if !itemsField.IsValid() {
+		tflog.SubsystemError(ctx, subsystemName, "XML wrapper struct missing Items field")
+		diags.Append(DiagFlatteningIncompatibleTypes(vFrom.Type(), reflect.TypeOf(vTo.Interface())))
+		return diags
+	}
+
+	tflog.SubsystemTrace(ctx, subsystemName, "Found Items field", map[string]any{
+		"items_type":   itemsField.Type().String(),
+		"items_kind":   itemsField.Kind().String(),
+		"items_len":    itemsField.Len(),
+		"items_is_nil": itemsField.IsNil(),
+	})
+
+	// Determine element type
+	var elementType attr.Type = types.StringType // default
+	if tToWithElem, ok := tTo.(attr.TypeWithElementType); ok {
+		elementType = tToWithElem.ElementType()
+		tflog.SubsystemTrace(ctx, subsystemName, "Using target element type", map[string]any{
+			"element_type": elementType.String(),
+		})
+	}
+
+	// Handle different target collection types
+	switch tTo := tTo.(type) {
+	case basetypes.ListTypable:
+		// Items []T -> types.List
+		if itemsField.IsNil() {
+			tflog.SubsystemTrace(ctx, subsystemName, "Flattening XML wrapper with ListNull")
+			to, d := tTo.ValueFromList(ctx, types.ListNull(elementType))
+			diags.Append(d...)
+			if diags.HasError() {
+				return diags
+			}
+			vTo.Set(reflect.ValueOf(to))
+			return diags
+		}
+
+		// Convert items slice to list elements
+		itemsLen := itemsField.Len()
+
+		// Filter out nil pointers first and collect valid items
+		validItems := make([]reflect.Value, 0, itemsLen)
+		for i := range itemsLen {
+			item := itemsField.Index(i)
+			// Skip nil pointers
+			if item.Kind() == reflect.Pointer && item.IsNil() {
+				continue
+			}
+			validItems = append(validItems, item)
+		}
+
+		elements := make([]attr.Value, len(validItems))
+
+		tflog.SubsystemTrace(ctx, subsystemName, "Converting items to list elements", map[string]any{
+			"items_count": itemsLen,
+			"valid_count": len(validItems),
+		})
+
+		for i, item := range validItems {
+			tflog.SubsystemTrace(ctx, subsystemName, "Processing item", map[string]any{
+				"index":      i,
+				"item_kind":  item.Kind().String(),
+				"item_value": item.Interface(),
+			})
+
+			// Convert each item based on its type
+			switch item.Kind() {
+			case reflect.Int32:
+				// Handle int32 -> Int64 conversion for XML wrapper items
+				if val, d := newInt64ValueFromReflectValue(item); d.HasError() {
+					diags.Append(d...)
+					return diags
+				} else {
+					elements[i] = val
+				}
+			case reflect.String:
+				// Try to create a value that matches the target element type
+				if val, d := flattener.createTargetValue(ctx, types.StringValue(item.String()), elementType); d.HasError() {
+					diags.Append(d...)
+					return diags
+				} else {
+					elements[i] = val
+				}
+			case reflect.Pointer:
+				// Handle pointer types like *testEnum (pointer to enum)
+				// (nil pointers are already filtered out)
+				// Dereference the pointer and get the underlying value
+				derefItem := item.Elem()
+
+				// Handle the dereferenced value based on its type
+				switch derefItem.Kind() {
+				case reflect.String:
+					// Handle *string or *testEnum (where testEnum is a string type)
+					stringVal := derefItem.String()
+					if val, d := flattener.createTargetValue(ctx, types.StringValue(stringVal), elementType); d.HasError() {
+						diags.Append(d...)
+						return diags
+					} else {
+						elements[i] = val
+					}
+				default:
+					// Check if the dereferenced type is convertible to string (like custom enums)
+					if derefItem.Type().ConvertibleTo(reflect.TypeOf("")) {
+						stringVal := derefItem.Convert(reflect.TypeOf("")).String()
+						if val, d := flattener.createTargetValue(ctx, types.StringValue(stringVal), elementType); d.HasError() {
+							diags.Append(d...)
+							return diags
+						} else {
+							elements[i] = val
+						}
+					} else {
+						diags.Append(DiagFlatteningIncompatibleTypes(derefItem.Type(), reflect.TypeOf(elementType)))
+						return diags
+					}
+				}
+			case reflect.Struct:
+				// Handle struct types - convert to ObjectValue
+				if objType, ok := elementType.(fwtypes.NestedObjectType); ok {
+					objPtr, d := objType.NewObjectPtr(ctx)
+					diags.Append(d...)
+					if diags.HasError() {
+						return diags
+					}
+					diags.Append(autoFlattenConvert(ctx, item.Interface(), objPtr, flattener)...)
+					if diags.HasError() {
+						return diags
+					}
+					objVal, d := objType.ValueFromObjectPtr(ctx, objPtr)
+					diags.Append(d...)
+					if diags.HasError() {
+						return diags
+					}
+					elements[i] = objVal
+				} else {
+					diags.Append(DiagFlatteningIncompatibleTypes(item.Type(), reflect.TypeOf(elementType)))
+					return diags
+				}
+			default:
+				// Check for custom string types (like enums)
+				if item.Type().ConvertibleTo(reflect.TypeOf("")) {
+					// Convert custom string type (like testEnum/Method) to string
+					stringVal := item.Convert(reflect.TypeOf("")).String()
+
+					// Try to create a value that matches the target element type
+					if val, d := flattener.createTargetValue(ctx, types.StringValue(stringVal), elementType); d.HasError() {
+						diags.Append(d...)
+						return diags
+					} else {
+						elements[i] = val
+					}
+				} else {
+					diags.Append(DiagFlatteningIncompatibleTypes(item.Type(), reflect.TypeOf(elementType)))
+					return diags
+				}
+			}
+		}
+
+		tflog.SubsystemTrace(ctx, subsystemName, "Creating list value", map[string]any{
+			"element_count": len(elements),
+			"element_type":  elementType.String(),
+		})
+
+		list, d := types.ListValue(elementType, elements)
+		diags.Append(d...)
+		if diags.HasError() {
+			tflog.SubsystemError(ctx, subsystemName, "Error creating list value", map[string]any{
+				"error": d.Errors(),
+			})
+			return diags
+		}
+
+		to, d := tTo.ValueFromList(ctx, list)
+		diags.Append(d...)
+		if diags.HasError() {
+			tflog.SubsystemError(ctx, subsystemName, "Error converting to target list", map[string]any{
+				"error": d.Errors(),
+			})
+			return diags
+		}
+
+		tflog.SubsystemTrace(ctx, subsystemName, "Setting target list value")
+		vTo.Set(reflect.ValueOf(to))
+		return diags
+
+	case basetypes.SetTypable:
+		// Items []T -> types.Set
+		if itemsField.IsNil() {
+			tflog.SubsystemTrace(ctx, subsystemName, "Flattening XML wrapper with SetNull")
+			to, d := tTo.ValueFromSet(ctx, types.SetNull(elementType))
+			diags.Append(d...)
+			if diags.HasError() {
+				return diags
+			}
+			vTo.Set(reflect.ValueOf(to))
+			return diags
+		}
+
+		// Convert items slice to set elements
+		itemsLen := itemsField.Len()
+
+		// Filter out nil pointers first and collect valid items
+		validItems := make([]reflect.Value, 0, itemsLen)
+		for i := range itemsLen {
+			item := itemsField.Index(i)
+			// Skip nil pointers
+			if item.Kind() == reflect.Pointer && item.IsNil() {
+				continue
+			}
+			validItems = append(validItems, item)
+		}
+
+		elements := make([]attr.Value, len(validItems))
+
+		tflog.SubsystemTrace(ctx, subsystemName, "Converting items to set elements", map[string]any{
+			"items_count": itemsLen,
+			"valid_count": len(validItems),
+		})
+
+		for i, item := range validItems {
+			tflog.SubsystemTrace(ctx, subsystemName, "Processing item", map[string]any{
+				"index":      i,
+				"item_kind":  item.Kind().String(),
+				"item_value": item.Interface(),
+			})
+
+			// Convert each item based on its type
+			switch item.Kind() {
+			case reflect.Int32:
+				// Handle int32 -> Int64 conversion for XML wrapper items
+				if val, d := newInt64ValueFromReflectValue(item); d.HasError() {
+					diags.Append(d...)
+					return diags
+				} else {
+					elements[i] = val
+				}
+			case reflect.String:
+				// Try to create a value that matches the target element type
+				if val, d := flattener.createTargetValue(ctx, types.StringValue(item.String()), elementType); d.HasError() {
+					diags.Append(d...)
+					return diags
+				} else {
+					elements[i] = val
+				}
+			case reflect.Pointer:
+				// Handle pointer types like *testEnum (pointer to enum)
+				// (nil pointers are already filtered out)
+				// Dereference the pointer and get the underlying value
+				derefItem := item.Elem()
+
+				// Handle the dereferenced value based on its type
+				switch derefItem.Kind() {
+				case reflect.String:
+					// Handle *string or *testEnum (where testEnum is a string type)
+					stringVal := derefItem.String()
+					if val, d := flattener.createTargetValue(ctx, types.StringValue(stringVal), elementType); d.HasError() {
+						diags.Append(d...)
+						return diags
+					} else {
+						elements[i] = val
+					}
+				default:
+					// Check if the dereferenced type is convertible to string (like custom enums)
+					if derefItem.Type().ConvertibleTo(reflect.TypeOf("")) {
+						stringVal := derefItem.Convert(reflect.TypeOf("")).String()
+						if val, d := flattener.createTargetValue(ctx, types.StringValue(stringVal), elementType); d.HasError() {
+							diags.Append(d...)
+							return diags
+						} else {
+							elements[i] = val
+						}
+					} else {
+						diags.Append(DiagFlatteningIncompatibleTypes(derefItem.Type(), reflect.TypeOf(elementType)))
+						return diags
+					}
+				}
+			case reflect.Struct:
+				// Handle complex struct types by converting to the target element type
+				if elemTyper, ok := tTo.(attr.TypeWithElementType); ok && elemTyper.ElementType() != nil {
+					elemType := elemTyper.ElementType()
+
+					// Create a new instance of the target element type
+					targetValue := reflect.New(reflect.TypeOf(elemType.ValueType(ctx))).Elem()
+
+					// Use AutoFlex to flatten the struct to the target type
+					diags.Append(flattener.convert(ctx, path.Empty(), item, path.Empty(), targetValue, fieldOpts{})...)
+					if diags.HasError() {
+						return diags
+					}
+
+					// The converted value should implement attr.Value
+					if attrVal, ok := targetValue.Interface().(attr.Value); ok {
+						elements[i] = attrVal
+					} else {
+						diags.Append(DiagFlatteningIncompatibleTypes(item.Type(), reflect.TypeOf(targetValue.Interface())))
+						return diags
+					}
+				} else {
+					diags.Append(DiagFlatteningIncompatibleTypes(item.Type(), reflect.TypeOf(elementType)))
+					return diags
+				}
+			default:
+				// Check for custom string types (like enums)
+				if item.Type().ConvertibleTo(reflect.TypeOf("")) {
+					// Convert custom string type (like testEnum/Method) to string
+					stringVal := item.Convert(reflect.TypeOf("")).String()
+
+					// Try to create a value that matches the target element type
+					if val, d := flattener.createTargetValue(ctx, types.StringValue(stringVal), elementType); d.HasError() {
+						diags.Append(d...)
+						return diags
+					} else {
+						elements[i] = val
+					}
+				} else {
+					// For other complex types, handle conversion if needed
+					diags.Append(DiagFlatteningIncompatibleTypes(item.Type(), reflect.TypeOf(elementType)))
+					return diags
+				}
+			}
+		}
+
+		tflog.SubsystemTrace(ctx, subsystemName, "Creating set value", map[string]any{
+			"element_count": len(elements),
+			"element_type":  elementType.String(),
+		})
+
+		set, d := types.SetValue(elementType, elements)
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+
+		to, d := tTo.ValueFromSet(ctx, set)
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+
+		vTo.Set(reflect.ValueOf(to))
+		return diags
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "Unsupported target type for XML wrapper flattening", map[string]any{
+		"target_type": tTo,
+	})
+	diags.Append(DiagFlatteningIncompatibleTypes(vFrom.Type(), reflect.TypeOf(vTo.Interface())))
+	return diags
+}

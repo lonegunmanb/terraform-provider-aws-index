@@ -8,15 +8,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
@@ -44,23 +45,24 @@ func (r *directConnectGatewayAttachmentResource) Update(ctx context.Context, req
 	// Attachment must be in an Available state to be modified
 	// Only edge locations can be modified
 	if !new.EdgeLocations.Equal(old.EdgeLocations) {
-		input := &networkmanager.UpdateDirectConnectGatewayAttachmentInput{
-			AttachmentId:  new.ID.ValueStringPointer(),
+		id := fwflex.StringValueFromFramework(ctx, new.ID)
+		input := networkmanager.UpdateDirectConnectGatewayAttachmentInput{
+			AttachmentId:  aws.String(id),
 			EdgeLocations: fwflex.ExpandFrameworkStringValueList(ctx, new.EdgeLocations),
 		}
 
-		_, err := conn.UpdateDirectConnectGatewayAttachment(ctx, input)
+		_, err := conn.UpdateDirectConnectGatewayAttachment(ctx, &input)
 
 		if err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("updating Network Manager Direct Connect Gateway Attachment (%s)", new.ID.ValueString()), err.Error())
+			response.Diagnostics.AddError(fmt.Sprintf("updating Network Manager Direct Connect Gateway Attachment (%s)", id), err.Error())
 
 			return
 		}
 
-		dxgwAttachment, err := waitDirectConnectGatewayAttachmentUpdated(ctx, conn, new.ID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts))
+		dxgwAttachment, err := waitDirectConnectGatewayAttachmentUpdated(ctx, conn, id, r.UpdateTimeout(ctx, new.Timeouts))
 
 		if err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("waiting for Network Manager Direct Connect Gateway Attachment (%s) update", new.ID.ValueString()), err.Error())
+			response.Diagnostics.AddError(fmt.Sprintf("waiting for Network Manager Direct Connect Gateway Attachment (%s) update", id), err.Error())
 
 			return
 		}

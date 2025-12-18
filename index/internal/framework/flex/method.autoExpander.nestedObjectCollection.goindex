@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -17,11 +19,19 @@ import (
 func (expander autoExpander) nestedObjectCollection(ctx context.Context, sourcePath path.Path, vFrom fwtypes.NestedObjectCollectionValue, targetPath path.Path, vTo reflect.Value, fieldOpts fieldOpts) diag.Diagnostics {
 	var diags diag.Diagnostics
 
+	// TRACE: Log entry with field options
+	tflog.SubsystemTrace(ctx, subsystemName, "TRACE: nestedObjectCollection entry", map[string]any{
+		"target_type":     vTo.Type().String(),
+		"target_kind":     vTo.Kind().String(),
+		"xmlWrapper":      fieldOpts.xmlWrapper,
+		"xmlWrapperField": fieldOpts.xmlWrapperField,
+	})
+
 	switch tTo := vTo.Type(); vTo.Kind() {
 	case reflect.Struct:
-		// Check if target is an XML wrapper struct before handling as generic struct
-		if fieldOpts.xmlWrapper && isXMLWrapperStruct(tTo) {
-			diags.Append(expander.nestedObjectCollectionToXMLWrapper(ctx, sourcePath, vFrom, targetPath, vTo)...)
+		// Check if xmlwrapper tag is present
+		if fieldOpts.xmlWrapper {
+			diags.Append(expander.nestedObjectCollectionToXMLWrapper(ctx, sourcePath, vFrom, targetPath, vTo, fieldOpts.xmlWrapperField)...)
 			return diags
 		}
 
@@ -33,11 +43,11 @@ func (expander autoExpander) nestedObjectCollection(ctx context.Context, sourceP
 	case reflect.Pointer:
 		switch tElem := tTo.Elem(); tElem.Kind() {
 		case reflect.Struct:
-			// Check if target is a pointer to XML wrapper struct
-			if fieldOpts.xmlWrapper && isXMLWrapperStruct(tElem) {
+			// Check if xmlwrapper tag is present
+			if fieldOpts.xmlWrapper {
 				// Create new instance of the XML wrapper struct
 				newWrapper := reflect.New(tElem)
-				diags.Append(expander.nestedObjectCollectionToXMLWrapper(ctx, sourcePath, vFrom, targetPath, newWrapper.Elem())...)
+				diags.Append(expander.nestedObjectCollectionToXMLWrapper(ctx, sourcePath, vFrom, targetPath, newWrapper.Elem(), fieldOpts.xmlWrapperField)...)
 				if !diags.HasError() {
 					vTo.Set(newWrapper)
 				}

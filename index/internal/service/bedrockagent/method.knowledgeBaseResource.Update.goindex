@@ -12,12 +12,17 @@ import (
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/objectvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -51,26 +56,27 @@ func (r *knowledgeBaseResource) Update(ctx context.Context, request resource.Upd
 	if !new.Description.Equal(old.Description) ||
 		!new.Name.Equal(old.Name) ||
 		!new.RoleARN.Equal(old.RoleARN) {
-		input := &bedrockagent.UpdateKnowledgeBaseInput{}
-		response.Diagnostics.Append(fwflex.Expand(ctx, new, input)...)
+		knowledgeBaseID := fwflex.StringValueFromFramework(ctx, new.KnowledgeBaseID)
+		var input bedrockagent.UpdateKnowledgeBaseInput
+		response.Diagnostics.Append(fwflex.Expand(ctx, new, &input)...)
 		if response.Diagnostics.HasError() {
 			return
 		}
 
 		_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func(ctx context.Context) (any, error) {
-			return conn.UpdateKnowledgeBase(ctx, input)
+			return conn.UpdateKnowledgeBase(ctx, &input)
 		}, errCodeValidationException, "cannot assume role")
 
 		if err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("updating Bedrock Agent Knowledge Base (%s)", new.KnowledgeBaseID.ValueString()), err.Error())
+			response.Diagnostics.AddError(fmt.Sprintf("updating Bedrock Agent Knowledge Base (%s)", knowledgeBaseID), err.Error())
 
 			return
 		}
 
-		kb, err := waitKnowledgeBaseUpdated(ctx, conn, new.KnowledgeBaseID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts))
+		kb, err := waitKnowledgeBaseUpdated(ctx, conn, knowledgeBaseID, r.UpdateTimeout(ctx, new.Timeouts))
 
 		if err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("waiting for Bedrock Agent Knowledge Base (%s) create", new.KnowledgeBaseID.ValueString()), err.Error())
+			response.Diagnostics.AddError(fmt.Sprintf("waiting for Bedrock Agent Knowledge Base (%s) update", knowledgeBaseID), err.Error())
 
 			return
 		}
