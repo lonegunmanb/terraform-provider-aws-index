@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -24,7 +25,7 @@ func resourceAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta 
 	conn := meta.(*conns.AWSClient).ELBV2Client(ctx)
 
 	targetGroupARN := d.Get("target_group_arn").(string)
-	input := &elasticloadbalancingv2.RegisterTargetsInput{
+	input := elasticloadbalancingv2.RegisterTargetsInput{
 		TargetGroupArn: aws.String(targetGroupARN),
 		Targets: []awstypes.TargetDescription{{
 			Id: aws.String(d.Get("target_id").(string)),
@@ -39,11 +40,15 @@ func resourceAttachmentCreate(ctx context.Context, d *schema.ResourceData, meta 
 		input.Targets[0].Port = aws.Int32(int32(v.(int)))
 	}
 
+	if v, ok := d.GetOk("quic_server_id"); ok {
+		input.Targets[0].QuicServerId = aws.String(v.(string))
+	}
+
 	const (
 		timeout = 10 * time.Minute
 	)
 	_, err := tfresource.RetryWhenIsA[any, *awstypes.InvalidTargetException](ctx, timeout, func(ctx context.Context) (any, error) {
-		return conn.RegisterTargets(ctx, input)
+		return conn.RegisterTargets(ctx, &input)
 	})
 
 	if err != nil {

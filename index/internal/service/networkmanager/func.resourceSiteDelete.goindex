@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -25,18 +24,17 @@ import (
 )
 func resourceSiteDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-
 	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
 
-	globalNetworkID := d.Get("global_network_id").(string)
-
 	log.Printf("[DEBUG] Deleting Network Manager Site: %s", d.Id())
+	globalNetworkID := d.Get("global_network_id").(string)
+	input := networkmanager.DeleteSiteInput{
+		GlobalNetworkId: aws.String(globalNetworkID),
+		SiteId:          aws.String(d.Id()),
+	}
 	_, err := tfresource.RetryWhen(ctx, siteValidationExceptionTimeout,
 		func(ctx context.Context) (any, error) {
-			return conn.DeleteSite(ctx, &networkmanager.DeleteSiteInput{
-				GlobalNetworkId: aws.String(globalNetworkID),
-				SiteId:          aws.String(d.Id()),
-			})
+			return conn.DeleteSite(ctx, &input)
 		},
 		func(err error) (bool, error) {
 			if errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "cannot be deleted due to existing association") {

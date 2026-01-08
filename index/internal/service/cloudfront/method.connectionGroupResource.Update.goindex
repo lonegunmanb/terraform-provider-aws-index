@@ -1,0 +1,107 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *connectionGroupResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var old, new connectionGroupResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &new)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudFrontClient(ctx)
+
+	var updateOutput *cloudfront.UpdateConnectionGroupOutput
+
+	// Remove tags from main update condition since they're handled separately
+	if !new.AnycastIPListID.Equal(old.AnycastIPListID) || !new.IPv6Enabled.Equal(old.IPv6Enabled) || !new.Enabled.Equal(old.Enabled) {
+		input := &cloudfront.UpdateConnectionGroupInput{}
+		resp.Diagnostics.Append(fwflex.Expand(ctx, new, input)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// Handle special fields manually
+		input.Id = fwflex.StringFromFramework(ctx, new.ID)
+		input.IfMatch = fwflex.StringFromFramework(ctx, old.ETag)
+
+		var err error
+		updateOutput, err = conn.UpdateConnectionGroup(ctx, input)
+
+		// Refresh our ETag if it is out of date and attempt update again.
+		if errs.IsA[*awstypes.PreconditionFailed](err) {
+			var etag string
+			etag, err = connectionGroupETag(ctx, conn, new.ID.ValueString())
+
+			if err != nil {
+				resp.Diagnostics.AddError(
+					create.ProblemStandardMessage(names.CloudFront, create.ErrActionUpdating, ResNameConnectionGroup, new.ID.String(), err),
+					err.Error(),
+				)
+				return
+			}
+
+			input.IfMatch = aws.String(etag)
+			updateOutput, err = conn.UpdateConnectionGroup(ctx, input)
+		}
+
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.CloudFront, create.ErrActionUpdating, ResNameConnectionGroup, new.ID.String(), err),
+				err.Error(),
+			)
+			return
+		}
+
+		if new.WaitForDeployment.ValueBool() {
+			if _, err := waitConnectionGroupDeployed(ctx, conn, new.ID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
+				resp.Diagnostics.AddError(
+					create.ProblemStandardMessage(names.CloudFront, create.ErrActionWaitingForUpdate, ResNameConnectionGroup, new.ID.String(), err),
+					err.Error(),
+				)
+				return
+			}
+		}
+
+		resp.Diagnostics.Append(fwflex.Flatten(ctx, updateOutput.ConnectionGroup, &new)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		new.ETag = fwflex.StringToFramework(ctx, updateOutput.ETag)
+		new.LastModifiedTime = fwflex.TimeToFramework(ctx, updateOutput.ConnectionGroup.LastModifiedTime)
+	} else {
+		// Tag-only update - preserve all computed fields from old state
+		new.ETag = old.ETag
+		new.IsDefault = old.IsDefault
+		new.LastModifiedTime = old.LastModifiedTime
+		new.RoutingEndpoint = old.RoutingEndpoint
+		new.Status = old.Status
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &new)...)
+}

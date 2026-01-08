@@ -14,20 +14,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/comprehend/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
 	tfkms "github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tfsync "github.com/hashicorp/terraform-provider-aws/internal/sync"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -61,21 +61,21 @@ func resourceEntityRecognizerDelete(ctx context.Context, d *schema.ResourceData,
 		return sdkdiag.AppendErrorf(diags, "waiting for Comprehend Entity Recognizer (%s) to be stopped: %s", d.Id(), err)
 	}
 
-	name, err := EntityRecognizerParseARN(d.Id())
+	name, err := entityRecognizerParseARN(d.Id())
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "deleting Comprehend Entity Recognizer (%s): %s", d.Id(), err)
 	}
 
 	log.Printf("[INFO] Deleting Comprehend Entity Recognizer (%s)", name)
 
-	versions, err := ListEntityRecognizerVersionsByName(ctx, conn, name)
+	versions, err := findEntityRecognizerVersionsByName(ctx, conn, name)
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "deleting Comprehend Entity Recognizer (%s): %s", name, err)
 	}
 
-	var g multierror.Group
+	var g tfsync.Group
 	for _, v := range versions {
-		g.Go(func() error {
+		g.Go(ctx, func(ctx context.Context) error {
 			input := comprehend.DeleteEntityRecognizerInput{
 				EntityRecognizerArn: v.EntityRecognizerArn,
 			}
@@ -102,7 +102,7 @@ func resourceEntityRecognizerDelete(ctx context.Context, d *schema.ResourceData,
 			}
 
 			for _, v := range networkInterfaces {
-				g.Go(func() error {
+				g.Go(ctx, func(ctx context.Context) error {
 					networkInterfaceID := aws.ToString(v.NetworkInterfaceId)
 
 					if v.Attachment != nil {
@@ -126,7 +126,7 @@ func resourceEntityRecognizerDelete(ctx context.Context, d *schema.ResourceData,
 		})
 	}
 
-	if err := g.Wait(); err != nil {
+	if err := g.Wait(ctx); err != nil {
 		return sdkdiag.AppendErrorf(diags, "deleting Comprehend Entity Recognizer (%s): %s", name, err)
 	}
 

@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func findDataShareConsumerAssociationByFourPartKey(ctx context.Context, conn *redshift.Client, dataShareARN, associateEntireAccount, consumerARN, consumerRegion string) (*awstypes.DataShare, error) {
+	input := redshift.DescribeDataSharesInput{
+		DataShareArn: aws.String(dataShareARN),
+	}
+	output, err := findDataShare(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// The data share should include an association in an "ACTIVE" status where
+	// one of the following is true:
+	// - `associate_entire_account` is `true` and `ConsumerIdentifier` matches the
+	//   account number of the data share ARN.
+	// - `consumer_arn` is set and `ConsumerIdentifier` matches its value.
+	// - `consumer_region` is set and `ConsumerRegion` matches its value.
+	_, err = tfresource.AssertSingleValueResult(tfslices.Filter(output.DataShareAssociations, func(v awstypes.DataShareAssociation) bool {
+		accountIDFromARN := func(s string) string {
+			v, err := arn.Parse(s)
+			if err != nil {
+				return ""
+			}
+			return v.AccountID
+		}
+
+		return v.Status == awstypes.DataShareStatusActive &&
+			((associateEntireAccount == "true" && aws.ToString(v.ConsumerIdentifier) == accountIDFromARN(dataShareARN)) ||
+				(consumerARN != "" && aws.ToString(v.ConsumerIdentifier) == consumerARN) ||
+				(consumerRegion != "" && aws.ToString(v.ConsumerRegion) == consumerRegion))
+	}))
+
+	if err != nil {
+		return nil, err
+	}
+
+	return output, nil
+}

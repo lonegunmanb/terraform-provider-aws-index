@@ -10,13 +10,11 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/redshift"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
 	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -37,7 +35,7 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
 
 	clusterID := d.Get(names.AttrClusterIdentifier).(string)
-	inputR := &redshift.RestoreFromClusterSnapshotInput{
+	inputR := redshift.RestoreFromClusterSnapshotInput{
 		AllowVersionUpgrade:              aws.Bool(d.Get("allow_version_upgrade").(bool)),
 		AutomatedSnapshotRetentionPeriod: aws.Int32(int32(d.Get("automated_snapshot_retention_period").(int))),
 		ClusterIdentifier:                aws.String(clusterID),
@@ -45,7 +43,7 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 		NodeType:                         aws.String(d.Get("node_type").(string)),
 		PubliclyAccessible:               aws.Bool(d.Get(names.AttrPubliclyAccessible).(bool)),
 	}
-	inputC := &redshift.CreateClusterInput{
+	inputC := redshift.CreateClusterInput{
 		AllowVersionUpgrade:              aws.Bool(d.Get("allow_version_upgrade").(bool)),
 		AutomatedSnapshotRetentionPeriod: aws.Int32(int32(d.Get("automated_snapshot_retention_period").(int))),
 		ClusterIdentifier:                aws.String(clusterID),
@@ -185,7 +183,7 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 			inputR.SnapshotClusterIdentifier = aws.String(v.(string))
 		}
 
-		output, err := conn.RestoreFromClusterSnapshot(ctx, inputR)
+		output, err := conn.RestoreFromClusterSnapshot(ctx, &inputR)
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "restoring Redshift Cluster (%s) from snapshot: %s", clusterID, err)
 		}
@@ -213,7 +211,7 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 			inputC.ClusterType = aws.String(clusterTypeSingleNode)
 		}
 
-		output, err := conn.CreateCluster(ctx, inputC)
+		output, err := conn.CreateCluster(ctx, &inputC)
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): %s", clusterID, err)
 		}
@@ -231,17 +229,17 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	if isEncrypted != aws.ToBool(cluster.Encrypted) {
-		modifyInput := redshift.ModifyClusterInput{
+		input := redshift.ModifyClusterInput{
 			ClusterIdentifier: aws.String(d.Id()),
 			Encrypted:         aws.Bool(isEncrypted),
 		}
-		_, err := conn.ModifyCluster(ctx, &modifyInput)
+		_, err := conn.ModifyCluster(ctx, &input)
 		if err != nil {
-			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): disabling encryption: %s", d.Id(), err)
+			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): modifying Encrypted(%t): %s", d.Id(), isEncrypted, err)
 		}
 
 		if _, err := waitClusterUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
-			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): disabling encryption: %s", d.Id(), err)
+			return sdkdiag.AppendErrorf(diags, "creating Redshift Cluster (%s): modifying Encrypted(%t): %s", d.Id(), isEncrypted, err)
 		}
 	}
 

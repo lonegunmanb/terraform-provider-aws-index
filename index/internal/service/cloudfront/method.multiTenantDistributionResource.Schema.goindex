@@ -1,0 +1,620 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *multiTenantDistributionResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN:                      framework.ARNAttributeComputedOnly(),
+			names.AttrDomainName:               schema.StringAttribute{Computed: true},
+			"etag":                             schema.StringAttribute{Computed: true},
+			names.AttrID:                       framework.IDAttribute(),
+			"in_progress_invalidation_batches": schema.Int32Attribute{Computed: true},
+			"last_modified_time": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			names.AttrStatus: schema.StringAttribute{Computed: true},
+			"caller_reference": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"connection_mode": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.ConnectionMode](),
+				Computed:   true,
+			},
+			names.AttrComment: schema.StringAttribute{
+				Required: true,
+			},
+			"default_root_object": schema.StringAttribute{
+				Optional: true,
+			},
+			names.AttrEnabled: schema.BoolAttribute{
+				Required: true,
+			},
+			"http_version": schema.StringAttribute{
+				Optional:   true,
+				Computed:   true,
+				CustomType: fwtypes.StringEnumType[awstypes.HttpVersion](),
+			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
+			"web_acl_id": schema.StringAttribute{
+				Optional: true,
+				// Note: For multi-tenant distributions, this must be a WAF V2 web ACL if specified
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"active_trusted_key_groups": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[activeTrustedKeyGroupsModel](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrEnabled: schema.BoolAttribute{Computed: true},
+					},
+					Blocks: map[string]schema.Block{
+						"items": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[kgKeyPairIDsModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"key_group_id": schema.StringAttribute{Computed: true},
+									"key_pair_ids": schema.ListAttribute{
+										CustomType:  fwtypes.ListOfStringType,
+										Computed:    true,
+										ElementType: types.StringType,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"custom_error_response": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[customErrorResponseModel](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"error_caching_min_ttl": schema.Int64Attribute{
+							Optional: true,
+							Computed: true,
+							Default:  int64default.StaticInt64(0),
+						},
+						"error_code": schema.Int64Attribute{
+							Required: true,
+						},
+						"response_code": schema.StringAttribute{
+							Optional: true,
+						},
+						"response_page_path": schema.StringAttribute{
+							Optional: true,
+						},
+					},
+				},
+			},
+			"cache_behavior": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[cacheBehaviorModel](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"cache_policy_id": schema.StringAttribute{
+							Optional: true,
+						},
+						"compress": schema.BoolAttribute{
+							Optional: true,
+							Computed: true,
+							Default:  booldefault.StaticBool(false),
+						},
+						"field_level_encryption_id": schema.StringAttribute{
+							Optional: true,
+							Computed: true,
+							Default:  stringdefault.StaticString(""),
+						},
+						"origin_request_policy_id": schema.StringAttribute{
+							Optional: true,
+						},
+						"path_pattern": schema.StringAttribute{
+							Required: true,
+						},
+						"realtime_log_config_arn": schema.StringAttribute{
+							Optional: true,
+						},
+						"response_headers_policy_id": schema.StringAttribute{
+							Optional: true,
+						},
+						"target_origin_id": schema.StringAttribute{
+							Required: true,
+						},
+						"viewer_protocol_policy": schema.StringAttribute{
+							Required:   true,
+							CustomType: fwtypes.StringEnumType[awstypes.ViewerProtocolPolicy](),
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"allowed_methods": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[allowedMethodsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"items": schema.SetAttribute{
+										Required:   true,
+										CustomType: fwtypes.SetOfStringEnumType[awstypes.Method](),
+									},
+									"cached_methods": schema.SetAttribute{
+										Required:   true,
+										CustomType: fwtypes.SetOfStringEnumType[awstypes.Method](),
+									},
+								},
+							},
+						},
+						"function_association": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[functionAssociationModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"event_type": schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.EventType](),
+									},
+									names.AttrFunctionARN: schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+						"lambda_function_association": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[lambdaFunctionAssociationModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"event_type": schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.EventType](),
+									},
+									"include_body": schema.BoolAttribute{
+										Optional: true,
+										Computed: true,
+									},
+									"lambda_function_arn": schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+						"trusted_key_groups": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[trustedKeyGroupsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"items": schema.ListAttribute{
+										Optional:   true,
+										CustomType: fwtypes.ListOfStringType,
+									},
+									names.AttrEnabled: schema.BoolAttribute{
+										Optional: true,
+										Computed: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"default_cache_behavior": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[defaultCacheBehaviorModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"cache_policy_id": schema.StringAttribute{
+							Optional: true,
+						},
+						"compress": schema.BoolAttribute{
+							Optional: true,
+							Computed: true,
+							Default:  booldefault.StaticBool(false),
+						},
+						"field_level_encryption_id": schema.StringAttribute{
+							Optional: true,
+							Computed: true,
+							Default:  stringdefault.StaticString(""),
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.UseStateForUnknown(),
+							},
+						},
+						"origin_request_policy_id": schema.StringAttribute{
+							Optional: true,
+						},
+						"realtime_log_config_arn": schema.StringAttribute{
+							Optional: true,
+						},
+						"response_headers_policy_id": schema.StringAttribute{
+							Optional: true,
+						},
+						"target_origin_id": schema.StringAttribute{
+							Required: true,
+						},
+						"viewer_protocol_policy": schema.StringAttribute{
+							Required:   true,
+							CustomType: fwtypes.StringEnumType[awstypes.ViewerProtocolPolicy](),
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"allowed_methods": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[allowedMethodsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"items": schema.SetAttribute{
+										Required:   true,
+										CustomType: fwtypes.SetOfStringEnumType[awstypes.Method](),
+									},
+									"cached_methods": schema.SetAttribute{
+										Required:   true,
+										CustomType: fwtypes.SetOfStringEnumType[awstypes.Method](),
+									},
+								},
+							},
+						},
+						"function_association": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[functionAssociationModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"event_type": schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.EventType](),
+									},
+									names.AttrFunctionARN: schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+						"lambda_function_association": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[lambdaFunctionAssociationModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"event_type": schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.EventType](),
+									},
+									"include_body": schema.BoolAttribute{
+										Optional: true,
+										Computed: true,
+									},
+									"lambda_function_arn": schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+						"trusted_key_groups": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[trustedKeyGroupsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"items": schema.ListAttribute{
+										Optional:   true,
+										CustomType: fwtypes.ListOfStringType,
+									},
+									names.AttrEnabled: schema.BoolAttribute{
+										Optional: true,
+										Computed: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"origin": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[originModel](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"connection_attempts": schema.Int32Attribute{
+							Optional: true,
+							Computed: true,
+							Default:  int32default.StaticInt32(defaultConnectionAttempts),
+						},
+						"connection_timeout": schema.Int32Attribute{
+							Optional: true,
+							Computed: true,
+							Default:  int32default.StaticInt32(defaultConnectionTimeout),
+						},
+						names.AttrDomainName: schema.StringAttribute{
+							Required: true,
+						},
+						names.AttrID: schema.StringAttribute{
+							Required: true,
+						},
+						"origin_access_control_id": schema.StringAttribute{
+							Optional: true,
+						},
+						"origin_path": schema.StringAttribute{
+							Optional: true,
+							Computed: true,
+							Default:  stringdefault.StaticString(""),
+						},
+						"response_completion_timeout": schema.Int32Attribute{
+							Optional: true,
+							Computed: true,
+							Default:  int32default.StaticInt32(defaultResponseCompletionTimeout),
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"custom_header": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[customHeaderModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"header_name": schema.StringAttribute{
+										Required: true,
+									},
+									"header_value": schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+						"custom_origin_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[customOriginConfigModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"http_port": schema.Int32Attribute{
+										Required: true,
+									},
+									"https_port": schema.Int32Attribute{
+										Required: true,
+									},
+									names.AttrIPAddressType: schema.StringAttribute{
+										Optional:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.IpAddressType](),
+									},
+									"origin_keepalive_timeout": schema.Int32Attribute{
+										Optional: true,
+										Computed: true,
+										Default:  int32default.StaticInt32(defaultOriginKeepaliveTimeout),
+									},
+									"origin_read_timeout": schema.Int32Attribute{
+										Optional: true,
+										Computed: true,
+										Default:  int32default.StaticInt32(defaultOriginReadTimeout),
+									},
+									"origin_protocol_policy": schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.OriginProtocolPolicy](),
+									},
+									"origin_ssl_protocols": schema.SetAttribute{
+										Required:   true,
+										CustomType: fwtypes.SetOfStringEnumType[awstypes.SslProtocol](),
+									},
+								},
+							},
+						},
+						"origin_shield": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[originShieldModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrEnabled: schema.BoolAttribute{
+										Required: true,
+									},
+									"origin_shield_region": schema.StringAttribute{
+										Optional: true,
+									},
+								},
+							},
+						},
+
+						"vpc_origin_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[vpcOriginConfigModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"origin_keepalive_timeout": schema.Int32Attribute{
+										Optional: true,
+										Computed: true,
+										Default:  int32default.StaticInt32(defaultOriginKeepaliveTimeout),
+									},
+									"origin_read_timeout": schema.Int32Attribute{
+										Optional: true,
+										Computed: true,
+										Default:  int32default.StaticInt32(defaultOriginReadTimeout),
+									},
+									"vpc_origin_id": schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"origin_group": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[originGroupModel](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"origin_id": schema.StringAttribute{
+							Required: true,
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"failover_criteria": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[failoverCriteriaModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"status_codes": schema.SetAttribute{
+										Required:    true,
+										ElementType: types.Int64Type,
+									},
+								},
+							},
+						},
+						"member": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[memberModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtLeast(2),
+								listvalidator.SizeAtMost(2),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"origin_id": schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"restrictions": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[restrictionsModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"geo_restriction": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[geoRestrictionModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"items": schema.SetAttribute{
+										Optional:   true,
+										CustomType: fwtypes.SetOfStringType,
+									},
+									"restriction_type": schema.StringAttribute{
+										Required:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.GeoRestrictionType](),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"tenant_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[tenantConfigModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"parameter_definition": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[parameterDefinitionModel](ctx),
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrName: schema.StringAttribute{
+										Required: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"definition": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[parameterDefinitionSchemaModel](ctx),
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												"string_schema": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[stringSchemaConfigModel](ctx),
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"required": schema.BoolAttribute{
+																Required: true,
+															},
+															names.AttrComment: schema.StringAttribute{
+																Optional: true,
+															},
+															names.AttrDefaultValue: schema.StringAttribute{
+																Optional: true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Delete: true,
+				Update: true,
+			}),
+			"viewer_certificate": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[viewerCertificateModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"acm_certificate_arn": schema.StringAttribute{
+							Optional: true,
+						},
+						"cloudfront_default_certificate": schema.BoolAttribute{
+							Optional: true,
+							Computed: true,
+						},
+						"minimum_protocol_version": schema.StringAttribute{
+							Optional:   true,
+							Computed:   true,
+							Default:    stringdefault.StaticString(string(awstypes.MinimumProtocolVersionTLSv1)),
+							CustomType: fwtypes.StringEnumType[awstypes.MinimumProtocolVersion](),
+						},
+						"ssl_support_method": schema.StringAttribute{
+							Optional:   true,
+							Computed:   true,
+							CustomType: fwtypes.StringEnumType[awstypes.SSLSupportMethod](),
+						},
+					},
+				},
+			},
+		},
+	}
+}

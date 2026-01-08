@@ -1,11 +1,9 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
 import (
 	"context"
-	"errors"
-	"strconv"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/redshift"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
@@ -15,62 +13,59 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *dataShareConsumerAssociationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	conn := r.Meta().RedshiftClient(ctx)
-
 	var state dataShareConsumerAssociationResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	parts, err := intflex.ExpandResourceId(state.ID.ValueString(), dataShareConsumerAssociationIDPartCount, true)
+	conn := r.Meta().RedshiftClient(ctx)
+
+	id := fwflex.StringValueFromFramework(ctx, state.ID)
+	parts, err := intflex.ExpandResourceId(id, dataShareConsumerAssociationIDPartCount, true)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.Redshift, create.ErrActionExpandingResourceId, ResNameDataShareAuthorization, state.ID.String(), err),
-			err.Error(),
-		)
+		resp.Diagnostics.Append(fwdiag.NewParsingResourceIDErrorDiagnostic(err))
 		return
 	}
-	// split ID and write constituent parts to state to support import
-	state.DataShareARN = fwtypes.ARNValue(parts[0])
-	if parts[1] != "" {
-		state.AssociateEntireAccount = types.BoolValue(parts[1] == "true")
-	}
-	if parts[2] != "" {
-		state.ConsumerARN = fwtypes.ARNValue(parts[2])
-	}
-	if parts[3] != "" {
-		state.ConsumerRegion = types.StringValue(parts[3])
-	}
 
-	out, err := findDataShareConsumerAssociationByID(ctx, conn, state.ID.ValueString())
+	dataShareARN, associateEntireAccount, consumerARN, consumerRegion := parts[0], parts[1], parts[2], parts[3]
+	out, err := findDataShareConsumerAssociationByFourPartKey(ctx, conn, dataShareARN, associateEntireAccount, consumerARN, consumerRegion)
 	if retry.NotFound(err) {
+		resp.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
 		resp.State.RemoveResource(ctx)
 		return
 	}
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.Redshift, create.ErrActionSetting, ResNameDataShareConsumerAssociation, state.ID.String(), err),
-			err.Error(),
-		)
+		resp.Diagnostics.AddError(fmt.Sprintf("reading Redshift Data Share Consumer Association (%s)", id), err.Error())
 		return
 	}
 
-	state.ProducerARN = flex.StringToFrameworkARN(ctx, out.ProducerArn)
-	state.ManagedBy = flex.StringToFramework(ctx, out.ManagedBy)
+	// Set attributes for import.
+	if associateEntireAccount != "" {
+		state.AssociateEntireAccount = fwflex.BoolValueToFramework(ctx, intflex.StringValueToBoolValue(associateEntireAccount))
+	}
+	if consumerARN != "" {
+		state.ConsumerARN = fwtypes.ARNValue(consumerARN)
+	}
+	if consumerRegion != "" {
+		state.ConsumerRegion = fwflex.StringValueToFramework(ctx, consumerRegion)
+	}
+	state.DataShareARN = fwtypes.ARNValue(dataShareARN)
+	state.ProducerARN = fwflex.StringToFrameworkARN(ctx, out.ProducerArn)
+	state.ManagedBy = fwflex.StringToFramework(ctx, out.ManagedBy)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }

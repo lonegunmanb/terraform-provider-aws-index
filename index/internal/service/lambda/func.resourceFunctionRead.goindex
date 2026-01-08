@@ -7,7 +7,6 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
@@ -131,6 +130,7 @@ func resourceFunctionRead(ctx context.Context, d *schema.ResourceData, meta any)
 	} else {
 		d.Set("reserved_concurrent_executions", -1)
 	}
+	d.Set("response_streaming_invoke_arn", responseStreamingInvokeARN(ctx, meta.(*conns.AWSClient), functionARN))
 	d.Set(names.AttrRole, function.Role)
 	d.Set("runtime", function.Runtime)
 	d.Set("signing_job_arn", function.SigningJobArn)
@@ -187,12 +187,11 @@ func resourceFunctionRead(ctx context.Context, d *schema.ResourceData, meta any)
 		setTagsOut(ctx, output.Tags)
 	}
 
-	// Currently, this functionality is only enabled in AWS Commercial partition
-	// and other partitions return ambiguous error codes (e.g. AccessDeniedException
-	// in AWS GovCloud (US)) so we cannot just ignore the error as would typically.
+	// Currently, this functionality is only enabled in AWS Commercial & AWS GovCloud (US)
+	// partitions and other partitions return ambiguous error codes.
 	// Currently this functionality is not enabled in all Regions and returns ambiguous error codes
 	// (e.g. AccessDeniedException), so we cannot just ignore the error as we would typically.
-	if partition, region := meta.(*conns.AWSClient).Partition(ctx), meta.(*conns.AWSClient).Region(ctx); partition == endpoints.AwsPartitionID && signerServiceIsAvailable(region) {
+	if partition, region := meta.(*conns.AWSClient).Partition(ctx), meta.(*conns.AWSClient).Region(ctx); (partition == endpoints.AwsPartitionID || partition == endpoints.AwsUsGovPartitionID) && signerServiceIsAvailable(region) {
 		var codeSigningConfigARN string
 
 		// Code Signing is only supported on zip packaged lambda functions.

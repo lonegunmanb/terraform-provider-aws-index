@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceAttachmentRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -24,7 +25,7 @@ func resourceAttachmentRead(ctx context.Context, d *schema.ResourceData, meta an
 	conn := meta.(*conns.AWSClient).ELBV2Client(ctx)
 
 	targetGroupARN := d.Get("target_group_arn").(string)
-	input := &elasticloadbalancingv2.DescribeTargetHealthInput{
+	input := elasticloadbalancingv2.DescribeTargetHealthInput{
 		TargetGroupArn: aws.String(targetGroupARN),
 		Targets: []awstypes.TargetDescription{{
 			Id: aws.String(d.Get("target_id").(string)),
@@ -39,7 +40,11 @@ func resourceAttachmentRead(ctx context.Context, d *schema.ResourceData, meta an
 		input.Targets[0].Port = aws.Int32(int32(v.(int)))
 	}
 
-	_, err := findTargetHealthDescription(ctx, conn, input)
+	if v, ok := d.GetOk("quic_server_id"); ok {
+		input.Targets[0].QuicServerId = aws.String(v.(string))
+	}
+
+	_, err := findTargetHealthDescription(ctx, conn, &input)
 
 	if !d.IsNewResource() && retry.NotFound(err) {
 		log.Printf("[WARN] ELBv2 Target Group Attachment %s not found, removing from state", d.Id())

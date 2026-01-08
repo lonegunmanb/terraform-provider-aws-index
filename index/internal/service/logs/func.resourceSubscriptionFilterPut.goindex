@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
@@ -37,8 +38,16 @@ func resourceSubscriptionFilterPut(ctx context.Context, d *schema.ResourceData, 
 		LogGroupName:   aws.String(logGroupName),
 	}
 
+	if v, ok := d.GetOk("apply_on_transformed_logs"); ok {
+		input.ApplyOnTransformedLogs = v.(bool)
+	}
+
 	if v, ok := d.GetOk("distribution"); ok {
 		input.Distribution = awstypes.Distribution(v.(string))
+	}
+
+	if v, ok := d.GetOk("emit_system_fields"); ok {
+		input.EmitSystemFields = flex.ExpandStringValueSet(v.(*schema.Set))
 	}
 
 	if v, ok := d.GetOk(names.AttrRoleARN); ok {
@@ -62,6 +71,10 @@ func resourceSubscriptionFilterPut(ctx context.Context, d *schema.ResourceData, 
 			}
 
 			if errs.IsAErrorMessageContains[*awstypes.OperationAbortedException](err, "Please try again") {
+				return true, err
+			}
+
+			if errs.IsAErrorMessageContains[*awstypes.ValidationException](err, "Make sure you have given CloudWatch Logs permission to assume the provided role") {
 				return true, err
 			}
 

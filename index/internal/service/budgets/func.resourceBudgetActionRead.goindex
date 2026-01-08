@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/budgets
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -8,7 +9,6 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/budgets"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/budgets/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -27,17 +27,15 @@ import (
 )
 func resourceBudgetActionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).BudgetsClient(ctx)
+	c := meta.(*conns.AWSClient)
+	conn := c.BudgetsClient(ctx)
 
-	accountID, actionID, budgetName, err := BudgetActionParseResourceID(d.Id())
-
+	accountID, actionID, budgetName, err := budgetActionParseResourceID(d.Id())
 	if err != nil {
 		return sdkdiag.AppendFromErr(diags, err)
 	}
 
-	output, err := FindBudgetWithDelay(ctx, func() (*awstypes.Action, error) {
-		return FindActionByThreePartKey(ctx, conn, accountID, actionID, budgetName)
-	})
+	output, err := findBudgetActionByThreePartKey(ctx, conn, accountID, actionID, budgetName)
 
 	if !d.IsNewResource() && retry.NotFound(err) {
 		log.Printf("[WARN] Budget Action (%s) not found, removing from state", d.Id())
@@ -51,26 +49,20 @@ func resourceBudgetActionRead(ctx context.Context, d *schema.ResourceData, meta 
 
 	d.Set(names.AttrAccountID, accountID)
 	d.Set("action_id", actionID)
-	if err := d.Set("action_threshold", flattenBudgetActionActionThreshold(output.ActionThreshold)); err != nil {
+	if err := d.Set("action_threshold", flattenActionThreshold(output.ActionThreshold)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "setting action_threshold: %s", err)
 	}
 	d.Set("action_type", output.ActionType)
 	d.Set("approval_model", output.ApprovalModel)
-	arn := arn.ARN{
-		Partition: meta.(*conns.AWSClient).Partition(ctx),
-		Service:   "budgets",
-		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
-		Resource:  fmt.Sprintf("budget/%s/action/%s", budgetName, actionID),
-	}
-	d.Set(names.AttrARN, arn.String())
+	d.Set(names.AttrARN, budgetActionARN(ctx, c, budgetName, actionID))
 	d.Set("budget_name", budgetName)
-	if err := d.Set("definition", flattenBudgetActionDefinition(output.Definition)); err != nil {
+	if err := d.Set("definition", flattenDefinition(output.Definition)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "setting definition: %s", err)
 	}
 	d.Set(names.AttrExecutionRoleARN, output.ExecutionRoleArn)
 	d.Set("notification_type", output.NotificationType)
 	d.Set(names.AttrStatus, output.Status)
-	if err := d.Set("subscriber", flattenBudgetActionSubscriber(output.Subscribers)); err != nil {
+	if err := d.Set("subscriber", flattenBudgetActionSubscribers(output.Subscribers)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "setting subscriber: %s", err)
 	}
 

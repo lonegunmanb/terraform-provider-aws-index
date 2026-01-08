@@ -22,23 +22,24 @@ func resourceEndpointAuthorizationCreate(ctx context.Context, d *schema.Resource
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
 
-	account := d.Get("account").(string)
+	accountID, clusterID := d.Get("account").(string), d.Get(names.AttrClusterIdentifier).(string)
+	id := fmt.Sprintf("%s:%s", accountID, clusterID)
 	input := redshift.AuthorizeEndpointAccessInput{
-		Account:           aws.String(account),
-		ClusterIdentifier: aws.String(d.Get(names.AttrClusterIdentifier).(string)),
+		Account:           aws.String(accountID),
+		ClusterIdentifier: aws.String(clusterID),
 	}
 
 	if v, ok := d.GetOk("vpc_ids"); ok && v.(*schema.Set).Len() > 0 {
 		input.VpcIds = flex.ExpandStringValueSet(v.(*schema.Set))
 	}
 
-	output, err := conn.AuthorizeEndpointAccess(ctx, &input)
+	_, err := conn.AuthorizeEndpointAccess(ctx, &input)
+
 	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "creating Redshift Endpoint Authorization: %s", err)
+		return sdkdiag.AppendErrorf(diags, "creating Redshift Endpoint Authorization (%s): %s", id, err)
 	}
 
-	d.SetId(fmt.Sprintf("%s:%s", account, aws.ToString(output.ClusterIdentifier)))
-	log.Printf("[INFO] Redshift Endpoint Authorization ID: %s", d.Id())
+	d.SetId(id)
 
 	return append(diags, resourceEndpointAuthorizationRead(ctx, d, meta)...)
 }

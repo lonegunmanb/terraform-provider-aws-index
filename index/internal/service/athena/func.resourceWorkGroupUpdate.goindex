@@ -3,10 +3,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -34,6 +34,47 @@ func resourceWorkGroupUpdate(ctx context.Context, d *schema.ResourceData, meta a
 
 		if d.HasChange(names.AttrConfiguration) {
 			input.ConfigurationUpdates = expandWorkGroupConfigurationUpdates(d.Get(names.AttrConfiguration).([]any))
+			if d.HasChange("configuration.0.customer_content_encryption_configuration") {
+				// When customer_content_encryption_configuration is changed and the expander returns nil,
+				// the content_encryption_configuration needs to be removed.
+				// To remove it, set RemoveCustomerContentEncryptionConfiguration to true.
+				if input.ConfigurationUpdates == nil || input.ConfigurationUpdates.CustomerContentEncryptionConfiguration == nil {
+					input.ConfigurationUpdates.RemoveCustomerContentEncryptionConfiguration = aws.Bool(true)
+				}
+			}
+			if d.HasChange("configuration.0.monitoring_configuration.0.cloud_watch_logging_configuration") {
+				// When monitoring_configuration block is removed or monitoring_configuration.cloud_watch_logging_configuration is removed,
+				// the cloud_watch_logging_configuration is disabled.
+				if input.ConfigurationUpdates == nil || (input.ConfigurationUpdates.MonitoringConfiguration == nil || input.ConfigurationUpdates.MonitoringConfiguration.CloudWatchLoggingConfiguration == nil) {
+					input.ConfigurationUpdates.MonitoringConfiguration.CloudWatchLoggingConfiguration.Enabled = aws.Bool(false)
+				}
+			}
+			if d.HasChange("configuration.0.monitoring_configuration.0.managed_logging_configuration") {
+				// When monitoring_configuration block is removed or monitoring_configuration.managed_logging_configuration is removed,
+				// the managed_logging_configuration is disabled.
+				if input.ConfigurationUpdates == nil || (input.ConfigurationUpdates.MonitoringConfiguration == nil || input.ConfigurationUpdates.MonitoringConfiguration.ManagedLoggingConfiguration == nil) {
+					input.ConfigurationUpdates.MonitoringConfiguration.ManagedLoggingConfiguration.Enabled = aws.Bool(false)
+				}
+			}
+			if d.HasChange("configuration.0.monitoring_configuration.0.s3_logging_configuration") {
+				// When monitoring_configuration block is removed or monitoring_configuration.s3_logging_configuration is removed,
+				// the s3_logging_configuration is disabled.
+				if input.ConfigurationUpdates == nil || (input.ConfigurationUpdates.MonitoringConfiguration == nil || input.ConfigurationUpdates.MonitoringConfiguration.S3LoggingConfiguration == nil) {
+					input.ConfigurationUpdates.MonitoringConfiguration.S3LoggingConfiguration.Enabled = aws.Bool(false)
+				}
+			}
+			if d.HasChange("configuration.0.requester_pays_enabled") {
+				// When requester_pays_enabled is returned as nil, set it to false to disable it.
+				if input.ConfigurationUpdates == nil || input.ConfigurationUpdates.RequesterPaysEnabled == nil {
+					input.ConfigurationUpdates.RequesterPaysEnabled = aws.Bool(false)
+				}
+			}
+			if d.HasChange("configuration.0.enable_minimum_encryption_configuration") {
+				// When enable_minimum_encryption_configuration is returned as nil, set it to false to disable it.
+				if input.ConfigurationUpdates == nil || input.ConfigurationUpdates.EnableMinimumEncryptionConfiguration == nil {
+					input.ConfigurationUpdates.EnableMinimumEncryptionConfiguration = aws.Bool(false)
+				}
+			}
 		}
 
 		if d.HasChange(names.AttrDescription) {
@@ -44,7 +85,17 @@ func resourceWorkGroupUpdate(ctx context.Context, d *schema.ResourceData, meta a
 			input.State = types.WorkGroupState(d.Get(names.AttrState).(string))
 		}
 
-		_, err := conn.UpdateWorkGroup(ctx, &input)
+		// To avoid eventual consistency issues with IAM roles,
+		// retry on InvalidRequestException with a specific message.
+		const (
+			timeout = 2 * time.Minute
+		)
+		_, err := tfresource.RetryWhenIsAErrorMessageContains[any, *types.InvalidRequestException](ctx, timeout,
+			func(ctx context.Context) (any, error) {
+				return conn.UpdateWorkGroup(ctx, &input)
+			},
+			"Make sure that athena.amazonaws.com has been allowed for sts:AssumeRole",
+		)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "updating Athena WorkGroup (%s): %s", d.Id(), err)

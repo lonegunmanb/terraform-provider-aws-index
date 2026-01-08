@@ -34,19 +34,12 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func retryDataLakeConflictWithMutex[T any](ctx context.Context, f func() (T, error)) (T, error) {
+func retryDataLakeConflictWithMutex[T any](ctx context.Context, f func(ctx context.Context) (T, error)) (T, error) {
 	conns.GlobalMutexKV.Lock(dataLakeMutexKey)
 	defer conns.GlobalMutexKV.Unlock(dataLakeMutexKey)
 
-	const dataLakeTimeout = 2 * time.Minute
-
-	raw, err := tfresource.RetryWhenIsA[any, *awstypes.ConflictException](ctx, dataLakeTimeout, func(ctx context.Context) (any, error) {
-		return f()
-	})
-	if err != nil {
-		var zero T
-		return zero, err
-	}
-
-	return raw.(T), err
+	const (
+		dataLakeTimeout = 2 * time.Minute
+	)
+	return tfresource.RetryWhenIsA[T, *awstypes.ConflictException](ctx, dataLakeTimeout, f)
 }

@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/budgets
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/budgets"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/budgets/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -24,26 +24,22 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 	"github.com/shopspring/decimal"
 )
 func resourceBudgetRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
+	c := meta.(*conns.AWSClient)
+	conn := c.BudgetsClient(ctx)
 
-	conn := meta.(*conns.AWSClient).BudgetsClient(ctx)
-
-	accountID, budgetName, err := BudgetParseResourceID(d.Id())
-
+	accountID, budgetName, err := budgetParseResourceID(d.Id())
 	if err != nil {
 		return sdkdiag.AppendFromErr(diags, err)
 	}
 
-	//budget, err := FindBudgetByTwoPartKey(ctx, conn, accountID, budgetName)
-
-	budget, err := FindBudgetWithDelay(ctx, func() (*awstypes.Budget, error) {
-		return FindBudgetByTwoPartKey(ctx, conn, accountID, budgetName)
-	})
+	budget, err := findBudgetByTwoPartKey(ctx, conn, accountID, budgetName)
 
 	if !d.IsNewResource() && retry.NotFound(err) {
 		log.Printf("[WARN] Budget (%s) not found, removing from state", d.Id())
@@ -56,13 +52,7 @@ func resourceBudgetRead(ctx context.Context, d *schema.ResourceData, meta any) d
 	}
 
 	d.Set(names.AttrAccountID, accountID)
-	arn := arn.ARN{
-		Partition: meta.(*conns.AWSClient).Partition(ctx),
-		Service:   "budgets",
-		AccountID: accountID,
-		Resource:  "budget/" + budgetName,
-	}
-	d.Set(names.AttrARN, arn.String())
+	d.Set(names.AttrARN, budgetARN(ctx, c, accountID, budgetName))
 	d.Set("budget_type", budget.BudgetType)
 	d.Set("billing_view_arn", budget.BillingViewArn)
 
@@ -95,7 +85,7 @@ func resourceBudgetRead(ctx context.Context, d *schema.ResourceData, meta any) d
 
 	d.Set("time_unit", budget.TimeUnit)
 
-	notifications, err := findNotifications(ctx, conn, accountID, budgetName)
+	notifications, err := findNotificationsByTwoPartKey(ctx, conn, accountID, budgetName)
 
 	if retry.NotFound(err) {
 		return diags
@@ -122,7 +112,7 @@ func resourceBudgetRead(ctx context.Context, d *schema.ResourceData, meta any) d
 			tfMap["threshold_type"] = string(notification.ThresholdType)
 		}
 
-		subscribers, err := findSubscribers(ctx, conn, accountID, budgetName, notification)
+		subscribers, err := findSubscribersByThreePartKey(ctx, conn, accountID, budgetName, notification)
 
 		if retry.NotFound(err) {
 			tfList = append(tfList, tfMap)

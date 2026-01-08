@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func updateDistributionTenantWithManagedCertificate(ctx context.Context, conn *cloudfront.Client, dtOutput *cloudfront.GetDistributionTenantOutput, mcOutput *cloudfront.GetManagedCertificateDetailsOutput) error {
+	// Check if we need to update the certificate ARN
+	if !needToUpdateCertificateARN(dtOutput.DistributionTenant, aws.ToString(mcOutput.ManagedCertificateDetails.CertificateArn)) {
+		// Certificate ARN already matches, nothing to do
+		return nil
+	}
+
+	// Get fresh ETag before update
+	freshOutput, err := findDistributionTenantByIdentifier(ctx, conn, aws.ToString(dtOutput.DistributionTenant.Id))
+	if err != nil {
+		return fmt.Errorf("failed reading CloudFront Distribution Tenant (%s): %w", aws.ToString(dtOutput.DistributionTenant.Id), err)
+	}
+
+	// Update distribution tenant with managed certificate ARN
+	updateInput := &cloudfront.UpdateDistributionTenantInput{
+		Id:      dtOutput.DistributionTenant.Id,
+		IfMatch: freshOutput.ETag,
+		Customizations: &awstypes.Customizations{
+			Certificate: &awstypes.Certificate{
+				Arn: mcOutput.ManagedCertificateDetails.CertificateArn,
+			},
+		},
+	}
+
+	// Copy other required fields from current distribution tenant
+	updateInput.ConnectionGroupId = dtOutput.DistributionTenant.ConnectionGroupId
+	updateInput.DistributionId = dtOutput.DistributionTenant.DistributionId
+	updateInput.Domains = convertDomainResultsToDomainItems(dtOutput.DistributionTenant.Domains)
+	updateInput.Enabled = dtOutput.DistributionTenant.Enabled
+	updateInput.Parameters = dtOutput.DistributionTenant.Parameters
+
+	_, err = conn.UpdateDistributionTenant(ctx, updateInput)
+	if err != nil {
+		return fmt.Errorf("updating CloudFront Distribution Tenant (%s) with managed certificate: %w", aws.ToString(dtOutput.DistributionTenant.Id), err)
+	}
+
+	// Wait for the distribution tenant update to be deployed
+	_, err = waitForDistributionTenantDeployed(ctx, conn, aws.ToString(dtOutput.DistributionTenant.Id))
+	if err != nil {
+		return fmt.Errorf("failed waiting for CloudFront Distribution Tenant (%s) deploy: %w", aws.ToString(dtOutput.DistributionTenant.Id), err)
+	}
+
+	return nil
+}

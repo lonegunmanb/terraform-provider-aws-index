@@ -3,10 +3,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -55,6 +55,25 @@ func resourceWorkGroup() *schema.Resource {
 								validation.IntAtLeast(10485760),
 								validation.IntInSlice([]int{0}),
 							),
+						},
+						"customer_content_encryption_configuration": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									names.AttrKMSKey: {
+										Type:         schema.TypeString,
+										Optional:     true,
+										ValidateFunc: validation.StringMatch(regexache.MustCompile(`^arn:aws[a-z\-]*:kms:([a-z0-9\-]+):\d{12}:key/?[a-zA-Z_0-9+=,.@\-_/]+$|^arn:aws[a-z\-]*:kms:([a-z0-9\-]+):\d{12}:alias/?[a-zA-Z_0-9+=,.@\-_/]+$|^alias/[a-zA-Z0-9/_-]+$|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`), "must be a valid KMS Key ARN or Alias"),
+									},
+								},
+							},
+						},
+						"enable_minimum_encryption_configuration": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Computed: true,
 						},
 						"enforce_workgroup_configuration": {
 							Type:     schema.TypeBool,
@@ -122,6 +141,177 @@ func resourceWorkGroup() *schema.Resource {
 													Type:         schema.TypeString,
 													Optional:     true,
 													ValidateFunc: verify.ValidARN,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"monitoring_configuration": {
+							Type:             schema.TypeList,
+							Optional:         true,
+							MaxItems:         1,
+							DiffSuppressFunc: verify.SuppressMissingOptionalConfigurationBlock,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"cloud_watch_logging_configuration": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										DiffSuppressFunc: func(_, old, new string, d *schema.ResourceData) bool {
+											// Empty block and enabled = false is equivalent
+											o, n := d.GetChange("configuration.0.monitoring_configuration.0.cloud_watch_logging_configuration")
+											if o != nil && n != nil {
+												if v, ok := o.([]any); ok && len(v) == 0 {
+													if v, ok := n.([]any); ok && len(v) > 0 && v[0] != nil {
+														vm := v[0].(map[string]any)
+														if v, ok := vm[names.AttrEnabled].(bool); ok && !v {
+															return true
+														}
+													}
+												}
+											}
+											return false
+										},
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												names.AttrEnabled: {
+													Type:     schema.TypeBool,
+													Required: true,
+													DiffSuppressFunc: func(_, old, new string, d *schema.ResourceData) bool {
+														if old == "" && new == "false" {
+															return true
+														}
+														return false
+													},
+												},
+												"log_group": {
+													Type:             schema.TypeString,
+													Optional:         true,
+													DiffSuppressFunc: diffSuppressWorkGroupConfigurationMonitoringCloudWatchLogging,
+													ValidateFunc: validation.All(
+														validation.StringMatch(regexache.MustCompile(`^[a-zA-Z0-9._/-]+$`), "must contain only alphanumeric characters, periods, underscores, hyphens, and slashes"),
+														validation.StringLenBetween(1, 512),
+													),
+												},
+												"log_stream_name_prefix": {
+													Type:             schema.TypeString,
+													Optional:         true,
+													DiffSuppressFunc: diffSuppressWorkGroupConfigurationMonitoringCloudWatchLogging,
+													ValidateFunc: validation.All(
+														validation.StringMatch(regexache.MustCompile(`^[a-zA-Z0-9._/-]+$`), "must contain only alphanumeric characters, periods, underscores, hyphens, and slashes"),
+														validation.StringLenBetween(1, 512),
+													),
+												},
+												"log_type": {
+													Type:             schema.TypeSet,
+													Optional:         true,
+													DiffSuppressFunc: diffSuppressWorkGroupConfigurationMonitoringCloudWatchLogging,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															names.AttrKey: {
+																Type:     schema.TypeString,
+																Required: true,
+															},
+															names.AttrValues: {
+																Type:     schema.TypeSet,
+																Required: true,
+																Elem: &schema.Schema{
+																	Type: schema.TypeString,
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+									"managed_logging_configuration": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										DiffSuppressFunc: func(_, old, new string, d *schema.ResourceData) bool {
+											// Empty block and enabled = false is equivalent
+											o, n := d.GetChange("configuration.0.monitoring_configuration.0.managed_logging_configuration")
+											if o != nil && n != nil {
+												if v, ok := o.([]any); ok && len(v) == 0 {
+													if v, ok := n.([]any); ok && len(v) > 0 && v[0] != nil {
+														vm := v[0].(map[string]any)
+														if v, ok := vm[names.AttrEnabled].(bool); ok && !v {
+															return true
+														}
+													}
+												}
+											}
+											return false
+										},
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												names.AttrEnabled: {
+													Type:     schema.TypeBool,
+													Required: true,
+													DiffSuppressFunc: func(_, old, new string, d *schema.ResourceData) bool {
+														if old == "" && new == "false" {
+															return true
+														}
+														return false
+													},
+												},
+												names.AttrKMSKey: {
+													Type:             schema.TypeString,
+													Optional:         true,
+													DiffSuppressFunc: diffSuppressWorkGroupConfigurationMonitoringManagedLogging,
+													ValidateFunc:     validation.StringMatch(regexache.MustCompile(`^arn:aws[a-z\-]*:kms:([a-z0-9\-]+):\d{12}:key/?[a-zA-Z_0-9+=,.@\-_/]+$|^arn:aws[a-z\-]*:kms:([a-z0-9\-]+):\d{12}:alias/?[a-zA-Z_0-9+=,.@\-_/]+$|^alias/[a-zA-Z0-9/_-]+$|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`), "must be a valid KMS Key ARN or Alias"),
+												},
+											},
+										},
+									},
+									"s3_logging_configuration": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										DiffSuppressFunc: func(_, old, new string, d *schema.ResourceData) bool {
+											// Empty block and enabled = false is equivalent
+											o, n := d.GetChange("configuration.0.monitoring_configuration.0.s3_logging_configuration")
+											if o != nil && n != nil {
+												if v, ok := o.([]any); ok && len(v) == 0 {
+													if v, ok := n.([]any); ok && len(v) > 0 && v[0] != nil {
+														vm := v[0].(map[string]any)
+														if v, ok := vm[names.AttrEnabled].(bool); ok && !v {
+															return true
+														}
+													}
+												}
+											}
+											return false
+										},
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												names.AttrEnabled: {
+													Type:     schema.TypeBool,
+													Required: true,
+													DiffSuppressFunc: func(_, old, new string, d *schema.ResourceData) bool {
+														if old == "" && new == "false" {
+															return true
+														}
+														return false
+													},
+												},
+												names.AttrKMSKey: {
+													Type:             schema.TypeString,
+													Optional:         true,
+													DiffSuppressFunc: diffSuppressWorkGroupConfigurationMonitoringS3Logging,
+													ValidateFunc:     validation.StringMatch(regexache.MustCompile(`^arn:aws[a-z\-]*:kms:([a-z0-9\-]+):\d{12}:key/?[a-zA-Z_0-9+=,.@\-_/]+$|^arn:aws[a-z\-]*:kms:([a-z0-9\-]+):\d{12}:alias/?[a-zA-Z_0-9+=,.@\-_/]+$|^alias/[a-zA-Z0-9/_-]+$|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`), "must be a valid KMS Key ARN or Alias"),
+												},
+												"log_location": {
+													Type:             schema.TypeString,
+													Optional:         true,
+													DiffSuppressFunc: diffSuppressWorkGroupConfigurationMonitoringS3Logging,
+													ValidateFunc: validation.All(
+														validation.StringLenBetween(1, 1024),
+														validation.StringMatch(regexache.MustCompile(`^s3://[a-z0-9][a-z0-9\-]*[a-z0-9](/.*)?$`), "must be a valid S3 URI starting with s3://"),
+													),
 												},
 											},
 										},

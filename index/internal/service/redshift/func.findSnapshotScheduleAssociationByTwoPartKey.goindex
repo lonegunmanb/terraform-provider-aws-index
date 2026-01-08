@@ -1,52 +1,28 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
 import (
 	"context"
-	"fmt"
-	"log"
-	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/redshift"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/hashicorp/terraform-provider-aws/internal/conns"
-	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
-	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
-	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
-	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func findSnapshotScheduleAssociationByTwoPartKey(ctx context.Context, conn *redshift.Client, clusterIdentifier, scheduleIdentifier string) (*awstypes.ClusterAssociatedToSchedule, error) {
-	input := &redshift.DescribeSnapshotSchedulesInput{
-		ClusterIdentifier:  aws.String(clusterIdentifier),
-		ScheduleIdentifier: aws.String(scheduleIdentifier),
+func findSnapshotScheduleAssociationByTwoPartKey(ctx context.Context, conn *redshift.Client, clusterID, scheduleID string) (*awstypes.ClusterAssociatedToSchedule, error) {
+	input := redshift.DescribeSnapshotSchedulesInput{
+		ClusterIdentifier:  aws.String(clusterID),
+		ScheduleIdentifier: aws.String(scheduleID),
 	}
-
-	output, err := conn.DescribeSnapshotSchedules(ctx, input)
+	output, err := findSnapshotSchedule(ctx, conn, &input)
 
 	if err != nil {
 		return nil, err
 	}
 
-	if output == nil {
-		return nil, tfresource.NewEmptyResultError(input)
-	}
-
-	schedule, err := tfresource.AssertSingleValueResult(output.SnapshotSchedules)
-
-	if err != nil {
-		return nil, err
-	}
-
-	for _, v := range schedule.AssociatedClusters {
-		if aws.ToString(v.ClusterIdentifier) == clusterIdentifier {
-			return &v, nil
-		}
-	}
-
-	return nil, &sdkretry.NotFoundError{}
+	return tfresource.AssertSingleValueResult(tfslices.Filter(output.AssociatedClusters, func(v awstypes.ClusterAssociatedToSchedule) bool {
+		return aws.ToString(v.ClusterIdentifier) == clusterID
+	}))
 }

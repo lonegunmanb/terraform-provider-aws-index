@@ -1,12 +1,10 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
 import (
 	"context"
-	"fmt"
 	"log"
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/redshift"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -15,13 +13,16 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceSubnetGroupRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).RedshiftClient(ctx)
+	c := meta.(*conns.AWSClient)
+	conn := c.RedshiftClient(ctx)
 
 	subnetgroup, err := findSubnetGroupByName(ctx, conn, d.Id())
 
@@ -35,17 +36,12 @@ func resourceSubnetGroupRead(ctx context.Context, d *schema.ResourceData, meta a
 		return sdkdiag.AppendErrorf(diags, "reading Redshift Subnet Group (%s): %s", d.Id(), err)
 	}
 
-	arn := arn.ARN{
-		Partition: meta.(*conns.AWSClient).Partition(ctx),
-		Service:   names.Redshift,
-		Region:    meta.(*conns.AWSClient).Region(ctx),
-		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
-		Resource:  fmt.Sprintf("subnetgroup:%s", d.Id()),
-	}.String()
-	d.Set(names.AttrARN, arn)
+	d.Set(names.AttrARN, subnetGroupARN(ctx, c, d.Id()))
 	d.Set(names.AttrDescription, subnetgroup.Description)
 	d.Set(names.AttrName, d.Id())
-	d.Set(names.AttrSubnetIDs, subnetIdsToSlice(subnetgroup.Subnets))
+	d.Set(names.AttrSubnetIDs, tfslices.ApplyToAll(subnetgroup.Subnets, func(v awstypes.Subnet) string {
+		return aws.ToString(v.SubnetIdentifier)
+	}))
 
 	setTagsOut(ctx, subnetgroup.Tags)
 

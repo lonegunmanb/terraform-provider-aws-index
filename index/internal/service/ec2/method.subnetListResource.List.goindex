@@ -2,35 +2,23 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
 import (
 	"context"
 	"fmt"
-	"log"
-	"time"
+	"iter"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
 	fdiag "github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/list"
 	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"github.com/hashicorp/terraform-provider-aws/internal/conns"
-	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
-	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/logging"
-	"github.com/hashicorp/terraform-provider-aws/internal/retry"
-	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
-	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"go.opentelemetry.io/otel/attribute"
@@ -68,51 +56,38 @@ func (l *subnetListResource) List(ctx context.Context, request list.ListRequest,
 	tflog.Info(ctx, "Listing resources")
 
 	stream.Results = func(yield func(list.ListResult) bool) {
-		pages := ec2.NewDescribeSubnetsPaginator(conn, &input)
-		for pages.HasMorePages() {
-			page, err := pages.NextPage(ctx)
+		for subnet, err := range listSubnets(ctx, conn, &input) {
 			if err != nil {
 				result := fwdiag.NewListResultErrorDiagnostic(err)
 				yield(result)
 				return
 			}
 
-			for _, subnet := range page.Subnets {
-				ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrID), aws.ToString(subnet.SubnetId))
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrID), aws.ToString(subnet.SubnetId))
+			result := request.NewListResult(ctx)
+			tags := keyValueTags(ctx, subnet.Tags)
+			setTagsOut(ctx, subnet.Tags)
 
-				result := request.NewListResult(ctx)
+			rd := l.ResourceData()
+			rd.SetId(aws.ToString(subnet.SubnetId))
 
-				tags := keyValueTags(ctx, subnet.Tags)
+			tflog.Info(ctx, "Reading resource")
+			resourceSubnetFlatten(ctx, &subnet, rd)
 
-				rd := l.ResourceData()
-				rd.SetId(aws.ToString(subnet.SubnetId))
+			if v, ok := tags["Name"]; ok {
+				result.DisplayName = fmt.Sprintf("%s (%s)", v.ValueString(), aws.ToString(subnet.SubnetId))
+			} else {
+				result.DisplayName = aws.ToString(subnet.SubnetId)
+			}
 
-				tflog.Info(ctx, "Reading resource")
-				resourceSubnetFlatten(ctx, &subnet, rd)
+			l.SetResult(ctx, awsClient, request.IncludeResource, &result, rd)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
 
-				// set tags
-				err = l.SetTags(ctx, awsClient, rd)
-				if err != nil {
-					result = fwdiag.NewListResultErrorDiagnostic(err)
-					yield(result)
-					return
-				}
-
-				if v, ok := tags["Name"]; ok {
-					result.DisplayName = fmt.Sprintf("%s (%s)", v.ValueString(), aws.ToString(subnet.SubnetId))
-				} else {
-					result.DisplayName = aws.ToString(subnet.SubnetId)
-				}
-
-				l.SetResult(ctx, awsClient, request.IncludeResource, &result, rd)
-				if result.Diagnostics.HasError() {
-					yield(result)
-					return
-				}
-
-				if !yield(result) {
-					return
-				}
+			if !yield(result) {
+				return
 			}
 		}
 	}

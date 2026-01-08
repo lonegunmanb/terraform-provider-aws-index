@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/athena
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandWorkGroupMonitoringConfigurationCloudWatchLoggingConfiguration(l []any) *types.CloudWatchLoggingConfiguration {
+	if len(l) == 0 || l[0] == nil {
+		return nil
+	}
+
+	m := l[0].(map[string]any)
+
+	cloudWatchLoggingConfiguration := &types.CloudWatchLoggingConfiguration{}
+
+	if v, ok := m[names.AttrEnabled].(bool); ok {
+		cloudWatchLoggingConfiguration.Enabled = aws.Bool(v)
+	}
+
+	if v, ok := m["log_group"].(string); ok && v != "" {
+		cloudWatchLoggingConfiguration.LogGroup = aws.String(v)
+	}
+
+	if v, ok := m["log_stream_name_prefix"].(string); ok && v != "" {
+		cloudWatchLoggingConfiguration.LogStreamNamePrefix = aws.String(v)
+	}
+
+	if v, ok := m["log_type"].(*schema.Set); ok && v.Len() > 0 {
+		logTypes := make(map[string][]string)
+		for _, item := range v.List() {
+			m := item.(map[string]any)
+			if key, ok := m[names.AttrKey].(string); ok && key != "" {
+				if valueSet, ok := m[names.AttrValues].(*schema.Set); ok {
+					values := make([]string, 0, valueSet.Len())
+					for _, val := range valueSet.List() {
+						values = append(values, val.(string))
+					}
+					logTypes[key] = values
+				}
+			}
+		}
+		cloudWatchLoggingConfiguration.LogTypes = logTypes
+	}
+
+	return cloudWatchLoggingConfiguration
+}

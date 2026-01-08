@@ -1,0 +1,54 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53resolver
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53resolver"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53resolver/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+var firewallRuleCustomizeDiff = customdiff.All(
+	func(ctx context.Context, d *schema.ResourceDiff, meta any) error {
+		// Use GetRawConfig to check if attributes are set in the configuration,
+		// regardless of whether their values are known yet (e.g., references to other resources)
+		rawConfig := d.GetRawConfig()
+		domainListVal := rawConfig.GetAttr("firewall_domain_list_id")
+		threatProtectionVal := rawConfig.GetAttr("dns_threat_protection")
+		confidenceThresholdVal := rawConfig.GetAttr("confidence_threshold")
+
+		hasDomainList := !domainListVal.IsNull()
+		hasThreatProtection := !threatProtectionVal.IsNull()
+		hasConfidenceThreshold := !confidenceThresholdVal.IsNull()
+
+		// Must have either firewall_domain_list_id OR (dns_threat_protection AND confidence_threshold)
+		if !hasDomainList && !hasThreatProtection {
+			return fmt.Errorf("one of firewall_domain_list_id or dns_threat_protection must be specified")
+		}
+
+		// For advanced rules, both dns_threat_protection and confidence_threshold are required
+		if hasThreatProtection && !hasConfidenceThreshold {
+			return fmt.Errorf("confidence_threshold is required when dns_threat_protection is specified")
+		}
+
+		if hasConfidenceThreshold && !hasThreatProtection {
+			return fmt.Errorf("dns_threat_protection is required when confidence_threshold is specified")
+		}
+
+		return nil
+	},
+)

@@ -1,59 +1,32 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"log"
-	"strings"
 
-	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/redshift"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"github.com/hashicorp/terraform-provider-aws/internal/conns"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
-	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
-	"github.com/hashicorp/terraform-provider-aws/internal/retry"
-	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
-	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func findParameterGroupByName(ctx context.Context, conn *redshift.Client, name string) (*awstypes.ClusterParameterGroup, error) {
-	input := &redshift.DescribeClusterParameterGroupsInput{
+	input := redshift.DescribeClusterParameterGroupsInput{
 		ParameterGroupName: aws.String(name),
 	}
-
-	output, err := conn.DescribeClusterParameterGroups(ctx, input)
-
-	if errs.IsA[*awstypes.ClusterParameterGroupNotFoundFault](err) {
-		return nil, &sdkretry.NotFoundError{
-			LastError:   err,
-			LastRequest: input,
-		}
-	}
+	output, err := findClusterParameterGroup(ctx, conn, &input)
 
 	if err != nil {
 		return nil, err
 	}
 
-	if output == nil || len(output.ParameterGroups) == 0 {
-		return nil, tfresource.NewEmptyResultError(input)
-	}
-
-	parameterGroup := output.ParameterGroups[0]
-
 	// Eventual consistency check.
-	if aws.ToString(parameterGroup.ParameterGroupName) != name {
+	if aws.ToString(output.ParameterGroupName) != name {
 		return nil, &sdkretry.NotFoundError{
 			LastRequest: input,
 		}
 	}
 
-	return &parameterGroup, nil
+	return output, nil
 }
