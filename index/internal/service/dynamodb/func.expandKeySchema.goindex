@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -35,20 +38,39 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func expandKeySchema(data map[string]any) []awstypes.KeySchemaElement {
-	keySchema := []awstypes.KeySchemaElement{}
+	var keySchema []awstypes.KeySchemaElement
 
-	if v, ok := data["hash_key"]; ok && v != nil && v != "" {
-		keySchema = append(keySchema, awstypes.KeySchemaElement{
-			AttributeName: aws.String(v.(string)),
-			KeyType:       awstypes.KeyTypeHash,
-		})
+	hKeys, hKsok := data["key_schema"].([]any)
+	if hKsok {
+		for _, v := range hKeys {
+			element := v.(map[string]any)
+			keySchema = append(keySchema, awstypes.KeySchemaElement{
+				AttributeName: aws.String(element["attribute_name"].(string)),
+				KeyType:       awstypes.KeyType(element["key_type"].(string)),
+			})
+		}
 	}
 
-	if v, ok := data["range_key"]; ok && v != nil && v != "" {
-		keySchema = append(keySchema, awstypes.KeySchemaElement{
-			AttributeName: aws.String(v.(string)),
-			KeyType:       awstypes.KeyTypeRange,
-		})
+	hKey, hKok := data["hash_key"]
+	if hKok {
+		if (hKey != nil && hKey != "") && (len(hKeys) == 0) {
+			// use hash_key
+			keySchema = append(keySchema, awstypes.KeySchemaElement{
+				AttributeName: aws.String(hKey.(string)),
+				KeyType:       awstypes.KeyTypeHash,
+			})
+		}
+	}
+
+	rKey, rKok := data["range_key"]
+	if rKok {
+		if rKey != nil && rKey != "" {
+			// use range_key
+			keySchema = append(keySchema, awstypes.KeySchemaElement{
+				AttributeName: aws.String(rKey.(string)),
+				KeyType:       awstypes.KeyTypeRange,
+			})
+		}
 	}
 
 	return keySchema

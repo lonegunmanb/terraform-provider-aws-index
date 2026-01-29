@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ram"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func findAssociationsForResourceShare(ctx context.Context, conn *ram.Client, resourceShareARN string) ([]string, []string, error) {
+	var principals, resources []string
+
+	// Fetch principal associations
+	principalAssociations, err := findResourceShareAssociations(ctx, conn, &ram.GetResourceShareAssociationsInput{
+		AssociationType:   awstypes.ResourceShareAssociationTypePrincipal,
+		ResourceShareArns: []string{resourceShareARN},
+	})
+	if err != nil && !retry.NotFound(err) {
+		return nil, nil, err
+	}
+
+	for _, v := range principalAssociations {
+		if v.Status == awstypes.ResourceShareAssociationStatusAssociated {
+			principals = append(principals, aws.ToString(v.AssociatedEntity))
+		}
+	}
+
+	// Fetch resource associations
+	resourceAssociations, err := findResourceShareAssociations(ctx, conn, &ram.GetResourceShareAssociationsInput{
+		AssociationType:   awstypes.ResourceShareAssociationTypeResource,
+		ResourceShareArns: []string{resourceShareARN},
+	})
+	if err != nil && !retry.NotFound(err) {
+		return nil, nil, err
+	}
+
+	for _, v := range resourceAssociations {
+		if v.Status == awstypes.ResourceShareAssociationStatusAssociated {
+			resources = append(resources, aws.ToString(v.AssociatedEntity))
+		}
+	}
+
+	return principals, resources, nil
+}

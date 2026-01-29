@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceSecurityGroupRulesExclusive) syncRules(ctx context.Context, diags *diag.Diagnostics, securityGroupID string, wantIngress, wantEgress []string) error {
+	conn := r.Meta().EC2Client(ctx)
+
+	haveIngress, haveEgress, err := findSecurityGroupRuleIDsBySecurityGroupID(ctx, conn, securityGroupID)
+	if err != nil {
+		return err
+	}
+
+	createIngress, removeIngress, _ := intflex.DiffSlices(haveIngress, wantIngress, func(s1, s2 string) bool { return s1 == s2 })
+	createEgress, removeEgress, _ := intflex.DiffSlices(haveEgress, wantEgress, func(s1, s2 string) bool { return s1 == s2 })
+
+	// Emit warnings for rules that need to be created
+	for _, ruleID := range createIngress {
+		diags.AddWarning(
+			"Ingress Rule Not Found",
+			fmt.Sprintf("Security group rule %q is configured but not currently associated with security group %q. "+
+				"Use the aws_vpc_security_group_ingress_rule resource to create this rule.", ruleID, securityGroupID),
+		)
+	}
+
+	for _, ruleID := range createEgress {
+		diags.AddWarning(
+			"Egress Rule Not Found",
+			fmt.Sprintf("Security group rule %q is configured but not currently associated with security group %q. "+
+				"Use the aws_vpc_security_group_egress_rule resource to create this rule.", ruleID, securityGroupID),
+		)
+	}
+
+	for _, ruleID := range removeIngress {
+		input := ec2.RevokeSecurityGroupIngressInput{
+			GroupId:              aws.String(securityGroupID),
+			SecurityGroupRuleIds: []string{ruleID},
+		}
+		if _, err := conn.RevokeSecurityGroupIngress(ctx, &input); err != nil {
+			return err
+		}
+	}
+
+	for _, ruleID := range removeEgress {
+		input := ec2.RevokeSecurityGroupEgressInput{
+			GroupId:              aws.String(securityGroupID),
+			SecurityGroupRuleIds: []string{ruleID},
+		}
+		if _, err := conn.RevokeSecurityGroupEgress(ctx, &input); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

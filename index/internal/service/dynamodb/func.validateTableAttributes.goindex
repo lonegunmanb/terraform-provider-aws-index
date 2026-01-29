@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -39,7 +42,6 @@ func validateTableAttributes(ctx context.Context, d *schema.ResourceDiff, meta a
 	conn := c.DynamoDBClient(ctx)
 	// Collect all indexed attributes
 	indexedAttributes := map[string]bool{}
-
 	if v, ok := d.GetOk("hash_key"); ok {
 		indexedAttributes[v.(string)] = true
 	}
@@ -55,56 +57,52 @@ func validateTableAttributes(ctx context.Context, d *schema.ResourceDiff, meta a
 		}
 	}
 
-	config := d.GetRawConfig()
-	hasConfiguredGsi := false
-	if config.IsKnown() {
-		hasConfiguredGsi = config.GetAttr("global_secondary_index").AsValueSet().Length() > 0
-	}
-
-	if v, ok := d.GetOk("global_secondary_index"); ok && hasConfiguredGsi {
-		indexes := v.(*schema.Set).List()
-		for _, idx := range indexes {
-			index := idx.(map[string]any)
-
-			hashKey := index["hash_key"].(string)
-			indexedAttributes[hashKey] = true
-
-			if rk, ok := index["range_key"].(string); ok && rk != "" {
-				indexedAttributes[rk] = true
+	// schema.ResourceDiff.GetOk() has a bug when retrieving a list inside a set
+	planRaw := d.GetRawPlan()
+	if planRaw.IsKnown() && !planRaw.IsNull() {
+		planGSI := planRaw.GetAttr("global_secondary_index")
+		if planGSI.IsKnown() && !planGSI.IsNull() {
+			for v := range tfcty.ValueElementValues(planGSI) {
+				hashKey := v.GetAttr("hash_key")
+				if hashKey.IsKnown() && !hashKey.IsNull() {
+					indexedAttributes[hashKey.AsString()] = true
+				}
+				rangeKey := v.GetAttr("range_key")
+				if rangeKey.IsKnown() && !rangeKey.IsNull() {
+					indexedAttributes[rangeKey.AsString()] = true
+				}
+				keySchema := v.GetAttr("key_schema")
+				if keySchema.IsKnown() && !keySchema.IsNull() {
+					for v := range tfcty.ValueElementValues(keySchema) {
+						name := v.GetAttr("attribute_name")
+						indexedAttributes[name.AsString()] = true
+					}
+				}
 			}
 		}
 	}
 
 	// validate against remote as well, because we're using the remote state as a bridge between the table and gsi resources
 	remoteGSIAttributes := map[string]bool{}
-	table, err := findTableByName(ctx, conn, d.Get(names.AttrName).(string))
-	if err != nil && !retry.NotFound(err) {
-		return err
-	}
+	name := planRaw.GetAttr(names.AttrName)
+	if name.IsKnown() {
+		table, err := findTableByName(ctx, conn, name.AsString())
+		if err != nil && !retry.NotFound(err) {
+			return err
+		}
 
-	if table != nil {
-		for _, g := range table.GlobalSecondaryIndexes {
-			for _, ks := range g.KeySchema {
-				remoteGSIAttributes[aws.ToString(ks.AttributeName)] = true
-				delete(indexedAttributes, aws.ToString(ks.AttributeName))
+		if table != nil {
+			for _, g := range table.GlobalSecondaryIndexes {
+				for _, ks := range g.KeySchema {
+					remoteGSIAttributes[aws.ToString(ks.AttributeName)] = true
+					delete(indexedAttributes, aws.ToString(ks.AttributeName))
+				}
 			}
 		}
 	}
 
 	// Check if all indexed attributes have an attribute definition
-	var attributes []any
-	if hasConfiguredGsi {
-		vals := d.GetRawConfig().GetAttr("attribute").AsValueSet().Values()
-		for _, v := range vals {
-			attr := map[string]any{}
-			for k, v := range v.AsValueMap() {
-				attr[k] = v.AsString()
-			}
-			attributes = append(attributes, attr)
-		}
-	} else {
-		attributes = d.Get("attribute").(*schema.Set).List()
-	}
+	attributes := d.Get("attribute").(*schema.Set).List()
 
 	unindexedAttributes := []string{}
 	for _, attr := range attributes {
@@ -135,6 +133,5 @@ func validateTableAttributes(ctx context.Context, d *schema.ResourceDiff, meta a
 
 		errs = append(errs, fmt.Errorf("all indexes must match a defined attribute. Unmatched indexes: %q", missingIndexes))
 	}
-
 	return errors.Join(errs...)
 }

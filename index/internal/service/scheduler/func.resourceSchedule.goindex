@@ -1,6 +1,5 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/scheduler
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,18 +10,21 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
-	"github.com/aws/aws-sdk-go-v2/service/scheduler/types"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
@@ -44,7 +46,7 @@ func resourceSchedule() *schema.Resource {
 				Type:             schema.TypeString,
 				Optional:         true,
 				Computed:         true,
-				ValidateDiagFunc: enum.Validate[types.ActionAfterCompletion](),
+				ValidateDiagFunc: enum.Validate[awstypes.ActionAfterCompletion](),
 			},
 			names.AttrARN: {
 				Type:     schema.TypeString,
@@ -74,7 +76,7 @@ func resourceSchedule() *schema.Resource {
 						names.AttrMode: {
 							Type:             schema.TypeString,
 							Required:         true,
-							ValidateDiagFunc: enum.Validate[types.FlexibleTimeWindowMode](),
+							ValidateDiagFunc: enum.Validate[awstypes.FlexibleTimeWindowMode](),
 						},
 					},
 				},
@@ -111,7 +113,7 @@ func resourceSchedule() *schema.Resource {
 				ForceNew:      true,
 				ConflictsWith: []string{names.AttrName},
 				ValidateDiagFunc: validation.ToDiagFunc(validation.All(
-					validation.StringLenBetween(1, 64-id.UniqueIDSuffixLength),
+					validation.StringLenBetween(1, 64-sdkid.UniqueIDSuffixLength),
 					validation.StringMatch(regexache.MustCompile(`^[0-9A-Za-z_.-]+$`), `The name must consist of alphanumerics, hyphens, and underscores.`),
 				)),
 			},
@@ -134,8 +136,8 @@ func resourceSchedule() *schema.Resource {
 			names.AttrState: {
 				Type:             schema.TypeString,
 				Optional:         true,
-				Default:          types.ScheduleStateEnabled,
-				ValidateDiagFunc: enum.Validate[types.ScheduleState](),
+				Default:          awstypes.ScheduleStateEnabled,
+				ValidateDiagFunc: enum.Validate[awstypes.ScheduleState](),
 			},
 			names.AttrTarget: {
 				Type:     schema.TypeList,
@@ -172,7 +174,6 @@ func resourceSchedule() *schema.Resource {
 										Type:     schema.TypeSet,
 										Optional: true,
 										MaxItems: 6,
-										Set:      capacityProviderHash,
 										Elem: &schema.Resource{
 											Schema: map[string]*schema.Schema{
 												"base": {
@@ -209,7 +210,7 @@ func resourceSchedule() *schema.Resource {
 									"launch_type": {
 										Type:             schema.TypeString,
 										Optional:         true,
-										ValidateDiagFunc: enum.Validate[types.LaunchType](),
+										ValidateDiagFunc: enum.Validate[awstypes.LaunchType](),
 									},
 									names.AttrNetworkConfiguration: {
 										Type:     schema.TypeList,
@@ -239,7 +240,6 @@ func resourceSchedule() *schema.Resource {
 										Type:     schema.TypeSet,
 										Optional: true,
 										MaxItems: 10,
-										Set:      placementConstraintHash,
 										Elem: &schema.Resource{
 											Schema: map[string]*schema.Schema{
 												names.AttrExpression: {
@@ -250,7 +250,7 @@ func resourceSchedule() *schema.Resource {
 												names.AttrType: {
 													Type:             schema.TypeString,
 													Required:         true,
-													ValidateDiagFunc: enum.Validate[types.PlacementConstraintType](),
+													ValidateDiagFunc: enum.Validate[awstypes.PlacementConstraintType](),
 												},
 											},
 										},
@@ -259,20 +259,17 @@ func resourceSchedule() *schema.Resource {
 										Type:     schema.TypeSet,
 										Optional: true,
 										MaxItems: 5,
-										Set:      placementStrategyHash,
 										Elem: &schema.Resource{
 											Schema: map[string]*schema.Schema{
 												names.AttrField: {
-													Type:     schema.TypeString,
-													Optional: true,
-													DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
-														return strings.EqualFold(old, new)
-													},
+													Type:             schema.TypeString,
+													Optional:         true,
+													DiffSuppressFunc: sdkv2.SuppressEquivalentStringCaseInsensitive,
 												},
 												names.AttrType: {
 													Type:             schema.TypeString,
 													Required:         true,
-													ValidateDiagFunc: enum.Validate[types.PlacementStrategyType](),
+													ValidateDiagFunc: enum.Validate[awstypes.PlacementStrategyType](),
 												},
 											},
 										},
@@ -284,7 +281,7 @@ func resourceSchedule() *schema.Resource {
 									names.AttrPropagateTags: {
 										Type:             schema.TypeString,
 										Optional:         true,
-										ValidateDiagFunc: enum.Validate[types.PropagateTags](),
+										ValidateDiagFunc: enum.Validate[awstypes.PropagateTags](),
 									},
 									"reference_id": {
 										Type:     schema.TypeString,
@@ -388,7 +385,6 @@ func resourceSchedule() *schema.Resource {
 										Type:     schema.TypeSet,
 										Optional: true,
 										MaxItems: 200,
-										Set:      sagemakerPipelineParameterHash,
 										Elem: &schema.Resource{
 											Schema: map[string]*schema.Schema{
 												names.AttrName: {

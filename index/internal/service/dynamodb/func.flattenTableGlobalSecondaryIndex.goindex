@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -51,14 +54,27 @@ func flattenTableGlobalSecondaryIndex(gsi []awstypes.GlobalSecondaryIndexDescrip
 			gsi["read_capacity"] = aws.ToInt64(g.ProvisionedThroughput.ReadCapacityUnits)
 		}
 
+		gsi["key_schema"] = flattenKeySchema(g.KeySchema)
+
+		var hashKeys []string
+		var rangeKeys []string
+
 		for _, attribute := range g.KeySchema {
 			if attribute.KeyType == awstypes.KeyTypeHash {
-				gsi["hash_key"] = aws.ToString(attribute.AttributeName)
+				hashKeys = append(hashKeys, aws.ToString(attribute.AttributeName))
 			}
-
 			if attribute.KeyType == awstypes.KeyTypeRange {
-				gsi["range_key"] = aws.ToString(attribute.AttributeName)
+				rangeKeys = append(rangeKeys, aws.ToString(attribute.AttributeName))
 			}
+		}
+
+		// Set single values or lists based on count
+		if len(hashKeys) == 1 {
+			gsi["hash_key"] = hashKeys[0]
+		}
+
+		if len(rangeKeys) == 1 {
+			gsi["range_key"] = rangeKeys[0]
 		}
 
 		if g.Projection != nil {

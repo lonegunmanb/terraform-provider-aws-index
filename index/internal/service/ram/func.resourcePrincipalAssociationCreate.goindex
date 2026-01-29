@@ -11,7 +11,6 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -20,7 +19,6 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
-	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -46,28 +44,11 @@ func resourcePrincipalAssociationCreate(ctx context.Context, d *schema.ResourceD
 		return sdkdiag.AppendErrorf(diags, "reading RAM Principal Association: %s", err)
 	}
 
-	input := &ram.AssociateResourceShareInput{
-		ClientToken:      aws.String(sdkid.UniqueId()),
-		Principals:       []string{principal},
-		ResourceShareArn: aws.String(resourceShareARN),
-	}
-
-	_, err = conn.AssociateResourceShare(ctx, input)
-
-	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "creating RAM Principal Association (%s): %s", id, err)
+	if err := createResourceSharePrincipalAssociation(ctx, conn, resourceShareARN, principal); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
 	}
 
 	d.SetId(id)
-
-	// AWS Account ID principals need to be accepted to become ASSOCIATED.
-	if inttypes.IsAWSAccountID(principal) {
-		return append(diags, resourcePrincipalAssociationRead(ctx, d, meta)...)
-	}
-
-	if _, err := waitPrincipalAssociationCreated(ctx, conn, resourceShareARN, principal); err != nil {
-		return sdkdiag.AppendErrorf(diags, "waiting for RAM Principal Association (%s) create: %s", d.Id(), err)
-	}
 
 	return append(diags, resourcePrincipalAssociationRead(ctx, d, meta)...)
 }

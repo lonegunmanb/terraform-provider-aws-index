@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -33,28 +34,7 @@ func findSubscriptionInTopic(ctx context.Context, conn *sns.Client, topicARN, su
 		TopicArn: aws.String(topicARN),
 	}
 
-	paginator := sns.NewListSubscriptionsByTopicPaginator(conn, &input)
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if errs.IsA[*types.NotFoundException](err) {
-			return nil, &sdkretry.NotFoundError{
-				LastError:   err,
-				LastRequest: input,
-			}
-		}
-
-		if err != nil {
-			return nil, err
-		}
-
-		for _, subscription := range page.Subscriptions {
-			if aws.ToString(subscription.SubscriptionArn) == subscriptionARN {
-				return &subscription, nil
-			}
-		}
-	}
-
-	return nil, &sdkretry.NotFoundError{
-		LastRequest: input,
-	}
+	return findSubscriptionByTopic(ctx, conn, &input, func(v *types.Subscription) bool {
+		return aws.ToString(v.SubscriptionArn) == subscriptionARN
+	})
 }

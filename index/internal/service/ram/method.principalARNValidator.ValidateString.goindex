@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/hashicorp/terraform-plugin-framework-validators/helpers/validatordiag"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+)
+func (v principalARNValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+
+	value := request.ConfigValue.ValueString()
+
+	if !arn.IsARN(value) {
+		response.Diagnostics.Append(validatordiag.InvalidAttributeValueDiagnostic(
+			request.Path,
+			v.Description(ctx),
+			value,
+		))
+		return
+	}
+
+	parsedARN, err := arn.Parse(value)
+	if err != nil {
+		response.Diagnostics.Append(validatordiag.InvalidAttributeValueDiagnostic(
+			request.Path,
+			v.Description(ctx),
+			value,
+		))
+		return
+	}
+
+	// Validate it's an allowed ARN type for RAM principals
+	switch parsedARN.Service {
+	case "organizations":
+		if strings.HasPrefix(parsedARN.Resource, "organization/") ||
+			strings.HasPrefix(parsedARN.Resource, "ou/") {
+			return
+		}
+	case "iam":
+		if strings.HasPrefix(parsedARN.Resource, "role/") ||
+			strings.HasPrefix(parsedARN.Resource, "user/") {
+			return
+		}
+	}
+
+	response.Diagnostics.Append(validatordiag.InvalidAttributeValueDiagnostic(
+		request.Path,
+		v.Description(ctx),
+		value,
+	))
+}

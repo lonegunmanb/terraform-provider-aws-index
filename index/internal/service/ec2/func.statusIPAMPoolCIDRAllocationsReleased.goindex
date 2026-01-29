@@ -1,0 +1,41 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func statusIPAMPoolCIDRAllocationsReleased(ctx context.Context, conn *ec2.Client, poolID, cidrBlock string, optFns ...func(*ec2.Options)) sdkretry.StateRefreshFunc {
+	return func() (any, string, error) {
+		input := ec2.GetIpamPoolAllocationsInput{
+			IpamPoolId: aws.String(poolID),
+		}
+
+		allocations, err := findIPAMPoolAllocations(ctx, conn, &input, optFns...)
+
+		if retry.NotFound(err) {
+			return poolID, ipamPoolCIDRAllocationsReleased, nil
+		}
+
+		if err != nil {
+			return nil, "", err
+		}
+
+		for _, allocation := range allocations {
+			allocationCIDR := aws.ToString(allocation.Cidr)
+
+			if inttypes.CIDRBlocksOverlap(cidrBlock, allocationCIDR) {
+				return allocation, ipamPoolCIDRAllocationsExist, nil
+			}
+		}
+
+		return poolID, ipamPoolCIDRAllocationsReleased, nil
+	}
+}

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -36,14 +39,19 @@ import (
 )
 func expandGlobalSecondaryIndex(data map[string]any, billingMode awstypes.BillingMode) *awstypes.GlobalSecondaryIndex {
 	output := awstypes.GlobalSecondaryIndex{
-		IndexName:             aws.String(data[names.AttrName].(string)),
-		KeySchema:             expandKeySchema(data),
-		Projection:            expandProjection(data),
-		ProvisionedThroughput: expandProvisionedThroughput(data, billingMode),
+		IndexName:  aws.String(data[names.AttrName].(string)),
+		KeySchema:  expandKeySchema(data),
+		Projection: expandProjection(data),
 	}
 
-	if v, ok := data["on_demand_throughput"].([]any); ok && len(v) > 0 && v[0] != nil {
-		output.OnDemandThroughput = expandOnDemandThroughput(v[0].(map[string]any))
+	switch billingMode {
+	case awstypes.BillingModeProvisioned:
+		output.ProvisionedThroughput = expandProvisionedThroughput(data, billingMode)
+
+	case awstypes.BillingModePayPerRequest:
+		if v, ok := data["on_demand_throughput"].([]any); ok && len(v) > 0 && v[0] != nil {
+			output.OnDemandThroughput = expandOnDemandThroughput(v[0].(map[string]any))
+		}
 	}
 
 	if v, ok := data["warm_throughput"].([]any); ok && len(v) > 0 && v[0] != nil {

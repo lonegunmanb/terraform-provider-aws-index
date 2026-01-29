@@ -1,0 +1,61 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ram"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (r *resourceShareAssociationsExclusiveResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan resourceShareAssociationsExclusiveResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().RAMClient(ctx)
+
+	// Verify resource share exists
+	resourceShareARN := fwflex.StringValueFromFramework(ctx, plan.ResourceShareARN)
+	_, err := findResourceShareOwnerSelfByARN(ctx, conn, resourceShareARN)
+	if err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("reading RAM Resource Share (%s)", resourceShareARN), err.Error())
+		return
+	}
+
+	// Get desired state
+	wantPrincipals, wantResources, wantSources := fwflex.ExpandFrameworkStringValueSet(ctx, plan.Principals), fwflex.ExpandFrameworkStringValueSet(ctx, plan.ResourceARNs), fwflex.ExpandFrameworkStringValueSet(ctx, plan.Sources)
+
+	// Get current state from AWS
+	currentPrincipals, currentResources, err := findAssociationsForResourceShare(ctx, conn, resourceShareARN)
+	if err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("reading RAM Resource Share (%s) Associations", resourceShareARN), err.Error())
+		return
+	}
+
+	// Sync associations
+	resp.Diagnostics.Append(r.syncAssociations(ctx, conn, resourceShareARN, currentPrincipals, currentResources, wantPrincipals, wantResources, wantSources)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}

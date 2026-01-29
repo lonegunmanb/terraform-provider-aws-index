@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -34,21 +37,48 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func validateProvisionedThroughputField(diff *schema.ResourceDiff, key string) error {
-	oldBillingMode, newBillingMode := diff.GetChange("billing_mode")
-	v := diff.Get(key).(int)
-	if oldBillingMode, newBillingMode := awstypes.BillingMode(oldBillingMode.(string)), awstypes.BillingMode(newBillingMode.(string)); newBillingMode == awstypes.BillingModeProvisioned {
-		if v < provisionedThroughputMinValue {
-			// Assuming the field is ignored, likely due to autoscaling
-			if oldBillingMode == awstypes.BillingModePayPerRequest {
-				return nil
-			}
-			return fmt.Errorf("%s must be at least 1 when billing_mode is %q", key, newBillingMode)
+func validateProvisionedThroughputField(path cty.Path) schema.ValidateRawResourceConfigFunc {
+	return func(ctx context.Context, req schema.ValidateResourceConfigFuncRequest, resp *schema.ValidateResourceConfigFuncResponse) {
+		v, err := path.Apply(req.RawConfig)
+		if err != nil {
+			resp.Diagnostics = sdkdiag.AppendFromErr(resp.Diagnostics, err)
+			return
 		}
-	} else if newBillingMode == awstypes.BillingModePayPerRequest && oldBillingMode != awstypes.BillingModeProvisioned {
-		if v != 0 {
-			return fmt.Errorf("%s can not be set when billing_mode is %q", key, awstypes.BillingModePayPerRequest)
+
+		if !v.IsKnown() || v.IsNull() {
+			return
+		}
+
+		billingMode := req.RawConfig.GetAttr("billing_mode")
+		if !billingMode.IsKnown() || billingMode.IsNull() {
+			return
+		}
+
+		bm := awstypes.BillingMode(billingMode.AsString())
+		value, _ := v.AsBigFloat().Int64()
+
+		switch bm {
+		case awstypes.BillingModeProvisioned:
+			if value < provisionedThroughputMinValue {
+				resp.Diagnostics = append(resp.Diagnostics, errs.NewInvalidValueAttributeCombinationError(
+					path,
+					fmt.Sprintf("Attribute %q must be at least %d when %q is %q.",
+						errs.PathString(path),
+						provisionedThroughputMinValue,
+						cty.GetAttrPath("billing_mode"),
+						string(awstypes.BillingModeProvisioned),
+					),
+				))
+			}
+
+		case awstypes.BillingModePayPerRequest:
+			if value != 0 {
+				resp.Diagnostics = append(resp.Diagnostics, errs.NewAttributeConflictsWhenError(
+					path,
+					cty.GetAttrPath("billing_mode"),
+					string(awstypes.BillingModePayPerRequest),
+				))
+			}
 		}
 	}
-	return nil
 }

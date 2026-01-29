@@ -12,8 +12,7 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -27,11 +26,11 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func deleteAllResourceRecordsFromHostedZone(ctx context.Context, conn *route53.Client, hostedZoneID, hostedZoneName string, timeout time.Duration) error {
-	input := &route53.ListResourceRecordSetsInput{
+	input := route53.ListResourceRecordSetsInput{
 		HostedZoneId: aws.String(hostedZoneID),
 	}
 
-	resourceRecordSets, err := findResourceRecordSets(ctx, conn, input, tfslices.PredicateTrue[*route53.ListResourceRecordSetsOutput](), func(v *awstypes.ResourceRecordSet) bool {
+	resourceRecordSets, err := findResourceRecordSets(ctx, conn, &input, tfslices.PredicateTrue[*route53.ListResourceRecordSetsOutput](), func(v *awstypes.ResourceRecordSet) bool {
 		// Zone NS & SOA records cannot be deleted.
 		if normalizeDomainName(v.Name) == normalizeDomainName(hostedZoneName) && (v.Type == awstypes.RRTypeNs || v.Type == awstypes.RRTypeSoa) {
 			return false
@@ -57,7 +56,7 @@ func deleteAllResourceRecordsFromHostedZone(ctx context.Context, conn *route53.C
 				ResourceRecordSet: &v,
 			}
 		})
-		input := &route53.ChangeResourceRecordSetsInput{
+		input := route53.ChangeResourceRecordSetsInput{
 			ChangeBatch: &awstypes.ChangeBatch{
 				Changes: changes,
 				Comment: aws.String("Deleted by Terraform"),
@@ -65,7 +64,7 @@ func deleteAllResourceRecordsFromHostedZone(ctx context.Context, conn *route53.C
 			HostedZoneId: aws.String(hostedZoneID),
 		}
 
-		output, err := conn.ChangeResourceRecordSets(ctx, input)
+		output, err := conn.ChangeResourceRecordSets(ctx, &input)
 
 		if v, ok := errs.As[*awstypes.InvalidChangeBatch](err); ok && len(v.Messages) > 0 {
 			err = fmt.Errorf("%s: %w", v.ErrorCode(), errors.Join(tfslices.ApplyToAll(v.Messages, errors.New)...))

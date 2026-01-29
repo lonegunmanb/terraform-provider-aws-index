@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceSecurityGroupRulesExclusive) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state resourceSecurityGroupRulesExclusiveData
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !plan.IngressRuleIDs.Equal(state.IngressRuleIDs) || !plan.EgressRuleIDs.Equal(state.EgressRuleIDs) {
+		var ingressRuleIDs, egressRuleIDs []string
+		resp.Diagnostics.Append(plan.IngressRuleIDs.ElementsAs(ctx, &ingressRuleIDs, false)...)
+		resp.Diagnostics.Append(plan.EgressRuleIDs.ElementsAs(ctx, &egressRuleIDs, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		err := r.syncRules(ctx, &resp.Diagnostics, plan.SecurityGroupID.ValueString(), ingressRuleIDs, egressRuleIDs)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				create.ProblemStandardMessage(names.EC2, create.ErrActionUpdating, ResNameSecurityGroupRulesExclusive, plan.SecurityGroupID.String(), err),
+				err.Error(),
+			)
+			return
+		}
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}

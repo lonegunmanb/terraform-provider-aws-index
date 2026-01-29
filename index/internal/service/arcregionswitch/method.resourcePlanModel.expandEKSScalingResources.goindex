@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/arcregionswitch
+import (
+	"context"
+	"errors"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/arcregionswitch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/arcregionswitch/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	fwdiag "github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	fwschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (m resourcePlanModel) expandEKSScalingResources(ctx context.Context, data *eksResourceScalingConfigModel, apiEKSConfig *awstypes.EksResourceScalingConfiguration, diags *fwdiag.Diagnostics) error {
+	if data.ScalingResources.IsNull() || data.ScalingResources.IsUnknown() {
+		return nil
+	}
+
+	var scalingResources []scalingResourcesModel
+	diags.Append(data.ScalingResources.ElementsAs(ctx, &scalingResources, false)...)
+	if diags.HasError() {
+		return errors.New("failed to expand scaling resources")
+	}
+
+	apiEKSConfig.ScalingResources = make([]map[string]map[string]awstypes.KubernetesScalingResource, len(scalingResources))
+	for k, sr := range scalingResources {
+		namespaceMap := make(map[string]map[string]awstypes.KubernetesScalingResource)
+
+		if !sr.Resources.IsNull() && !sr.Resources.IsUnknown() {
+			var resources []kubernetesScalingResourceModel
+			diags.Append(sr.Resources.ElementsAs(ctx, &resources, false)...)
+			if diags.HasError() {
+				return errors.New("failed to expand kubernetes resources")
+			}
+
+			resourceMap := make(map[string]awstypes.KubernetesScalingResource)
+			for _, res := range resources {
+				resourceMap[res.ResourceName.ValueString()] = awstypes.KubernetesScalingResource{
+					Name:      res.Name.ValueStringPointer(),
+					Namespace: res.Namespace.ValueStringPointer(),
+					HpaName:   res.HpaName.ValueStringPointer(),
+				}
+			}
+			namespaceMap[sr.Namespace.ValueString()] = resourceMap
+		}
+		apiEKSConfig.ScalingResources[k] = namespaceMap
+	}
+	return nil
+}

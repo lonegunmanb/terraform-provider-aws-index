@@ -1,0 +1,120 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"math/big"
+	"reflect"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfmaps "github.com/hashicorp/terraform-provider-aws/internal/maps"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/service/kms"
+	tfsync "github.com/hashicorp/terraform-provider-aws/internal/sync"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func customDiffGlobalSecondaryIndex(_ context.Context, diff *schema.ResourceDiff, _ any) error {
+	if diff.Id() == "" {
+		return nil
+	}
+	if !diff.HasChange("global_secondary_index") {
+		return nil
+	}
+
+	stateRaw := diff.GetRawState()
+	if !stateRaw.IsKnown() || stateRaw.IsNull() {
+		return nil
+	}
+	stateGSI := stateRaw.GetAttr("global_secondary_index")
+	state := collectGSI(stateGSI)
+
+	planRaw := diff.GetRawPlan()
+	if !planRaw.IsKnown() || planRaw.IsNull() {
+		return nil
+	}
+	planGSI := planRaw.GetAttr("global_secondary_index")
+	plan := collectGSI(planGSI)
+
+	// Adding or removing GSIs
+	if len(plan) != len(state) {
+		return nil
+	}
+
+	// GSI name mismatch
+	for name := range state {
+		if _, ok := plan[name]; !ok {
+			return nil
+		}
+	}
+
+	for name, vState := range state {
+		vPlan := plan[name]
+
+		for attrName := range vState.Type().AttributeTypes() {
+			s := vState.GetAttr(attrName)
+			p := vPlan.GetAttr(attrName)
+			switch attrName {
+			case "hash_key":
+				if p.IsNull() && !s.IsNull() {
+					// "key_schema" is set
+					continue // change to "key_schema" will be caught by equality test
+				}
+				if !ctyValueLegacyEquals(s, p) {
+					return nil
+				}
+
+			case "key_schema":
+				// key_schema is a block nested list, so the zero-value is an empty list
+				if p.LengthInt() == 0 && s.LengthInt() > 0 {
+					// "hash_key" is set
+					continue // change to "hash_key" will be caught by equality test
+				}
+				if !ctyValueLegacyEquals(s, p) {
+					return nil
+				}
+
+			case "warm_throughput":
+				// AWS automatically sets warm_throughput
+				// values for on-demand tables, but these should not cause diffs when
+				// the user hasn't explicitly configured warm_throughput.
+				if p.IsNull() || (p.IsKnown() && p.LengthInt() == 0) {
+					continue
+				}
+				if !ctyValueLegacyEquals(s, p) {
+					return nil
+				}
+
+			default:
+				if !ctyValueLegacyEquals(s, p) {
+					return nil
+				}
+			}
+		}
+	}
+
+	return diff.Clear("global_secondary_index")
+}

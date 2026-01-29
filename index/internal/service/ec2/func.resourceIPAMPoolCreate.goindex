@@ -28,7 +28,7 @@ func resourceIPAMPoolCreate(ctx context.Context, d *schema.ResourceData, meta an
 	scopeID := d.Get("ipam_scope_id").(string)
 
 	addressFamily := awstypes.AddressFamily(d.Get("address_family").(string))
-	input := &ec2.CreateIpamPoolInput{
+	input := ec2.CreateIpamPoolInput{
 		AddressFamily:     addressFamily,
 		ClientToken:       aws.String(id.UniqueId()),
 		IpamScopeId:       aws.String(scopeID),
@@ -86,7 +86,39 @@ func resourceIPAMPoolCreate(ctx context.Context, d *schema.ResourceData, meta an
 		input.SourceIpamPoolId = aws.String(v.(string))
 	}
 
-	output, err := conn.CreateIpamPool(ctx, input)
+	if v, ok := d.GetOk("source_resource"); ok && len(v.([]any)) > 0 {
+		if tfMap := v.([]any)[0].(map[string]any); tfMap != nil {
+			resourceID := tfMap[names.AttrResourceID].(string)
+			resourceOwner := aws.String(tfMap[names.AttrResourceOwner].(string))
+			resourceRegion := tfMap["resource_region"].(string)
+			resourceType := awstypes.IpamPoolSourceResourceType(tfMap[names.AttrResourceType].(string))
+
+			if resourceType == awstypes.IpamPoolSourceResourceTypeVpc {
+				optFn := func(o *ec2.Options) { o.Region = resourceRegion }
+				if _, err := findVPCByID(ctx, conn, resourceID, optFn); err != nil {
+					return sdkdiag.AppendErrorf(diags, "reading EC2 VPC (%s): %s", resourceID, err)
+				}
+			}
+
+			log.Printf("[DEBUG] Resource %s exists, waiting for IPAM to manage the resource", resourceID)
+
+			// Wait for the resource to be managed by IPAM - can take 20+ minutes
+			if _, err := waitIPAMResourceCIDRManaged(ctx, conn, scopeID, resourceID, addressFamily, d.Timeout(schema.TimeoutCreate)); err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for %s to be managed by IPAM: %s", resourceID, err)
+			}
+
+			log.Printf("[DEBUG] Resource %s is now managed by IPAM", resourceID)
+
+			input.SourceResource = &awstypes.IpamPoolSourceResourceRequest{
+				ResourceId:     aws.String(resourceID),
+				ResourceOwner:  resourceOwner,
+				ResourceRegion: aws.String(resourceRegion),
+				ResourceType:   resourceType,
+			}
+		}
+	}
+
+	output, err := conn.CreateIpamPool(ctx, &input)
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "creating IPAM Pool: %s", err)

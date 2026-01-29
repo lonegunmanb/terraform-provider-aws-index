@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -53,9 +56,6 @@ func resourceTable() *schema.Resource {
 		},
 
 		CustomizeDiff: customdiff.All(
-			func(_ context.Context, diff *schema.ResourceDiff, meta any) error {
-				return validStreamSpec(diff)
-			},
 			func(ctx context.Context, diff *schema.ResourceDiff, meta any) error {
 				return validateTableAttributes(ctx, diff, meta)
 			},
@@ -85,25 +85,6 @@ func resourceTable() *schema.Resource {
 				}
 				return nil
 			},
-			func(_ context.Context, diff *schema.ResourceDiff, meta any) error {
-				if v := diff.Get("restore_source_name"); v != "" {
-					return nil
-				}
-
-				if !diff.GetRawPlan().GetAttr("restore_source_table_arn").IsWhollyKnown() ||
-					diff.Get("restore_source_table_arn") != "" {
-					return nil
-				}
-
-				var errs []error
-				if err := validateProvisionedThroughputField(diff, "read_capacity"); err != nil {
-					errs = append(errs, err)
-				}
-				if err := validateProvisionedThroughputField(diff, "write_capacity"); err != nil {
-					errs = append(errs, err)
-				}
-				return errors.Join(errs...)
-			},
 			customdiff.ForceNewIfChange("restore_source_name", func(_ context.Context, old, new, meta any) bool {
 				// If they differ force new unless new is cleared
 				// https://github.com/hashicorp/terraform-provider-aws/issues/25214
@@ -130,16 +111,16 @@ func resourceTable() *schema.Resource {
 
 				return false
 			}),
-			validateWarmThroughputCustomDiff,
-			validateTTLCustomDiff,
-			func(ctx context.Context, diff *schema.ResourceDiff, i any) error {
+			suppressTableWarmThroughputDefaults,
+			customDiffGlobalSecondaryIndex,
+			func(_ context.Context, diff *schema.ResourceDiff, _ any) error {
 				rs := diff.GetRawState()
 				if rs.IsNull() {
 					return nil
 				}
 
 				if diff.HasChange("attribute") && !diff.HasChange("global_secondary_index") {
-					_ = diff.Clear("attribute")
+					return diff.Clear("attribute")
 				}
 
 				return nil
@@ -191,8 +172,28 @@ func resourceTable() *schema.Resource {
 					Elem: &schema.Resource{
 						Schema: map[string]*schema.Schema{
 							"hash_key": {
-								Type:     schema.TypeString,
-								Required: true,
+								Type:       schema.TypeString,
+								Optional:   true,
+								Computed:   true,
+								Deprecated: "hash_key is deprecated. Use key_schema instead.",
+							},
+							"key_schema": {
+								Type:     schema.TypeList,
+								Optional: true,
+								Computed: true,
+								Elem: &schema.Resource{
+									Schema: map[string]*schema.Schema{
+										"attribute_name": {
+											Type:     schema.TypeString,
+											Required: true,
+										},
+										"key_type": {
+											Type:             schema.TypeString,
+											Required:         true,
+											ValidateDiagFunc: enum.Validate[awstypes.KeyType](),
+										},
+									},
+								},
 							},
 							names.AttrName: {
 								Type:     schema.TypeString,
@@ -210,8 +211,9 @@ func resourceTable() *schema.Resource {
 								ValidateDiagFunc: enum.Validate[awstypes.ProjectionType](),
 							},
 							"range_key": {
-								Type:     schema.TypeString,
-								Optional: true,
+								Type:       schema.TypeString,
+								Optional:   true,
+								Deprecated: "range_key is deprecated. Use key_schema instead.",
 							},
 							"read_capacity": {
 								Type:     schema.TypeInt,
@@ -551,6 +553,14 @@ func resourceTable() *schema.Resource {
 					ConflictsWith: []string{"on_demand_throughput"},
 				},
 			}
+		},
+
+		ValidateRawResourceConfigFuncs: []schema.ValidateRawResourceConfigFunc{
+			validateGlobalSecondaryIndexes,
+			validateStreamSpecification,
+			validateProvisionedThroughputField(cty.GetAttrPath("read_capacity")),
+			validateProvisionedThroughputField(cty.GetAttrPath("write_capacity")),
+			validateTTLList,
 		},
 	}
 }

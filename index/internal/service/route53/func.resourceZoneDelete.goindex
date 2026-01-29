@@ -12,8 +12,7 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -32,19 +31,22 @@ func resourceZoneDelete(ctx context.Context, d *schema.ResourceData, meta any) d
 
 	// Disable accelerated recovery before deletion if enabled
 	output, err := findHostedZoneByID(ctx, conn, d.Id())
+	if retry.NotFound(err) {
+		return diags
+	}
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "reading Route53 Hosted Zone (%s) before deletion: %s", d.Id(), err)
 	}
-	if v := output.HostedZone; v != nil {
-		if v := v.Features; v != nil && v.AcceleratedRecoveryStatus == awstypes.AcceleratedRecoveryStatusEnabled {
-			err := updateEnableAcceleratedRecovery(ctx, conn, d.Id(), false, d.Timeout(schema.TimeoutDelete))
-			if err != nil {
-				return sdkdiag.AppendErrorf(diags, "disabling Route53 Hosted Zone (%s) accelerated recovery: %s", d.Id(), err)
-			}
+	if v := output.HostedZone.Features; v != nil && v.AcceleratedRecoveryStatus == awstypes.AcceleratedRecoveryStatusEnabled {
+		err := updateEnableAcceleratedRecovery(ctx, conn, d.Id(), false, d.Timeout(schema.TimeoutDelete))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "disabling Route53 Hosted Zone (%s) accelerated recovery: %s", d.Id(), err)
 		}
 	}
 
-	if err := deleteHostedZone(ctx, conn, d.Id(), d.Get(names.AttrName).(string), d.Get(names.AttrForceDestroy).(bool), d.Timeout(schema.TimeoutDelete)); err != nil {
+	// Use the actual zone name from AWS instead of relying on the Terraform state
+	// which might contain the new zone name during a ForceNew operation
+	if err := deleteHostedZone(ctx, conn, d.Id(), aws.ToString(output.HostedZone.Name), d.Get(names.AttrForceDestroy).(bool), d.Timeout(schema.TimeoutDelete)); err != nil {
 		return sdkdiag.AppendFromErr(diags, err)
 	}
 

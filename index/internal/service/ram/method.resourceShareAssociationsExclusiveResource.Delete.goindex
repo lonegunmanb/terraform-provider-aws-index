@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ram"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (r *resourceShareAssociationsExclusiveResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state resourceShareAssociationsExclusiveResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().RAMClient(ctx)
+
+	// Get current associations
+	resourceShareARN := fwflex.StringValueFromFramework(ctx, state.ResourceShareARN)
+	principals, resources, err := findAssociationsForResourceShare(ctx, conn, resourceShareARN)
+	if retry.NotFound(err) {
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("reading RAM Resource Share (%s) Associations", resourceShareARN), err.Error())
+		return
+	}
+
+	// Remove all principals
+	for _, principal := range principals {
+		if err := deleteResourceSharePrincipalAssociation(ctx, conn, resourceShareARN, principal); err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("deleting RAM Resource Share (%s) Associations", resourceShareARN), err.Error())
+			return
+		}
+	}
+
+	// Remove all resources
+	for _, resourceARN := range resources {
+		if err := deleteResourceShareResourceAssociation(ctx, conn, resourceShareARN, resourceARN); err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("deleting RAM Resource Share (%s) Associations", resourceShareARN), err.Error())
+			return
+		}
+	}
+}

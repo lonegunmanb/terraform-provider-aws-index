@@ -1,0 +1,67 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ram
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ram"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ram/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (r *resourceShareAssociationsExclusiveResource) syncAssociations(ctx context.Context, conn *ram.Client, resourceShareARN string, currentPrincipals, currentResources, wantPrincipals, wantResources, wantSources []string) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Calculate differences
+	addPrincipals, removePrincipals, _ := flex.DiffSlices(currentPrincipals, wantPrincipals, func(a, b string) bool { return a == b })
+	addResources, removeResources, _ := flex.DiffSlices(currentResources, wantResources, func(a, b string) bool { return a == b })
+
+	// Remove principals no longer wanted
+	for _, principal := range removePrincipals {
+		if err := deleteResourceSharePrincipalAssociation(ctx, conn, resourceShareARN, principal); err != nil {
+			diags.AddError(fmt.Sprintf("syncing RAM Resource Share (%s) Associations", resourceShareARN), err.Error())
+			return diags
+		}
+	}
+
+	// Remove resources no longer wanted
+	for _, resourceARN := range removeResources {
+		if err := deleteResourceShareResourceAssociation(ctx, conn, resourceShareARN, resourceARN); err != nil {
+			diags.AddError(fmt.Sprintf("syncing RAM Resource Share (%s) Associations", resourceShareARN), err.Error())
+			return diags
+		}
+	}
+
+	// Add new principals
+	for _, principal := range addPrincipals {
+		if err := createResourceSharePrincipalAssociation(ctx, conn, resourceShareARN, principal, wantSources...); err != nil {
+			diags.AddError(fmt.Sprintf("syncing RAM Resource Share (%s) Associations", resourceShareARN), err.Error())
+			return diags
+		}
+	}
+
+	// Add new resources
+	for _, resourceARN := range addResources {
+		if err := createResourceShareResourceAssociation(ctx, conn, resourceShareARN, resourceARN); err != nil {
+			diags.AddError(fmt.Sprintf("syncing RAM Resource Share (%s) Associations", resourceShareARN), err.Error())
+			return diags
+		}
+	}
+
+	return diags
+}

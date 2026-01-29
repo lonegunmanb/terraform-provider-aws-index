@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *managedPolicyAttachmentsExclusiveResource) syncAttachments(ctx context.Context, instanceARN, permissionSetARN string, want []string, timeout time.Duration) error {
+	conn := r.Meta().SSOAdminClient(ctx)
+
+	have, err := findManagedPolicyAttachmentsByTwoPartKey(ctx, conn, permissionSetARN, instanceARN)
+	if err != nil {
+		return smarterr.NewError(err)
+	}
+
+	create, remove, _ := intflex.DiffSlices(have, want, func(s1, s2 string) bool { return s1 == s2 })
+
+	for _, arn := range create {
+		input := &ssoadmin.AttachManagedPolicyToPermissionSetInput{
+			InstanceArn:      aws.String(instanceARN),
+			ManagedPolicyArn: aws.String(arn),
+			PermissionSetArn: aws.String(permissionSetARN),
+		}
+		_, err := conn.AttachManagedPolicyToPermissionSet(ctx, input)
+		if err != nil {
+			return smarterr.NewError(err)
+		}
+	}
+
+	for _, arn := range remove {
+		input := &ssoadmin.DetachManagedPolicyFromPermissionSetInput{
+			InstanceArn:      aws.String(instanceARN),
+			ManagedPolicyArn: aws.String(arn),
+			PermissionSetArn: aws.String(permissionSetARN),
+		}
+		_, err := conn.DetachManagedPolicyFromPermissionSet(ctx, input)
+		if err != nil && !errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return smarterr.NewError(err)
+		}
+	}
+
+	if len(create) > 0 || len(remove) > 0 {
+		if err := provisionPermissionSet(ctx, conn, permissionSetARN, instanceARN, timeout); err != nil {
+			return smarterr.NewError(err)
+		}
+	}
+
+	return nil
+}

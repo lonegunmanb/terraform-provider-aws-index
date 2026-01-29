@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
@@ -21,18 +20,18 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func waitContributorInsightsCreated(ctx context.Context, conn *dynamodb.Client, tableName, indexName string, timeout time.Duration) (*dynamodb.DescribeContributorInsightsOutput, error) {
-	stateConf := &sdkretry.StateChangeConf{
+	stateConf := &retry.StateChangeConf{
 		Pending: enum.Slice(awstypes.ContributorInsightsStatusEnabling),
 		Target:  enum.Slice(awstypes.ContributorInsightsStatusEnabled),
 		Timeout: timeout,
-		Refresh: statusContributorInsights(ctx, conn, tableName, indexName),
+		Refresh: statusContributorInsights(conn, tableName, indexName),
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)
 
 	if output, ok := outputRaw.(*dynamodb.DescribeContributorInsightsOutput); ok {
 		if status, failureException := output.ContributorInsightsStatus, output.FailureException; status == awstypes.ContributorInsightsStatusFailed && failureException != nil {
-			tfresource.SetLastError(err, fmt.Errorf("%s: %s", aws.ToString(failureException.ExceptionName), aws.ToString(failureException.ExceptionDescription)))
+			retry.SetLastError(err, fmt.Errorf("%s: %s", aws.ToString(failureException.ExceptionName), aws.ToString(failureException.ExceptionDescription)))
 		}
 
 		return output, err

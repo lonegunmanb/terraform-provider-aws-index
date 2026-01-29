@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findIPAMResourceCIDRByThreePartKey(ctx context.Context, conn *ec2.Client, scopeID, resourceID string, addressFamily awstypes.AddressFamily) (*awstypes.IpamResourceCidr, error) {
+	input := ec2.GetIpamResourceCidrsInput{
+		Filters: []awstypes.Filter{
+			{
+				Name:   aws.String("resource-id"),
+				Values: []string{resourceID},
+			},
+		},
+		IpamScopeId: aws.String(scopeID),
+	}
+
+	output, err := findIPAMResourceCIDRs(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	switch addressFamily {
+	case awstypes.AddressFamilyIpv4:
+		output = tfslices.Filter(output, func(v awstypes.IpamResourceCidr) bool {
+			return inttypes.IsIPv4CIDR(aws.ToString(v.ResourceCidr))
+		})
+	case awstypes.AddressFamilyIpv6:
+		output = tfslices.Filter(output, func(v awstypes.IpamResourceCidr) bool {
+			return !inttypes.IsIPv4CIDR(aws.ToString(v.ResourceCidr))
+		})
+	}
+
+	return tfresource.AssertFirstValueResult(output)
+}

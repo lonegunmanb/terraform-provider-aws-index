@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceSecurityGroupRulesExclusive) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	conn := r.Meta().EC2Client(ctx)
+
+	var state resourceSecurityGroupRulesExclusiveData
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// The ingress/egress rule finder below will simply return empty arrays for deleted
+	// security groups. To determine whether this resource should be removed from state,
+	// check for presence of the security group first.
+	if _, err := findSecurityGroupByID(ctx, conn, state.SecurityGroupID.ValueString()); retry.NotFound(err) { // nosemgrep:ci.semgrep.errors.notfound-without-err-checks
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	ingressRuleIDs, egressRuleIDs, err := findSecurityGroupRuleIDsBySecurityGroupID(ctx, conn, state.SecurityGroupID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			create.ProblemStandardMessage(names.EC2, create.ErrActionReading, ResNameSecurityGroupRulesExclusive, state.SecurityGroupID.String(), err),
+			err.Error(),
+		)
+		return
+	}
+
+	state.IngressRuleIDs = fwflex.FlattenFrameworkStringValueSetOfStringLegacy(ctx, ingressRuleIDs)
+	state.EgressRuleIDs = fwflex.FlattenFrameworkStringValueSetOfStringLegacy(ctx, egressRuleIDs)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}

@@ -24,8 +24,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
@@ -52,18 +51,19 @@ func (r *dataSourceResource) Update(ctx context.Context, request resource.Update
 
 	conn := r.Meta().BedrockAgentClient(ctx)
 
-	input := &bedrockagent.UpdateDataSourceInput{}
-	response.Diagnostics.Append(fwflex.Expand(ctx, new, input)...)
+	dataSourceID, knowledgeBaseID := fwflex.StringValueFromFramework(ctx, new.DataSourceID), fwflex.StringValueFromFramework(ctx, new.KnowledgeBaseID)
+	var input bedrockagent.UpdateDataSourceInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, new, &input)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
 
 	_, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func(ctx context.Context) (any, error) {
-		return conn.UpdateDataSource(ctx, input)
+		return conn.UpdateDataSource(ctx, &input)
 	}, errCodeValidationException, "cannot assume role")
 
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("updating Bedrock Agent Data Source (%s)", new.DataSourceID.ValueString()), err.Error())
+		response.Diagnostics.AddError(fmt.Sprintf("updating Bedrock Agent Data Source (%s,%s)", dataSourceID, knowledgeBaseID), err.Error())
 
 		return
 	}

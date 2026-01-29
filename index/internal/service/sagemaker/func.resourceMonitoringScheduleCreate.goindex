@@ -1,9 +1,10 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
 import (
 	"context"
+	"errors"
 	"log"
+	"time"
 
-	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
@@ -16,9 +17,11 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceMonitoringScheduleCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -31,21 +34,22 @@ func resourceMonitoringScheduleCreate(ctx context.Context, d *schema.ResourceDat
 	} else {
 		name = id.UniqueId()
 	}
-
-	createOpts := &sagemaker.CreateMonitoringScheduleInput{
+	input := sagemaker.CreateMonitoringScheduleInput{
 		MonitoringScheduleConfig: expandMonitoringScheduleConfig(d.Get("monitoring_schedule_config").([]any)),
 		MonitoringScheduleName:   aws.String(name),
 		Tags:                     getTagsIn(ctx),
 	}
 
-	_, err := conn.CreateMonitoringSchedule(ctx, createOpts)
+	_, err := conn.CreateMonitoringSchedule(ctx, &input)
+
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Monitoring Schedule (%s): %s", name, err)
 	}
 
 	d.SetId(name)
-	if err := waitMonitoringScheduleScheduled(ctx, conn, d.Id()); err != nil {
-		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Monitoring Schedule (%s): waiting for completion: %s", d.Id(), err)
+
+	if _, err := waitMonitoringScheduleScheduled(ctx, conn, d.Id()); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for SageMaker AI Monitoring Schedule (%s) create: %s", d.Id(), err)
 	}
 
 	return append(diags, resourceMonitoringScheduleRead(ctx, d, meta)...)
