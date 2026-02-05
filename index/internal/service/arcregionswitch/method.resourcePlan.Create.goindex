@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/arcregionswitch
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -11,7 +12,6 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/arcregionswitch/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	fwdiag "github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	fwschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -40,14 +40,11 @@ func (r *resourcePlan) Create(ctx context.Context, req resource.CreateRequest, r
 
 	conn := r.Meta().ARCRegionSwitchClient(ctx)
 
-	// Use custom Expand method for resourcePlanModel
-	expanded, diags := plan.Expand(ctx)
-	if diags.HasError() {
-		smerr.AddEnrich(ctx, &resp.Diagnostics, diags)
+	var input arcregionswitch.CreatePlanInput
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Expand(ctx, plan, &input))
+	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	input := expanded.(arcregionswitch.CreatePlanInput)
 
 	// Handle tags - use getTagsIn to get all tags including provider defaults
 	input.Tags = getTagsIn(ctx)
@@ -67,9 +64,13 @@ func (r *resourcePlan) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	diags = plan.Flatten(ctx, planOutput)
-	if diags.HasError() {
-		smerr.AddEnrich(ctx, &resp.Diagnostics, diags)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Flatten(ctx, planOutput, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, sortWorkflows(ctx, &plan))
+	if resp.Diagnostics.HasError() {
 		return
 	}
 

@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/arcregionswitch
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -11,7 +12,6 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/arcregionswitch/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	fwdiag "github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	fwschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -41,14 +41,11 @@ func (r *resourcePlan) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	conn := r.Meta().ARCRegionSwitchClient(ctx)
 
-	// Use custom expand logic (similar to Create)
-	apiObject, diags := plan.Expand(ctx)
-	if diags.HasError() {
-		smerr.AddEnrich(ctx, &resp.Diagnostics, diags)
+	var createInput arcregionswitch.CreatePlanInput
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Expand(ctx, plan, &createInput))
+	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	createInput := apiObject.(arcregionswitch.CreatePlanInput)
 
 	// Convert CreatePlanInput to UpdatePlanInput (only updatable fields)
 	var input arcregionswitch.UpdatePlanInput
@@ -81,9 +78,13 @@ func (r *resourcePlan) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	diags = plan.Flatten(ctx, planOutput)
-	if diags.HasError() {
-		smerr.AddEnrich(ctx, &resp.Diagnostics, diags)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Flatten(ctx, planOutput, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, sortWorkflows(ctx, &plan))
+	if resp.Diagnostics.HasError() {
 		return
 	}
 

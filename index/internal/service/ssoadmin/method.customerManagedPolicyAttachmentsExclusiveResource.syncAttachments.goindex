@@ -1,0 +1,88 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *customerManagedPolicyAttachmentsExclusiveResource) syncAttachments(ctx context.Context, instanceARN, permissionSetARN string, want []customerManagedPolicyReferenceModel, timeout time.Duration) error {
+	conn := r.Meta().SSOAdminClient(ctx)
+
+	have, err := findCustomerManagedPolicyAttachmentsByTwoPartKey(ctx, conn, permissionSetARN, instanceARN)
+	if err != nil {
+		return smarterr.NewError(err)
+	}
+
+	wantAPI := make([]awstypes.CustomerManagedPolicyReference, len(want))
+	for i, w := range want {
+		wantAPI[i] = awstypes.CustomerManagedPolicyReference{
+			Name: w.Name.ValueStringPointer(),
+			Path: w.Path.ValueStringPointer(),
+		}
+	}
+
+	create, remove, _ := intflex.DiffSlices(have, wantAPI, func(h, w awstypes.CustomerManagedPolicyReference) bool {
+		return aws.ToString(h.Name) == aws.ToString(w.Name) && aws.ToString(h.Path) == aws.ToString(w.Path)
+	})
+
+	for _, policy := range create {
+		input := &ssoadmin.AttachCustomerManagedPolicyReferenceToPermissionSetInput{
+			InstanceArn:      aws.String(instanceARN),
+			PermissionSetArn: aws.String(permissionSetARN),
+			CustomerManagedPolicyReference: &awstypes.CustomerManagedPolicyReference{
+				Name: policy.Name,
+				Path: policy.Path,
+			},
+		}
+		_, err := conn.AttachCustomerManagedPolicyReferenceToPermissionSet(ctx, input)
+		if err != nil {
+			return smarterr.NewError(err)
+		}
+	}
+
+	for _, policy := range remove {
+		input := &ssoadmin.DetachCustomerManagedPolicyReferenceFromPermissionSetInput{
+			InstanceArn:      aws.String(instanceARN),
+			PermissionSetArn: aws.String(permissionSetARN),
+			CustomerManagedPolicyReference: &awstypes.CustomerManagedPolicyReference{
+				Name: policy.Name,
+				Path: policy.Path,
+			},
+		}
+		_, err := conn.DetachCustomerManagedPolicyReferenceFromPermissionSet(ctx, input)
+		if err != nil && !errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return smarterr.NewError(err)
+		}
+	}
+
+	if len(create) > 0 || len(remove) > 0 {
+		if err := provisionPermissionSet(ctx, conn, permissionSetARN, instanceARN, timeout); err != nil {
+			return smarterr.NewError(err)
+		}
+	}
+
+	return nil
+}

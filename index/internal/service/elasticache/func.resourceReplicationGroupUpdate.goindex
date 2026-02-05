@@ -224,6 +224,10 @@ func resourceReplicationGroupUpdate(ctx context.Context, d *schema.ResourceData,
 			add, del := ns.Difference(os), os.Difference(ns)
 
 			if add.Len() > 0 {
+				if d.HasChanges("auth_token", "auth_token_update_strategy") && awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string)) == awstypes.AuthTokenUpdateStrategyTypeDelete {
+					// Transitioning to RBAC.
+					input.AuthTokenUpdateStrategy = awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string))
+				}
 				input.UserGroupIdsToAdd = flex.ExpandStringValueSet(add)
 				requestUpdate = true
 			}
@@ -250,25 +254,28 @@ func resourceReplicationGroupUpdate(ctx context.Context, d *schema.ResourceData,
 		}
 
 		if d.HasChanges("auth_token", "auth_token_update_strategy") {
-			authInput := elasticache.ModifyReplicationGroupInput{
-				ApplyImmediately:        aws.Bool(true),
-				AuthToken:               aws.String(d.Get("auth_token").(string)),
-				AuthTokenUpdateStrategy: awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string)),
-				ReplicationGroupId:      aws.String(d.Id()),
-			}
+			// AuthTokenUpdateStrategyTypeDelete only supported while transitioning to RBAC.
+			if awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string)) != awstypes.AuthTokenUpdateStrategyTypeDelete {
+				authInput := elasticache.ModifyReplicationGroupInput{
+					ApplyImmediately:        aws.Bool(true),
+					AuthToken:               aws.String(d.Get("auth_token").(string)),
+					AuthTokenUpdateStrategy: awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string)),
+					ReplicationGroupId:      aws.String(d.Id()),
+				}
 
-			updateFuncs = append(updateFuncs, func() error {
-				_, err := conn.ModifyReplicationGroup(ctx, &authInput)
-				// modifying to match out of band operations may result in this error
-				if errs.IsAErrorMessageContains[*awstypes.InvalidParameterCombinationException](err, "No modifications were requested") {
+				updateFuncs = append(updateFuncs, func() error {
+					_, err := conn.ModifyReplicationGroup(ctx, &authInput)
+					// modifying to match out of band operations may result in this error
+					if errs.IsAErrorMessageContains[*awstypes.InvalidParameterCombinationException](err, "No modifications were requested") {
+						return nil
+					}
+
+					if err != nil {
+						return fmt.Errorf("modifying ElastiCache Replication Group (%s) authentication: %w", d.Id(), err)
+					}
 					return nil
-				}
-
-				if err != nil {
-					return fmt.Errorf("modifying ElastiCache Replication Group (%s) authentication: %w", d.Id(), err)
-				}
-				return nil
-			})
+				})
+			}
 		}
 
 		if d.HasChange("num_cache_clusters") {
