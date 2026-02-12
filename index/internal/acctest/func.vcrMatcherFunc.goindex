@@ -1,0 +1,91 @@
+package github.com/hashicorp/terraform-provider-aws/internal/acctest
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used -- Deterministic PRNG required for VCR test reproducibility
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+
+	cleanhttp "github.com/hashicorp/go-cleanhttp"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	sdkacctest "github.com/hashicorp/terraform-plugin-testing/helper/acctest"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider"
+	"github.com/hashicorp/terraform-provider-aws/internal/vcr"
+	"gopkg.in/dnaeon/go-vcr.v4/pkg/cassette"
+	"gopkg.in/dnaeon/go-vcr.v4/pkg/recorder"
+)
+func vcrMatcherFunc(ctx context.Context) recorder.MatcherFunc {
+	return func(r *http.Request, i cassette.Request) bool {
+		if r.Method != i.Method {
+			return false
+		}
+
+		if r.URL.String() != i.URL {
+			return false
+		}
+
+		if r.Body == nil {
+			return true
+		}
+
+		var b bytes.Buffer
+		if _, err := b.ReadFrom(r.Body); err != nil {
+			tflog.Debug(ctx, "Failed to read request body from cassette", map[string]any{
+				"error": err,
+			})
+			return false
+		}
+
+		r.Body = io.NopCloser(&b)
+		body := b.String()
+		// If body matches identically, we are done.
+		if body == i.Body {
+			return true
+		}
+
+		// https://awslabs.github.io/smithy/1.0/spec/aws/index.html#aws-protocols.
+		switch contentType := r.Header.Get("Content-Type"); contentType {
+		case "application/json", "application/x-amz-json-1.0", "application/x-amz-json-1.1":
+			// JSON might be the same, but reordered. Try parsing and comparing.
+			return tfjson.EqualStrings(body, i.Body)
+
+		case "application/xml":
+			// XML might be the same, but reordered. Try parsing and comparing.
+			var requestXML, cassetteXML any
+
+			if err := xml.Unmarshal([]byte(body), &requestXML); err != nil {
+				tflog.Debug(ctx, "Failed to unmarshal request XML", map[string]any{
+					"error": err,
+				})
+				return false
+			}
+
+			if err := xml.Unmarshal([]byte(i.Body), &cassetteXML); err != nil {
+				tflog.Debug(ctx, "Failed to unmarshal cassette XML", map[string]any{
+					"error": err,
+				})
+				return false
+			}
+
+			return reflect.DeepEqual(requestXML, cassetteXML)
+		}
+
+		return false
+	}
+}

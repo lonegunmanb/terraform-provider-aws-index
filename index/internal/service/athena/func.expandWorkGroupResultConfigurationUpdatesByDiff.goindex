@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/athena
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/athena"
+	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandWorkGroupResultConfigurationUpdatesByDiff(state, config cty.Value) (*types.ResultConfigurationUpdates, error) {
+	stateHasValue := tfcty.HasValue(state)
+	configHasValue := tfcty.HasValue(config)
+
+	if stateHasValue && !configHasValue {
+		// Removing `result_configuration`
+		// Set all `Remove` fields for simplcity
+		return &types.ResultConfigurationUpdates{
+			RemoveAclConfiguration:        aws.Bool(true),
+			RemoveEncryptionConfiguration: aws.Bool(true),
+			RemoveExpectedBucketOwner:     aws.Bool(true),
+			RemoveOutputLocation:          aws.Bool(true),
+		}, nil
+	} else if configHasValue {
+		result := &types.ResultConfigurationUpdates{}
+
+		aclPath := cty.GetAttrPath("acl_configuration").IndexInt(0)
+		stateACLConfiguration, _, err := tfcty.PathSafeApply(aclPath, state)
+		if err != nil {
+			return nil, fmt.Errorf("reading state value at %q: %w", errs.PathString(aclPath), err)
+		}
+		configACLConfiguration, _, err := tfcty.PathSafeApply(aclPath, config)
+		if err != nil {
+			return nil, fmt.Errorf("reading config value at %q: %w", errs.PathString(aclPath), err)
+		}
+		expandWorkGroupACLConfigurationByDiff(stateACLConfiguration, configACLConfiguration, result)
+
+		encryptionPath := cty.GetAttrPath(names.AttrEncryptionConfiguration).IndexInt(0)
+		stateEncryptionConfiguration, _, err := tfcty.PathSafeApply(encryptionPath, state)
+		if err != nil {
+			return nil, fmt.Errorf("reading state value at %q: %w", errs.PathString(encryptionPath), err)
+		}
+		configEncryptionConfiguration, _, err := tfcty.PathSafeApply(encryptionPath, config)
+		if err != nil {
+			return nil, fmt.Errorf("reading config value at %q: %w", errs.PathString(encryptionPath), err)
+		}
+		expandWorkGroupEncryptionConfigurationByDiff(stateEncryptionConfiguration, configEncryptionConfiguration, result)
+
+		if outputLocation := config.GetAttr("output_location"); outputLocation.IsNull() {
+			result.RemoveOutputLocation = aws.Bool(true)
+		} else {
+			result.OutputLocation = aws.String(outputLocation.AsString())
+		}
+
+		if expectedBucketOwner := config.GetAttr(names.AttrExpectedBucketOwner); expectedBucketOwner.IsNull() {
+			result.RemoveExpectedBucketOwner = aws.Bool(true)
+		} else {
+			result.ExpectedBucketOwner = aws.String(expectedBucketOwner.AsString())
+		}
+
+		return result, nil
+	}
+
+	return nil, nil
+}

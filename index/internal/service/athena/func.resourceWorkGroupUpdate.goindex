@@ -9,10 +9,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -75,12 +77,24 @@ func resourceWorkGroupUpdate(ctx context.Context, d *schema.ResourceData, meta a
 				}
 			}
 
-			if d.HasChange("configuration.0.result_configuration.0.encryption_configuration") {
-				// encryption_option is required if result_configuration is set.
-				// we can remove the configuration if unset
-				if input.ConfigurationUpdates == nil || (input.ConfigurationUpdates.ResultConfigurationUpdates == nil || input.ConfigurationUpdates.ResultConfigurationUpdates.EncryptionConfiguration == nil || input.ConfigurationUpdates.ResultConfigurationUpdates.EncryptionConfiguration.EncryptionOption == "") {
-					input.ConfigurationUpdates.ResultConfigurationUpdates = &types.ResultConfigurationUpdates{}
-					input.ConfigurationUpdates.ResultConfigurationUpdates.RemoveEncryptionConfiguration = aws.Bool(true)
+			if d.HasChanges("configuration.0.result_configuration") {
+				path := cty.GetAttrPath(names.AttrConfiguration).IndexInt(0).GetAttr("result_configuration").IndexInt(0)
+
+				rs := d.GetRawState()
+				stateResultConfiguration, _, err := tfcty.PathSafeApply(path, rs)
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "reading state value at %q: %s", errs.PathString(path), err)
+				}
+
+				rc := d.GetRawConfig()
+				configResultConfiguration, _, err := tfcty.PathSafeApply(path, rc)
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "reading config value at %q: %s", errs.PathString(path), err)
+				}
+
+				input.ConfigurationUpdates.ResultConfigurationUpdates, err = expandWorkGroupResultConfigurationUpdatesByDiff(stateResultConfiguration, configResultConfiguration)
+				if err != nil {
+					return sdkdiag.AppendErrorf(diags, "expanding result configuration updates: %s", err)
 				}
 			}
 		}

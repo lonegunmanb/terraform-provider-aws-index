@@ -32,19 +32,19 @@ import (
 )
 func closeVCRRecorder(ctx context.Context, t *testing.T) {
 	t.Helper()
+	testName := t.Name()
 
 	// Don't close the recorder if we're running because of a panic.
 	if p := recover(); p != nil {
 		panic(p)
 	}
 
-	testName := t.Name()
 	providerMetas.Lock()
 	meta, ok := providerMetas[testName]
-	defer providerMetas.Unlock()
+	providerMetas.Unlock()
 
 	if ok {
-		if !t.Failed() && !t.Skipped() {
+		if !t.Failed() {
 			if v, ok := meta.HTTPClient(ctx).Transport.(*recorder.Recorder); ok {
 				t.Log("stopping VCR recorder")
 				if err := v.Stop(); err != nil {
@@ -53,7 +53,9 @@ func closeVCRRecorder(ctx context.Context, t *testing.T) {
 			}
 		}
 
+		providerMetas.Lock()
 		delete(providerMetas, testName)
+		providerMetas.Unlock()
 	} else {
 		t.Log("provider meta not found for test", testName)
 	}
@@ -61,17 +63,19 @@ func closeVCRRecorder(ctx context.Context, t *testing.T) {
 	// Save the randomness seed.
 	randomnessSources.Lock()
 	s, ok := randomnessSources[testName]
-	defer randomnessSources.Unlock()
+	randomnessSources.Unlock()
 
 	if ok {
-		if !t.Failed() && !t.Skipped() {
+		if !t.Failed() {
 			t.Log("persisting randomness seed")
 			if err := writeSeedToFile(s.seed, vcrSeedFile(vcr.Path(), t.Name())); err != nil {
 				t.Error(err)
 			}
 		}
 
+		randomnessSources.Lock()
 		delete(randomnessSources, testName)
+		randomnessSources.Unlock()
 	} else {
 		t.Log("randomness source not found for test", testName)
 	}

@@ -52,85 +52,18 @@ func vcrProviderConfigureContextFunc(provider *schema.Provider, configureContext
 		httpClient := cleanhttp.DefaultPooledClient()
 		transport := httpClient.Transport.(*http.Transport)
 		transport.MaxIdleConnsPerHost = 10
-		if tlsConfig := transport.TLSClientConfig; tlsConfig == nil {
-			tlsConfig = &tls.Config{
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{
 				MinVersion: tls.VersionTLS13,
 			}
-			transport.TLSClientConfig = tlsConfig
-		}
-
-		// After capture hook to remove sensitive HTTP headers.
-		sensitiveHeaderHook := func(i *cassette.Interaction) error {
-			delete(i.Request.Headers, "Authorization")
-			delete(i.Request.Headers, "X-Amz-Security-Token")
-			return nil
-		}
-
-		// Define how VCR will match requests to stored interactions.
-		matchFunc := func(r *http.Request, i cassette.Request) bool {
-			if r.Method != i.Method {
-				return false
-			}
-
-			if r.URL.String() != i.URL {
-				return false
-			}
-
-			if r.Body == nil {
-				return true
-			}
-
-			var b bytes.Buffer
-			if _, err := b.ReadFrom(r.Body); err != nil {
-				tflog.Debug(ctx, "Failed to read request body from cassette", map[string]any{
-					"error": err,
-				})
-				return false
-			}
-
-			r.Body = io.NopCloser(&b)
-			body := b.String()
-			// If body matches identically, we are done.
-			if body == i.Body {
-				return true
-			}
-
-			// https://awslabs.github.io/smithy/1.0/spec/aws/index.html#aws-protocols.
-			switch contentType := r.Header.Get("Content-Type"); contentType {
-			case "application/json", "application/x-amz-json-1.0", "application/x-amz-json-1.1":
-				// JSON might be the same, but reordered. Try parsing and comparing.
-				return tfjson.EqualStrings(body, i.Body)
-
-			case "application/xml":
-				// XML might be the same, but reordered. Try parsing and comparing.
-				var requestXml, cassetteXml any
-
-				if err := xml.Unmarshal([]byte(body), &requestXml); err != nil {
-					tflog.Debug(ctx, "Failed to unmarshal request XML", map[string]any{
-						"error": err,
-					})
-					return false
-				}
-
-				if err := xml.Unmarshal([]byte(i.Body), &cassetteXml); err != nil {
-					tflog.Debug(ctx, "Failed to unmarshal cassette XML", map[string]any{
-						"error": err,
-					})
-					return false
-				}
-
-				return reflect.DeepEqual(requestXml, cassetteXml)
-			}
-
-			return false
 		}
 
 		cassetteName := filepath.Join(vcr.Path(), vcrFileName(testName))
 
 		// Create a VCR recorder around a default HTTP client.
 		r, err := recorder.New(cassetteName,
-			recorder.WithHook(sensitiveHeaderHook, recorder.AfterCaptureHook),
-			recorder.WithMatcher(matchFunc),
+			recorder.WithHook(vcrSensitiveHeaderHook, recorder.AfterCaptureHook),
+			recorder.WithMatcher(vcrMatcherFunc(ctx)),
 			recorder.WithMode(vcrMode),
 			recorder.WithRealTransport(httpClient.Transport),
 			recorder.WithSkipRequestLatency(true),
