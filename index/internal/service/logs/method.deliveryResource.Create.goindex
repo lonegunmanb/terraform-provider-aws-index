@@ -9,7 +9,6 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -85,7 +84,9 @@ func (r *deliveryResource) Create(ctx context.Context, request resource.CreateRe
 		}
 	}
 
-	// set s3_delivery_configuration.suffix_path to what was in configuration
+	// Normalize S3DeliveryConfiguration.SuffixPath to match user configuration.
+	// AWS modifies the suffix_path by prepending account/service-specific prefixes.
+	// We normalize after Create to ensure state consistency with the configuration.
 	if delivery.S3DeliveryConfiguration != nil && aws.ToString(delivery.S3DeliveryConfiguration.SuffixPath) != "" {
 		if !data.S3DeliveryConfiguration.IsNull() {
 			s3DeliveryConfiguration, diags := data.S3DeliveryConfiguration.ToPtr(ctx)
@@ -93,9 +94,10 @@ func (r *deliveryResource) Create(ctx context.Context, request resource.CreateRe
 			if response.Diagnostics.HasError() {
 				return
 			}
-
 			if s3DeliveryConfiguration != nil && !s3DeliveryConfiguration.SuffixPath.IsNull() {
-				delivery.S3DeliveryConfiguration.SuffixPath = s3DeliveryConfiguration.SuffixPath.ValueStringPointer()
+				configPath := s3DeliveryConfiguration.SuffixPath.ValueString()
+				apiPath := aws.ToString(delivery.S3DeliveryConfiguration.SuffixPath)
+				delivery.S3DeliveryConfiguration.SuffixPath = aws.String(normalizeS3SuffixPath(apiPath, configPath))
 			}
 		}
 	}
