@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfkms "github.com/hashicorp/terraform-provider-aws/internal/service/kms"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -126,14 +127,25 @@ func resourceEndpointCreate(ctx context.Context, d *schema.ResourceData, meta an
 	case engineNameKinesis:
 		input.KinesisSettings = expandKinesisSettings(d.Get("kinesis_settings").([]any)[0].(map[string]any))
 	case engineNameMongodb:
-		var settings = &awstypes.MongoDbSettings{}
+		var settings *awstypes.MongoDbSettings
+
+		if v, ok := d.GetOk("mongodb_settings"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			settings = expandMongoDBSettings(v.([]any)[0].(map[string]any))
+		} else {
+			settings = &awstypes.MongoDbSettings{}
+		}
+		settings.DatabaseName = aws.String(d.Get(names.AttrDatabaseName).(string))
+		settings.KmsKeyId = aws.String(d.Get(names.AttrKMSKeyARN).(string))
 
 		if _, ok := d.GetOk("secrets_manager_arn"); ok {
 			settings.SecretsManagerAccessRoleArn = aws.String(d.Get("secrets_manager_access_role_arn").(string))
 			settings.SecretsManagerSecretId = aws.String(d.Get("secrets_manager_arn").(string))
 		} else {
+			if v, ok := d.GetOk(names.AttrPassword); ok {
+				settings.Password = aws.String(v.(string))
+			}
+
 			settings.Username = aws.String(d.Get(names.AttrUsername).(string))
-			settings.Password = aws.String(d.Get(names.AttrPassword).(string))
 			settings.ServerName = aws.String(d.Get("server_name").(string))
 			settings.Port = aws.Int32(int32(d.Get(names.AttrPort).(int)))
 
@@ -141,24 +153,17 @@ func resourceEndpointCreate(ctx context.Context, d *schema.ResourceData, meta an
 			expandTopLevelConnectionInfo(d, &input)
 		}
 
-		settings.DatabaseName = aws.String(d.Get(names.AttrDatabaseName).(string))
-		settings.KmsKeyId = aws.String(d.Get(names.AttrKMSKeyARN).(string))
-		settings.AuthType = awstypes.AuthTypeValue(d.Get("mongodb_settings.0.auth_type").(string))
-		settings.AuthMechanism = awstypes.AuthMechanismValue(d.Get("mongodb_settings.0.auth_mechanism").(string))
-		settings.NestingLevel = awstypes.NestingLevelValue(d.Get("mongodb_settings.0.nesting_level").(string))
-		settings.ExtractDocId = aws.String(d.Get("mongodb_settings.0.extract_doc_id").(string))
-		settings.DocsToInvestigate = aws.String(d.Get("mongodb_settings.0.docs_to_investigate").(string))
-		settings.AuthSource = aws.String(d.Get("mongodb_settings.0.auth_source").(string))
-
 		input.MongoDbSettings = settings
 	case engineNameOracle:
-		var settings = &awstypes.OracleSettings{
-			DatabaseName: aws.String(d.Get(names.AttrDatabaseName).(string)),
-		}
+		var settings *awstypes.OracleSettings
 
 		if v, ok := d.GetOk("oracle_settings"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
-			settings.AuthenticationMethod = expandOracleSettings(v.([]any)).AuthenticationMethod
+			settings = expandOracleSettings(v.([]any)[0].(map[string]any))
+		} else {
+			settings = &awstypes.OracleSettings{}
 		}
+		settings.DatabaseName = aws.String(d.Get(names.AttrDatabaseName).(string))
+
 		if _, ok := d.GetOk("secrets_manager_arn"); ok {
 			settings.SecretsManagerAccessRoleArn = aws.String(d.Get("secrets_manager_access_role_arn").(string))
 			settings.SecretsManagerSecretId = aws.String(d.Get("secrets_manager_arn").(string))

@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/networkmanager
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/networkmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/networkmanager/types"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func (r *attachmentRoutingPolicyLabelResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state attachmentRoutingPolicyLabelResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().NetworkManagerClient(ctx)
+
+	coreNetworkID, attachmentID := fwflex.StringValueFromFramework(ctx, state.CoreNetworkID), fwflex.StringValueFromFramework(ctx, state.AttachmentID)
+	label, err := findAttachmentRoutingPolicyAssociationLabelByTwoPartKey(ctx, conn, coreNetworkID, attachmentID)
+	if retry.NotFound(err) {
+		resp.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		resp.Diagnostics.AddError(
+			fmt.Sprintf("reading Network Manager Attachment Routing Policy Label (%s/%s)", coreNetworkID, attachmentID),
+			err.Error(),
+		)
+		return
+	}
+
+	state.RoutingPolicyLabel = fwflex.StringToFramework(ctx, label)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}

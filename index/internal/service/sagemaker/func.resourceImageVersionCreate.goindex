@@ -2,6 +2,8 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
 import (
 	"context"
 	"log"
+	"strconv"
+	"strings"
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -9,7 +11,6 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
@@ -64,16 +65,18 @@ func resourceImageVersionCreate(ctx context.Context, d *schema.ResourceData, met
 		input.Aliases = flex.ExpandStringValueSet(v.(*schema.Set))
 	}
 
-	if _, err := conn.CreateImageVersion(ctx, &input); err != nil {
+	out, err := conn.CreateImageVersion(ctx, &input)
+	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Image Version %s: %s", name, err)
 	}
 
-	out, err := waitImageVersionCreated(ctx, conn, name)
+	version := imageVersionFromARN(aws.ToString(out.ImageVersionArn))
+	waitOut, err := waitImageVersionCreated(ctx, conn, name, version)
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "waiting for SageMaker AI Image Version (%s) to be created: %s", d.Id(), err)
 	}
 
-	parts := []string{name, flex.Int32ToStringValue(out.Version)}
+	parts := []string{name, flex.Int32ToStringValue(waitOut.Version)}
 	id, err := flex.FlattenResourceId(parts, imageVersionResourcePartCount, false)
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Image Version %s: %s", name, err)

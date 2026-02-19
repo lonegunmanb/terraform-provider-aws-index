@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfkms "github.com/hashicorp/terraform-provider-aws/internal/service/kms"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -40,13 +41,13 @@ func resourceEndpointSetState(d *schema.ResourceData, endpoint *awstypes.Endpoin
 
 	switch aws.ToString(endpoint.EngineName) {
 	case engineNameAurora, engineNameMariadb, engineNameMySQL:
-		if endpoint.MySQLSettings != nil {
-			d.Set(names.AttrUsername, endpoint.MySQLSettings.Username)
-			d.Set("server_name", endpoint.MySQLSettings.ServerName)
-			d.Set(names.AttrPort, endpoint.MySQLSettings.Port)
-			d.Set(names.AttrDatabaseName, endpoint.MySQLSettings.DatabaseName)
-			d.Set("secrets_manager_access_role_arn", endpoint.MySQLSettings.SecretsManagerAccessRoleArn)
-			d.Set("secrets_manager_arn", endpoint.MySQLSettings.SecretsManagerSecretId)
+		if v := endpoint.MySQLSettings; v != nil {
+			d.Set(names.AttrUsername, v.Username)
+			d.Set("server_name", v.ServerName)
+			d.Set(names.AttrPort, v.Port)
+			d.Set(names.AttrDatabaseName, v.DatabaseName)
+			d.Set("secrets_manager_access_role_arn", v.SecretsManagerAccessRoleArn)
+			d.Set("secrets_manager_arn", v.SecretsManagerSecretId)
 		} else {
 			flattenTopLevelConnectionInfo(d, endpoint)
 		}
@@ -54,13 +55,13 @@ func resourceEndpointSetState(d *schema.ResourceData, endpoint *awstypes.Endpoin
 			return fmt.Errorf("setting mysql_settings: %w", err)
 		}
 	case engineNameAuroraPostgresql, engineNamePostgres:
-		if endpoint.PostgreSQLSettings != nil {
-			d.Set(names.AttrUsername, endpoint.PostgreSQLSettings.Username)
-			d.Set("server_name", endpoint.PostgreSQLSettings.ServerName)
-			d.Set(names.AttrPort, endpoint.PostgreSQLSettings.Port)
-			d.Set(names.AttrDatabaseName, endpoint.PostgreSQLSettings.DatabaseName)
-			d.Set("secrets_manager_access_role_arn", endpoint.PostgreSQLSettings.SecretsManagerAccessRoleArn)
-			d.Set("secrets_manager_arn", endpoint.PostgreSQLSettings.SecretsManagerSecretId)
+		if v := endpoint.PostgreSQLSettings; v != nil {
+			d.Set(names.AttrUsername, v.Username)
+			d.Set("server_name", v.ServerName)
+			d.Set(names.AttrPort, v.Port)
+			d.Set(names.AttrDatabaseName, v.DatabaseName)
+			d.Set("secrets_manager_access_role_arn", v.SecretsManagerAccessRoleArn)
+			d.Set("secrets_manager_arn", v.SecretsManagerSecretId)
 		} else {
 			flattenTopLevelConnectionInfo(d, endpoint)
 		}
@@ -68,8 +69,8 @@ func resourceEndpointSetState(d *schema.ResourceData, endpoint *awstypes.Endpoin
 			return fmt.Errorf("setting postgres_settings: %w", err)
 		}
 	case engineNameDynamoDB:
-		if endpoint.DynamoDbSettings != nil {
-			d.Set("service_access_role", endpoint.DynamoDbSettings.ServiceAccessRoleArn)
+		if v := endpoint.DynamoDbSettings; v != nil {
+			d.Set("service_access_role", v.ServiceAccessRoleArn)
 		} else {
 			d.Set("service_access_role", "")
 		}
@@ -78,9 +79,9 @@ func resourceEndpointSetState(d *schema.ResourceData, endpoint *awstypes.Endpoin
 			return fmt.Errorf("setting elasticsearch_settings: %w", err)
 		}
 	case engineNameKafka:
-		if endpoint.KafkaSettings != nil {
+		if v := endpoint.KafkaSettings; v != nil {
 			// SASL password isn't returned in API. Propagate state value.
-			tfMap := flattenKafkaSettings(endpoint.KafkaSettings)
+			tfMap := flattenKafkaSettings(v)
 			tfMap["sasl_password"] = d.Get("kafka_settings.0.sasl_password").(string)
 
 			if err := d.Set("kafka_settings", []any{tfMap}); err != nil {
@@ -94,13 +95,13 @@ func resourceEndpointSetState(d *schema.ResourceData, endpoint *awstypes.Endpoin
 			return fmt.Errorf("setting kinesis_settings: %w", err)
 		}
 	case engineNameMongodb:
-		if endpoint.MongoDbSettings != nil {
-			d.Set(names.AttrUsername, endpoint.MongoDbSettings.Username)
-			d.Set("server_name", endpoint.MongoDbSettings.ServerName)
-			d.Set(names.AttrPort, endpoint.MongoDbSettings.Port)
-			d.Set(names.AttrDatabaseName, endpoint.MongoDbSettings.DatabaseName)
-			d.Set("secrets_manager_access_role_arn", endpoint.MongoDbSettings.SecretsManagerAccessRoleArn)
-			d.Set("secrets_manager_arn", endpoint.MongoDbSettings.SecretsManagerSecretId)
+		if v := endpoint.MongoDbSettings; v != nil {
+			d.Set(names.AttrUsername, v.Username)
+			d.Set("server_name", v.ServerName)
+			d.Set(names.AttrPort, v.Port)
+			d.Set(names.AttrDatabaseName, v.DatabaseName)
+			d.Set("secrets_manager_access_role_arn", v.SecretsManagerAccessRoleArn)
+			d.Set("secrets_manager_arn", v.SecretsManagerSecretId)
 		} else {
 			flattenTopLevelConnectionInfo(d, endpoint)
 		}
@@ -108,13 +109,13 @@ func resourceEndpointSetState(d *schema.ResourceData, endpoint *awstypes.Endpoin
 			return fmt.Errorf("setting mongodb_settings: %w", err)
 		}
 	case engineNameOracle:
-		if endpoint.OracleSettings != nil {
-			d.Set(names.AttrUsername, endpoint.OracleSettings.Username)
-			d.Set("server_name", endpoint.OracleSettings.ServerName)
-			d.Set(names.AttrPort, endpoint.OracleSettings.Port)
-			d.Set(names.AttrDatabaseName, endpoint.OracleSettings.DatabaseName)
-			d.Set("secrets_manager_access_role_arn", endpoint.OracleSettings.SecretsManagerAccessRoleArn)
-			d.Set("secrets_manager_arn", endpoint.OracleSettings.SecretsManagerSecretId)
+		if v := endpoint.OracleSettings; v != nil {
+			d.Set(names.AttrUsername, v.Username)
+			d.Set("server_name", v.ServerName)
+			d.Set(names.AttrPort, v.Port)
+			d.Set(names.AttrDatabaseName, v.DatabaseName)
+			d.Set("secrets_manager_access_role_arn", v.SecretsManagerAccessRoleArn)
+			d.Set("secrets_manager_arn", v.SecretsManagerSecretId)
 		} else {
 			flattenTopLevelConnectionInfo(d, endpoint)
 		}
@@ -130,13 +131,13 @@ func resourceEndpointSetState(d *schema.ResourceData, endpoint *awstypes.Endpoin
 			return fmt.Errorf("setting redis_settings: %w", err)
 		}
 	case engineNameRedshift:
-		if endpoint.RedshiftSettings != nil {
-			d.Set(names.AttrUsername, endpoint.RedshiftSettings.Username)
-			d.Set("server_name", endpoint.RedshiftSettings.ServerName)
-			d.Set(names.AttrPort, endpoint.RedshiftSettings.Port)
-			d.Set(names.AttrDatabaseName, endpoint.RedshiftSettings.DatabaseName)
-			d.Set("secrets_manager_access_role_arn", endpoint.RedshiftSettings.SecretsManagerAccessRoleArn)
-			d.Set("secrets_manager_arn", endpoint.RedshiftSettings.SecretsManagerSecretId)
+		if v := endpoint.RedshiftSettings; v != nil {
+			d.Set(names.AttrUsername, v.Username)
+			d.Set("server_name", v.ServerName)
+			d.Set(names.AttrPort, v.Port)
+			d.Set(names.AttrDatabaseName, v.DatabaseName)
+			d.Set("secrets_manager_access_role_arn", v.SecretsManagerAccessRoleArn)
+			d.Set("secrets_manager_arn", v.SecretsManagerSecretId)
 		} else {
 			flattenTopLevelConnectionInfo(d, endpoint)
 		}
@@ -144,35 +145,35 @@ func resourceEndpointSetState(d *schema.ResourceData, endpoint *awstypes.Endpoin
 			return fmt.Errorf("setting redshift_settings: %w", err)
 		}
 	case engineNameSQLServer, engineNameBabelfish:
-		if endpoint.MicrosoftSQLServerSettings != nil {
-			d.Set(names.AttrUsername, endpoint.MicrosoftSQLServerSettings.Username)
-			d.Set("server_name", endpoint.MicrosoftSQLServerSettings.ServerName)
-			d.Set(names.AttrPort, endpoint.MicrosoftSQLServerSettings.Port)
-			d.Set(names.AttrDatabaseName, endpoint.MicrosoftSQLServerSettings.DatabaseName)
-			d.Set("secrets_manager_access_role_arn", endpoint.MicrosoftSQLServerSettings.SecretsManagerAccessRoleArn)
-			d.Set("secrets_manager_arn", endpoint.MicrosoftSQLServerSettings.SecretsManagerSecretId)
+		if v := endpoint.MicrosoftSQLServerSettings; v != nil {
+			d.Set(names.AttrUsername, v.Username)
+			d.Set("server_name", v.ServerName)
+			d.Set(names.AttrPort, v.Port)
+			d.Set(names.AttrDatabaseName, v.DatabaseName)
+			d.Set("secrets_manager_access_role_arn", v.SecretsManagerAccessRoleArn)
+			d.Set("secrets_manager_arn", v.SecretsManagerSecretId)
 		} else {
 			flattenTopLevelConnectionInfo(d, endpoint)
 		}
 	case engineNameSybase:
-		if endpoint.SybaseSettings != nil {
-			d.Set(names.AttrUsername, endpoint.SybaseSettings.Username)
-			d.Set("server_name", endpoint.SybaseSettings.ServerName)
-			d.Set(names.AttrPort, endpoint.SybaseSettings.Port)
-			d.Set(names.AttrDatabaseName, endpoint.SybaseSettings.DatabaseName)
-			d.Set("secrets_manager_access_role_arn", endpoint.SybaseSettings.SecretsManagerAccessRoleArn)
-			d.Set("secrets_manager_arn", endpoint.SybaseSettings.SecretsManagerSecretId)
+		if v := endpoint.SybaseSettings; v != nil {
+			d.Set(names.AttrUsername, v.Username)
+			d.Set("server_name", v.ServerName)
+			d.Set(names.AttrPort, v.Port)
+			d.Set(names.AttrDatabaseName, v.DatabaseName)
+			d.Set("secrets_manager_access_role_arn", v.SecretsManagerAccessRoleArn)
+			d.Set("secrets_manager_arn", v.SecretsManagerSecretId)
 		} else {
 			flattenTopLevelConnectionInfo(d, endpoint)
 		}
 	case engineNameDB2, engineNameDB2zOS:
-		if endpoint.IBMDb2Settings != nil {
-			d.Set(names.AttrUsername, endpoint.IBMDb2Settings.Username)
-			d.Set("server_name", endpoint.IBMDb2Settings.ServerName)
-			d.Set(names.AttrPort, endpoint.IBMDb2Settings.Port)
-			d.Set(names.AttrDatabaseName, endpoint.IBMDb2Settings.DatabaseName)
-			d.Set("secrets_manager_access_role_arn", endpoint.IBMDb2Settings.SecretsManagerAccessRoleArn)
-			d.Set("secrets_manager_arn", endpoint.IBMDb2Settings.SecretsManagerSecretId)
+		if v := endpoint.IBMDb2Settings; v != nil {
+			d.Set(names.AttrUsername, v.Username)
+			d.Set("server_name", v.ServerName)
+			d.Set(names.AttrPort, v.Port)
+			d.Set(names.AttrDatabaseName, v.DatabaseName)
+			d.Set("secrets_manager_access_role_arn", v.SecretsManagerAccessRoleArn)
+			d.Set("secrets_manager_arn", v.SecretsManagerSecretId)
 		} else {
 			flattenTopLevelConnectionInfo(d, endpoint)
 		}
