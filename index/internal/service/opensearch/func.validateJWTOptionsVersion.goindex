@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearch
+import (
+	"context"
+	"fmt"
+	"log"
+	"maps"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearch/types"
+	awspolicy "github.com/hashicorp/awspolicyequivalence"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func validateJWTOptionsVersion(_ context.Context, d *schema.ResourceDiff, _ any) error {
+	if v, ok := d.GetOk("advanced_security_options"); ok {
+		options := v.([]any)
+		if len(options) > 0 && options[0] != nil {
+			m := options[0].(map[string]any)
+			if jwtOptions, ok := m["jwt_options"].([]any); ok && len(jwtOptions) > 0 && jwtOptions[0] != nil {
+				jwtMap := jwtOptions[0].(map[string]any)
+				if enabled, ok := jwtMap[names.AttrEnabled].(bool); ok && enabled {
+					engineVersion := d.Get(names.AttrEngineVersion).(string)
+					if engineType, version, err := parseEngineVersion(engineVersion); err == nil {
+						switch engineType {
+						case string(awstypes.EngineTypeElasticsearch):
+							return fmt.Errorf("jwt_options is not supported with Elasticsearch. Use OpenSearch 2.11 or later")
+						case string(awstypes.EngineTypeOpenSearch):
+							if semver.LessThan(version, "2.11") {
+								return fmt.Errorf("jwt_options requires OpenSearch 2.11 or later, got %s", engineVersion)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}

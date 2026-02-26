@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/wafv2"
@@ -13,10 +14,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -90,8 +95,26 @@ func (r *resourceWebACLRuleGroupAssociation) Update(ctx context.Context, req res
 				}
 			}
 
+			// update visibility config if changed
+			var visibilityConfig awstypes.VisibilityConfig
+			if !plan.VisibilityConfig.IsNull() && !plan.VisibilityConfig.IsUnknown() {
+				resp.Diagnostics.Append(fwflex.Expand(ctx, plan.VisibilityConfig, &visibilityConfig)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				webACL.WebACL.Rules[i].VisibilityConfig = &visibilityConfig
+			} else {
+				visibilityConfig = awstypes.VisibilityConfig{
+					SampledRequestsEnabled:   true,
+					CloudWatchMetricsEnabled: true,
+					MetricName:               plan.RuleName.ValueStringPointer(),
+				}
+			}
+
 			// Update rule action overrides from nested structure (both custom and managed)
 			var overrides []awstypes.RuleActionOverride
+			var managedRuleGroupConfigs []awstypes.ManagedRuleGroupConfig
+
 			if !plan.RuleGroupReference.IsNull() && !plan.RuleGroupReference.IsUnknown() {
 				ruleGroupRefs := plan.RuleGroupReference.Elements()
 				if len(ruleGroupRefs) > 0 {
@@ -123,6 +146,40 @@ func (r *resourceWebACLRuleGroupAssociation) Update(ctx context.Context, req res
 							return
 						}
 					}
+
+					if !managedRuleGroupRef.ManagedRuleGroupConfig.IsNull() && !managedRuleGroupRef.ManagedRuleGroupConfig.IsUnknown() {
+						var tfManagedRuleGroupConfigModel managedRuleGroupConfigModel
+
+						resp.Diagnostics.Append(managedRuleGroupRef.ManagedRuleGroupConfig.Elements()[0].(fwtypes.ObjectValueOf[managedRuleGroupConfigModel]).As(ctx, &tfManagedRuleGroupConfigModel, basetypes.ObjectAsOptions{})...)
+						if resp.Diagnostics.HasError() {
+							return
+						}
+
+						if !tfManagedRuleGroupConfigModel.AWSManagedRulesACFPRuleSet.IsNull() && !tfManagedRuleGroupConfigModel.AWSManagedRulesACFPRuleSet.IsUnknown() {
+							// custom expand for ACFP Managed Rule Group Config
+							var tfACFPConfig awsManagedRulesACFPRuleSetModel
+							resp.Diagnostics.Append(tfManagedRuleGroupConfigModel.AWSManagedRulesACFPRuleSet.Elements()[0].(fwtypes.ObjectValueOf[awsManagedRulesACFPRuleSetModel]).As(ctx, &tfACFPConfig, basetypes.ObjectAsOptions{})...)
+							if resp.Diagnostics.HasError() {
+								return
+							}
+
+							var acfpConfig awstypes.AWSManagedRulesACFPRuleSet
+							resp.Diagnostics.Append(fwflex.Expand(ctx, tfACFPConfig, &acfpConfig)...)
+							if resp.Diagnostics.HasError() {
+								return
+							}
+
+							managedRuleGroupConfigs = append(managedRuleGroupConfigs, awstypes.ManagedRuleGroupConfig{
+								AWSManagedRulesACFPRuleSet: &acfpConfig,
+							})
+						} else {
+							// let auto flex handle expand
+							resp.Diagnostics.Append(fwflex.Expand(ctx, managedRuleGroupRef.ManagedRuleGroupConfig, &managedRuleGroupConfigs)...)
+							if resp.Diagnostics.HasError() {
+								return
+							}
+						}
+					}
 				}
 			}
 
@@ -132,6 +189,7 @@ func (r *resourceWebACLRuleGroupAssociation) Update(ctx context.Context, req res
 					webACL.WebACL.Rules[i].Statement.RuleGroupReferenceStatement.RuleActionOverrides = overrides
 				} else if webACL.WebACL.Rules[i].Statement.ManagedRuleGroupStatement != nil {
 					webACL.WebACL.Rules[i].Statement.ManagedRuleGroupStatement.RuleActionOverrides = overrides
+					webACL.WebACL.Rules[i].Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs = managedRuleGroupConfigs
 				}
 			}
 

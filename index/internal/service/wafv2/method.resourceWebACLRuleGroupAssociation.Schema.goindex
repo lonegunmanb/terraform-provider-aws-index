@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/wafv2"
@@ -13,10 +14,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -33,6 +38,431 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *resourceWebACLRuleGroupAssociation) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	usernameFieldLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[usernameFieldModel](ctx),
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				names.AttrIdentifier: schema.StringAttribute{
+					Required: true,
+					Validators: []validator.String{
+						stringvalidator.All(
+							stringvalidator.LengthBetween(1, 512),
+							stringvalidator.RegexMatches(
+								regexache.MustCompile(`\S`),
+								"can not be empty string",
+							),
+						),
+					},
+					Description: "Identifier of the username field",
+				},
+			},
+		},
+	}
+
+	passwordFieldLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[passwordFieldModel](ctx),
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				names.AttrIdentifier: schema.StringAttribute{
+					Required: true,
+					Validators: []validator.String{
+						stringvalidator.All(
+							stringvalidator.LengthBetween(1, 512),
+							stringvalidator.RegexMatches(
+								regexache.MustCompile(`\S`),
+								"can not be empty string",
+							),
+						),
+					},
+					Description: "Identifier of the password field",
+				},
+			},
+		},
+	}
+
+	managedRulegroupConfigACFPRequestInspectionLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[requestInspectionACFPModel](ctx),
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"payload_type": schema.StringAttribute{
+					CustomType:  fwtypes.StringEnumType[awstypes.PayloadType](),
+					Required:    true,
+					Description: "Payload type for inspection, either JSON or FORM_ENCODED.",
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"username_field": usernameFieldLNB,
+				"address_fields": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[addressFieldModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+						listvalidator.SizeAtLeast(0),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"identifiers": schema.ListAttribute{
+								ElementType: types.StringType,
+								Required:    true,
+								Validators: []validator.List{
+									listvalidator.SizeAtLeast(1),
+								},
+								Description: "Identifiers of the address fields",
+							},
+						},
+					},
+				},
+				"email_field": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[emailFieldModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+						listvalidator.SizeAtLeast(0),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrIdentifier: schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.All(
+										stringvalidator.LengthBetween(1, 512),
+										stringvalidator.RegexMatches(
+											regexache.MustCompile(`\S`),
+											"can not be empty string",
+										),
+									),
+								},
+								Description: "Identifier of the email field",
+							},
+						},
+					},
+				},
+				"password_field": passwordFieldLNB,
+				"phone_number_fields": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[phoneNumberFieldModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+						listvalidator.SizeAtLeast(0),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"identifiers": schema.ListAttribute{
+								ElementType: types.StringType,
+								Required:    true,
+								Validators: []validator.List{
+									listvalidator.SizeAtLeast(1),
+								},
+								Description: "Identifiers of the phone number fields",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	managedRulegroupConfigATPRequestInspectionLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[requestInspectionModel](ctx),
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		NestedObject: schema.NestedBlockObject{
+			Attributes: map[string]schema.Attribute{
+				"payload_type": schema.StringAttribute{
+					CustomType:  fwtypes.StringEnumType[awstypes.PayloadType](),
+					Required:    true,
+					Description: "Payload type for inspection, either JSON or FORM_ENCODED.",
+				},
+			},
+			Blocks: map[string]schema.Block{
+				"password_field": passwordFieldLNB,
+				"username_field": usernameFieldLNB,
+			},
+		},
+	}
+	managedRulegroupConfigResponseInspectionLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[responseInspectionModel](ctx),
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		NestedObject: schema.NestedBlockObject{
+			Blocks: map[string]schema.Block{
+				"body_contains": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[responseInspectionBodyContainsModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"failure_strings": schema.SetAttribute{
+								Required:    true,
+								ElementType: types.StringType,
+								Description: "Strings that indicate a failed login or account creation attempt",
+							},
+							"success_strings": schema.SetAttribute{
+								Required:    true,
+								ElementType: types.StringType,
+								Description: "Strings that indicate a successful login or account creation attempt",
+							},
+						},
+					},
+				},
+				names.AttrHeader: schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[responseInspectionHeaderModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrName: schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.LengthBetween(1, 256),
+								},
+								Description: "Name of the HTTP header to inspect",
+							},
+							"failure_values": schema.SetAttribute{
+								Required:    true,
+								ElementType: types.StringType,
+								Description: "Strings that indicate a failed login or account creation attempt",
+							},
+							"success_values": schema.SetAttribute{
+								Required:    true,
+								ElementType: types.StringType,
+								Description: "Strings that indicate a successful login or account creation attempt",
+							},
+						},
+					},
+				},
+				names.AttrJSON: schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[responseInspectionJsonModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrIdentifier: schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.LengthBetween(1, 256),
+								},
+								Description: "Identifier of the JSON field to inspect",
+							},
+							"failure_values": schema.SetAttribute{
+								Required:    true,
+								ElementType: types.StringType,
+								Description: "Strings that indicate a failed login or account creation attempt",
+							},
+							"success_values": schema.SetAttribute{
+								Required:    true,
+								ElementType: types.StringType,
+								Description: "Strings that indicate a successful login or account creation attempt",
+							},
+						},
+					},
+				},
+				names.AttrStatusCode: schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[responseInspectionStatusCodeModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"failure_codes": schema.SetAttribute{
+								Required:    true,
+								ElementType: types.Int32Type,
+								Description: "Status codes that indicate a failed login or account creation attempt",
+							},
+							"success_codes": schema.SetAttribute{
+								Required:    true,
+								ElementType: types.Int32Type,
+								Description: "Status codes that indicate a successful login or account creation attempt",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	managedRulegroupConfigLNB := schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[managedRuleGroupConfigModel](ctx),
+		Validators: []validator.List{
+			listvalidator.SizeAtMost(1),
+		},
+		NestedObject: schema.NestedBlockObject{
+			Blocks: map[string]schema.Block{
+				"aws_managed_rules_acfp_rule_set": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[awsManagedRulesACFPRuleSetModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"creation_path": schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.All(
+										stringvalidator.LengthBetween(1, 256),
+										stringvalidator.RegexMatches(
+											regexache.MustCompile(`\S`),
+											"can not be empty string",
+										),
+									),
+								},
+								Description: "Path to the account creation endpoint on the protected website",
+							},
+							"enable_regex_in_path": schema.BoolAttribute{
+								Optional: true,
+								Computed: true,
+								Default:  booldefault.StaticBool(false),
+							},
+							"registration_page_path": schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.All(
+										stringvalidator.LengthBetween(1, 256),
+										stringvalidator.RegexMatches(
+											regexache.MustCompile(`\S`),
+											"can not be empty string",
+										),
+									),
+								},
+							},
+						},
+						Blocks: map[string]schema.Block{
+							"request_inspection":  managedRulegroupConfigACFPRequestInspectionLNB,
+							"response_inspection": managedRulegroupConfigResponseInspectionLNB,
+						},
+					},
+				},
+				"aws_managed_rules_anti_ddos_rule_set": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[awsManagedRulesAntiDDoSRuleSetModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"sensitivity_to_block": schema.StringAttribute{
+								CustomType: fwtypes.StringEnumType[awstypes.SensitivityToAct](),
+								Optional:   true,
+								Computed:   true,
+								Default:    stringdefault.StaticString(string(awstypes.SensitivityToActLow)),
+							},
+						},
+						Blocks: map[string]schema.Block{
+							"client_side_action_config": schema.ListNestedBlock{
+								CustomType: fwtypes.NewListNestedObjectTypeOf[clientSideActionConfigModel](ctx),
+								Validators: []validator.List{
+									listvalidator.SizeAtMost(1),
+									listvalidator.SizeAtLeast(1),
+								},
+								NestedObject: schema.NestedBlockObject{
+									Blocks: map[string]schema.Block{
+										"challenge": schema.ListNestedBlock{
+											CustomType: fwtypes.NewListNestedObjectTypeOf[clientSideActionModel](ctx),
+											Validators: []validator.List{
+												listvalidator.SizeAtMost(1),
+												listvalidator.SizeAtLeast(1),
+											},
+											NestedObject: schema.NestedBlockObject{
+												Blocks: map[string]schema.Block{
+													"exempt_uri_regular_expression": schema.ListNestedBlock{
+														//CustomType: fwtypes.NewListNestedObjectTypeOf[exemptUriRegularExpressionModel](ctx),
+														CustomType: fwtypes.NewListNestedObjectTypeOf[regexModel](ctx),
+														Validators: []validator.List{
+															listvalidator.SizeAtMost(5),
+														},
+														NestedObject: schema.NestedBlockObject{
+															Attributes: map[string]schema.Attribute{
+																"regex_string": schema.StringAttribute{
+																	Optional: true,
+																	Validators: []validator.String{
+																		stringvalidator.LengthBetween(1, 512),
+																	},
+																},
+															},
+														},
+													},
+												},
+												Attributes: map[string]schema.Attribute{
+													"sensitivity": schema.StringAttribute{
+														CustomType: fwtypes.StringEnumType[awstypes.SensitivityToAct](),
+														Optional:   true,
+														Computed:   true,
+														Default:    stringdefault.StaticString(string(awstypes.SensitivityToActHigh)),
+													},
+													"usage_of_action": schema.StringAttribute{
+														CustomType: fwtypes.StringEnumType[awstypes.UsageOfAction](),
+														Required:   true,
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"aws_managed_rules_atp_rule_set": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[awsManagedRulesATPRuleSetModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"enable_regex_in_path": schema.BoolAttribute{
+								Optional: true,
+								Computed: true,
+								Default:  booldefault.StaticBool(false),
+							},
+							"login_path": schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.All(
+										stringvalidator.LengthBetween(1, 256),
+										stringvalidator.RegexMatches(
+											regexache.MustCompile(`\S`),
+											"can not be empty string",
+										),
+									),
+								},
+							},
+						},
+						Blocks: map[string]schema.Block{
+							"request_inspection":  managedRulegroupConfigATPRequestInspectionLNB,
+							"response_inspection": managedRulegroupConfigResponseInspectionLNB,
+						},
+					},
+				},
+				"aws_managed_rules_bot_control_rule_set": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[awsManagedRulesBotControlRuleSetModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"enable_machine_learning": schema.BoolAttribute{
+								Optional: true,
+								Default:  booldefault.StaticBool(false),
+								Computed: true,
+							},
+							"inspection_level": schema.StringAttribute{
+								CustomType: fwtypes.StringEnumType[awstypes.InspectionLevel](),
+								Required:   true,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 	ruleActionOverrideLNB := schema.ListNestedBlock{
 		CustomType: fwtypes.NewListNestedObjectTypeOf[ruleActionOverrideModel](ctx),
 		Validators: []validator.List{
@@ -395,10 +825,43 @@ func (r *resourceWebACLRuleGroupAssociation) Schema(ctx context.Context, req res
 						},
 					},
 					Blocks: map[string]schema.Block{
-						"rule_action_override": ruleActionOverrideLNB,
+						"rule_action_override":       ruleActionOverrideLNB,
+						"managed_rule_group_configs": managedRulegroupConfigLNB,
 					},
 				},
 				Description: "Managed rule group configuration.",
+			},
+			"visibility_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[visibilityConfigModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"sampled_requests_enabled": schema.BoolAttribute{
+							Required:    true,
+							Description: "Indicates whether to store a sampling of the web requests that match the rule.",
+						},
+						"cloudwatch_metrics_enabled": schema.BoolAttribute{
+							Required:    true,
+							Description: "Indicates whether the rule is available for use in the metrics for the web ACL.",
+						},
+						names.AttrMetricName: schema.StringAttribute{
+							Required: true,
+							Validators: []validator.String{
+								stringvalidator.All(
+									stringvalidator.LengthBetween(1, 128),
+									stringvalidator.RegexMatches(
+										regexache.MustCompile(`^[0-9A-Za-z_-]+$`),
+										"can only contain alphanumeric characters, hyphens, underscores, and colons",
+									),
+								),
+							},
+							Description: "A name for the metrics for this rule.",
+						},
+					},
+				},
+				Description: "Visibility configuration for the rule.",
 			},
 			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
 				Create: true,

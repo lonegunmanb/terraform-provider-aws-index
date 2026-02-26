@@ -29,7 +29,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
@@ -46,14 +45,21 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *bucketLifecycleConfigurationResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
-	bucket, expectedBucketOwner, err := parseResourceID(request.ID)
-	if err != nil {
-		response.Diagnostics.AddError("Resource Import Invalid ID", err.Error())
-		return
+	var bucket, expectedBucketOwner string
+
+	if request.ID != "" {
+		var err error
+		bucket, expectedBucketOwner, err = parseResourceID(request.ID)
+		if err != nil {
+			response.Diagnostics.AddError("Resource Import Invalid ID", err.Error())
+			return
+		}
+
+		request.ID = bucket
 	}
 
-	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(names.AttrBucket), bucket)...)
-	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(names.AttrExpectedBucketOwner), expectedBucketOwner)...)
+	r.WithImportByIdentity.ImportState(ctx, request, response)
 
-	resource.ImportStatePassthroughID(ctx, path.Root(names.AttrID), request, response)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(names.AttrExpectedBucketOwner), expectedBucketOwner)...)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(names.AttrID), types.StringValue(createResourceID(bucket, expectedBucketOwner)))...)
 }

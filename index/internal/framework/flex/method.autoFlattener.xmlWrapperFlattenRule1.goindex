@@ -20,24 +20,15 @@ import (
 	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	"github.com/shopspring/decimal"
 )
-func (flattener *autoFlattener) xmlWrapperFlattenRule1(ctx context.Context, vFrom reflect.Value, tTo attr.Type, vTo reflect.Value) diag.Diagnostics {
+func (flattener *autoFlattener) xmlWrapperFlattenRule1(ctx context.Context, sourcePath path.Path, sourceFieldName string, vFrom reflect.Value, tTo attr.Type, vTo reflect.Value) diag.Diagnostics {
 	var diags diag.Diagnostics
 
-	// Get the Items field from the source wrapper struct
-	wrapperFieldName := getXMLWrapperSliceFieldName(vFrom.Type())
-	itemsField := vFrom.FieldByName(wrapperFieldName)
+	itemsField := vFrom.FieldByName(sourceFieldName)
 	if !itemsField.IsValid() {
 		tflog.SubsystemError(ctx, subsystemName, "XML wrapper struct missing Items field")
 		diags.Append(DiagFlatteningIncompatibleTypes(vFrom.Type(), reflect.TypeOf(vTo.Interface())))
 		return diags
 	}
-
-	tflog.SubsystemTrace(ctx, subsystemName, "Found Items field", map[string]any{
-		"items_type":   itemsField.Type().String(),
-		"items_kind":   itemsField.Kind().String(),
-		"items_len":    itemsField.Len(),
-		"items_is_nil": itemsField.IsNil(),
-	})
 
 	// Determine element type
 	var elementType attr.Type = types.StringType // default
@@ -85,11 +76,10 @@ func (flattener *autoFlattener) xmlWrapperFlattenRule1(ctx context.Context, vFro
 		})
 
 		for i, item := range validItems {
-			tflog.SubsystemTrace(ctx, subsystemName, "Processing item", map[string]any{
-				"index":      i,
-				"item_kind":  item.Kind().String(),
-				"item_value": item.Interface(),
-			})
+			sourcePath := sourcePath.AtListIndex(i)
+			ctx := tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourcePath, sourcePath.String())
+			ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourceType, fullTypeName(item.Type()))
+			tflog.SubsystemTrace(ctx, subsystemName, "Processing item")
 
 			// Convert each item based on its type
 			switch item.Kind() {
@@ -185,7 +175,6 @@ func (flattener *autoFlattener) xmlWrapperFlattenRule1(ctx context.Context, vFro
 
 		tflog.SubsystemTrace(ctx, subsystemName, "Creating list value", map[string]any{
 			"element_count": len(elements),
-			"element_type":  elementType.String(),
 		})
 
 		list, d := types.ListValue(elementType, elements)
@@ -245,11 +234,10 @@ func (flattener *autoFlattener) xmlWrapperFlattenRule1(ctx context.Context, vFro
 		})
 
 		for i, item := range validItems {
-			tflog.SubsystemTrace(ctx, subsystemName, "Processing item", map[string]any{
-				"index":      i,
-				"item_kind":  item.Kind().String(),
-				"item_value": item.Interface(),
-			})
+			sourcePath := sourcePath.AtListIndex(i)
+			ctx := tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourcePath, sourcePath.String())
+			ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourceType, fullTypeName(item.Type()))
+			tflog.SubsystemTrace(ctx, subsystemName, "Processing item")
 
 			// Convert each item based on its type
 			switch item.Kind() {
@@ -349,7 +337,6 @@ func (flattener *autoFlattener) xmlWrapperFlattenRule1(ctx context.Context, vFro
 
 		tflog.SubsystemTrace(ctx, subsystemName, "Creating set value", map[string]any{
 			"element_count": len(elements),
-			"element_type":  elementType.String(),
 		})
 
 		set, d := types.SetValue(elementType, elements)

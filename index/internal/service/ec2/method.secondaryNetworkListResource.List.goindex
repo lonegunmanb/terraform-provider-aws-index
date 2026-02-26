@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+)
+func (r *secondaryNetworkListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := r.Meta().EC2Client(ctx)
+
+	var query listSecondaryNetworkModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		result := request.NewListResult(ctx)
+		var input ec2.DescribeSecondaryNetworksInput
+		for item, err := range listSecondaryNetworks(ctx, conn, &input) {
+			if err != nil {
+				result = fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			var data secondaryNetworkResourceModel
+
+			r.SetResult(ctx, r.Meta(), request.IncludeResource, &data, &result, func() {
+				if diags := fwflex.Flatten(ctx, item, &data, fwflex.WithFieldNamePrefix("SecondaryNetwork")); diags.HasError() {
+					result.Diagnostics.Append(diags...)
+					yield(result)
+					return
+				}
+
+				id := aws.ToString(item.SecondaryNetworkId)
+				data.ID = fwflex.StringValueToFramework(ctx, id)
+				result.DisplayName = id
+
+				// Fields with mismatched names missed by AutoFlex
+				data.NetworkType = fwflex.StringValueToFramework(ctx, item.Type)
+			})
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

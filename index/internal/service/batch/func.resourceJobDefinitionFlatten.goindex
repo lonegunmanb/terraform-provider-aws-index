@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/batch
+import (
+	"context"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/batch/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceJobDefinitionFlatten(ctx context.Context, jobDefinition *awstypes.JobDefinition, d *schema.ResourceData) diag.Diagnostics {
+	var diags diag.Diagnostics
+	arn, revision := aws.ToString(jobDefinition.JobDefinitionArn), aws.ToInt32(jobDefinition.Revision)
+	d.Set(names.AttrARN, arn)
+	d.Set("arn_prefix", strings.TrimSuffix(arn, fmt.Sprintf(":%d", revision)))
+	containerProperties, err := flattenContainerProperties(jobDefinition.ContainerProperties)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+
+	d.Set("container_properties", containerProperties)
+	ecsProperties, err := flattenECSProperties(jobDefinition.EcsProperties)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+	d.Set("ecs_properties", ecsProperties)
+
+	d.Set("eks_properties", flattenEKSProperties(jobDefinition.EksProperties))
+	d.Set(names.AttrName, jobDefinition.JobDefinitionName)
+	nodeProperties, err := flattenNodeProperties(jobDefinition.NodeProperties)
+	if err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
+	}
+	d.Set("node_properties", nodeProperties)
+	d.Set(names.AttrParameters, jobDefinition.Parameters)
+	d.Set("platform_capabilities", jobDefinition.PlatformCapabilities)
+	d.Set(names.AttrPropagateTags, jobDefinition.PropagateTags)
+	if jobDefinition.RetryStrategy != nil {
+		d.Set("retry_strategy", []any{flattenRetryStrategy(jobDefinition.RetryStrategy)})
+	} else {
+		d.Set("retry_strategy", nil)
+	}
+	d.Set("revision", revision)
+	d.Set("scheduling_priority", jobDefinition.SchedulingPriority)
+	if jobDefinition.Timeout != nil {
+		d.Set(names.AttrTimeout, []any{flattenJobTimeout(jobDefinition.Timeout)})
+	} else {
+		d.Set(names.AttrTimeout, nil)
+	}
+	d.Set(names.AttrType, jobDefinition.Type)
+
+	setTagsOut(ctx, jobDefinition.Tags)
+
+	return diags
+}

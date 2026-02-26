@@ -1,0 +1,64 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *secondarySubnetListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().EC2Client(ctx)
+
+	var query listSecondarySubnetModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	var input ec2.DescribeSecondarySubnetsInput
+	if diags := fwflex.Expand(ctx, query, &input); diags.HasError() {
+		stream.Results = list.ListResultsStreamDiagnostics(diags)
+		return
+	}
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		result := request.NewListResult(ctx)
+		for item, err := range listSecondarySubnets(ctx, conn, &input) {
+			if err != nil {
+				result = fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			var data secondarySubnetResourceModel
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, &data, &result, func() {
+				if diags := fwflex.Flatten(ctx, item, &data, fwflex.WithFieldNamePrefix("SecondarySubnet")); diags.HasError() {
+					result.Diagnostics.Append(diags...)
+					yield(result)
+					return
+				}
+
+				id := aws.ToString(item.SecondarySubnetId)
+				data.ID = fwflex.StringValueToFramework(ctx, id)
+				result.DisplayName = id
+			})
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

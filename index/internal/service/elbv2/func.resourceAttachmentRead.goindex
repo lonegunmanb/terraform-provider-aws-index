@@ -1,14 +1,16 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
 import (
 	"context"
+	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
@@ -16,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
@@ -43,7 +46,7 @@ func resourceAttachmentRead(ctx context.Context, d *schema.ResourceData, meta an
 		input.Targets[0].QuicServerId = aws.String(v.(string))
 	}
 
-	_, err := findTargetHealthDescription(ctx, conn, &input)
+	target, err := findTargetHealthDescription(ctx, conn, &input)
 
 	if !d.IsNewResource() && retry.NotFound(err) {
 		log.Printf("[WARN] ELBv2 Target Group Attachment %s not found, removing from state", d.Id())
@@ -53,6 +56,26 @@ func resourceAttachmentRead(ctx context.Context, d *schema.ResourceData, meta an
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "reading ELBv2 Target Group Attachment (%s): %s", d.Id(), err)
+	}
+
+	if target == nil || target.Target == nil {
+		return sdkdiag.AppendErrorf(diags, "reading ELBv2 Target Group Attachment (%s): target not found", d.Id())
+	}
+
+	d.Set("target_group_arn", targetGroupARN)
+	d.Set("target_id", target.Target.Id)
+
+	if rawConfig := d.GetRawConfig(); rawConfig.IsKnown() && !rawConfig.IsNull() {
+		if rawPort := rawConfig.GetAttr(names.AttrPort); rawPort.IsKnown() && !rawPort.IsNull() {
+			d.Set(names.AttrPort, target.Target.Port)
+		}
+		if rawAZ := rawConfig.GetAttr(names.AttrAvailabilityZone); rawAZ.IsKnown() && !rawAZ.IsNull() {
+			d.Set(names.AttrAvailabilityZone, target.Target.AvailabilityZone)
+		}
+	}
+
+	if v := aws.ToString(target.Target.QuicServerId); v != "" {
+		d.Set("quic_server_id", v)
 	}
 
 	return diags

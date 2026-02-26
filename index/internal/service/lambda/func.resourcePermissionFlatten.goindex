@@ -1,0 +1,76 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePermissionFlatten(ctx context.Context, d *schema.ResourceData, awsClient *conns.AWSClient, statement *policyStatement, functionName string) diag.Diagnostics {
+	var diags diag.Diagnostics
+	qualifier, _ := getQualifierFromAliasOrVersionARN(statement.Resource)
+	d.Set("qualifier", qualifier)
+
+	// Save Lambda function name in the same format
+	if strings.HasPrefix(functionName, "arn:"+awsClient.Partition(ctx)+":lambda:") {
+		// Strip qualifier off
+		trimmed := strings.TrimSuffix(statement.Resource, ":"+qualifier)
+		d.Set("function_name", trimmed)
+	} else {
+		functionName, err := getFunctionNameFromARN(statement.Resource)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+
+		d.Set("function_name", functionName)
+	}
+
+	d.Set(names.AttrAction, statement.Action)
+	// Check if the principal is a cross-account IAM role
+	if v, ok := statement.Principal.(map[string]any); ok {
+		if _, ok := v["AWS"]; ok {
+			d.Set(names.AttrPrincipal, v["AWS"])
+		} else {
+			d.Set(names.AttrPrincipal, v["Service"])
+		}
+	} else if v, ok := statement.Principal.(string); ok {
+		d.Set(names.AttrPrincipal, v)
+	}
+
+	if v, ok := statement.Condition["StringEquals"]; ok {
+		d.Set("event_source_token", v["lambda:EventSourceToken"])
+		d.Set("function_url_auth_type", v["lambda:FunctionUrlAuthType"])
+		d.Set("principal_org_id", v["aws:PrincipalOrgID"])
+		d.Set("source_account", v["AWS:SourceAccount"])
+	}
+
+	if v, ok := statement.Condition["Bool"]; ok {
+		d.Set("invoked_via_function_url", strings.EqualFold(v["lambda:InvokedViaFunctionUrl"], "true"))
+	}
+
+	if v, ok := statement.Condition["ArnLike"]; ok {
+		d.Set("source_arn", v["AWS:SourceArn"])
+	}
+
+	d.Set("statement_id", statement.Sid)
+	d.Set("statement_id_prefix", create.NamePrefixFromName(statement.Sid))
+
+	return diags
+}
