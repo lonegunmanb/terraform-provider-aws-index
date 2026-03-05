@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findLatestLayerVersionByARN(ctx context.Context, conn *lambda.Client, layerARN string) (*lambda.GetLayerVersionOutput, error) {
+	input := &lambda.ListLayerVersionsInput{
+		LayerName: aws.String(layerARN),
+	}
+
+	output, err := conn.ListLayerVersions(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("unable to list layer versions (if this is a cross-account layer, the ARN must include the version number, e.g., :1, :2, etc.): %w", err)
+	}
+
+	if len(output.LayerVersions) == 0 {
+		return nil, tfresource.NewEmptyResultError()
+	}
+
+	versionNumber := output.LayerVersions[0].Version
+
+	getInput := &lambda.GetLayerVersionInput{
+		LayerName:     aws.String(layerARN),
+		VersionNumber: aws.Int64(versionNumber),
+	}
+
+	return findLayerVersion(ctx, conn, getInput)
+}

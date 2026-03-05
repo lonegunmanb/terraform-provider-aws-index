@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *mlflowAppResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data mlflowAppResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().SageMakerClient(ctx)
+
+	var input sagemaker.CreateMlflowAppInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	input.Tags = getTagsIn(ctx)
+
+	output, err := tfresource.RetryWhenAWSErrMessageContains(ctx, propagationTimeout, func(ctx context.Context) (*sagemaker.CreateMlflowAppOutput, error) {
+		return conn.CreateMlflowApp(ctx, &input)
+	}, ErrCodeValidationException, "SageMaker is unable to perform: sts:AssumeRole")
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("creating SageMaker Mlflow App (%s)", data.Name.ValueString()), err.Error())
+		return
+	}
+
+	data.ARN = fwflex.StringToFramework(ctx, output.Arn)
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	createTimeout := r.CreateTimeout(ctx, data.Timeouts)
+	outputWait, err := waitMlflowAppCreated(ctx, conn, data.ARN.ValueString(), createTimeout)
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("waiting for SageMaker Mlflow App (%s) create", data.ARN.ValueString()), err.Error())
+		return
+	}
+
+	response.Diagnostics.Append(fwflex.Flatten(ctx, outputWait, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

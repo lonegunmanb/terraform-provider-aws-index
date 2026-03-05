@@ -51,57 +51,9 @@ func resourceTargetGroupRead(ctx context.Context, d *schema.ResourceData, meta a
 		targetGroupRuntimeValidation(d, &diags)
 	}
 
-	d.Set(names.AttrARN, targetGroup.TargetGroupArn)
-	d.Set("arn_suffix", TargetGroupSuffixFromARN(targetGroup.TargetGroupArn))
-	if err := d.Set(names.AttrHealthCheck, flattenTargetGroupHealthCheck(targetGroup)); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting health_check: %s", err)
+	if err := resourceTargetGroupFlatten(ctx, meta.(*conns.AWSClient), targetGroup, d); err != nil {
+		return sdkdiag.AppendFromErr(diags, err)
 	}
-	d.Set(names.AttrIPAddressType, targetGroup.IpAddressType)
-	d.Set("load_balancer_arns", flex.FlattenStringValueSet(targetGroup.LoadBalancerArns))
-	d.Set(names.AttrName, targetGroup.TargetGroupName)
-	d.Set(names.AttrNamePrefix, create.NamePrefixFromName(aws.ToString(targetGroup.TargetGroupName)))
-	d.Set("target_control_port", targetGroup.TargetControlPort)
-	targetType := targetGroup.TargetType
-	d.Set("target_type", targetType)
-
-	if _, ok := d.GetOk(names.AttrPort); targetGroup.Port != nil || ok {
-		d.Set(names.AttrPort, targetGroup.Port)
-	}
-	var protocol awstypes.ProtocolEnum
-	if _, ok := d.GetOk(names.AttrProtocol); targetGroup.Protocol != "" || ok {
-		protocol = targetGroup.Protocol
-		d.Set(names.AttrProtocol, protocol)
-	}
-	if _, ok := d.GetOk("protocol_version"); targetGroup.ProtocolVersion != nil || ok {
-		d.Set("protocol_version", targetGroup.ProtocolVersion)
-	}
-	if _, ok := d.GetOk(names.AttrVPCID); targetGroup.VpcId != nil || ok {
-		d.Set(names.AttrVPCID, targetGroup.VpcId)
-	}
-
-	attributes, err := findTargetGroupAttributesByARN(ctx, conn, d.Id())
-
-	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "reading ELBv2 Target Group (%s) attributes: %s", d.Id(), err)
-	}
-
-	if err := d.Set("stickiness", []any{flattenTargetGroupStickinessAttributes(attributes, protocol)}); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting stickiness: %s", err)
-	}
-
-	if err := d.Set("target_failover", []any{flattenTargetGroupTargetFailoverAttributes(attributes, protocol)}); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting target_failover: %s", err)
-	}
-
-	if err := d.Set("target_group_health", []any{flattenTargetGroupHealthAttributes(attributes, protocol)}); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting target_group_health: %s", err)
-	}
-
-	if err := d.Set("target_health_state", []any{flattenTargetGroupTargetHealthStateAttributes(attributes, protocol)}); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting target_health_state: %s", err)
-	}
-
-	targetGroupAttributes.flatten(d, targetType, attributes)
 
 	return diags
 }

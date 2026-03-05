@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elbv2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func listListenerRules(ctx context.Context, conn *elasticloadbalancingv2.Client, input *elasticloadbalancingv2.DescribeRulesInput) iter.Seq2[listenerRuleResult, error] {
+	return func(yield func(listenerRuleResult, error) bool) {
+		pages := elasticloadbalancingv2.NewDescribeRulesPaginator(conn, input)
+		for pages.HasMorePages() {
+			page, err := pages.NextPage(ctx)
+			if err != nil {
+				yield(listenerRuleResult{}, fmt.Errorf("listing ELB Listener Rule resources: %w", err))
+				return
+			}
+
+			ruleARNs := make([]string, len(page.Rules))
+			for i, rule := range page.Rules {
+				ruleARNs[i] = aws.ToString(rule.RuleArn)
+			}
+
+			tags, err := batchListTags(ctx, conn, ruleARNs)
+			if err != nil {
+				yield(listenerRuleResult{}, fmt.Errorf("listing ELB Listener Rule resource tags: %w", err))
+				return
+			}
+
+			for _, item := range page.Rules {
+				if aws.ToBool(item.IsDefault) {
+					continue
+				}
+				v := listenerRuleResult{
+					rule: item,
+					tags: tags[aws.ToString(item.RuleArn)],
+				}
+				if !yield(v, nil) {
+					return
+				}
+			}
+		}
+	}
+}

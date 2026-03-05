@@ -1,6 +1,9 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
 import (
 	"context"
+	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -11,46 +14,58 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func dataSourceLayerVersionRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
 
-	layerName := d.Get("layer_name").(string)
-	var versionNumber int64
-	if v, ok := d.GetOk(names.AttrVersion); ok {
-		versionNumber = int64(v.(int))
-	} else {
-		input := &lambda.ListLayerVersionsInput{
-			LayerName: aws.String(layerName),
-		}
+	var output *lambda.GetLayerVersionOutput
+	var err error
 
-		if v, ok := d.GetOk("compatible_architecture"); ok {
-			input.CompatibleArchitecture = awstypes.Architecture(v.(string))
-		}
-
-		if v, ok := d.GetOk("compatible_runtime"); ok {
-			input.CompatibleRuntime = awstypes.Runtime(v.(string))
-		}
-
-		output, err := conn.ListLayerVersions(ctx, input)
-
-		if err == nil && len(output.LayerVersions) == 0 {
-			err = tfresource.NewEmptyResultError()
-		}
-
+	if v, ok := d.GetOk("layer_version_arn"); ok {
+		output, err = findLayerVersionByARN(ctx, conn, v.(string))
 		if err != nil {
-			return sdkdiag.AppendErrorf(diags, "listing Lambda Layer Versions (%s): %s", layerName, err)
+			return sdkdiag.AppendErrorf(diags, "reading Lambda Layer Version (%s): %s", v.(string), err)
+		}
+	} else {
+		layerName := d.Get("layer_name").(string)
+		if layerName == "" {
+			return sdkdiag.AppendErrorf(diags, "one of `layer_name` or `layer_version_arn` must be specified")
 		}
 
-		versionNumber = output.LayerVersions[0].Version
-	}
+		var versionNumber int64
+		if v, ok := d.GetOk(names.AttrVersion); ok {
+			versionNumber = int64(v.(int))
+		} else {
+			input := &lambda.ListLayerVersionsInput{
+				LayerName: aws.String(layerName),
+			}
 
-	output, err := findLayerVersionByTwoPartKey(ctx, conn, layerName, versionNumber)
+			if v, ok := d.GetOk("compatible_architecture"); ok {
+				input.CompatibleArchitecture = awstypes.Architecture(v.(string))
+			}
 
-	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "reading Lambda Layer (%s) Version (%d): %s", layerName, versionNumber, err)
+			if v, ok := d.GetOk("compatible_runtime"); ok {
+				input.CompatibleRuntime = awstypes.Runtime(v.(string))
+			}
+
+			listOutput, err := conn.ListLayerVersions(ctx, input)
+			if err == nil && len(listOutput.LayerVersions) == 0 {
+				err = tfresource.NewEmptyResultError()
+			}
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "listing Lambda Layer Versions (%s): %s", layerName, err)
+			}
+
+			versionNumber = listOutput.LayerVersions[0].Version
+		}
+
+		output, err = findLayerVersionByTwoPartKey(ctx, conn, layerName, versionNumber)
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading Lambda Layer (%s) Version (%d): %s", layerName, versionNumber, err)
+		}
 	}
 
 	d.SetId(aws.ToString(output.LayerVersionArn))
@@ -61,6 +76,8 @@ func dataSourceLayerVersionRead(ctx context.Context, d *schema.ResourceData, met
 	d.Set(names.AttrCreatedDate, output.CreatedDate)
 	d.Set(names.AttrDescription, output.Description)
 	d.Set("layer_arn", output.LayerArn)
+	d.Set("layer_name", layerNameFromARN(aws.ToString(output.LayerArn)))
+	d.Set("layer_version_arn", output.LayerVersionArn)
 	d.Set("license_info", output.LicenseInfo)
 	d.Set("signing_job_arn", output.Content.SigningJobArn)
 	d.Set("signing_profile_version_arn", output.Content.SigningProfileVersionArn)

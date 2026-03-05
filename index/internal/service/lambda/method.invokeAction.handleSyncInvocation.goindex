@@ -13,19 +13,19 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwactions "github.com/hashicorp/terraform-provider-aws/internal/framework/actions"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (a *invokeAction) handleSyncInvocation(resp *action.InvokeResponse, functionName string, output *lambda.InvokeOutput, logType awstypes.LogType) {
+func (a *invokeAction) handleSyncInvocation(ctx context.Context, cb fwactions.SendProgressFunc, functionName string, output *lambda.InvokeOutput, logType awstypes.LogType) {
 	statusCode := output.StatusCode
 	payloadLength := len(output.Payload)
 
 	// Send success message
-	resp.SendProgress(action.InvokeProgressEvent{
-		Message: fmt.Sprintf("Lambda function %s invoked successfully (status: %d, payload: %d bytes)",
-			functionName, statusCode, payloadLength),
-	})
+	cb(ctx, "Lambda function %s invoked successfully (status: %d, payload: %d bytes)",
+		functionName, statusCode, payloadLength)
 
 	// Output logs if available
 	if logType != awstypes.LogTypeTail || output.LogResult == nil {
@@ -34,13 +34,9 @@ func (a *invokeAction) handleSyncInvocation(resp *action.InvokeResponse, functio
 
 	logData, err := base64.StdEncoding.DecodeString(aws.ToString(output.LogResult))
 	if err != nil {
-		resp.SendProgress(action.InvokeProgressEvent{
-			Message: fmt.Sprintf("Failed to decode Lambda logs: %s", err),
-		})
+		cb(ctx, "Failed to decode Lambda logs: %s", err)
 		return
 	}
 
-	resp.SendProgress(action.InvokeProgressEvent{
-		Message: fmt.Sprintf("Lambda function logs:\n%s", string(logData)),
-	})
+	cb(ctx, "Lambda function logs:\n%s", string(logData))
 }
