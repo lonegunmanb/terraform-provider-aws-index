@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -17,6 +18,7 @@ import (
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceResourcePolicy() *schema.Resource {
 	return &schema.Resource{
@@ -26,8 +28,14 @@ func resourceResourcePolicy() *schema.Resource {
 		DeleteWithoutTimeout: resourceResourcePolicyDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: func(d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
-				d.Set("policy_name", d.Id())
+			StateContext: func(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+				if arn.IsARN(d.Id()) {
+					d.Set(names.AttrResourceARN, d.Id())
+					d.Set("policy_scope", awstypes.PolicyScopeResource)
+				} else {
+					d.Set("policy_name", d.Id())
+					d.Set("policy_scope", awstypes.PolicyScopeAccount)
+				}
 				return []*schema.ResourceData{d}, nil
 			},
 		},
@@ -36,8 +44,30 @@ func resourceResourcePolicy() *schema.Resource {
 			"policy_document": sdkv2.IAMPolicyDocumentSchemaRequired(),
 			"policy_name": {
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 				ForceNew: true,
+				ConflictsWith: []string{
+					names.AttrResourceARN,
+				},
+				ExactlyOneOf: []string{"policy_name", names.AttrResourceARN},
+			},
+			"policy_scope": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrResourceARN: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ValidateFunc: verify.ValidARN,
+				ConflictsWith: []string{
+					"policy_name",
+				},
+				ExactlyOneOf: []string{"policy_name", names.AttrResourceARN},
+			},
+			"revision_id": {
+				Type:     schema.TypeString,
+				Computed: true,
 			},
 		},
 	}

@@ -1,25 +1,40 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/guardduty
 import (
 	"context"
+	"fmt"
+	"log"
+	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/guardduty"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/guardduty/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func waitPublishingDestinationCreated(ctx context.Context, conn *guardduty.Client, destinationID, detectorID string) (*guardduty.CreatePublishingDestinationOutput, error) {
+func waitPublishingDestinationCreated(ctx context.Context, conn *guardduty.Client, detectorID, destinationID string) (*guardduty.DescribePublishingDestinationOutput, error) {
+	const (
+		timeout = 5 * time.Minute
+	)
 	stateConf := &retry.StateChangeConf{
 		Pending: enum.Slice(awstypes.PublishingStatusPendingVerification),
 		Target:  enum.Slice(awstypes.PublishingStatusPublishing),
-		Refresh: statusPublishingDestination(conn, destinationID, detectorID),
-		Timeout: publishingDestinationCreatedTimeout,
+		Refresh: statusPublishingDestination(conn, detectorID, destinationID),
+		Timeout: timeout,
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)
-
-	if v, ok := outputRaw.(*guardduty.CreatePublishingDestinationOutput); ok {
-		return v, err
+	if output, ok := outputRaw.(*guardduty.DescribePublishingDestinationOutput); ok {
+		return output, err
 	}
 
 	return nil, err

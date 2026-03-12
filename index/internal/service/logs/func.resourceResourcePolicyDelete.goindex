@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -17,15 +18,27 @@ import (
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceResourcePolicyDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).LogsClient(ctx)
 
-	log.Printf("[DEBUG] Deleting CloudWatch Logs Resource Policy: %s", d.Id())
-	_, err := conn.DeleteResourcePolicy(ctx, &cloudwatchlogs.DeleteResourcePolicyInput{
-		PolicyName: aws.String(d.Id()),
-	})
+	input := cloudwatchlogs.DeleteResourcePolicyInput{}
+	if v, ok := d.GetOk("policy_scope"); ok && v.(string) == string(awstypes.PolicyScopeResource) {
+		log.Printf("[DEBUG] Deleting CloudWatch Logs Resource Policy by ARN: %s", d.Id())
+		revisionID := d.Get("revision_id").(string)
+		if revisionID == "" {
+			return sdkdiag.AppendErrorf(diags, "deleting CloudWatch Logs Resource Policy (%s): missing required revision_id", d.Id())
+		}
+		input.ResourceArn = aws.String(d.Id())
+		input.ExpectedRevisionId = aws.String(revisionID)
+	} else {
+		log.Printf("[DEBUG] Deleting CloudWatch Logs Resource Policy by Name: %s", d.Id())
+		input.PolicyName = aws.String(d.Id())
+	}
+
+	_, err := conn.DeleteResourcePolicy(ctx, &input)
 
 	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
 		return diags

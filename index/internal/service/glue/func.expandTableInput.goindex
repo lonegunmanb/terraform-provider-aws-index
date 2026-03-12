@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/glue
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -7,67 +8,74 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
+	"github.com/aws/aws-sdk-go-v2/service/glue/document"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func expandTableInput(d *schema.ResourceData) *awstypes.TableInput {
-	tableInput := &awstypes.TableInput{
+	apiObject := &awstypes.TableInput{
 		Name: aws.String(d.Get(names.AttrName).(string)),
 	}
 
 	if v, ok := d.GetOk(names.AttrDescription); ok {
-		tableInput.Description = aws.String(v.(string))
+		apiObject.Description = aws.String(v.(string))
 	}
 
 	if v, ok := d.GetOk(names.AttrOwner); ok {
-		tableInput.Owner = aws.String(v.(string))
-	}
-
-	if v, ok := d.GetOk("retention"); ok {
-		tableInput.Retention = int32(v.(int))
-	}
-
-	if v, ok := d.GetOk("storage_descriptor"); ok {
-		tableInput.StorageDescriptor = expandStorageDescriptor(v.([]any))
-	}
-
-	if v, ok := d.GetOk("partition_keys"); ok {
-		tableInput.PartitionKeys = expandColumns(v.([]any))
-	} else if _, ok = d.GetOk("open_table_format_input"); !ok {
-		tableInput.PartitionKeys = []awstypes.Column{}
-	}
-
-	if v, ok := d.GetOk("view_original_text"); ok {
-		tableInput.ViewOriginalText = aws.String(v.(string))
-	}
-
-	if v, ok := d.GetOk("view_expanded_text"); ok {
-		tableInput.ViewExpandedText = aws.String(v.(string))
-	}
-
-	if v, ok := d.GetOk("table_type"); ok {
-		tableInput.TableType = aws.String(v.(string))
+		apiObject.Owner = aws.String(v.(string))
 	}
 
 	if v, ok := d.GetOk(names.AttrParameters); ok {
-		tableInput.Parameters = flex.ExpandStringValueMap(v.(map[string]any))
+		apiObject.Parameters = flex.ExpandStringValueMap(v.(map[string]any))
+	}
+
+	if v, ok := d.GetOk("partition_keys"); ok {
+		apiObject.PartitionKeys = expandColumns(v.([]any))
+	} else if _, ok = d.GetOk("open_table_format_input"); !ok {
+		apiObject.PartitionKeys = []awstypes.Column{}
+	}
+
+	if v, ok := d.GetOk("retention"); ok {
+		apiObject.Retention = int32(v.(int))
+	}
+
+	if v, ok := d.GetOk("storage_descriptor"); ok {
+		apiObject.StorageDescriptor = expandStorageDescriptor(v.([]any))
+	}
+
+	if v, ok := d.GetOk("table_type"); ok {
+		apiObject.TableType = aws.String(v.(string))
 	}
 
 	if v, ok := d.GetOk("target_table"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
-		tableInput.TargetTable = expandTableTargetTable(v.([]any)[0].(map[string]any))
+		apiObject.TargetTable = expandTableIdentifier(v.([]any)[0].(map[string]any))
 	}
 
-	return tableInput
+	if v, ok := d.GetOk("view_definition"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		apiObject.ViewDefinition = expandViewDefinitionInput(v.([]any)[0].(map[string]any))
+	}
+
+	if v, ok := d.GetOk("view_expanded_text"); ok {
+		apiObject.ViewExpandedText = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("view_original_text"); ok {
+		apiObject.ViewOriginalText = aws.String(v.(string))
+	}
+
+	return apiObject
 }

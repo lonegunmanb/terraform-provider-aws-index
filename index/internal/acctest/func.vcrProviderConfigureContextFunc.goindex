@@ -36,47 +36,32 @@ func vcrProviderConfigureContextFunc(provider *schema.Provider, configureContext
 		testName := t.Name()
 
 		providerMetas.Lock()
-		meta, ok := providerMetas[testName]
+		store, ok := providerMetas[testName]
 		providerMetas.Unlock()
 
+		// Return cached meta if the same provider instance is being reconfigured
+		// (e.g. during plan, apply, refresh within a single test step).
+		if ok && store.provider == provider {
+			return store.meta, nil
+		}
+
+		// Reuse the existing VCR-enabled HTTP client if one was already created
+		// for a prior step, otherwise create a new one with a recorder.
+		var httpClient *http.Client
+		var err error
 		if ok {
-			return meta, nil
-		}
-
-		vcrMode, err := vcr.Mode()
-		if err != nil {
-			return nil, sdkdiag.AppendFromErr(diags, err)
-		}
-
-		// Real transport config, cribbed from aws-sdk-go-base.
-		httpClient := cleanhttp.DefaultPooledClient()
-		transport := httpClient.Transport.(*http.Transport)
-		transport.MaxIdleConnsPerHost = 10
-		if transport.TLSClientConfig == nil {
-			transport.TLSClientConfig = &tls.Config{
-				MinVersion: tls.VersionTLS13,
+			httpClient = store.meta.HTTPClient(ctx)
+		} else {
+			httpClient, err = vcrHTTPClient(ctx, testName)
+			if err != nil {
+				return nil, sdkdiag.AppendFromErr(diags, err)
 			}
-		}
-
-		cassetteName := filepath.Join(vcr.Path(), vcrFileName(testName))
-
-		// Create a VCR recorder around a default HTTP client.
-		r, err := recorder.New(cassetteName,
-			recorder.WithHook(vcrSensitiveHeaderHook, recorder.AfterCaptureHook),
-			recorder.WithMatcher(vcrMatcherFunc(ctx)),
-			recorder.WithMode(vcrMode),
-			recorder.WithRealTransport(httpClient.Transport),
-			recorder.WithSkipRequestLatency(true),
-		)
-
-		if err != nil {
-			return nil, sdkdiag.AppendFromErr(diags, err)
 		}
 
 		// Use the wrapped HTTP Client for AWS APIs.
 		// As the HTTP client is used in the provider's ConfigureContextFunc
 		// we must do this setup before calling the ConfigureContextFunc.
-		httpClient.Transport = r
+		var meta *conns.AWSClient
 		if v, ok := provider.Meta().(*conns.AWSClient); ok {
 			meta = v
 		} else {
@@ -98,7 +83,7 @@ func vcrProviderConfigureContextFunc(provider *schema.Provider, configureContext
 		meta.SetRandomnessSource(s.source)
 
 		providerMetas.Lock()
-		providerMetas[testName] = meta
+		providerMetas[testName] = &providerMetaStore{provider: provider, meta: meta}
 		providerMetas.Unlock()
 
 		return meta, diags

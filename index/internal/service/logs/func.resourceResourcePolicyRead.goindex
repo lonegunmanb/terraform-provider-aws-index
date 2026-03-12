@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -17,12 +18,19 @@ import (
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceResourcePolicyRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).LogsClient(ctx)
 
-	resourcePolicy, err := findResourcePolicyByName(ctx, conn, d.Id())
+	var resourcePolicy *awstypes.ResourcePolicy
+	var err error
+	if v, ok := d.GetOk("policy_scope"); ok && v.(string) == string(awstypes.PolicyScopeResource) {
+		resourcePolicy, err = findResourcePolicyByResourceARN(ctx, conn, d.Id())
+	} else {
+		resourcePolicy, err = findResourcePolicyByName(ctx, conn, d.Id())
+	}
 
 	if !d.IsNewResource() && retry.NotFound(err) {
 		log.Printf("[WARN] CloudWatch Logs Resource Policy (%s) not found, removing from state", d.Id())
@@ -45,6 +53,9 @@ func resourceResourcePolicyRead(ctx context.Context, d *schema.ResourceData, met
 	}
 
 	d.Set("policy_document", policyToSet)
+	d.Set("policy_scope", resourcePolicy.PolicyScope)
+	d.Set(names.AttrResourceARN, resourcePolicy.ResourceArn)
+	d.Set("revision_id", resourcePolicy.RevisionId)
 
 	return diags
 }

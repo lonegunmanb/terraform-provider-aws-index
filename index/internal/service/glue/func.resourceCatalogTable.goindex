@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/glue
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -7,17 +8,20 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
+	"github.com/aws/aws-sdk-go-v2/service/glue/document"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -63,6 +67,184 @@ func resourceCatalogTable() *schema.Resource {
 					validation.StringDoesNotMatch(regexache.MustCompile(`[A-Z]`), "uppercase characters cannot be used"),
 				),
 			},
+			"open_table_format_input": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"iceberg_input": {
+							Type:     schema.TypeList,
+							Required: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"iceberg_table_input": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												names.AttrLocation: {
+													Type:         schema.TypeString,
+													Required:     true,
+													ValidateFunc: validation.StringLenBetween(1, 2056),
+												},
+												"partition_spec": {
+													Type:     schema.TypeList,
+													Optional: true,
+													MaxItems: 1,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"fields": {
+																Type:     schema.TypeList,
+																Required: true,
+																Elem: &schema.Resource{
+																	Schema: map[string]*schema.Schema{
+																		"field_id": {
+																			Type:     schema.TypeInt,
+																			Optional: true,
+																		},
+																		names.AttrName: {
+																			Type:         schema.TypeString,
+																			Required:     true,
+																			ValidateFunc: validation.StringLenBetween(1, 1024),
+																		},
+																		"source_id": {
+																			Type:     schema.TypeInt,
+																			Required: true,
+																		},
+																		"transform": {
+																			Type:     schema.TypeString,
+																			Required: true,
+																		},
+																	},
+																},
+															},
+															"spec_id": {
+																Type:     schema.TypeInt,
+																Optional: true,
+															},
+														},
+													},
+												},
+												names.AttrProperties: {
+													Type:     schema.TypeMap,
+													Optional: true,
+													Elem:     &schema.Schema{Type: schema.TypeString},
+												},
+												names.AttrSchema: {
+													Type:     schema.TypeList,
+													Required: true,
+													MaxItems: 1,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"fields": {
+																Type:     schema.TypeList,
+																Required: true,
+																Elem: &schema.Resource{
+																	Schema: map[string]*schema.Schema{
+																		"doc": {
+																			Type:         schema.TypeString,
+																			Optional:     true,
+																			ValidateFunc: validation.StringLenBetween(0, 255),
+																		},
+																		names.AttrID: {
+																			Type:     schema.TypeInt,
+																			Required: true,
+																		},
+																		"initial_default": sdkv2.JSONDocumentSchemaOptional(),
+																		names.AttrName: {
+																			Type:         schema.TypeString,
+																			Required:     true,
+																			ValidateFunc: validation.StringLenBetween(1, 1024),
+																		},
+																		"required": {
+																			Type:     schema.TypeBool,
+																			Required: true,
+																		},
+																		names.AttrType:  sdkv2.JSONDocumentSchemaRequired(),
+																		"write_default": sdkv2.JSONDocumentSchemaOptional(),
+																	},
+																},
+															},
+															"identifier_field_ids": {
+																Type:     schema.TypeList,
+																Optional: true,
+																Elem:     &schema.Schema{Type: schema.TypeInt},
+															},
+															"schema_id": {
+																Type:     schema.TypeInt,
+																Optional: true,
+															},
+															names.AttrType: {
+																Type:             schema.TypeString,
+																Optional:         true,
+																ValidateDiagFunc: enum.Validate[awstypes.IcebergStructTypeEnum](),
+															},
+														},
+													},
+												},
+												"sort_order": {
+													Type:     schema.TypeList,
+													Optional: true,
+													MaxItems: 1,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"fields": {
+																Type:     schema.TypeList,
+																Required: true,
+																Elem: &schema.Resource{
+																	Schema: map[string]*schema.Schema{
+																		"direction": {
+																			Type:             schema.TypeString,
+																			Required:         true,
+																			ValidateDiagFunc: enum.Validate[awstypes.IcebergSortDirection](),
+																		},
+																		"null_order": {
+																			Type:             schema.TypeString,
+																			Required:         true,
+																			ValidateDiagFunc: enum.Validate[awstypes.IcebergNullOrder](),
+																		},
+																		"source_id": {
+																			Type:     schema.TypeInt,
+																			Required: true,
+																		},
+																		"transform": {
+																			Type:     schema.TypeString,
+																			Required: true,
+																		},
+																	},
+																},
+															},
+															"order_id": {
+																Type:     schema.TypeInt,
+																Required: true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+									"metadata_operation": {
+										Type:             schema.TypeString,
+										Required:         true,
+										ForceNew:         true,
+										ValidateDiagFunc: enum.Validate[awstypes.MetadataOperation](),
+									},
+									names.AttrVersion: {
+										Type:         schema.TypeString,
+										Optional:     true,
+										ForceNew:     true,
+										ValidateFunc: validation.StringLenBetween(1, 255),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			names.AttrOwner: {
 				Type:     schema.TypeString,
 				Optional: true,
@@ -70,7 +252,34 @@ func resourceCatalogTable() *schema.Resource {
 			names.AttrParameters: {
 				Type:     schema.TypeMap,
 				Optional: true,
+				Computed: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"partition_index": {
+				Type:     schema.TypeList,
+				Optional: true,
+				Computed: true,
+				ForceNew: true,
+				MaxItems: 3,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"index_name": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.StringLenBetween(1, 255),
+						},
+						"index_status": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
+						"keys": {
+							Type:     schema.TypeList,
+							Required: true,
+							MinItems: 1,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+					},
+				},
 			},
 			"partition_keys": {
 				Type:     schema.TypeList,
@@ -108,6 +317,7 @@ func resourceCatalogTable() *schema.Resource {
 			"storage_descriptor": {
 				Type:     schema.TypeList,
 				Optional: true,
+				Computed: true,
 				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -214,6 +424,11 @@ func resourceCatalogTable() *schema.Resource {
 										MaxItems: 1,
 										Elem: &schema.Resource{
 											Schema: map[string]*schema.Schema{
+												"registry_name": {
+													Type:          schema.TypeString,
+													Optional:      true,
+													ConflictsWith: []string{"storage_descriptor.0.schema_reference.0.schema_id.0.schema_arn"},
+												},
 												"schema_arn": {
 													Type:         schema.TypeString,
 													Optional:     true,
@@ -224,11 +439,6 @@ func resourceCatalogTable() *schema.Resource {
 													Type:         schema.TypeString,
 													Optional:     true,
 													ExactlyOneOf: []string{"storage_descriptor.0.schema_reference.0.schema_id.0.schema_arn", "storage_descriptor.0.schema_reference.0.schema_id.0.schema_name"},
-												},
-												"registry_name": {
-													Type:          schema.TypeString,
-													Optional:      true,
-													ConflictsWith: []string{"storage_descriptor.0.schema_reference.0.schema_id.0.schema_arn"},
 												},
 											},
 										},
@@ -260,13 +470,13 @@ func resourceCatalogTable() *schema.Resource {
 											ValidateFunc: validation.StringLenBetween(1, 255),
 										},
 									},
-									"skewed_column_values": {
-										Type:     schema.TypeList,
+									"skewed_column_value_location_maps": {
+										Type:     schema.TypeMap,
 										Optional: true,
 										Elem:     &schema.Schema{Type: schema.TypeString},
 									},
-									"skewed_column_value_location_maps": {
-										Type:     schema.TypeMap,
+									"skewed_column_values": {
+										Type:     schema.TypeList,
 										Optional: true,
 										Elem:     &schema.Schema{Type: schema.TypeString},
 									},
@@ -301,34 +511,7 @@ func resourceCatalogTable() *schema.Resource {
 			"table_type": {
 				Type:     schema.TypeString,
 				Optional: true,
-			},
-			"open_table_format_input": {
-				Type:     schema.TypeList,
-				Optional: true,
-				MaxItems: 1,
-				Elem: &schema.Resource{
-					Schema: map[string]*schema.Schema{
-						"iceberg_input": {
-							Type:     schema.TypeList,
-							Required: true,
-							MaxItems: 1,
-							Elem: &schema.Resource{
-								Schema: map[string]*schema.Schema{
-									"metadata_operation": {
-										Type:         schema.TypeString,
-										Required:     true,
-										ValidateFunc: validation.StringInSlice([]string{"CREATE"}, false),
-									},
-									names.AttrVersion: {
-										Type:         schema.TypeString,
-										Optional:     true,
-										ValidateFunc: validation.StringLenBetween(1, 255),
-									},
-								},
-							},
-						},
-					},
-				},
+				Computed: true,
 			},
 			"target_table": {
 				Type:     schema.TypeList,
@@ -356,41 +539,94 @@ func resourceCatalogTable() *schema.Resource {
 					},
 				},
 			},
-			"view_original_text": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				ValidateFunc: validation.StringLenBetween(0, 409600),
+			"view_definition": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"definer": {
+							Type:     schema.TypeString,
+							Optional: true,
+							Computed: true,
+						},
+						"is_protected": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Computed: true,
+						},
+						"last_refresh_type": {
+							Type:             schema.TypeString,
+							Optional:         true,
+							ValidateDiagFunc: enum.Validate[awstypes.LastRefreshType](),
+						},
+						"refresh_seconds": {
+							Type:     schema.TypeInt,
+							Optional: true,
+						},
+						"representations": {
+							Type:     schema.TypeList,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"dialect": {
+										Type:             schema.TypeString,
+										Optional:         true,
+										ValidateDiagFunc: enum.Validate[awstypes.ViewDialect](),
+									},
+									"dialect_version": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										ValidateFunc: validation.StringLenBetween(1, 255),
+									},
+									"validation_connection": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										ValidateFunc: validation.StringLenBetween(1, 255),
+									},
+									"view_expanded_text": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										ValidateFunc: validation.StringLenBetween(0, 409600),
+									},
+									"view_original_text": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										ValidateFunc: validation.StringLenBetween(0, 409600),
+									},
+								},
+							},
+						},
+						"sub_object_version_ids": {
+							Type:     schema.TypeList,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeInt},
+						},
+						"sub_objects": {
+							Type:     schema.TypeList,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						"view_version_id": {
+							Type:     schema.TypeInt,
+							Optional: true,
+						},
+						"view_version_token": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+					},
+				},
 			},
 			"view_expanded_text": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ValidateFunc: validation.StringLenBetween(0, 409600),
 			},
-			"partition_index": {
-				Type:     schema.TypeList,
-				Optional: true,
-				Computed: true,
-				ForceNew: true,
-				MaxItems: 3,
-				Elem: &schema.Resource{
-					Schema: map[string]*schema.Schema{
-						"index_name": {
-							Type:         schema.TypeString,
-							Required:     true,
-							ValidateFunc: validation.StringLenBetween(1, 255),
-						},
-						"keys": {
-							Type:     schema.TypeList,
-							Required: true,
-							MinItems: 1,
-							Elem:     &schema.Schema{Type: schema.TypeString},
-						},
-						"index_status": {
-							Type:     schema.TypeString,
-							Computed: true,
-						},
-					},
-				},
+			"view_original_text": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ValidateFunc: validation.StringLenBetween(0, 409600),
 			},
 		},
 	}

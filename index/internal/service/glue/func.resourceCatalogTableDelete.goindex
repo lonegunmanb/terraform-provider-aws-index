@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/glue
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -7,17 +8,20 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
+	"github.com/aws/aws-sdk-go-v2/service/glue/document"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -26,17 +30,18 @@ func resourceCatalogTableDelete(ctx context.Context, d *schema.ResourceData, met
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).GlueClient(ctx)
 
-	catalogID, dbName, name, err := ReadTableID(d.Id())
+	catalogID, dbName, name, err := catalogTableParseResourceID(d.Id())
 	if err != nil {
 		return sdkdiag.AppendFromErr(diags, err)
 	}
 
 	log.Printf("[DEBUG] Deleting Glue Catalog Table: %s", d.Id())
-	_, err = conn.DeleteTable(ctx, &glue.DeleteTableInput{
+	input := glue.DeleteTableInput{
 		CatalogId:    aws.String(catalogID),
-		Name:         aws.String(name),
 		DatabaseName: aws.String(dbName),
-	})
+		Name:         aws.String(name),
+	}
+	_, err = conn.DeleteTable(ctx, &input)
 
 	if errs.IsA[*awstypes.EntityNotFoundException](err) {
 		return diags

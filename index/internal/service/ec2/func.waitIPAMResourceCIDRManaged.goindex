@@ -11,17 +11,23 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
-	sdkretry "github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 )
 func waitIPAMResourceCIDRManaged(ctx context.Context, conn *ec2.Client, scopeID, resourceID string, addressFamily awstypes.AddressFamily, timeout time.Duration) (*awstypes.IpamResourceCidr, error) {
-	stateConf := &sdkretry.StateChangeConf{
-		Pending: enum.Slice(awstypes.IpamManagementStateUnmanaged),
-		Target:  enum.Slice(awstypes.IpamManagementStateManaged),
-		Refresh: statusIPAMResourceCIDR(ctx, conn, scopeID, resourceID, addressFamily),
-		Timeout: timeout,
-		Delay:   10 * time.Second,
+	// When IPAM is not enabled, the status func returns a zero value object
+	// which retry treats as NotFound. Enabling IPAM can take up to 20
+	// minutes to complete.
+	//
+	// 30s PollInternal x 40 NotFoundChecks = 1200s (20m)
+	stateConf := &retry.StateChangeConf{
+		NotFoundChecks: 40,
+		Pending:        enum.Slice(awstypes.IpamManagementStateUnmanaged),
+		Target:         enum.Slice(awstypes.IpamManagementStateManaged),
+		Refresh:        statusIPAMResourceCIDR(conn, scopeID, resourceID, addressFamily),
+		Timeout:        timeout,
+		Delay:          10 * time.Second,
+		PollInterval:   30 * time.Second,
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)

@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/glue
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -7,50 +8,51 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
+	"github.com/aws/aws-sdk-go-v2/service/glue/document"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func flattenStorageDescriptor(s *awstypes.StorageDescriptor) []map[string]any {
-	if s == nil {
-		storageDescriptors := make([]map[string]any, 0)
-		return storageDescriptors
+func flattenStorageDescriptor(apiObject *awstypes.StorageDescriptor) []any {
+	if apiObject == nil {
+		return make([]any, 0)
 	}
 
-	storageDescriptors := make([]map[string]any, 1)
+	tfList := make([]any, 1)
+	tfMap := make(map[string]any)
 
-	storageDescriptor := make(map[string]any)
+	tfMap["additional_locations"] = apiObject.AdditionalLocations
+	tfMap["columns"] = flattenColumns(apiObject.Columns)
+	tfMap[names.AttrLocation] = aws.ToString(apiObject.Location)
+	tfMap["input_format"] = aws.ToString(apiObject.InputFormat)
+	tfMap["output_format"] = aws.ToString(apiObject.OutputFormat)
+	tfMap["compressed"] = apiObject.Compressed
+	tfMap["number_of_buckets"] = apiObject.NumberOfBuckets
+	tfMap["ser_de_info"] = flattenSerDeInfo(apiObject.SerdeInfo)
+	tfMap["bucket_columns"] = apiObject.BucketColumns
+	tfMap["sort_columns"] = flattenOrders(apiObject.SortColumns)
+	tfMap[names.AttrParameters] = apiObject.Parameters
+	tfMap["skewed_info"] = flattenSkewedInfo(apiObject.SkewedInfo)
+	tfMap["stored_as_sub_directories"] = apiObject.StoredAsSubDirectories
 
-	storageDescriptor["additional_locations"] = flex.FlattenStringValueList(s.AdditionalLocations)
-	storageDescriptor["columns"] = flattenColumns(s.Columns)
-	storageDescriptor[names.AttrLocation] = aws.ToString(s.Location)
-	storageDescriptor["input_format"] = aws.ToString(s.InputFormat)
-	storageDescriptor["output_format"] = aws.ToString(s.OutputFormat)
-	storageDescriptor["compressed"] = s.Compressed
-	storageDescriptor["number_of_buckets"] = s.NumberOfBuckets
-	storageDescriptor["ser_de_info"] = flattenSerDeInfo(s.SerdeInfo)
-	storageDescriptor["bucket_columns"] = flex.FlattenStringValueList(s.BucketColumns)
-	storageDescriptor["sort_columns"] = flattenOrders(s.SortColumns)
-	storageDescriptor[names.AttrParameters] = s.Parameters
-	storageDescriptor["skewed_info"] = flattenSkewedInfo(s.SkewedInfo)
-	storageDescriptor["stored_as_sub_directories"] = s.StoredAsSubDirectories
-
-	if s.SchemaReference != nil {
-		storageDescriptor["schema_reference"] = flattenTableSchemaReference(s.SchemaReference)
+	if apiObject.SchemaReference != nil {
+		tfMap["schema_reference"] = flattenSchemaReference(apiObject.SchemaReference)
 	}
 
-	storageDescriptors[0] = storageDescriptor
+	tfList[0] = tfMap
 
-	return storageDescriptors
+	return tfList
 }

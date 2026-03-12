@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/glue
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -7,42 +8,55 @@ import (
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
+	"github.com/aws/aws-sdk-go-v2/service/glue/document"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceCatalogTableCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).GlueClient(ctx)
-	catalogID := createCatalogID(d, meta.(*conns.AWSClient).AccountID(ctx))
-	dbName := d.Get(names.AttrDatabaseName).(string)
-	name := d.Get(names.AttrName).(string)
+	c := meta.(*conns.AWSClient)
+	conn := c.GlueClient(ctx)
 
-	input := &glue.CreateTableInput{
-		CatalogId:            aws.String(catalogID),
-		DatabaseName:         aws.String(dbName),
-		OpenTableFormatInput: expandOpenTableFormat(d),
-		TableInput:           expandTableInput(d),
-		PartitionIndexes:     expandTablePartitionIndexes(d.Get("partition_index").([]any)),
+	catalogID, dbName, name := cmp.Or(d.Get(names.AttrCatalogID).(string), c.AccountID(ctx)), d.Get(names.AttrDatabaseName).(string), d.Get(names.AttrName).(string)
+	id := catalogTableCreateResourceID(catalogID, dbName, name)
+	input := glue.CreateTableInput{
+		CatalogId:    aws.String(catalogID),
+		DatabaseName: aws.String(dbName),
+	}
+	if v, ok := d.GetOk("open_table_format_input"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.OpenTableFormatInput = expandOpenTableFormatInput(v.([]any)[0].(map[string]any))
+	}
+	if v, ok := d.GetOk("partition_index"); ok && len(v.([]any)) > 0 {
+		input.PartitionIndexes = expandPartitionIndexes(v.([]any))
+	}
+	if input.OpenTableFormatInput != nil && input.OpenTableFormatInput.IcebergInput != nil && input.OpenTableFormatInput.IcebergInput.CreateIcebergTableInput != nil {
+		// "InvalidInputException: Location information cannot be null while creating an iceberg table".
+		input.Name = aws.String(name)
+	} else {
+		// "InvalidInputException: CreateIcebergTableInput cannot be equal to null".
+		input.TableInput = expandTableInput(d)
 	}
 
-	_, err := conn.CreateTable(ctx, input)
+	_, err := conn.CreateTable(ctx, &input)
 	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "creating Glue Catalog Table (%s): %s", name, err)
+		return sdkdiag.AppendErrorf(diags, "creating Glue Catalog Table (%s): %s", id, err)
 	}
 
-	d.SetId(fmt.Sprintf("%s:%s:%s", catalogID, dbName, name))
+	d.SetId(id)
 
 	return append(diags, resourceCatalogTableRead(ctx, d, meta)...)
 }
