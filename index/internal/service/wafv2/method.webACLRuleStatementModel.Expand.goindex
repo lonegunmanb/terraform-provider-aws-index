@@ -1,0 +1,319 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (m webACLRuleStatementModel) Expand(ctx context.Context) (result any, diags diag.Diagnostics) {
+	switch {
+	case !m.AndStatement.IsNull():
+		andData, d := m.AndStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var andStmt awstypes.AndStatement
+		diags.Append(flex.Expand(ctx, andData, &andStmt)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{AndStatement: &andStmt}, diags
+
+	case !m.NotStatement.IsNull():
+		notData, d := m.NotStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var notStmt awstypes.NotStatement
+		diags.Append(flex.Expand(ctx, notData, &notStmt)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{NotStatement: &notStmt}, diags
+
+	case !m.OrStatement.IsNull():
+		orData, d := m.OrStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var orStmt awstypes.OrStatement
+		diags.Append(flex.Expand(ctx, orData, &orStmt)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{OrStatement: &orStmt}, diags
+
+	case !m.IPSetReferenceStatement.IsNull():
+		ipSetData, d := m.IPSetReferenceStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var ipSetStmt awstypes.IPSetReferenceStatement
+		diags.Append(flex.Expand(ctx, ipSetData, &ipSetStmt)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{IPSetReferenceStatement: &ipSetStmt}, diags
+
+	case !m.GeoMatchStatement.IsNull():
+		geoData, d := m.GeoMatchStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var geoStmt awstypes.GeoMatchStatement
+		diags.Append(flex.Expand(ctx, geoData, &geoStmt)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{GeoMatchStatement: &geoStmt}, diags
+
+	case !m.RuleGroupReferenceStatement.IsNull():
+		rgData, d := m.RuleGroupReferenceStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var rg awstypes.RuleGroupReferenceStatement
+		diags.Append(flex.Expand(ctx, rgData, &rg)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{RuleGroupReferenceStatement: &rg}, diags
+
+	case !m.ManagedRuleGroupStatement.IsNull():
+		mrgData, d := m.ManagedRuleGroupStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		mrg := &awstypes.ManagedRuleGroupStatement{
+			Name:       mrgData.Name.ValueStringPointer(),
+			VendorName: mrgData.VendorName.ValueStringPointer(),
+		}
+
+		if !mrgData.Version.IsNull() {
+			mrg.Version = mrgData.Version.ValueStringPointer()
+		}
+
+		// Expand ManagedRuleGroupConfigs
+		if !mrgData.ManagedRuleGroupConfigs.IsNull() {
+			configsData, d := mrgData.ManagedRuleGroupConfigs.ToSlice(ctx)
+			diags.Append(d...)
+			if diags.HasError() {
+				return nil, diags
+			}
+			mrg.ManagedRuleGroupConfigs = make([]awstypes.ManagedRuleGroupConfig, len(configsData))
+			for i, cfg := range configsData {
+				expanded, d := cfg.expand(ctx)
+				diags.Append(d...)
+				if diags.HasError() {
+					return nil, diags
+				}
+				mrg.ManagedRuleGroupConfigs[i] = expanded
+			}
+		}
+
+		// Expand RuleActionOverrides
+		diags.Append(flex.Expand(ctx, mrgData.RuleActionOverrides, &mrg.RuleActionOverrides)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		// Expand ScopeDownStatement
+		if !mrgData.ScopeDownStatement.IsNull() {
+			sdsData, d := mrgData.ScopeDownStatement.ToPtr(ctx)
+			diags.Append(d...)
+			if diags.HasError() {
+				return nil, diags
+			}
+			sds, d := sdsData.Expand(ctx)
+			diags.Append(d...)
+			if diags.HasError() {
+				return nil, diags
+			}
+			mrg.ScopeDownStatement = sds.(*awstypes.Statement)
+		}
+
+		return &awstypes.Statement{ManagedRuleGroupStatement: mrg}, diags
+
+	case !m.RegexPatternSetReferenceStatement.IsNull():
+		rpsData, d := m.RegexPatternSetReferenceStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var rps awstypes.RegexPatternSetReferenceStatement
+		diags.Append(flex.Expand(ctx, rpsData, &rps)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{RegexPatternSetReferenceStatement: &rps}, diags
+
+	case !m.RateBasedStatement.IsNull():
+		rbsData, d := m.RateBasedStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var rbs awstypes.RateBasedStatement
+		diags.Append(flex.Expand(ctx, rbsData, &rbs)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{RateBasedStatement: &rbs}, diags
+
+	case !m.ByteMatchStatement.IsNull():
+		bmsData, d := m.ByteMatchStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var bms awstypes.ByteMatchStatement
+		diags.Append(flex.Expand(ctx, bmsData, &bms)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{ByteMatchStatement: &bms}, diags
+
+	case !m.SqliMatchStatement.IsNull():
+		sqliData, d := m.SqliMatchStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var sqli awstypes.SqliMatchStatement
+		diags.Append(flex.Expand(ctx, sqliData, &sqli)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{SqliMatchStatement: &sqli}, diags
+
+	case !m.XssMatchStatement.IsNull():
+		xssData, d := m.XssMatchStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var xss awstypes.XssMatchStatement
+		diags.Append(flex.Expand(ctx, xssData, &xss)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{XssMatchStatement: &xss}, diags
+
+	case !m.SizeConstraintStatement.IsNull():
+		scsData, d := m.SizeConstraintStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var scs awstypes.SizeConstraintStatement
+		diags.Append(flex.Expand(ctx, scsData, &scs)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{SizeConstraintStatement: &scs}, diags
+
+	case !m.RegexMatchStatement.IsNull():
+		rmsData, d := m.RegexMatchStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var rms awstypes.RegexMatchStatement
+		diags.Append(flex.Expand(ctx, rmsData, &rms)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{RegexMatchStatement: &rms}, diags
+
+	case !m.LabelMatchStatement.IsNull():
+		labelData, d := m.LabelMatchStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var labelStmt awstypes.LabelMatchStatement
+		diags.Append(flex.Expand(ctx, labelData, &labelStmt)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{LabelMatchStatement: &labelStmt}, diags
+
+	case !m.AsnMatchStatement.IsNull():
+		asnData, d := m.AsnMatchStatement.ToPtr(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		var asnStmt awstypes.AsnMatchStatement
+		diags.Append(flex.Expand(ctx, asnData, &asnStmt)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		return &awstypes.Statement{AsnMatchStatement: &asnStmt}, diags
+	}
+	return nil, diags
+}

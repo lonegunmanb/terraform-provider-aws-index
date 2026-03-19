@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findTransitGatewayMeteringPolicyEntryByTwoPartKey(ctx context.Context, conn *ec2.Client, policyID, ruleNumber string) (*awstypes.TransitGatewayMeteringPolicyEntry, error) {
+	input := ec2.GetTransitGatewayMeteringPolicyEntriesInput{
+		TransitGatewayMeteringPolicyId: aws.String(policyID),
+	}
+
+	transitGatewayMeteringPolicyEntries, err := findTransitGatewayMeteringPolicyEntries(ctx, conn, &input)
+
+	if err != nil {
+		return nil, err
+	}
+
+	output, err := tfresource.AssertSingleValueResult(tfslices.Filter(transitGatewayMeteringPolicyEntries, func(v awstypes.TransitGatewayMeteringPolicyEntry) bool {
+		return aws.ToString(v.PolicyRuleNumber) == ruleNumber
+	}))
+
+	if err != nil {
+		return nil, err
+	}
+
+	if state := output.State; state == awstypes.TransitGatewayMeteringPolicyEntryStateDeleted {
+		return nil, &retry.NotFoundError{
+			Message: string(state),
+		}
+	}
+
+	return output, nil
+}

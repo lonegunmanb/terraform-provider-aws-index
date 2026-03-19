@@ -1,0 +1,74 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/iam
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *userListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().IAMClient(ctx)
+
+	var query listUserModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	pathPrefix := query.PathPrefix.ValueString()
+
+	tflog.Info(ctx, "Listing Resources", map[string]any{
+		logging.ResourceAttributeKey("path_prefix"): pathPrefix,
+	})
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := iam.ListUsersInput{
+			PathPrefix: query.PathPrefix.ValueStringPointer(),
+		}
+		for item, err := range listUsers(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+			name := aws.ToString(item.UserName)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrName), name)
+
+			result := request.NewListResult(ctx)
+
+			rd := l.ResourceData()
+			rd.SetId(name)
+			rd.Set(names.AttrName, name)
+
+			if request.IncludeResource {
+				resourceUserFlatten(&item, rd)
+			}
+
+			result.DisplayName = aws.ToString(item.UserName)
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

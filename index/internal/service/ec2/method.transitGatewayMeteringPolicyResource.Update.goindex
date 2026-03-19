@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *transitGatewayMeteringPolicyResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var new, old transitGatewayMeteringPolicyResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EC2Client(ctx)
+
+	if !new.MiddleboxAttachmentIDs.Equal(old.MiddleboxAttachmentIDs) {
+		id := fwflex.StringValueFromFramework(ctx, new.TransitGatewayMeteringPolicyID)
+
+		oldIDs, newIDs := fwflex.ExpandFrameworkStringValueSet(ctx, old.MiddleboxAttachmentIDs), fwflex.ExpandFrameworkStringValueSet(ctx, new.MiddleboxAttachmentIDs)
+		add, remove := newIDs.Difference(oldIDs), oldIDs.Difference(newIDs)
+
+		input := ec2.ModifyTransitGatewayMeteringPolicyInput{
+			AddMiddleboxAttachmentIds:      add,
+			RemoveMiddleboxAttachmentIds:   remove,
+			TransitGatewayMeteringPolicyId: aws.String(id),
+		}
+
+		_, err := conn.ModifyTransitGatewayMeteringPolicy(ctx, &input)
+		if err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("updating EC2 Transit Gateway Metering Policy (%s)", id), err.Error())
+			return
+		}
+
+		if _, err := waitTransitGatewayMeteringPolicyUpdated(ctx, conn, id, r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
+			response.Diagnostics.AddError(fmt.Sprintf("waiting for EC2 Transit Gateway Metering Policy (%s) update", id), err.Error())
+			return
+		}
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+}

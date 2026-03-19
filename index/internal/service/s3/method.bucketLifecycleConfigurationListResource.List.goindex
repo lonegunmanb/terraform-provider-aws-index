@@ -7,7 +7,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
@@ -17,13 +19,12 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (l *bucketLifecycleConfigurationListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
-	var query listBucketLifecycleConfigurationModel
-	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
-		if diags := request.Config.Get(ctx, &query); diags.HasError() {
-			stream.Results = list.ListResultsStreamDiagnostics(diags)
-			return
-		}
+	if diags := l.handler.parseQuery(ctx, request.Config); diags.HasError() {
+		stream.Results = list.ListResultsStreamDiagnostics(diags)
+		return
 	}
+
+	tflog.Info(ctx, "Listing Resources")
 
 	stream.Results = func(yield func(list.ListResult) bool) {
 		tflog.Info(ctx, "Listing General Purpose Buckets")
@@ -33,7 +34,7 @@ func (l *bucketLifecycleConfigurationListResource) List(ctx context.Context, req
 			MaxBuckets:   aws.Int32(int32(request.Limit)),
 		}
 		var count int64
-		for result := range l.list(ctx, request, gpConn, listBuckets(ctx, gpConn, &gpInput)) {
+		for result := range l.handler.list(ctx, request, gpConn, listBuckets(ctx, gpConn, &gpInput)) {
 			count++
 			if !yield(result) {
 				return
@@ -50,7 +51,7 @@ func (l *bucketLifecycleConfigurationListResource) List(ctx context.Context, req
 		dirInput := s3.ListDirectoryBucketsInput{
 			MaxDirectoryBuckets: aws.Int32(int32(limit)),
 		}
-		for result := range l.list(ctx, request, gpConn, listDirectoryBuckets(ctx, dirConn, &dirInput)) {
+		for result := range l.handler.list(ctx, request, gpConn, listDirectoryBuckets(ctx, dirConn, &dirInput)) {
 			if !yield(result) {
 				return
 			}

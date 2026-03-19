@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *transitGatewayMeteringPolicyEntryResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data transitGatewayMeteringPolicyEntryResourceModel
+	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EC2Client(ctx)
+
+	policyID, ruleNumber := fwflex.StringValueFromFramework(ctx, data.TransitGatewayMeteringPolicyID), fwflex.Int32ValueFromFrameworkInt64(ctx, data.PolicyRuleNumber)
+	input := ec2.DeleteTransitGatewayMeteringPolicyEntryInput{
+		PolicyRuleNumber:               aws.Int32(ruleNumber),
+		TransitGatewayMeteringPolicyId: aws.String(policyID),
+	}
+	_, err := conn.DeleteTransitGatewayMeteringPolicyEntry(ctx, &input)
+
+	if tfawserr.ErrCodeEquals(err, errCodeInvalidTransitGatewayMeteringPolicyIdNotFound, errCodeInvalidTransitGatewayMeteringPolicyEntryNotFound) ||
+		tfawserr.ErrMessageContains(err, errCodeInvalidParameterValue, "RuleNumber provided does not exists") {
+		return
+	}
+
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("deleting EC2 Transit Gateway Metering Policy (%s) Entry (%d)", policyID, ruleNumber), err.Error())
+		return
+	}
+}

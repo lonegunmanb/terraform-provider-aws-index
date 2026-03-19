@@ -1,0 +1,154 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/wafv2
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/wafv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceWebACLRule) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().WAFV2Client(ctx)
+
+	var plan webACLRuleModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	webACLID, webACLName, webACLScope, err := parseWebACLARN(plan.WebACLARN.ValueString())
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, smarterr.NewError(err), smerr.ID, plan.Name.ValueString())
+		return
+	}
+
+	// Serialize operations on this WebACL to prevent intra-provider race conditions.
+	// Large configurations with many aws_wafv2_web_acl_rule resources targeting the
+	// same WebACL are particularly susceptible since all rules modify the WebACL.
+	mutex := getWebACLMutex(webACLID)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	webACL, err := findWebACLByThreePartKey(ctx, conn, webACLID, webACLName, webACLScope)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, smarterr.NewError(err), smerr.ID, plan.Name.ValueString())
+		return
+	}
+
+	// Check for existing rule with same name - adopt it if found
+	var existingRule *awstypes.Rule
+	for i, rule := range webACL.WebACL.Rules {
+		if aws.ToString(rule.Name) == plan.Name.ValueString() {
+			existingRule = &webACL.WebACL.Rules[i]
+			break
+		}
+	}
+
+	if existingRule != nil {
+		// Adopt existing rule - populate state and return
+		smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Flatten(ctx, existingRule, &plan))
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.WebACLARN = types.StringValue(plan.WebACLARN.ValueString())
+		resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+		return
+	}
+
+	// Check for duplicate priority (only for new rules)
+	for _, rule := range webACL.WebACL.Rules {
+		if rule.Priority == plan.Priority.ValueInt32() {
+			smerr.AddError(ctx, &resp.Diagnostics, smarterr.NewError(fmt.Errorf("rule with priority %d already exists in Web ACL", plan.Priority.ValueInt32())), smerr.ID, plan.Name.ValueString())
+			return
+		}
+	}
+
+	// Build the rule
+	var newRule awstypes.Rule
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Expand(ctx, &plan, &newRule))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	webACL.WebACL.Rules = append(webACL.WebACL.Rules, newRule)
+
+	updateInput := &wafv2.UpdateWebACLInput{
+		Id:                   aws.String(webACLID),
+		Name:                 aws.String(webACLName),
+		Scope:                awstypes.Scope(webACLScope),
+		DefaultAction:        webACL.WebACL.DefaultAction,
+		Rules:                webACL.WebACL.Rules,
+		VisibilityConfig:     webACL.WebACL.VisibilityConfig,
+		LockToken:            webACL.LockToken,
+		AssociationConfig:    webACL.WebACL.AssociationConfig,
+		CaptchaConfig:        webACL.WebACL.CaptchaConfig,
+		ChallengeConfig:      webACL.WebACL.ChallengeConfig,
+		CustomResponseBodies: webACL.WebACL.CustomResponseBodies,
+		TokenDomains:         webACL.WebACL.TokenDomains,
+	}
+
+	if webACL.WebACL.Description != nil && aws.ToString(webACL.WebACL.Description) != "" {
+		updateInput.Description = webACL.WebACL.Description
+	}
+
+	if err = updateWebACLWithRetry(ctx, conn, updateInput, r.CreateTimeout(ctx, plan.Timeouts), func(latest *wafv2.GetWebACLOutput) []awstypes.Rule {
+		// Re-append our rule to the latest rule list (which may have grown since we fetched).
+		for _, r := range latest.WebACL.Rules {
+			if aws.ToString(r.Name) == plan.Name.ValueString() {
+				// Already present (shouldn't happen, but be safe).
+				return latest.WebACL.Rules
+			}
+		}
+		return append(latest.WebACL.Rules, newRule)
+	}); err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, smarterr.NewError(err), smerr.ID, plan.Name.ValueString())
+		return
+	}
+
+	// Read back the WebACL to get computed values
+	webACL, err = findWebACLByThreePartKey(ctx, conn, webACLID, webACLName, webACLScope)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, smarterr.NewError(err), smerr.ID, plan.Name.ValueString())
+		return
+	}
+
+	// Find the created rule
+	createdRule := findRuleInWebACL(webACL, plan.Name.ValueString())
+	if createdRule == nil {
+		smerr.AddError(ctx, &resp.Diagnostics, smarterr.NewError(fmt.Errorf("created rule not found in Web ACL after update")), smerr.ID, plan.Name.ValueString())
+		return
+	}
+
+	// Flatten the created rule to get computed values
+	state := plan
+	smerr.AddEnrich(ctx, &resp.Diagnostics, r.flattenWebACLRule(ctx, createdRule, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, state))
+}
