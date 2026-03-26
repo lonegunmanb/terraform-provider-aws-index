@@ -1,0 +1,104 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kafka
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kafka"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kafka/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *topicResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().KafkaClient(ctx)
+
+	var plan, state topicResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	clusterARN, topicName := fwflex.StringValueFromFramework(ctx, plan.ClusterARN), fwflex.StringValueFromFramework(ctx, plan.TopicName)
+
+	// 'configs' and 'partition_count' are updated via separate API calls:
+	// "You must specify either configs or partitionCount to update."
+	if plan.Configs != state.Configs {
+		input := kafka.UpdateTopicInput{
+			ClusterArn: aws.String(clusterARN),
+			TopicName:  aws.String(topicName),
+		}
+		if !plan.Configs.IsNull() {
+			// Configs is base64encoded in the AWS API
+			input.Configs = aws.String(inttypes.Base64Encode([]byte(fwflex.StringValueFromFramework(ctx, plan.Configs))))
+		} else {
+			input.Configs = aws.String(inttypes.Base64Encode([]byte("{}")))
+		}
+		_, err := conn.UpdateTopic(ctx, &input)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, topicName)
+			return
+		}
+
+		out, err := waitTopicUpdated(ctx, conn, clusterARN, topicName, r.UpdateTimeout(ctx, plan.Timeouts))
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, topicName)
+			return
+		}
+
+		v, diags := flattenTopicConfigsActual(ctx, out.Configs)
+		smerr.AddEnrich(ctx, &resp.Diagnostics, diags)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.ConfigsActual = v
+	}
+
+	if plan.PartitionCount != state.PartitionCount {
+		input := kafka.UpdateTopicInput{
+			ClusterArn:     aws.String(clusterARN),
+			PartitionCount: fwflex.Int32FromFrameworkInt64(ctx, plan.PartitionCount),
+			TopicName:      aws.String(topicName),
+		}
+		_, err := conn.UpdateTopic(ctx, &input)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, topicName)
+			return
+		}
+
+		out, err := waitTopicUpdated(ctx, conn, clusterARN, topicName, r.UpdateTimeout(ctx, plan.Timeouts))
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, topicName)
+			return
+		}
+
+		v, diags := flattenTopicConfigsActual(ctx, out.Configs)
+		smerr.AddEnrich(ctx, &resp.Diagnostics, diags)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.ConfigsActual = v
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

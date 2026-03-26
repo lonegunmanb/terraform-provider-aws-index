@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	dmssdk "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/action"
+	"github.com/hashicorp/terraform-plugin-framework/action/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/actionwait"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwactions "github.com/hashicorp/terraform-provider-aws/internal/framework/actions"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (a *startReplicationTaskAssessmentRunAction) Schema(ctx context.Context, req action.SchemaRequest, resp *action.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Starts an AWS DMS premigration assessment run for a replication task and waits for the assessment run to reach a terminal state.",
+		Attributes: map[string]schema.Attribute{
+			"assessment_run_name": schema.StringAttribute{
+				Description: "Unique name for the assessment run.",
+				Required:    true,
+			},
+			"exclude": schema.ListAttribute{
+				CustomType:  fwtypes.ListOfStringType,
+				Description: "Specific individual assessments to exclude from the run. Cannot be set with include_only.",
+				Optional:    true,
+				ElementType: types.StringType,
+			},
+			"include_only": schema.ListAttribute{
+				CustomType:  fwtypes.ListOfStringType,
+				Description: "Specific individual assessments to include in the run. Cannot be set with exclude.",
+				Optional:    true,
+				ElementType: types.StringType,
+			},
+			"replication_task_arn": schema.StringAttribute{
+				Description: "ARN of the DMS replication task to assess.",
+				Required:    true,
+				CustomType:  fwtypes.ARNType,
+			},
+			"result_encryption_mode": schema.StringAttribute{
+				Description: fmt.Sprintf("Encryption mode for assessment results. Valid values are %q and %q.", encryptionModeSseKMS, encryptionModeSseS3),
+				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf(encryptionModeSseKMS, encryptionModeSseS3),
+				},
+			},
+			"result_kms_key_arn": schema.StringAttribute{
+				Description: "ARN of the KMS key used when result_encryption_mode is SSE_KMS.",
+				Optional:    true,
+				CustomType:  fwtypes.ARNType,
+			},
+			"result_location_bucket": schema.StringAttribute{
+				Description: "Amazon S3 bucket where DMS stores the assessment results.",
+				Required:    true,
+			},
+			"result_location_folder": schema.StringAttribute{
+				Description: "Folder within the S3 bucket where DMS stores the assessment results.",
+				Optional:    true,
+			},
+			"service_access_role_arn": schema.StringAttribute{
+				Description: "ARN of the IAM role used by DMS to write assessment results and start the run.",
+				Required:    true,
+				CustomType:  fwtypes.ARNType,
+			},
+			names.AttrTags: tftags.TagsAttribute(),
+			names.AttrTimeout: schema.Int64Attribute{
+				Description: "Timeout in seconds to wait for the assessment run to complete.",
+				Optional:    true,
+				Validators: []validator.Int64{
+					int64validator.AtLeast(60),
+				},
+			},
+		},
+	}
+}

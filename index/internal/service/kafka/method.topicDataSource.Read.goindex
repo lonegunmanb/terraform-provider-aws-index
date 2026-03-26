@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kafka
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (d *topicDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	conn := d.Meta().KafkaClient(ctx)
+
+	var config topicDataSourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Config.Get(ctx, &config))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	clusterARN, topicName := fwflex.StringValueFromFramework(ctx, config.ClusterARN), fwflex.StringValueFromFramework(ctx, config.TopicName)
+	out, err := findTopicByTwoPartKey(ctx, conn, clusterARN, topicName)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, clusterARN, topicName)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Flatten(ctx, out, &config))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Data source's Configs contains server-augmented values.
+	v, diags := flattenTopicConfigsActual(ctx, out.Configs)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, diags)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	config.Configs = v
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &config))
+}

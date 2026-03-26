@@ -1,8 +1,10 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/ecs
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/YakDriver/smarterr"
@@ -96,10 +98,15 @@ func (r *expressGatewayServiceResource) Create(ctx context.Context, req resource
 
 	// Set values for unknowns.
 	if len(waitOut.ActiveConfigurations) > 0 {
+		// Save plan's env/secret ordering before flattening (API may reorder).
+		planEnv, planSecrets := preservePlanContainerOrdering(ctx, plan.PrimaryContainer)
+
 		smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Flatten(ctx, waitOut.ActiveConfigurations[0], &plan))
 		if resp.Diagnostics.HasError() {
 			return
 		}
+
+		restorePlanContainerOrdering(ctx, &plan.PrimaryContainer, planEnv, planSecrets)
 	}
 
 	plan.Cluster = fwflex.StringValueToFramework(ctx, cluster)

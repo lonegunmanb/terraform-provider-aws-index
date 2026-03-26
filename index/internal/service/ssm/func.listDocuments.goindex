@@ -1,0 +1,41 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func listDocuments(ctx context.Context, conn *ssm.Client, input *ssm.ListDocumentsInput) iter.Seq2[awstypes.DocumentIdentifier, error] {
+	return func(yield func(awstypes.DocumentIdentifier, error) bool) {
+		pages := ssm.NewListDocumentsPaginator(conn, input)
+		for pages.HasMorePages() {
+			page, err := pages.NextPage(ctx)
+			if err != nil {
+				yield(awstypes.DocumentIdentifier{}, fmt.Errorf("listing SSM Documents: %w", err))
+				return
+			}
+
+			for _, item := range page.DocumentIdentifiers {
+				if !yield(item, nil) {
+					return
+				}
+			}
+		}
+	}
+}

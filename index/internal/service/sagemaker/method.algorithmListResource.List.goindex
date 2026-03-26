@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+)
+func (l *algorithmListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	awsClient := l.Meta()
+	conn := awsClient.SageMakerClient(ctx)
+
+	var query listAlgorithmModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	tflog.Info(ctx, "Listing SageMaker Algorithm resources")
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		var input sagemaker.ListAlgorithmsInput
+
+		for item, err := range listAlgorithms(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			algorithmName := aws.ToString(item.AlgorithmName)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey("algorithm_name"), algorithmName)
+
+			result := request.NewListResult(ctx)
+
+			output, err := findAlgorithmByName(ctx, conn, algorithmName)
+			if retry.NotFound(err) {
+				tflog.Warn(ctx, "Resource disappeared during listing, skipping")
+				continue
+			}
+			if err != nil {
+				result = fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			var data algorithmResourceModel
+			l.SetResult(ctx, awsClient, request.IncludeResource, &data, &result, func() {
+				result.Diagnostics.Append(l.flatten(ctx, output, &data, nil)...)
+				if result.Diagnostics.HasError() {
+					return
+				}
+
+				result.DisplayName = algorithmName
+			})
+
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/kafka
+import (
+	"context"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kafka"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/kafka/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *topicResource) flatten(ctx context.Context, topic *kafka.DescribeTopicOutput, data *topicResourceModel, importing bool) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	diags.Append(fwflex.Flatten(ctx, topic, data)...)
+	if diags.HasError() {
+		return diags
+	}
+
+	// The Configs returned from the API contains server-augmented values.
+	// The resource's ConfigsActual contains all values whilst Config contains only client-configured values.
+	v, d := flattenTopicConfigsActual(ctx, topic.Configs)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+	data.ConfigsActual = v
+
+	if !data.Configs.IsNull() {
+		var serverConfigs map[string]any
+		if err := tfjson.DecodeFromString(fwflex.StringValueFromFramework(ctx, data.ConfigsActual), &serverConfigs); err != nil {
+			diags.AddError("JSON decoding server configs", err.Error())
+			return diags
+		}
+		var clientConfigs map[string]any
+		if err := tfjson.DecodeFromString(fwflex.StringValueFromFramework(ctx, data.Configs), &clientConfigs); err != nil {
+			diags.AddError("JSON decoding client configs", err.Error())
+			return diags
+		}
+
+		for k := range clientConfigs {
+			if v, ok := serverConfigs[k]; ok {
+				clientConfigs[k] = v
+			} else {
+				delete(clientConfigs, k)
+			}
+		}
+
+		v, err := tfjson.EncodeToString(clientConfigs)
+		if err != nil {
+			diags.AddError("JSON encoding client configs", err.Error())
+			return diags
+		}
+
+		data.Configs = jsontypes.NewNormalizedValue(v)
+	} else if importing {
+		data.Configs = jsontypes.Normalized{StringValue: data.ConfigsActual}
+	}
+
+	return diags
+}

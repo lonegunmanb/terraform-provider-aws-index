@@ -1,0 +1,91 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *accountAssignmentListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().SSOAdminClient(ctx)
+
+	var query accountAssignmentListResourceModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	accountID := query.AccountID.ValueString()
+	instanceARN := query.InstanceARN.ValueString()
+	permissionSetARN := query.PermissionSetARN.ValueString()
+
+	tflog.Info(ctx, "Listing SSO Account Assignments", map[string]any{
+		logging.ResourceAttributeKey(names.AttrAccountID):  accountID,
+		logging.ResourceAttributeKey("instance_arn"):       instanceARN,
+		logging.ResourceAttributeKey("permission_set_arn"): permissionSetARN,
+	})
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := ssoadmin.ListAccountAssignmentsInput{
+			AccountId:        aws.String(accountID),
+			InstanceArn:      aws.String(instanceARN),
+			PermissionSetArn: aws.String(permissionSetARN),
+		}
+
+		for item, err := range listAccountAssignments(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			id := accountAssignmentCreateResourceID(
+				aws.ToString(item.PrincipalId),
+				string(item.PrincipalType),
+				accountID,
+				string(awstypes.TargetTypeAwsAccount),
+				permissionSetARN,
+				instanceARN,
+			)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrID), id)
+
+			result := request.NewListResult(ctx)
+			rd := l.ResourceData()
+			rd.SetId(id)
+
+			// no need for IncludeResource since every identity attribute is required to be set.
+			if err := resourceAccountAssignmentFlatten(rd, &item, instanceARN, string(awstypes.TargetTypeAwsAccount)); err != nil {
+				tflog.Error(ctx, "Flattening SSO Account Assignment", map[string]any{
+					"error":      err.Error(),
+					names.AttrID: id,
+				})
+				continue
+			}
+
+			result.DisplayName = fmt.Sprintf("%s %s", item.PrincipalType, aws.ToString(item.PrincipalId))
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

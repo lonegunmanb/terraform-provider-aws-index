@@ -130,6 +130,72 @@ func resourceTableCreate(ctx context.Context, d *schema.ResourceData, meta any) 
 		if err != nil {
 			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, tableName, err)
 		}
+	} else if backupARN, ok := d.GetOk("restore_backup_arn"); ok {
+		input := &dynamodb.RestoreTableFromBackupInput{
+			TargetTableName: aws.String(tableName),
+			BackupArn:       aws.String(backupARN.(string)),
+		}
+
+		billingModeOverride := awstypes.BillingMode(d.Get("billing_mode").(string))
+
+		if v, ok := d.GetOk("global_secondary_index"); ok {
+			globalSecondaryIndexes := []awstypes.GlobalSecondaryIndex{}
+			gsiSet := v.(*schema.Set)
+
+			for _, gsiObject := range gsiSet.List() {
+				gsi := gsiObject.(map[string]any)
+				if err := validateGSIProvisionedThroughput(gsi, billingModeOverride); err != nil {
+					return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, d.Get(names.AttrName).(string), err)
+				}
+
+				gsiObject := expandGlobalSecondaryIndex(gsi, billingModeOverride)
+				globalSecondaryIndexes = append(globalSecondaryIndexes, *gsiObject)
+			}
+			input.GlobalSecondaryIndexOverride = globalSecondaryIndexes
+		}
+
+		if v, ok := d.GetOk("local_secondary_index"); ok {
+			lsiSet := v.(*schema.Set)
+			input.LocalSecondaryIndexOverride = expandLocalSecondaryIndexes(lsiSet.List(), keySchemaMap)
+		}
+
+		if v, ok := d.GetOk("on_demand_throughput"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+			input.OnDemandThroughputOverride = expandOnDemandThroughput(v.([]any)[0].(map[string]any))
+		}
+
+		if _, ok := d.GetOk("write_capacity"); ok {
+			if _, ok := d.GetOk("read_capacity"); ok {
+				capacityMap := map[string]any{
+					"write_capacity": d.Get("write_capacity"),
+					"read_capacity":  d.Get("read_capacity"),
+				}
+				input.ProvisionedThroughputOverride = expandProvisionedThroughput(capacityMap, billingModeOverride)
+			}
+		}
+
+		if v, ok := d.GetOk("server_side_encryption"); ok {
+			input.SSESpecificationOverride = expandEncryptAtRestOptions(v.([]any))
+		}
+
+		_, err := tfresource.RetryWhen(ctx, createTableTimeout, func(ctx context.Context) (any, error) {
+			return conn.RestoreTableFromBackup(ctx, input)
+		}, func(err error) (bool, error) {
+			if tfawserr.ErrCodeEquals(err, errCodeThrottlingException) {
+				return true, err
+			}
+			if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "can be created, updated, or deleted simultaneously") {
+				return true, err
+			}
+			if errs.IsAErrorMessageContains[*awstypes.LimitExceededException](err, "indexed tables that can be created simultaneously") {
+				return true, err
+			}
+
+			return false, err
+		})
+
+		if err != nil {
+			return create.AppendDiagError(diags, names.DynamoDB, create.ErrActionCreating, resNameTable, tableName, err)
+		}
 	} else if vit, ok := d.GetOk("import_table"); ok && len(vit.([]any)) > 0 && vit.([]any)[0] != nil {
 		input := expandImportTable(vit.([]any)[0].(map[string]any))
 

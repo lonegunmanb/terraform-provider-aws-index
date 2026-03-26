@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"slices"
+
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/framework/listresource"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+)
+func walkStructSetZeroAttrNull(ctx context.Context, value reflect.Value, diags *diag.Diagnostics) {
+	if diags.HasError() || !value.IsValid() || value.Kind() != reflect.Struct {
+		return
+	}
+
+	for index := 0; index < value.NumField(); index++ {
+		field := value.Field(index)
+		if !field.CanSet() {
+			continue
+		}
+
+		if field.Kind() != reflect.Struct {
+			continue
+		}
+
+		if attrValue, ok := field.Interface().(attr.Value); ok {
+			if field.IsZero() {
+				nullValue, err := fwtypes.NullValueOf(ctx, attrValue)
+				if err != nil {
+					diags.AddError("Normalizing List Result", err.Error())
+					return
+				}
+
+				if nullValue == nil {
+					continue
+				}
+
+				nullValueReflect := reflect.ValueOf(nullValue)
+				switch {
+				case nullValueReflect.Type().AssignableTo(field.Type()):
+					field.Set(nullValueReflect)
+				case nullValueReflect.Type().ConvertibleTo(field.Type()):
+					field.Set(nullValueReflect.Convert(field.Type()))
+				default:
+					diags.AddError("Normalizing List Result", fmt.Sprintf("cannot assign null value of type %T to field type %s", nullValue, field.Type()))
+					return
+				}
+			}
+
+			continue
+		}
+
+		walkStructSetZeroAttrNull(ctx, field, diags)
+		if diags.HasError() {
+			return
+		}
+	}
+}

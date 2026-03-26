@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workmail
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workmail"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/workmail/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *domainResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().WorkMailClient(ctx)
+
+	var plan domainResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var input workmail.RegisterMailDomainInput
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Expand(ctx, plan, &input))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	_, err := conn.RegisterMailDomain(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.DomainName.String())
+		return
+	}
+
+	// Read back to populate computed fields
+	out, err := findDomainByOrgAndName(ctx, conn, plan.OrganizationId.ValueString(), plan.DomainName.ValueString())
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.DomainName.String())
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, r.flatten(ctx, out, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, plan))
+}

@@ -1,0 +1,97 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssm
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDocumentFlatten(ctx context.Context, conn *ssm.Client, d *schema.ResourceData, awsClient *conns.AWSClient, output *awstypes.DocumentDescription) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	documentType, name := output.DocumentType, aws.ToString(output.Name)
+	d.Set(names.AttrARN, documentARN(ctx, awsClient, documentType, name))
+	d.Set(names.AttrCreatedDate, aws.ToTime(output.CreatedDate).Format(time.RFC3339))
+	d.Set("default_version", output.DefaultVersion)
+	d.Set(names.AttrDescription, output.Description)
+	d.Set("document_format", output.DocumentFormat)
+	d.Set("document_type", documentType)
+	d.Set("document_version", output.DocumentVersion)
+	d.Set("hash", output.Hash)
+	d.Set("hash_type", output.HashType)
+	d.Set("latest_version", output.LatestVersion)
+	d.Set(names.AttrName, name)
+	d.Set(names.AttrOwner, output.Owner)
+	if err := d.Set(names.AttrParameter, flattenDocumentParameters(output.Parameters)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "setting parameter: %s", err)
+	}
+	d.Set("platform_types", output.PlatformTypes)
+	d.Set("schema_version", output.SchemaVersion)
+	d.Set(names.AttrStatus, output.Status)
+	d.Set("target_type", output.TargetType)
+	d.Set("version_name", output.VersionName)
+
+	{
+		input := &ssm.GetDocumentInput{
+			DocumentFormat:  awstypes.DocumentFormat(d.Get("document_format").(string)),
+			DocumentVersion: aws.String("$LATEST"),
+			Name:            aws.String(d.Id()),
+		}
+
+		output, err := conn.GetDocument(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading SSM Document (%s) content: %s", d.Id(), err)
+		}
+
+		d.Set(names.AttrContent, output.Content)
+	}
+
+	{
+		input := &ssm.DescribeDocumentPermissionInput{
+			Name:           aws.String(d.Id()),
+			PermissionType: awstypes.DocumentPermissionTypeShare,
+		}
+
+		output, err := conn.DescribeDocumentPermission(ctx, input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading SSM Document (%s) permissions: %s", d.Id(), err)
+		}
+
+		if accountsIDs := output.AccountIds; len(accountsIDs) > 0 {
+			d.Set(names.AttrPermissions, map[string]any{
+				"account_ids":  strings.Join(accountsIDs, ","),
+				names.AttrType: awstypes.DocumentPermissionTypeShare,
+			})
+		} else {
+			d.Set(names.AttrPermissions, nil)
+		}
+	}
+
+	setTagsOut(ctx, output.Tags)
+
+	return diags
+}

@@ -1,8 +1,10 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/ecs
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/YakDriver/smarterr"
@@ -62,10 +64,19 @@ func (r *expressGatewayServiceResource) Read(ctx context.Context, req resource.R
 	}
 
 	if len(out.ActiveConfigurations) > 0 {
+		// Save state's env/secret ordering before flattening (API may reorder).
+		stateEnv, stateSecrets := preservePlanContainerOrdering(ctx, state.PrimaryContainer)
+
+		// Sort alphabetically as canonical ordering (used as default during import).
+		orderExpressGatewayContainerEnvironmentVariables(&out.ActiveConfigurations[0])
+
 		smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Flatten(ctx, out.ActiveConfigurations[0], &state))
 		if resp.Diagnostics.HasError() {
 			return
 		}
+
+		// Restore state ordering if env vars are unchanged (no-op during import).
+		restoreContainerOrderingIfUnchanged(ctx, &state.PrimaryContainer, stateEnv, stateSecrets)
 	}
 
 	// Set Optional+Computed attributes from API response

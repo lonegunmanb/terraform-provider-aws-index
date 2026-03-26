@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workmail
+import (
+	"context"
+	"fmt"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workmail"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/workmail/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *defaultDomainResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	conn := r.Meta().WorkMailClient(ctx)
+
+	var state defaultDomainResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	domainName, err := findDefaultDomainByOrgID(ctx, conn, state.OrganizationId.ValueString())
+	if retry.NotFound(err) {
+		resp.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, state.DomainName.String())
+		return
+	}
+
+	state.DomainName = flex.StringValueToFramework(ctx, domainName)
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &state))
+}
