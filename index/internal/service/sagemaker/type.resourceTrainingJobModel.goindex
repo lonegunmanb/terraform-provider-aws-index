@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+type resourceTrainingJobModel struct {
+	framework.WithRegionModel
+	AlgorithmSpecification                fwtypes.ListNestedObjectValueOf[trainingJobAlgorithmSpecificationModel]  `tfsdk:"algorithm_specification"`
+	DeleteModelPackagesOnDestroy          types.Bool                                                               `tfsdk:"delete_model_packages_on_destroy" autoflex:",noexpand,noflatten"`
+	DeleteVPCENIsOnDestroy                types.Bool                                                               `tfsdk:"delete_vpc_enis_on_destroy" autoflex:",noexpand,noflatten"`
+	TrainingJobARN                        types.String                                                             `tfsdk:"arn"`
+	CheckpointConfig                      fwtypes.ListNestedObjectValueOf[trainingJobCheckpointConfigModel]        `tfsdk:"checkpoint_config"`
+	DebugHookConfig                       fwtypes.ListNestedObjectValueOf[trainingJobDebugHookConfigModel]         `tfsdk:"debug_hook_config"`
+	DebugRuleConfigurations               fwtypes.ListNestedObjectValueOf[trainingJobDebugRuleConfigurationModel]  `tfsdk:"debug_rule_configurations"`
+	EnableInterContainerTrafficEncryption types.Bool                                                               `tfsdk:"enable_inter_container_traffic_encryption"`
+	EnableManagedSpotTraining             types.Bool                                                               `tfsdk:"enable_managed_spot_training"`
+	EnableNetworkIsolation                types.Bool                                                               `tfsdk:"enable_network_isolation"`
+	Environment                           fwtypes.MapOfString                                                      `tfsdk:"environment"`
+	ExperimentConfig                      fwtypes.ListNestedObjectValueOf[trainingJobExperimentConfigModel]        `tfsdk:"experiment_config"`
+	HyperParameters                       fwtypes.MapOfString                                                      `tfsdk:"hyper_parameters"`
+	InfraCheckConfig                      fwtypes.ListNestedObjectValueOf[trainingJobInfraCheckConfigModel]        `tfsdk:"infra_check_config"`
+	InputDataConfig                       fwtypes.ListNestedObjectValueOf[trainingJobInputDataConfigModel]         `tfsdk:"input_data_config"`
+	MlflowConfig                          fwtypes.ListNestedObjectValueOf[trainingJobMlflowConfigModel]            `tfsdk:"mlflow_config"`
+	ModelPackageConfig                    fwtypes.ListNestedObjectValueOf[trainingJobModelPackageConfigModel]      `tfsdk:"model_package_config"`
+	OutputDataConfig                      fwtypes.ListNestedObjectValueOf[trainingJobOutputDataConfigModel]        `tfsdk:"output_data_config"`
+	ProfilerConfig                        fwtypes.ListNestedObjectValueOf[trainingJobProfilerConfigModel]          `tfsdk:"profiler_config"`
+	ProfilerRuleConfigurations            fwtypes.ListNestedObjectValueOf[trainingJobProfilerRuleConfigModel]      `tfsdk:"profiler_rule_configurations"`
+	RemoteDebugConfig                     fwtypes.ListNestedObjectValueOf[trainingJobRemoteDebugConfigModel]       `tfsdk:"remote_debug_config"`
+	ResourceConfig                        fwtypes.ListNestedObjectValueOf[trainingJobResourceConfigModel]          `tfsdk:"resource_config"`
+	RetryStrategy                         fwtypes.ListNestedObjectValueOf[trainingJobRetryStrategyModel]           `tfsdk:"retry_strategy"`
+	RoleARN                               fwtypes.ARN                                                              `tfsdk:"role_arn"`
+	ServerlessJobConfig                   fwtypes.ListNestedObjectValueOf[trainingJobServerlessJobConfigModel]     `tfsdk:"serverless_job_config"`
+	SessionChainingConfig                 fwtypes.ListNestedObjectValueOf[trainingJobSessionChainingConfigModel]   `tfsdk:"session_chaining_config"`
+	StoppingCondition                     fwtypes.ListNestedObjectValueOf[trainingJobStoppingConditionModel]       `tfsdk:"stopping_condition" autoflex:",omitempty"`
+	Tags                                  tftags.Map                                                               `tfsdk:"tags"`
+	TagsAll                               tftags.Map                                                               `tfsdk:"tags_all"`
+	TensorBoardOutputConfig               fwtypes.ListNestedObjectValueOf[trainingJobTensorBoardOutputConfigModel] `tfsdk:"tensor_board_output_config"`
+	Timeouts                              timeouts.Value                                                           `tfsdk:"timeouts"`
+	TrainingJobName                       types.String                                                             `tfsdk:"training_job_name"`
+	VPCConfig                             fwtypes.ListNestedObjectValueOf[trainingJobVPCConfigModel]               `tfsdk:"vpc_config"`
+}

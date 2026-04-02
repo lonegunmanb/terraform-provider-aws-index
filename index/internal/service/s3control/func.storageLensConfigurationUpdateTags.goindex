@@ -23,12 +23,12 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func storageLensConfigurationUpdateTags(ctx context.Context, conn *s3control.Client, accountID, configID string, oldTagsMap, newTagsMap any) error {
+func storageLensConfigurationUpdateTags(ctx context.Context, conn *s3control.Client, accountID, configID string, oldTagsMap, newTagsMap any, optFns ...func(*s3control.Options)) error {
 	oldTags := tftags.New(ctx, oldTagsMap)
 	newTags := tftags.New(ctx, newTagsMap)
 
 	// We need to also consider any existing ignored tags.
-	allTags, err := storageLensConfigurationListTags(ctx, conn, accountID, configID)
+	allTags, err := storageLensConfigurationListTags(ctx, conn, accountID, configID, optFns...)
 
 	if err != nil {
 		return fmt.Errorf("listing tags: %w", err)
@@ -37,24 +37,24 @@ func storageLensConfigurationUpdateTags(ctx context.Context, conn *s3control.Cli
 	ignoredTags := allTags.Ignore(oldTags).Ignore(newTags)
 
 	if len(newTags)+len(ignoredTags) > 0 {
-		input := &s3control.PutStorageLensConfigurationTaggingInput{
+		input := s3control.PutStorageLensConfigurationTaggingInput{
 			AccountId: aws.String(accountID),
 			ConfigId:  aws.String(configID),
 			Tags:      storageLensTags(newTags.Merge(ignoredTags)),
 		}
 
-		_, err := conn.PutStorageLensConfigurationTagging(ctx, input)
+		_, err := conn.PutStorageLensConfigurationTagging(ctx, &input, optFns...)
 
 		if err != nil {
 			return fmt.Errorf("setting tags: %w", err)
 		}
 	} else if len(oldTags) > 0 && len(ignoredTags) == 0 {
-		input := &s3control.DeleteStorageLensConfigurationTaggingInput{
+		input := s3control.DeleteStorageLensConfigurationTaggingInput{
 			AccountId: aws.String(accountID),
 			ConfigId:  aws.String(configID),
 		}
 
-		_, err := conn.DeleteStorageLensConfigurationTagging(ctx, input)
+		_, err := conn.DeleteStorageLensConfigurationTagging(ctx, &input, optFns...)
 
 		if err != nil {
 			return fmt.Errorf("deleting tags: %w", err)

@@ -1,0 +1,69 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workmail
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workmail"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/workmail/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().WorkMailClient(ctx)
+
+	var old, new groupResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &new))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &old))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !new.HiddenFromGlobalAddressList.Equal(old.HiddenFromGlobalAddressList) {
+		var updateInput workmail.UpdateGroupInput
+		smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Expand(ctx, new, &updateInput))
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		if _, err := conn.UpdateGroup(ctx, &updateInput); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, new.GroupId.ValueString())
+			return
+		}
+	}
+
+	out, err := findGroupByTwoPartKey(ctx, conn, old.OrganizationId.ValueString(), old.GroupId.ValueString())
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, old.GroupId.String())
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Flatten(ctx, out, &new))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &new))
+}

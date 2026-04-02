@@ -1,0 +1,99 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workmail
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workmail"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/workmail/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().WorkMailClient(ctx)
+
+	var old, new userResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &new))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &old))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// update other optional fields
+	if !new.City.Equal(old.City) ||
+		!new.Company.Equal(old.Company) ||
+		!new.Country.Equal(old.Country) ||
+		!new.Department.Equal(old.Department) ||
+		!new.DisplayName.Equal(old.DisplayName) ||
+		!new.FirstName.Equal(old.FirstName) ||
+		!new.HiddenFromGlobalAddressList.Equal(old.HiddenFromGlobalAddressList) ||
+		!new.IdentityProviderUserId.Equal(old.IdentityProviderUserId) ||
+		!new.Initials.Equal(old.Initials) ||
+		!new.JobTitle.Equal(old.JobTitle) ||
+		!new.LastName.Equal(old.LastName) ||
+		!new.Office.Equal(old.Office) ||
+		!new.UserRole.Equal(old.UserRole) ||
+		!new.Street.Equal(old.Street) ||
+		!new.Telephone.Equal(old.Telephone) ||
+		!new.ZipCode.Equal(old.ZipCode) {
+		var updateInput workmail.UpdateUserInput
+		smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Expand(ctx, new, &updateInput))
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		if _, err := conn.UpdateUser(ctx, &updateInput); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, new.UserId.String())
+			return
+		}
+	}
+
+	// update password needs to call ResetPassword API
+	if !new.Password.Equal(old.Password) {
+		resetPasswordInput := workmail.ResetPasswordInput{
+			OrganizationId: new.OrganizationId.ValueStringPointer(),
+			Password:       new.Password.ValueStringPointer(),
+			UserId:         new.UserId.ValueStringPointer(),
+		}
+		_, err := conn.ResetPassword(ctx, &resetPasswordInput)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, old.UserId.String())
+			return
+		}
+	}
+
+	out, err := findUserByTwoPartKey(ctx, conn, old.OrganizationId.ValueString(), old.UserId.ValueString())
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, old.UserId.String())
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Flatten(ctx, out, &new))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &new))
+}

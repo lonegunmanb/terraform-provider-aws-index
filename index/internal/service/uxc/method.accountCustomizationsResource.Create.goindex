@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/uxc
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/uxc"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/uxc/types"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+)
+func (r *accountCustomizationsResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan accountCustomizationsResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().UXCClient(ctx)
+
+	input := uxc.UpdateAccountCustomizationsInput{}
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, plan, &input))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// nil means "no change" in the API; use empty slice to explicitly clear any pre-existing restrictions.
+	if input.VisibleRegions == nil {
+		input.VisibleRegions = []string{}
+	}
+	if input.VisibleServices == nil {
+		input.VisibleServices = []string{}
+	}
+
+	output, err := conn.UpdateAccountCustomizations(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Flatten(ctx, output, &plan))
+	normalizeAccountCustomizationsModel(ctx, &plan)
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

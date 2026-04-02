@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workmail
+import (
+	"context"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workmail"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	sweepfw "github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+)
+func sweepGroups(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.WorkMailClient(ctx)
+	var sweepResources []sweep.Sweepable
+
+	pages := workmail.NewListOrganizationsPaginator(conn, &workmail.ListOrganizationsInput{})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, smarterr.NewError(err)
+		}
+
+		for _, organization := range page.OrganizationSummaries {
+			organizationID := aws.ToString(organization.OrganizationId)
+
+			input := workmail.ListGroupsInput{
+				OrganizationId: aws.String(organizationID),
+			}
+
+			groupPages := workmail.NewListGroupsPaginator(conn, &input)
+			for groupPages.HasMorePages() {
+				page, err := groupPages.NextPage(ctx)
+				if err != nil {
+					return nil, smarterr.NewError(err)
+				}
+
+				for _, group := range page.Groups {
+					sweepResources = append(sweepResources, sweepfw.NewSweepResource(newGroupResource, client,
+						sweepfw.NewAttribute("organization_id", organizationID),
+						sweepfw.NewAttribute("group_id", aws.ToString(group.Id))),
+					)
+				}
+			}
+		}
+	}
+
+	return sweepResources, nil
+}

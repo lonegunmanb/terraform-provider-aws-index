@@ -1,0 +1,164 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workmail
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workmail"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/workmail/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *userResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"city": schema.StringAttribute{
+				Description: "City where the user is located.",
+				Optional:    true,
+			},
+			"company": schema.StringAttribute{
+				Description: "Company associated with the user.",
+				Optional:    true,
+			},
+			"country": schema.StringAttribute{
+				Description: "Country where the user is located.",
+				Optional:    true,
+			},
+			"department": schema.StringAttribute{
+				Description: "Department associated with the user.",
+				Optional:    true,
+			},
+			"disabled_date": schema.StringAttribute{
+				Description: "Timestamp when the user was disabled from WorkMail use.",
+				CustomType:  timetypes.RFC3339Type{},
+				Computed:    true,
+			},
+			names.AttrDisplayName: schema.StringAttribute{
+				Description: "Display name of the user.",
+				Required:    true,
+			},
+			names.AttrEmail: schema.StringAttribute{
+				Description: "Primary email address used to register the user with WorkMail.",
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"enabled_date": schema.StringAttribute{
+				Description: "Timestamp when the user was enabled for WorkMail use.",
+				CustomType:  timetypes.RFC3339Type{},
+				Computed:    true,
+			},
+			"first_name": schema.StringAttribute{
+				Description: "First name of the user.",
+				Optional:    true,
+			},
+			"hidden_from_global_address_list": schema.BoolAttribute{
+				Description: "Whether to hide the user from the global address list.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"identity_provider_identity_store_id": schema.StringAttribute{
+				Description: "Identity store ID from IAM Identity Center associated with the user.",
+				Computed:    true,
+			},
+			"identity_provider_user_id": schema.StringAttribute{
+				Description: "User ID from IAM Identity Center associated with the user.",
+				Optional:    true,
+			},
+			"initials": schema.StringAttribute{
+				Description: "Initials of the user.",
+				Optional:    true,
+			},
+			"job_title": schema.StringAttribute{
+				Description: "Job title of the user.",
+				Optional:    true,
+			},
+			"last_name": schema.StringAttribute{
+				Description: "Last name of the user.",
+				Optional:    true,
+			},
+			"mailbox_deprovisioned_date": schema.StringAttribute{
+				Description: "Timestamp when the mailbox was removed for the user.",
+				CustomType:  timetypes.RFC3339Type{},
+				Computed:    true,
+			},
+			"mailbox_provisioned_date": schema.StringAttribute{
+				Description: "Timestamp when the mailbox was created for the user.",
+				CustomType:  timetypes.RFC3339Type{},
+				Computed:    true,
+			},
+			names.AttrName: schema.StringAttribute{
+				Description: "Username of the user.",
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"office": schema.StringAttribute{
+				Description: "Office where the user is located.",
+				Optional:    true,
+			},
+			"organization_id": schema.StringAttribute{
+				Description: "Identifier of the WorkMail organization where the user is managed.",
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			names.AttrPassword: schema.StringAttribute{
+				Description: "Password to set for the user.",
+				Optional:    true,
+				Sensitive:   true,
+			},
+			"user_role": schema.StringAttribute{
+				Description: "Role assigned to the user.",
+				Optional:    true,
+				CustomType:  fwtypes.StringEnumType[awstypes.UserRole](),
+				Computed:    true,
+			},
+			names.AttrState: schema.StringAttribute{
+				Description: "Current WorkMail state of the user.",
+				Computed:    true,
+			},
+			"street": schema.StringAttribute{
+				Description: "Street address of the user.",
+				Optional:    true,
+			},
+			"telephone": schema.StringAttribute{
+				Description: "Telephone number of the user.",
+				Optional:    true,
+			},
+			"user_id": schema.StringAttribute{
+				Description: "Identifier of the user.",
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"zip_code": schema.StringAttribute{
+				Description: "ZIP or postal code of the user.",
+				Optional:    true,
+			},
+		},
+	}
+}

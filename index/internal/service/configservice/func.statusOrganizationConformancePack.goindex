@@ -3,6 +3,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log"
 	"time"
 
@@ -19,7 +20,9 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
@@ -35,6 +38,27 @@ func statusOrganizationConformancePack(conn *configservice.Client, name string) 
 			return nil, "", err
 		}
 
-		return output, string(output.Status), err
+		status := output.Status
+
+		// The DescribeOrganizationConformancePackStatuses API may not
+		// transition the aggregate status from CREATE_IN_PROGRESS to
+		// CREATE_SUCCESSFUL when called from a delegated administrator
+		// account, even after all member accounts have completed
+		// deployment. Work around this by checking per-account detailed
+		// statuses: if no accounts are still in progress, the
+		// deployment has finished.
+		if status == types.OrganizationResourceStatusCreateInProgress {
+			if v, err := findOrganizationConformancePackDetailedStatusesByTwoPartKey(ctx, conn, name, types.OrganizationResourceDetailedStatusCreateInProgress); err == nil && len(v) == 0 {
+				status = types.OrganizationResourceStatusCreateSuccessful
+			}
+		}
+
+		if status == types.OrganizationResourceStatusUpdateInProgress {
+			if v, err := findOrganizationConformancePackDetailedStatusesByTwoPartKey(ctx, conn, name, types.OrganizationResourceDetailedStatusUpdateInProgress); err == nil && len(v) == 0 {
+				status = types.OrganizationResourceStatusUpdateSuccessful
+			}
+		}
+
+		return output, string(status), nil
 	}
 }
