@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3files
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3files"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3files/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *mountTargetResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data mountTargetResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.State.Get(ctx, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().S3FilesClient(ctx)
+
+	input := s3files.DeleteMountTargetInput{
+		MountTargetId: data.ID.ValueStringPointer(),
+	}
+
+	_, err := conn.DeleteMountTarget(ctx, &input)
+	if err != nil {
+		var nfe *awstypes.ResourceNotFoundException
+		if errors.As(err, &nfe) {
+			return // Resource already deleted
+		}
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, data.ID.ValueString())
+		return
+	}
+
+	_, err = waitMountTargetDeleted(ctx, conn, data.ID.ValueString(), r.DeleteTimeout(ctx, data.Timeouts))
+	if err != nil {
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, data.ID.ValueString())
+	}
+}

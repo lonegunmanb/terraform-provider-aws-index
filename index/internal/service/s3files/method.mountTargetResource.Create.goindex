@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/s3files
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3files"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/s3files/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *mountTargetResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data mountTargetResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().S3FilesClient(ctx)
+
+	input := s3files.CreateMountTargetInput{}
+	smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Expand(ctx, data, &input, fwflex.WithFieldNamePrefix("MountTarget")))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	output, err := conn.CreateMountTarget(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &response.Diagnostics, err)
+		return
+	}
+
+	data.ID = fwflex.StringToFramework(ctx, output.MountTargetId)
+
+	mountTarget, err := waitMountTargetCreated(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
+	if err != nil {
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, data.ID.ValueString())
+		return
+	}
+
+	smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Flatten(ctx, mountTarget, &data, fwflex.WithFieldNamePrefix("MountTarget")))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, data))
+}

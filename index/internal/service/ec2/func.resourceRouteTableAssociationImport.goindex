@@ -14,14 +14,24 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceRouteTableAssociationImport(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+	// If we're importing by Resource Identity, we can use the standard import logic.
+	if d.Id() == "" {
+		if err := importer.Import(ctx, d, meta); err != nil {
+			return nil, err
+		}
+		return []*schema.ResourceData{d}, nil
+	}
+
+	// Otherwise, we need to parse the import ID and find the association ID based on the route table and target IDs.
 	parts := strings.Split(d.Id(), "/")
 	if len(parts) != 2 {
-		return []*schema.ResourceData{}, fmt.Errorf("Unexpected format for import: %s. Use 'subnet ID/route table ID' or 'gateway ID/route table ID", d.Id())
+		return nil, fmt.Errorf("Unexpected format for import: %s. Use 'subnet ID/route table ID' or 'gateway ID/route table ID", d.Id())
 	}
 
 	targetID := parts[0]
@@ -41,14 +51,12 @@ func resourceRouteTableAssociationImport(ctx context.Context, d *schema.Resource
 
 	for _, association := range routeTable.Associations {
 		if aws.ToString(association.SubnetId) == targetID {
-			d.Set(names.AttrSubnetID, targetID)
 			associationID = aws.ToString(association.RouteTableAssociationId)
 
 			break
 		}
 
 		if aws.ToString(association.GatewayId) == targetID {
-			d.Set("gateway_id", targetID)
 			associationID = aws.ToString(association.RouteTableAssociationId)
 
 			break
@@ -60,7 +68,6 @@ func resourceRouteTableAssociationImport(ctx context.Context, d *schema.Resource
 	}
 
 	d.SetId(associationID)
-	d.Set("route_table_id", routeTableID)
 
 	return []*schema.ResourceData{d}, nil
 }
