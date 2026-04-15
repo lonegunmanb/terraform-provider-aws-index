@@ -45,5 +45,36 @@ func resourceDirectoryUpdate(ctx context.Context, d *schema.ResourceData, meta a
 		}
 	}
 
+	if d.HasChange("enable_directory_data_access") {
+		if _, ok := d.GetOk("enable_directory_data_access"); ok {
+			if err := enableDirectoryDataAccess(ctx, conn, d.Id()); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		} else {
+			if err := disableDirectoryDataAccess(ctx, conn, d.Id()); err != nil {
+				return sdkdiag.AppendFromErr(diags, err)
+			}
+		}
+
+		err := tfresource.Retry(ctx, d.Timeout(schema.TimeoutCreate), func(ctx context.Context) *tfresource.RetryError {
+			if err := waitDirectoryDataAccess(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+				if use, ok := errs.As[*retry.UnexpectedStateError](err); ok {
+					if use.State == string(awstypes.DataAccessStatusFailed) {
+						tflog.Info(ctx, "retrying failed Directory Data Access enablement", map[string]any{
+							"directory_id": d.Id(),
+						})
+						return tfresource.RetryableError(err)
+					}
+				}
+				return tfresource.NonRetryableError(err)
+			}
+
+			return nil
+		}, tfresource.WithPollInterval(1*time.Minute))
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, fmt.Errorf("enabling directory service data access: %w", err))
+		}
+	}
+
 	return append(diags, resourceDirectoryRead(ctx, d, meta)...)
 }

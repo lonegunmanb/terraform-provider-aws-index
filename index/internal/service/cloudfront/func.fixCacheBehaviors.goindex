@@ -1,0 +1,63 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudfront
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func fixCacheBehaviors(config *awstypes.DistributionConfig) {
+	if config == nil {
+		return
+	}
+
+	// Fix default cache behavior
+	if config.DefaultCacheBehavior != nil && config.DefaultCacheBehavior.LambdaFunctionAssociations != nil {
+		for i := range config.DefaultCacheBehavior.LambdaFunctionAssociations.Items {
+			assoc := &config.DefaultCacheBehavior.LambdaFunctionAssociations.Items[i]
+			if assoc.IncludeBody == nil {
+				assoc.IncludeBody = aws.Bool(false)
+			}
+		}
+	}
+
+	// Fix cache behaviors
+	if config.CacheBehaviors != nil {
+		for i := range config.CacheBehaviors.Items {
+			behavior := &config.CacheBehaviors.Items[i]
+			if behavior.LambdaFunctionAssociations != nil {
+				for j := range behavior.LambdaFunctionAssociations.Items {
+					assoc := &behavior.LambdaFunctionAssociations.Items[j]
+					if assoc.IncludeBody == nil {
+						assoc.IncludeBody = aws.Bool(false)
+					}
+				}
+			}
+		}
+	}
+}

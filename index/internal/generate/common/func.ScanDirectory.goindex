@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/generate/common
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"iter"
+	"os"
+	"strings"
+
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"golang.org/x/tools/go/packages"
+)
+func ScanDirectory(path string) iter.Seq2[*PackageFile, error] {
+	return func(yield func(*PackageFile, error) bool) {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+
+		fileSet := token.NewFileSet()
+
+		for _, entry := range entries {
+			// Skip directories and test files.
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+
+			name := path + "/" + entry.Name()
+
+			file, err := parser.ParseFile(fileSet, name, nil, parser.ParseComments)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+
+			if !yield(&PackageFile{name: name, file: file}, nil) {
+				return
+			}
+		}
+	}
+}

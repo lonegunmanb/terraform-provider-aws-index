@@ -1,0 +1,92 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *resourceListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().APIGatewayClient(ctx)
+
+	var query listResourceModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	restAPIID := query.RestAPIID.ValueString()
+
+	tflog.Info(ctx, "Listing API Gateway Resources", map[string]any{
+		logging.ResourceAttributeKey("rest_api_id"): restAPIID,
+	})
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := apigateway.GetResourcesInput{
+			RestApiId: aws.String(restAPIID),
+		}
+
+		pages := apigateway.NewGetResourcesPaginator(conn, &input)
+		for pages.HasMorePages() {
+			page, err := pages.NextPage(ctx)
+
+			if errs.IsA[*awstypes.NotFoundException](err) {
+				result := fwdiag.NewListResultErrorDiagnostic(&retry.NotFoundError{LastError: err})
+				yield(result)
+				return
+			}
+
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			for _, item := range page.Items {
+				resourceID := aws.ToString(item.Id)
+				ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrID), resourceID)
+
+				result := request.NewListResult(ctx)
+				rd := l.ResourceData()
+				rd.SetId(resourceID)
+				rd.Set("rest_api_id", restAPIID)
+
+				if request.IncludeResource {
+					output, err := findResourceByTwoPartKey(ctx, conn, resourceID, restAPIID)
+					if err != nil {
+						tflog.Error(ctx, "Reading API Gateway Resource", map[string]any{
+							"error": err.Error(),
+						})
+						continue
+					}
+					resourceResourceFlatten(rd, output)
+				}
+
+				result.DisplayName = aws.ToString(item.Path)
+
+				l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+				if result.Diagnostics.HasError() {
+					yield(result)
+					return
+				}
+
+				if !yield(result) {
+					return
+				}
+			}
+		}
+	}
+}

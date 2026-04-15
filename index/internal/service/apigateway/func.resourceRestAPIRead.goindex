@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
 	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
@@ -45,52 +46,13 @@ func resourceRestAPIRead(ctx context.Context, d *schema.ResourceData, meta any) 
 		return sdkdiag.AppendErrorf(diags, "reading API Gateway REST API (%s): %s", d.Id(), err)
 	}
 
-	d.Set("api_key_source", api.ApiKeySource)
-	d.Set(names.AttrARN, apiARN(ctx, c, d.Id()))
-	d.Set("binary_media_types", api.BinaryMediaTypes)
-	d.Set(names.AttrCreatedDate, api.CreatedDate.Format(time.RFC3339))
-	d.Set(names.AttrDescription, api.Description)
-	d.Set("disable_execute_api_endpoint", api.DisableExecuteApiEndpoint)
-	if err := d.Set("endpoint_configuration", flattenEndpointConfiguration(api.EndpointConfiguration)); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting endpoint_configuration: %s", err)
-	}
-	d.Set("execution_arn", apiInvokeARN(ctx, c, d.Id()))
-	if api.MinimumCompressionSize == nil {
-		d.Set("minimum_compression_size", nil)
-	} else {
-		d.Set("minimum_compression_size", flex.Int32ToStringValue(api.MinimumCompressionSize))
-	}
-	d.Set(names.AttrName, api.Name)
-
-	input := apigateway.GetResourcesInput{
-		RestApiId: aws.String(d.Id()),
-	}
-	rootResource, err := findResource(ctx, conn, &input, func(v *types.Resource) bool {
-		return aws.ToString(v.Path) == "/"
-	})
-
-	switch {
-	case err == nil:
-		d.Set("root_resource_id", rootResource.Id)
-	case retry.NotFound(err):
-		d.Set("root_resource_id", nil)
-	default:
-		return sdkdiag.AppendErrorf(diags, "reading API Gateway REST API (%s) root resource: %s", d.Id(), err)
-	}
-
-	policy, err := flattenAPIPolicy(api.Policy)
-	if err != nil {
+	if err := resourceRestAPIFlatten(ctx, c, d, api); err != nil {
 		return sdkdiag.AppendFromErr(diags, err)
 	}
 
-	policyToSet, err := verify.SecondJSONUnlessEquivalent(d.Get(names.AttrPolicy).(string), policy)
-	if err != nil {
+	if err := resourceRestAPIReadRootResourceID(ctx, conn, d); err != nil {
 		return sdkdiag.AppendFromErr(diags, err)
 	}
-
-	d.Set(names.AttrPolicy, policyToSet)
-
-	setTagsOut(ctx, api.Tags)
 
 	return diags
 }
