@@ -1,5 +1,6 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -8,15 +9,20 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/apigateway"
-	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigateway/types"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
@@ -26,13 +32,13 @@ func resourceAuthorizerCreate(ctx context.Context, d *schema.ResourceData, meta 
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).APIGatewayClient(ctx)
 
-	var postCreateOps []types.PatchOperation
+	var postCreateOps []awstypes.PatchOperation
 	name := d.Get(names.AttrName).(string)
 	input := apigateway.CreateAuthorizerInput{
 		IdentitySource:               aws.String(d.Get("identity_source").(string)),
 		Name:                         aws.String(name),
 		RestApiId:                    aws.String(d.Get("rest_api_id").(string)),
-		Type:                         types.AuthorizerType(d.Get(names.AttrType).(string)),
+		Type:                         awstypes.AuthorizerType(d.Get(names.AttrType).(string)),
 		AuthorizerResultTtlInSeconds: aws.Int32(int32(d.Get("authorizer_result_ttl_in_seconds").(int))),
 	}
 
@@ -45,11 +51,11 @@ func resourceAuthorizerCreate(ctx context.Context, d *schema.ResourceData, meta 
 		// regardless of authorizer Type, the API ignores this setting if the authorizer
 		// is of Type "COGNITO_USER_POOLS"; thus, a PatchOperation is used as an alternative.
 		// Reference: https://github.com/hashicorp/terraform-provider-aws/issues/16613
-		if input.Type != types.AuthorizerTypeCognitoUserPools {
+		if input.Type != awstypes.AuthorizerTypeCognitoUserPools {
 			input.AuthorizerCredentials = aws.String(v.(string))
 		} else {
-			postCreateOps = append(postCreateOps, types.PatchOperation{
-				Op:    types.OpReplace,
+			postCreateOps = append(postCreateOps, awstypes.PatchOperation{
+				Op:    awstypes.OpReplace,
 				Path:  aws.String("/authorizerCredentials"),
 				Value: aws.String(v.(string)),
 			})

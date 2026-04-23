@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *otelEnrichmentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data otelEnrichmentResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &data))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudWatchClient(ctx)
+
+	var input cloudwatch.StartOTelEnrichmentInput
+	_, err := conn.StartOTelEnrichment(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, "operation", "starting CloudWatch OTel Enrichment")
+		return
+	}
+
+	createTimeout := r.CreateTimeout(ctx, data.Timeouts)
+	_, err = waitOTelEnrichmentReady(ctx, conn, createTimeout)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, "operation", "waiting for CloudWatch OTel Enrichment start")
+		return
+	}
+
+	data.ID = fwflex.StringValueToFramework(ctx, r.Meta().Region(ctx))
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &data))
+}

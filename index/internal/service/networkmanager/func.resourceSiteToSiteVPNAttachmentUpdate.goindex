@@ -21,6 +21,39 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceSiteToSiteVPNAttachmentUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
-	// Tags only.
-	return resourceSiteToSiteVPNAttachmentRead(ctx, d, meta)
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).NetworkManagerClient(ctx)
+
+	// An update (via transparent tagging) to tags can put the attachment into PENDING_NETWORK_UPDATE state.
+	if _, err := waitSiteToSiteVPNAttachmentUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Site To Site VPN Attachment (%s) update: %s", d.Id(), err)
+	}
+
+	if d.HasChange("routing_policy_label") {
+		if v, ok := d.GetOk("routing_policy_label"); ok {
+			input := networkmanager.PutAttachmentRoutingPolicyLabelInput{
+				AttachmentId:       aws.String(d.Id()),
+				CoreNetworkId:      aws.String(d.Get("core_network_id").(string)),
+				RoutingPolicyLabel: aws.String(v.(string)),
+			}
+			_, err := conn.PutAttachmentRoutingPolicyLabel(ctx, &input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating Network Manager Site To Site VPN Attachment (%s) routing policy label: %s", d.Id(), err)
+			}
+		} else {
+			input := networkmanager.RemoveAttachmentRoutingPolicyLabelInput{
+				AttachmentId:  aws.String(d.Id()),
+				CoreNetworkId: aws.String(d.Get("core_network_id").(string)),
+			}
+			_, err := conn.RemoveAttachmentRoutingPolicyLabel(ctx, &input)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating Network Manager Site To Site VPN Attachment (%s) routing policy label: %s", d.Id(), err)
+			}
+		}
+		if _, err := waitSiteToSiteVPNAttachmentUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for Network Manager Site To Site VPN Attachment (%s) routing policy label update: %s", d.Id(), err)
+		}
+	}
+
+	return append(diags, resourceSiteToSiteVPNAttachmentRead(ctx, d, meta)...)
 }

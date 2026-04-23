@@ -2,6 +2,7 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 
 	"github.com/YakDriver/regexache"
@@ -70,7 +71,7 @@ func resourceMetricAlarm() *schema.Resource {
 			},
 			"comparison_operator": {
 				Type:             schema.TypeString,
-				Required:         true,
+				Optional:         true,
 				ValidateDiagFunc: enum.Validate[types.ComparisonOperator](),
 			},
 			"datapoints_to_alarm": {
@@ -90,9 +91,52 @@ func resourceMetricAlarm() *schema.Resource {
 				Computed:     true,
 				ValidateFunc: validation.StringInSlice(lowSampleCountPercentiles_Values(), true),
 			},
+			"evaluation_criteria": {
+				Type:          schema.TypeList,
+				Optional:      true,
+				MaxItems:      1,
+				ConflictsWith: []string{names.AttrNamespace, names.AttrMetricName, "dimensions", "period", names.AttrUnit, "statistic", "extended_statistic", "metric_query", "threshold", "comparison_operator", "threshold_metric_id", "evaluation_periods", "datapoints_to_alarm"},
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"promql_criteria": {
+							Type:     schema.TypeList,
+							Required: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"pending_period": {
+										Type:         schema.TypeInt,
+										Optional:     true,
+										ValidateFunc: validation.IntBetween(0, 86400),
+									},
+									"query": {
+										Type:         schema.TypeString,
+										Required:     true,
+										ValidateFunc: validation.StringLenBetween(1, 10000),
+									},
+									"recovery_period": {
+										Type:         schema.TypeInt,
+										Optional:     true,
+										ValidateFunc: validation.IntBetween(0, 86400),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"evaluation_interval": {
+				Type:          schema.TypeInt,
+				Optional:      true,
+				ConflictsWith: []string{names.AttrMetricName, "metric_query"},
+				ValidateFunc: validation.Any(
+					validation.IntInSlice([]int{10, 20, 30}),
+					validation.IntDivisibleBy(60),
+				),
+			},
 			"evaluation_periods": {
 				Type:         schema.TypeInt,
-				Required:     true,
+				Optional:     true,
 				ValidateFunc: validation.IntAtLeast(1),
 			},
 			"extended_statistic": {
@@ -282,9 +326,36 @@ func resourceMetricAlarm() *schema.Resource {
 
 		CustomizeDiff: customdiff.All(
 			func(_ context.Context, diff *schema.ResourceDiff, v any) error {
+				// Check if evaluation_criteria is used
+				if v := diff.Get("evaluation_criteria"); v != nil && len(v.([]any)) > 0 {
+					// When using evaluation_criteria, evaluation_interval is required
+					if _, ok := diff.GetOk("evaluation_interval"); !ok {
+						return errors.New("evaluation_interval is required when using evaluation_criteria")
+					}
+					return nil
+				}
+
+				// Traditional metric alarm validation
 				_, metricNameOk := diff.GetOk(names.AttrMetricName)
+				_, metricQueryOk := diff.GetOk("metric_query")
 				_, statisticOk := diff.GetOk("statistic")
 				_, extendedStatisticOk := diff.GetOk("extended_statistic")
+
+				// Must specify either MetricName, metric_query, or evaluation_criteria
+				if !metricNameOk && !metricQueryOk {
+					return errors.New("One of `metric_name`, `metric_query`, or `evaluation_criteria` must be set for a cloudwatch metric alarm")
+				}
+
+				// Traditional metric alarms require comparison_operator and evaluation_periods
+				if metricNameOk || metricQueryOk {
+					comparisonOp := diff.Get("comparison_operator").(string)
+					if comparisonOp == "" {
+						return errors.New("comparison_operator is required for traditional metric alarms")
+					}
+					if _, ok := diff.GetOk("evaluation_periods"); !ok {
+						return errors.New("evaluation_periods is required for traditional metric alarms")
+					}
+				}
 
 				if metricNameOk && ((!statisticOk && !extendedStatisticOk) || (statisticOk && extendedStatisticOk)) {
 					return errors.New("One of `statistic` or `extended_statistic` must be set for a cloudwatch metric alarm")

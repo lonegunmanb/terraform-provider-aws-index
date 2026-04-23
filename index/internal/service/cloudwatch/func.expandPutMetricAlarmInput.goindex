@@ -2,6 +2,7 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 
 	"github.com/YakDriver/regexache"
@@ -27,23 +28,45 @@ import (
 )
 func expandPutMetricAlarmInput(ctx context.Context, d *schema.ResourceData) *cloudwatch.PutMetricAlarmInput {
 	apiObject := &cloudwatch.PutMetricAlarmInput{
-		AlarmName:          aws.String(d.Get("alarm_name").(string)),
-		ComparisonOperator: types.ComparisonOperator(d.Get("comparison_operator").(string)),
-		EvaluationPeriods:  aws.Int32(int32(d.Get("evaluation_periods").(int))),
-		Tags:               getTagsIn(ctx),
-		TreatMissingData:   aws.String(d.Get("treat_missing_data").(string)),
+		AlarmName: aws.String(d.Get("alarm_name").(string)),
+		Tags:      getTagsIn(ctx),
 	}
 
-	if v := d.Get("actions_enabled"); v != nil {
-		apiObject.ActionsEnabled = aws.Bool(v.(bool))
-	}
-
+	// Set common fields for both PromQL and traditional alarms.
 	if v, ok := d.GetOk("alarm_actions"); ok && v.(*schema.Set).Len() > 0 {
 		apiObject.AlarmActions = flex.ExpandStringValueSet(v.(*schema.Set))
 	}
 
 	if v, ok := d.GetOk("alarm_description"); ok {
 		apiObject.AlarmDescription = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("insufficient_data_actions"); ok && v.(*schema.Set).Len() > 0 {
+		apiObject.InsufficientDataActions = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	if v, ok := d.GetOk("ok_actions"); ok && v.(*schema.Set).Len() > 0 {
+		apiObject.OKActions = flex.ExpandStringValueSet(v.(*schema.Set))
+	}
+
+	// Handle evaluation_criteria (PromQL alarms).
+	if v, ok := d.GetOk("evaluation_criteria"); ok && len(v.([]any)) > 0 {
+		apiObject.EvaluationCriteria = expandEvaluationCriteria(v.([]any)[0].(map[string]any))
+
+		if v, ok := d.GetOk("evaluation_interval"); ok {
+			apiObject.EvaluationInterval = aws.Int32(int32(v.(int)))
+		}
+
+		return apiObject
+	}
+
+	// Handle traditional metric alarms - set fields that are only for traditional alarms.
+	if v := d.Get("actions_enabled"); v != nil {
+		apiObject.ActionsEnabled = aws.Bool(v.(bool))
+	}
+
+	if v, ok := d.GetOk("comparison_operator"); ok {
+		apiObject.ComparisonOperator = types.ComparisonOperator(v.(string))
 	}
 
 	if v, ok := d.GetOk("datapoints_to_alarm"); ok {
@@ -58,12 +81,12 @@ func expandPutMetricAlarmInput(ctx context.Context, d *schema.ResourceData) *clo
 		apiObject.EvaluateLowSampleCountPercentile = aws.String(v.(string))
 	}
 
-	if v, ok := d.GetOk("extended_statistic"); ok {
-		apiObject.ExtendedStatistic = aws.String(v.(string))
+	if v, ok := d.GetOk("evaluation_periods"); ok {
+		apiObject.EvaluationPeriods = aws.Int32(int32(v.(int)))
 	}
 
-	if v, ok := d.GetOk("insufficient_data_actions"); ok && v.(*schema.Set).Len() > 0 {
-		apiObject.InsufficientDataActions = flex.ExpandStringValueSet(v.(*schema.Set))
+	if v, ok := d.GetOk("extended_statistic"); ok {
+		apiObject.ExtendedStatistic = aws.String(v.(string))
 	}
 
 	if v, ok := d.GetOk(names.AttrMetricName); ok {
@@ -76,10 +99,6 @@ func expandPutMetricAlarmInput(ctx context.Context, d *schema.ResourceData) *clo
 
 	if v, ok := d.GetOk(names.AttrNamespace); ok {
 		apiObject.Namespace = aws.String(v.(string))
-	}
-
-	if v, ok := d.GetOk("ok_actions"); ok && v.(*schema.Set).Len() > 0 {
-		apiObject.OKActions = flex.ExpandStringValueSet(v.(*schema.Set))
 	}
 
 	if v, ok := d.GetOk("period"); ok {
@@ -95,6 +114,8 @@ func expandPutMetricAlarmInput(ctx context.Context, d *schema.ResourceData) *clo
 	} else {
 		apiObject.Threshold = aws.Float64(d.Get("threshold").(float64))
 	}
+
+	apiObject.TreatMissingData = aws.String(d.Get("treat_missing_data").(string))
 
 	if v, ok := d.GetOk(names.AttrUnit); ok {
 		apiObject.Unit = types.StandardUnit(v.(string))

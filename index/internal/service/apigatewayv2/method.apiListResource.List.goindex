@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/apigatewayv2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/apigatewayv2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *apiListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().APIGatewayV2Client(ctx)
+
+	var query listAPIModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	tflog.Info(ctx, "Listing Resources")
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := apigatewayv2.GetApisInput{}
+		for item, err := range listAPIs(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			id := aws.ToString(item.ApiId)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrID), id)
+
+			result := request.NewListResult(ctx)
+
+			rd := l.ResourceData()
+			rd.SetId(id)
+
+			if request.IncludeResource {
+				if err := resourceAPIFlattenPage(ctx, l.Meta(), rd, &item); err != nil {
+					tflog.Error(ctx, "Reading API Gateway V2 API", map[string]any{
+						"error": err.Error(),
+					})
+					continue
+				}
+			}
+
+			result.DisplayName = aws.ToString(item.Name)
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

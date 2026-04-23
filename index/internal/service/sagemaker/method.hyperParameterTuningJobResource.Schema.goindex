@@ -1,0 +1,361 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *hyperParameterTuningJobResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN: framework.ARNAttributeComputedOnly(),
+			"failure_reason": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrName: schema.StringAttribute{
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,31}$`), "must be 1-32 characters long, start and end with an alphanumeric character, and contain only letters, numbers, and hyphens"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			names.AttrStatus: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.HyperParameterTuningJobStatus](),
+				Computed:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
+		},
+		Blocks: map[string]schema.Block{
+			"autotune": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[autotuneModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrMode: schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.AutotuneMode](),
+							Required:   true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+					},
+				},
+			},
+			"config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[hyperParameterTuningJobConfigModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtLeast(1),
+					listvalidator.SizeAtMost(1),
+				},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"random_seed": schema.Int64Attribute{
+							Optional: true,
+							Validators: []validator.Int64{
+								int64validator.AtLeast(0),
+							},
+							PlanModifiers: []planmodifier.Int64{
+								int64planmodifier.RequiresReplace(),
+							},
+						},
+						"strategy": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.HyperParameterTuningJobStrategyType](),
+							Required:   true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+						"training_job_early_stopping_type": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.TrainingJobEarlyStoppingType](),
+							Optional:   true,
+							Computed:   true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+								stringplanmodifier.UseStateForUnknown(),
+							},
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"objective": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[hyperParameterTuningConfigObjectiveModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrMetricName: schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.LengthBetween(1, 255),
+										},
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.RequiresReplace(),
+										},
+									},
+									names.AttrType: schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.HyperParameterTuningJobObjectiveType](),
+										Required:   true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.RequiresReplace(),
+										},
+									},
+								},
+							},
+						},
+						"parameter_ranges": parameterRangesBlock(ctx),
+						"resource_limits": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[resourceLimitsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeAtLeast(1),
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"max_number_of_training_jobs": schema.Int64Attribute{
+										Optional: true,
+										Computed: true,
+										Validators: []validator.Int64{
+											int64validator.AtLeast(1),
+										},
+										PlanModifiers: []planmodifier.Int64{
+											int64planmodifier.RequiresReplace(),
+											int64planmodifier.UseStateForUnknown(),
+										},
+									},
+									"max_parallel_training_jobs": schema.Int64Attribute{
+										Required: true,
+										Validators: []validator.Int64{
+											int64validator.AtLeast(1),
+										},
+										PlanModifiers: []planmodifier.Int64{
+											int64planmodifier.RequiresReplace(),
+										},
+									},
+									"max_runtime_in_seconds": schema.Int64Attribute{
+										Optional: true,
+										Computed: true,
+										Validators: []validator.Int64{
+											int64validator.Between(120, 15768000),
+										},
+										PlanModifiers: []planmodifier.Int64{
+											int64planmodifier.RequiresReplace(),
+											int64planmodifier.UseStateForUnknown(),
+										},
+									},
+								},
+							},
+						},
+						"strategy_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[strategyConfigModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							PlanModifiers: []planmodifier.List{
+								listplanmodifier.RequiresReplace(),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"hyperband_strategy_config": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[hyperbandStrategyConfigModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										PlanModifiers: []planmodifier.List{
+											listplanmodifier.RequiresReplace(),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"max_resource": schema.Int64Attribute{
+													Optional: true,
+													Validators: []validator.Int64{
+														int64validator.AtLeast(1),
+													},
+													PlanModifiers: []planmodifier.Int64{
+														int64planmodifier.RequiresReplace(),
+													},
+												},
+												"min_resource": schema.Int64Attribute{
+													Optional: true,
+													Validators: []validator.Int64{
+														int64validator.AtLeast(1),
+													},
+													PlanModifiers: []planmodifier.Int64{
+														int64planmodifier.RequiresReplace(),
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"tuning_job_completion_criteria": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[tuningJobCompletionCriteriaModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							PlanModifiers: []planmodifier.List{
+								listplanmodifier.RequiresReplace(),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"target_objective_metric_value": schema.Float64Attribute{
+										Optional: true,
+										PlanModifiers: []planmodifier.Float64{
+											float64planmodifier.RequiresReplace(),
+										},
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"best_objective_not_improving": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[bestObjectiveNotImprovingModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										PlanModifiers: []planmodifier.List{
+											listplanmodifier.RequiresReplace(),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"max_number_of_training_jobs_not_improving": schema.Int64Attribute{
+													Optional: true,
+													Computed: true,
+													Validators: []validator.Int64{
+														int64validator.AtLeast(3),
+													},
+													PlanModifiers: []planmodifier.Int64{
+														int64planmodifier.RequiresReplace(),
+														int64planmodifier.UseStateForUnknown(),
+													},
+												},
+											},
+										},
+									},
+									"convergence_detected": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[convergenceDetectedModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										PlanModifiers: []planmodifier.List{
+											listplanmodifier.RequiresReplace(),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"complete_on_convergence": schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.CompleteOnConvergence](),
+													Optional:   true,
+													PlanModifiers: []planmodifier.String{
+														stringplanmodifier.RequiresReplace(),
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Delete: true,
+			}),
+			"training_job_definition":  hyperParameterTrainingJobDefinitionBlock(ctx, false),
+			"training_job_definitions": hyperParameterTrainingJobDefinitionBlock(ctx, true),
+			"warm_start_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[warmStartConfigModel](ctx),
+				Validators: []validator.List{listvalidator.SizeAtMost(1)},
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"warm_start_type": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.HyperParameterTuningJobWarmStartType](),
+							Optional:   true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.RequiresReplace(),
+							},
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"parent_hyper_parameter_tuning_jobs": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[parentHyperParameterTuningJobModel](ctx),
+							Validators: []validator.List{listvalidator.SizeAtMost(5)},
+							PlanModifiers: []planmodifier.List{
+								listplanmodifier.RequiresReplace(),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrName: schema.StringAttribute{
+										Required: true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.RequiresReplace(),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

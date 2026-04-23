@@ -41,46 +41,5 @@ func resourceZoneRead(ctx context.Context, d *schema.ResourceData, meta any) dia
 		return sdkdiag.AppendErrorf(diags, "reading Route53 Hosted Zone (%s): %s", d.Id(), err)
 	}
 
-	zoneID := cleanZoneID(aws.ToString(output.HostedZone.Id))
-	d.Set(names.AttrARN, zoneARN(ctx, meta.(*conns.AWSClient), zoneID))
-	d.Set(names.AttrComment, "")
-	d.Set("delegation_set_id", "")
-	if v := output.HostedZone.Features; v != nil {
-		d.Set("enable_accelerated_recovery", v.AcceleratedRecoveryStatus == awstypes.AcceleratedRecoveryStatusEnabled)
-	} else {
-		d.Set("enable_accelerated_recovery", false)
-	}
-	// To be consistent with other AWS services (e.g. ACM) that do not accept a trailing period,
-	// we remove the suffix from the Hosted Zone Name returned from the API.
-	d.Set(names.AttrName, normalizeDomainName(aws.ToString(output.HostedZone.Name)))
-	d.Set("zone_id", zoneID)
-
-	var nameServers []string
-
-	if output.DelegationSet != nil {
-		d.Set("delegation_set_id", cleanDelegationSetID(aws.ToString(output.DelegationSet.Id)))
-
-		nameServers = output.DelegationSet.NameServers
-	}
-
-	if output.HostedZone.Config != nil {
-		d.Set(names.AttrComment, output.HostedZone.Config.Comment)
-
-		if output.HostedZone.Config.PrivateZone {
-			nameServers, err = findNameServersByZone(ctx, conn, d.Id(), d.Get(names.AttrName).(string))
-
-			if err != nil {
-				return sdkdiag.AppendErrorf(diags, "reading Route53 Hosted Zone (%s) name servers: %s", d.Id(), err)
-			}
-		}
-	}
-
-	d.Set("primary_name_server", nameServers[0])
-	slices.Sort(nameServers)
-	d.Set("name_servers", nameServers)
-	if err := d.Set("vpc", flattenVPCs(output.VPCs)); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting vpc: %s", err)
-	}
-
-	return diags
+	return append(diags, resourceZoneFlatten(ctx, conn, d, meta.(*conns.AWSClient), output)...)
 }

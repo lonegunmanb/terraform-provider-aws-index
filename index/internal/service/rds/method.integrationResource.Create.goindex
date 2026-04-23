@@ -3,9 +3,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
@@ -35,10 +37,10 @@ func (r *integrationResource) Create(ctx context.Context, request resource.Creat
 	}
 
 	conn := r.Meta().RDSClient(ctx)
-
 	name := data.IntegrationName.ValueString()
-	input := &rds.CreateIntegrationInput{}
-	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+
+	var input rds.CreateIntegrationInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -46,8 +48,7 @@ func (r *integrationResource) Create(ctx context.Context, request resource.Creat
 	// Additional fields.
 	input.Tags = getTagsIn(ctx)
 
-	output, err := conn.CreateIntegration(ctx, input)
-
+	output, err := conn.CreateIntegration(ctx, &input)
 	if err != nil {
 		response.Diagnostics.AddError(fmt.Sprintf("creating RDS Integration (%s)", name), err.Error())
 
@@ -56,7 +57,8 @@ func (r *integrationResource) Create(ctx context.Context, request resource.Creat
 
 	// Set values for unknowns.
 	data.IntegrationARN = fwflex.StringToFramework(ctx, output.IntegrationArn)
-	data.setID()
+	data.IntegrationIdentifier = integrationIDFromARN(data.IntegrationARN)
+	data.ID = data.IntegrationARN // Deprecated, for backward compatibility
 
 	integration, err := waitIntegrationCreated(ctx, conn, data.ID.ValueString(), r.CreateTimeout(ctx, data.Timeouts))
 

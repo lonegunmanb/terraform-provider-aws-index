@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"fmt"
+	"iter"
+	"strconv"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func listLayerVersionsAll(ctx context.Context, conn *lambda.Client) iter.Seq2[layerVersionListItem, error] {
+	return func(yield func(layerVersionListItem, error) bool) {
+		pages := lambda.NewListLayersPaginator(conn, &lambda.ListLayersInput{})
+		for pages.HasMorePages() {
+			page, err := pages.NextPage(ctx)
+			if err != nil {
+				yield(inttypes.Zero[layerVersionListItem](), fmt.Errorf("listing Lambda Layers: %w", err))
+				return
+			}
+
+			for _, layer := range page.Layers {
+				layerName := aws.ToString(layer.LayerName)
+				versionPages := lambda.NewListLayerVersionsPaginator(conn, &lambda.ListLayerVersionsInput{
+					LayerName: layer.LayerName,
+				})
+				for versionPages.HasMorePages() {
+					versionPage, err := versionPages.NextPage(ctx)
+					if err != nil {
+						yield(inttypes.Zero[layerVersionListItem](), fmt.Errorf("listing Lambda Layer (%s) Versions: %w", layerName, err))
+						return
+					}
+
+					for _, v := range versionPage.LayerVersions {
+						if !yield(layerVersionListItem{layerName: layerName, layerVersion: v}, nil) {
+							return
+						}
+					}
+				}
+			}
+		}
+	}
+}

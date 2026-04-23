@@ -1,23 +1,19 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/route53resolver
 import (
-	"fmt"
+	"context"
 	"log"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/route53resolver"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/route53resolver/types"
 	multierror "github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func sweepFirewallRules(region string) error {
-	ctx := sweep.Context(region)
-	client, err := sweep.SharedRegionalSweepClient(ctx, region)
-	if err != nil {
-		return fmt.Errorf("getting client: %w", err)
-	}
+func sweepFirewallRules(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
 	conn := client.Route53ResolverClient(ctx)
 	input := &route53resolver.ListFirewallRuleGroupsInput{}
 	var sweeperErrs *multierror.Error
@@ -26,14 +22,13 @@ func sweepFirewallRules(region string) error {
 	pages := route53resolver.NewListFirewallRuleGroupsPaginator(conn, input)
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
-
 		if awsv2.SkipSweepError(err) {
-			log.Print(fmt.Errorf("[WARN] Skipping Route53 Resolver Firewall Rule sweep for %s: %w", region, err))
-			return sweeperErrs.ErrorOrNil()
+			return nil, err
 		}
 
 		if err != nil {
-			sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error listing Route53 Resolver Firewall Rule Groups (%s): %w", region, err))
+			sweeperErrs = multierror.Append(sweeperErrs, err)
+			continue
 		}
 
 		for _, v := range page.FirewallRuleGroups {
@@ -57,7 +52,8 @@ func sweepFirewallRules(region string) error {
 				}
 
 				if err != nil {
-					sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error listing Route53 Resolver Firewall Rules (%s): %w", region, err))
+					sweeperErrs = multierror.Append(sweeperErrs, err)
+					continue
 				}
 
 				for _, v := range page.FirewallRules {
@@ -71,11 +67,5 @@ func sweepFirewallRules(region string) error {
 		}
 	}
 
-	err = sweep.SweepOrchestrator(ctx, sweepResources)
-
-	if err != nil {
-		sweeperErrs = multierror.Append(sweeperErrs, fmt.Errorf("error sweeping Route53 Resolver Firewall Rules (%s): %w", region, err))
-	}
-
-	return sweeperErrs.ErrorOrNil()
+	return sweepResources, sweeperErrs.ErrorOrNil()
 }
