@@ -44,29 +44,30 @@ func (r *resourceMemoryStrategy) Delete(ctx context.Context, request resource.De
 		return
 	}
 
+	memoryID, memoryStrategyID := fwflex.StringValueFromFramework(ctx, state.MemoryID), fwflex.StringValueFromFramework(ctx, state.MemoryStrategyID)
 	input := bedrockagentcorecontrol.UpdateMemoryInput{
 		ClientToken: aws.String(create.UniqueId(ctx)),
-		MemoryId:    state.MemoryID.ValueStringPointer(),
+		MemoryId:    aws.String(memoryID),
 		MemoryStrategies: &awstypes.ModifyMemoryStrategies{
 			DeleteMemoryStrategies: []awstypes.DeleteMemoryStrategyInput{
 				{
-					MemoryStrategyId: state.MemoryStrategyID.ValueStringPointer(),
+					MemoryStrategyId: aws.String(memoryStrategyID),
 				},
 			},
 		},
 	}
 
-	withMemoryLock(state.MemoryID.ValueString(), func() {
+	withMemoryLock(ctx, memoryID, func(ctx context.Context) {
 		deleteTimeout := r.DeleteTimeout(ctx, state.Timeouts)
 		_, err := updateMemoryWithRetry(ctx, conn, deleteTimeout, &input, true)
 		if err != nil {
-			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, state.MemoryStrategyID.String())
+			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, memoryStrategyID)
 			return
 		}
 
-		_, err = waitMemoryStrategyDeleted(ctx, conn, state.MemoryID.ValueString(), state.MemoryStrategyID.ValueString(), deleteTimeout)
+		_, err = waitMemoryStrategyDeleted(ctx, conn, memoryID, memoryStrategyID, deleteTimeout)
 		if err != nil {
-			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, state.MemoryStrategyID.String())
+			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, memoryStrategyID)
 			return
 		}
 	})

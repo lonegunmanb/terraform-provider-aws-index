@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func detectAndDeleteGuardDutySecurityGroups(ctx context.Context, conn *ec2.Client, vpcID string) error {
+	tflog.Debug(ctx, "Detecting GuardDuty security groups in VPC")
+
+	sgs, err := findGuardDutySecurityGroupsForVPC(ctx, conn, vpcID)
+	if err != nil {
+		if isUnauthorizedError(err) {
+			return err
+		}
+		return fmt.Errorf("listing GuardDuty security groups for VPC %q: %w", vpcID, err)
+	}
+
+	if len(sgs) == 0 {
+		tflog.Debug(ctx, "No GuardDuty security groups found in VPC")
+		return nil
+	}
+
+	tflog.Debug(ctx, "Found GuardDuty security group(s) in VPC", map[string]any{
+		"count": len(sgs),
+	})
+
+	for _, sg := range sgs {
+		groupID := aws.ToString(sg.GroupId)
+		ctx := tflog.SetField(ctx, "group_id", groupID)
+
+		tflog.Debug(ctx, "Deleting GuardDuty security group")
+
+		deleteInput := ec2.DeleteSecurityGroupInput{
+			GroupId: aws.String(groupID),
+		}
+		_, err := conn.DeleteSecurityGroup(ctx, &deleteInput)
+		if err != nil {
+			if isUnauthorizedError(err) {
+				return err
+			}
+			return fmt.Errorf("deleting GuardDuty security group %q: %w", groupID, err)
+		}
+
+		tflog.Debug(ctx, "Successfully deleted GuardDuty security group")
+	}
+
+	return nil
+}

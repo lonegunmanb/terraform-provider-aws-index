@@ -58,9 +58,10 @@ func (r *resourceMemoryStrategy) Update(ctx context.Context, request resource.Up
 			return
 		}
 
+		memoryID, memoryStrategyID := fwflex.StringValueFromFramework(ctx, plan.MemoryID), fwflex.StringValueFromFramework(ctx, plan.MemoryStrategyID)
 		input := bedrockagentcorecontrol.UpdateMemoryInput{
 			ClientToken: aws.String(create.UniqueId(ctx)),
-			MemoryId:    plan.MemoryID.ValueStringPointer(),
+			MemoryId:    aws.String(memoryID),
 			MemoryStrategies: &awstypes.ModifyMemoryStrategies{
 				ModifyMemoryStrategies: []awstypes.ModifyMemoryStrategyInput{strategyInput},
 			},
@@ -70,25 +71,28 @@ func (r *resourceMemoryStrategy) Update(ctx context.Context, request resource.Up
 			input.MemoryExecutionRoleArn = plan.MemoryExecutionRoleARN.ValueStringPointer()
 		}
 
-		withMemoryLock(plan.MemoryID.ValueString(), func() {
+		withMemoryLock(ctx, memoryID, func(ctx context.Context) {
 			updateTimeout := r.UpdateTimeout(ctx, plan.Timeouts)
 			out, err := updateMemoryWithRetry(ctx, conn, updateTimeout, &input, false)
 			if err != nil {
-				smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, plan.MemoryStrategyID.String())
+				smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, memoryStrategyID)
 				return
 			}
 			var found *awstypes.MemoryStrategy
 			if out != nil && out.Memory != nil {
 				for i := range out.Memory.Strategies {
 					s := &out.Memory.Strategies[i]
-					if s.StrategyId != nil && aws.ToString(s.StrategyId) == plan.MemoryStrategyID.ValueString() {
+					if s.StrategyId != nil && aws.ToString(s.StrategyId) == memoryStrategyID {
 						found = s
 					}
 				}
 			}
 			if found == nil {
-				smerr.AddError(ctx, &response.Diagnostics, fmt.Errorf("update memory strategy: API response missing strategy id %q", plan.MemoryStrategyID.ValueString()))
+				smerr.AddError(ctx, &response.Diagnostics, fmt.Errorf("update memory strategy: API response missing strategy id %q", memoryStrategyID))
 				return
+			}
+			if plan.Type.ValueEnum() != awstypes.MemoryStrategyTypeCustom {
+				found.Configuration = nil
 			}
 			smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Flatten(ctx, found, &plan, fwflex.WithFieldNamePrefix("Memory")))
 		})

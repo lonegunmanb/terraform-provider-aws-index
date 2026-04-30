@@ -11,12 +11,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
 	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
@@ -29,13 +31,15 @@ func resourceVPCDelete(ctx context.Context, d *schema.ResourceData, meta any) di
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).EC2Client(ctx)
 
-	log.Printf("[INFO] Deleting EC2 VPC: %s", d.Id())
+	ctx = tflog.SetField(ctx, logging.KeyResourceId, d.Id())
+	tflog.Info(ctx, "Deleting EC2 VPC")
+
 	input := ec2.DeleteVpcInput{
 		VpcId: aws.String(d.Id()),
 	}
-	_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutDelete), func(ctx context.Context) (any, error) {
-		return conn.DeleteVpc(ctx, &input)
-	}, errCodeDependencyViolation)
+
+	// First attempt at deletion.
+	_, err := conn.DeleteVpc(ctx, &input)
 
 	if tfawserr.ErrCodeEquals(err, errCodeInvalidVPCIDNotFound) {
 		return diags
@@ -45,6 +49,52 @@ func resourceVPCDelete(ctx context.Context, d *schema.ResourceData, meta any) di
 	// "UnauthorizedOperation: You are not authorized to perform DeleteVpc operation. A subnet in this vpc is shared but the provided object is not owned by you".
 	if tfawserr.ErrMessageContains(err, errCodeUnauthorizedOperation, "is not owned by you") {
 		return diags
+	}
+
+	// Defers checking for GuardDuty-managed resources until we get a DependencyViolation error so that no new permissions,
+	// such as ec2:DescribeVpcEndpoints, are required for users who do not have GuardDuty monitoring enabled for their VPCs.
+	var guardDutyDiags diag.Diagnostics
+	if tfawserr.ErrCodeEquals(err, errCodeDependencyViolation) {
+		tflog.Debug(ctx, "VPC deletion failed with DependencyViolation, checking for GuardDuty resources", map[string]any{
+			"error": err,
+		})
+
+		endpointsErr := detectAndDeleteGuardDutyVPCEndpoints(ctx, conn, d.Id())
+		if endpointsErr != nil {
+			if isUnauthorizedError(endpointsErr) {
+				guardDutyDiags = sdkdiag.AppendWarningf(guardDutyDiags,
+					"While deleting EC2 VPC %q, the provider was unable to do check for or dissociate GuardDuty-managed resources.\n"+
+						"If GuardDuty monitoring is enabled for this VPC, the missing permissions will prevent deletion of the Subnet\n\n"+
+						"Error: %s", d.Id(), endpointsErr.Error(),
+				)
+			} else {
+				return sdkdiag.AppendErrorf(diags, "deleting GuardDuty VPC endpoints for EC2 VPC %q: %s", d.Id(), endpointsErr)
+			}
+		}
+
+		sgErr := detectAndDeleteGuardDutySecurityGroups(ctx, conn, d.Id())
+		if sgErr != nil {
+			if isUnauthorizedError(sgErr) {
+				guardDutyDiags = sdkdiag.AppendWarningf(guardDutyDiags,
+					"While deleting EC2 VPC %q, the provider was unable to do check for or dissociate GuardDuty-managed resources.\n"+
+						"If GuardDuty monitoring is enabled for this VPC, the missing permissions will prevent deletion of the Subnet\n\n"+
+						"Error: %s", d.Id(), sgErr.Error(),
+				)
+			} else {
+				return sdkdiag.AppendErrorf(diags, "deleting GuardDuty VPC security groups for EC2 VPC %q: %s", d.Id(), sgErr)
+			}
+		}
+
+		// Retry the deletion now that GuardDuty resources have been cleaned up.
+		_, err = tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutDelete), func(ctx context.Context) (any, error) {
+			return conn.DeleteVpc(ctx, &input)
+		}, errCodeDependencyViolation)
+	}
+
+	// Only append GuardDuty-related warnings if we're still seeing a DependencyViolation:
+	// If there's no longer a DependencyViolation, any GuardDuty-related warings are not relevant.
+	if tfawserr.ErrCodeEquals(err, errCodeDependencyViolation) {
+		diags = append(diags, guardDutyDiags...)
 	}
 
 	if err != nil {

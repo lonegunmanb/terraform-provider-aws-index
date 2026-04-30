@@ -3,6 +3,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -36,14 +38,51 @@ func resourceSubnetDelete(ctx context.Context, d *schema.ResourceData, meta any)
 		return sdkdiag.AppendErrorf(diags, "deleting ENIs for EC2 Subnet (%s): %s", d.Id(), err)
 	}
 
-	_, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutDelete), func(ctx context.Context) (any, error) {
-		return conn.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{
-			SubnetId: aws.String(d.Id()),
-		})
-	}, errCodeDependencyViolation)
+	// First attempt at deletion.
+	input := ec2.DeleteSubnetInput{
+		SubnetId: aws.String(d.Id()),
+	}
+	_, err := conn.DeleteSubnet(ctx, &input)
 
 	if tfawserr.ErrCodeEquals(err, errCodeInvalidSubnetIDNotFound) {
 		return diags
+	}
+
+	// Defers checking for GuardDuty-managed resources until we get a DependencyViolation error so that no new permissions,
+	// such as ec2:DescribeVpcEndpoints, are required for users who do not have GuardDuty monitoring enabled for their VPCs.
+	var guardDutyDiags diag.Diagnostics
+	if tfawserr.ErrCodeEquals(err, errCodeDependencyViolation) {
+		tflog.Debug(ctx, "Subnet deletion failed with DependencyViolation, checking for GuardDuty resources", map[string]any{
+			"error": err,
+		})
+
+		vpcID := d.Get(names.AttrVPCID).(string)
+		accountID := meta.(*conns.AWSClient).AccountID(ctx)
+		dissociateErr := dissociateGuardDutyVPCEndpoints(ctx, conn, d.Id(), vpcID, accountID)
+		if dissociateErr != nil {
+			if isUnauthorizedError(dissociateErr) {
+				guardDutyDiags = sdkdiag.AppendWarningf(guardDutyDiags,
+					"While deleting EC2 Subnet %q, the provider was unable to do check for or dissociate GuardDuty-managed resources.\n"+
+						"If GuardDuty monitoring is enabled for the containing VPC %q, the missing permissions will prevent deletion of the Subnet\n\n"+
+						"Error: %s", d.Id(), vpcID, dissociateErr.Error(),
+				)
+			} else {
+				return sdkdiag.AppendErrorf(diags, "dissociating GuardDuty VPC endpoints for EC2 Subnet %q: %s", d.Id(), dissociateErr)
+			}
+		}
+
+		// Retry the deletion now that GuardDuty resources have been cleaned up.
+		_, err = tfresource.RetryWhenAWSErrCodeEquals(ctx, d.Timeout(schema.TimeoutDelete), func(ctx context.Context) (any, error) {
+			return conn.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{
+				SubnetId: aws.String(d.Id()),
+			})
+		}, errCodeDependencyViolation)
+	}
+
+	// Only append GuardDuty-related warnings if we're still seeing a DependencyViolation:
+	// If there's no longer a DependencyViolation, any GuardDuty-related warings are not relevant.
+	if tfawserr.ErrCodeEquals(err, errCodeDependencyViolation) {
+		diags = append(diags, guardDutyDiags...)
 	}
 
 	if err != nil {

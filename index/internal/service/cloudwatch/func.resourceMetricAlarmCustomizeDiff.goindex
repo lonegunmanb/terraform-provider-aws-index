@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	tfcty "github.com/hashicorp/terraform-provider-aws/internal/cty"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceMetricAlarmCustomizeDiff(ctx context.Context, diff *schema.ResourceDiff, v any) error {
+	var plan metricAlarmResourceModel
+	if err := tfcty.ToFramework(ctx, diff.GetRawPlan(), &plan); err != nil {
+		return smarterr.NewError(fmt.Errorf("RawPlan to framework model: %w", err))
+	}
+
+	// Traditional metric alarm validation.
+	if !plan.MetricName.IsUnknown() && !plan.MetricQuery.IsUnknown() && !plan.Statistic.IsUnknown() && !plan.ExtendedStatistic.IsUnknown() {
+		metricNameOk := fwflex.StringValueFromFramework(ctx, plan.MetricName) != ""
+		metricQueryOk := plan.MetricQuery.Length(basetypes.CollectionLengthOptions{UnhandledNullAsZero: true}) > 0
+
+		// Traditional metric alarms require comparison_operator and evaluation_periods.
+		if metricNameOk || metricQueryOk {
+			if fwflex.StringValueFromFramework(ctx, plan.ComparisonOperator) == "" {
+				return errors.New("comparison_operator is required for traditional metric alarms")
+			}
+			if plan.EvaluationPeriods.ValueInt64() == 0 {
+				return errors.New("evaluation_periods is required for traditional metric alarms")
+			}
+		}
+
+		statisticOk := fwflex.StringValueFromFramework(ctx, plan.Statistic) != ""
+		extendedStatisticOk := fwflex.StringValueFromFramework(ctx, plan.ExtendedStatistic) != ""
+		if metricNameOk && ((!statisticOk && !extendedStatisticOk) || (statisticOk && extendedStatisticOk)) {
+			return errors.New("One of `statistic` or `extended_statistic` must be set for a cloudwatch metric alarm")
+		}
+	}
+
+	if plan.MetricQuery.Length(basetypes.CollectionLengthOptions{UnhandledNullAsZero: true, UnhandledUnknownAsZero: true}) > 0 {
+		if mdqs, diags := plan.MetricQuery.ToSlice(ctx); !diags.HasError() {
+			for _, mdq := range mdqs {
+				if mdq == nil {
+					continue
+				}
+				if fwflex.StringValueFromFramework(ctx, mdq.Expression) != "" {
+					if mdq.Metric.Length(basetypes.CollectionLengthOptions{UnhandledNullAsZero: true, UnhandledUnknownAsZero: true}) > 0 {
+						return errors.New("No metric_query may have both `expression` and a `metric` specified")
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}

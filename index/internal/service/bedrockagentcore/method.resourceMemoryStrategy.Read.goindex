@@ -44,7 +44,8 @@ func (r *resourceMemoryStrategy) Read(ctx context.Context, request resource.Read
 		return
 	}
 
-	out, err := findMemoryStrategyByTwoPartKey(ctx, conn, state.MemoryID.ValueString(), state.MemoryStrategyID.ValueString())
+	memoryID, memoryStrategyID := fwflex.StringValueFromFramework(ctx, state.MemoryID), fwflex.StringValueFromFramework(ctx, state.MemoryStrategyID)
+	out, err := findMemoryStrategyByTwoPartKey(ctx, conn, memoryID, memoryStrategyID)
 	if retry.NotFound(err) {
 		smerr.AddOne(ctx, &response.Diagnostics, fwdiag.NewResourceNotFoundWarningDiagnostic(err))
 		response.State.RemoveResource(ctx)
@@ -52,8 +53,15 @@ func (r *resourceMemoryStrategy) Read(ctx context.Context, request resource.Read
 	}
 
 	if err != nil {
-		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, state.MemoryStrategyID.String())
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, memoryStrategyID)
 		return
+	}
+
+	// For non-CUSTOM types, clear Configuration from the API response before
+	// flattening. The API returns a StrategyConfiguration with Type values
+	// (e.g. "EPISODIC") that are not valid OverrideType enum values.
+	if state.Type.ValueEnum() != awstypes.MemoryStrategyTypeCustom {
+		out.Configuration = nil
 	}
 
 	smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Flatten(ctx, out, &state, fwflex.WithFieldNamePrefix("Memory")))

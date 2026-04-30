@@ -15,15 +15,17 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
-	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *standardsControlAssociationResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -35,26 +37,25 @@ func (r *standardsControlAssociationResource) Update(ctx context.Context, reques
 
 	conn := r.Meta().SecurityHubClient(ctx)
 
-	input := &securityhub.BatchUpdateStandardsControlAssociationsInput{
-		StandardsControlAssociationUpdates: []awstypes.StandardsControlAssociationUpdate{
-			{
-				AssociationStatus: awstypes.AssociationStatus(data.AssociationStatus.ValueString()),
-				SecurityControlId: data.SecurityControlID.ValueStringPointer(),
-				StandardsArn:      data.StandardsARN.ValueStringPointer(),
-				UpdatedReason:     data.UpdatedReason.ValueStringPointer(),
-			},
-		},
+	id := fwflex.StringValueFromFramework(ctx, data.ID)
+	var apiObject awstypes.StandardsControlAssociationUpdate
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &apiObject)...)
+	if response.Diagnostics.HasError() {
+		return
 	}
 
-	output, err := conn.BatchUpdateStandardsControlAssociations(ctx, input)
+	input := securityhub.BatchUpdateStandardsControlAssociationsInput{
+		StandardsControlAssociationUpdates: []awstypes.StandardsControlAssociationUpdate{apiObject},
+	}
+
+	output, err := conn.BatchUpdateStandardsControlAssociations(ctx, &input)
 
 	if err == nil {
 		err = unprocessedAssociationUpdatesError(output.UnprocessedAssociationUpdates)
 	}
 
 	if err != nil {
-		response.Diagnostics.AddError("updating Standards Control Association", err.Error())
-
+		response.Diagnostics.AddError(fmt.Sprintf("updating SecurityHub Standards Control Association (%s)", id), err.Error())
 		return
 	}
 
