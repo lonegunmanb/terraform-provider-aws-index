@@ -1,8 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/timestreaminfluxdb
 import (
 	"context"
-	"errors"
-	"math"
+	"fmt"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -25,7 +24,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
@@ -38,14 +36,14 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *dbInstanceResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	conn := r.Meta().TimestreamInfluxDBClient(ctx)
-
 	var plan, state dbInstanceResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	conn := r.Meta().TimestreamInfluxDBClient(ctx)
 
 	diff, d := fwflex.Diff(ctx, plan, state, fwflex.WithIgnoredField("SecondaryAvailabilityZone"))
 	resp.Diagnostics.Append(d...)
@@ -54,8 +52,9 @@ func (r *dbInstanceResource) Update(ctx context.Context, req resource.UpdateRequ
 	}
 
 	if diff.HasChanges() {
+		instanceID := fwflex.StringValueFromFramework(ctx, plan.ID)
 		input := timestreaminfluxdb.UpdateDbInstanceInput{
-			Identifier: plan.ID.ValueStringPointer(),
+			Identifier: aws.String(instanceID),
 		}
 		resp.Diagnostics.Append(fwflex.Expand(ctx, plan, &input, diff.IgnoredFieldNamesOpts()...)...)
 		if resp.Diagnostics.HasError() {
@@ -64,20 +63,13 @@ func (r *dbInstanceResource) Update(ctx context.Context, req resource.UpdateRequ
 
 		_, err := conn.UpdateDbInstance(ctx, &input)
 		if err != nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.TimestreamInfluxDB, create.ErrActionUpdating, ResNameDBInstance, plan.ID.String(), err),
-				err.Error(),
-			)
+			resp.Diagnostics.AddError(fmt.Sprintf("updating Timestream InfluxDB DB Instance (%s)", instanceID), err.Error())
 			return
 		}
 
-		updateTimeout := r.UpdateTimeout(ctx, plan.Timeouts)
-		output, err := waitDBInstanceUpdated(ctx, conn, plan.ID.ValueString(), updateTimeout)
+		output, err := waitDBInstanceUpdated(ctx, conn, plan.ID.ValueString(), r.UpdateTimeout(ctx, plan.Timeouts))
 		if err != nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.TimestreamInfluxDB, create.ErrActionWaitingForUpdate, ResNameDBInstance, plan.ID.String(), err),
-				err.Error(),
-			)
+			resp.Diagnostics.AddError(fmt.Sprintf("waiting for Timestream InfluxDB DB Instance (%s) update", instanceID), err.Error())
 			return
 		}
 

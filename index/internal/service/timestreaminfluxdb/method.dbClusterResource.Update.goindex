@@ -1,8 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/timestreaminfluxdb
 import (
 	"context"
-	"errors"
-	"math"
+	"fmt"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -27,7 +26,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
@@ -40,14 +38,14 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *dbClusterResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	conn := r.Meta().TimestreamInfluxDBClient(ctx)
-
 	var plan, state dbClusterResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	conn := r.Meta().TimestreamInfluxDBClient(ctx)
 
 	diff, d := fwflex.Diff(ctx, plan, state)
 	resp.Diagnostics.Append(d...)
@@ -56,8 +54,9 @@ func (r *dbClusterResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	if diff.HasChanges() {
+		clusterID := fwflex.StringValueFromFramework(ctx, plan.ID)
 		input := timestreaminfluxdb.UpdateDbClusterInput{
-			DbClusterId: plan.ID.ValueStringPointer(),
+			DbClusterId: aws.String(clusterID),
 		}
 		resp.Diagnostics.Append(fwflex.Expand(ctx, plan, &input, diff.IgnoredFieldNamesOpts()...)...)
 		if resp.Diagnostics.HasError() {
@@ -66,20 +65,13 @@ func (r *dbClusterResource) Update(ctx context.Context, req resource.UpdateReque
 
 		_, err := conn.UpdateDbCluster(ctx, &input)
 		if err != nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.TimestreamInfluxDB, create.ErrActionUpdating, ResNameDBCluster, plan.ID.String(), err),
-				err.Error(),
-			)
+			resp.Diagnostics.AddError(fmt.Sprintf("updating Timestream InfluxDB DB Cluster (%s)", clusterID), err.Error())
 			return
 		}
 
-		updateTimeout := r.UpdateTimeout(ctx, plan.Timeouts)
-		output, err := waitDBClusterUpdated(ctx, conn, plan.ID.ValueString(), updateTimeout)
+		output, err := waitDBClusterUpdated(ctx, conn, plan.ID.ValueString(), r.UpdateTimeout(ctx, plan.Timeouts))
 		if err != nil {
-			resp.Diagnostics.AddError(
-				create.ProblemStandardMessage(names.TimestreamInfluxDB, create.ErrActionWaitingForUpdate, ResNameDBCluster, plan.ID.String(), err),
-				err.Error(),
-			)
+			resp.Diagnostics.AddError(fmt.Sprintf("waiting for Timestream InfluxDB DB Cluster (%s) update", clusterID), err.Error())
 			return
 		}
 

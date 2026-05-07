@@ -1,8 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/timestreaminfluxdb
 import (
 	"context"
-	"errors"
-	"math"
+	"fmt"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -25,7 +24,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
@@ -38,37 +36,30 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *dbInstanceResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	conn := r.Meta().TimestreamInfluxDBClient(ctx)
-
 	var state dbInstanceResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	in := &timestreaminfluxdb.DeleteDbInstanceInput{
-		Identifier: state.ID.ValueStringPointer(),
+	conn := r.Meta().TimestreamInfluxDBClient(ctx)
+
+	instanceID := fwflex.StringValueFromFramework(ctx, state.ID)
+	input := timestreaminfluxdb.DeleteDbInstanceInput{
+		Identifier: aws.String(instanceID),
 	}
 
-	_, err := conn.DeleteDbInstance(ctx, in)
+	_, err := conn.DeleteDbInstance(ctx, &input)
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return
+	}
 	if err != nil {
-		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
-			return
-		}
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.TimestreamInfluxDB, create.ErrActionDeleting, ResNameDBInstance, state.ID.String(), err),
-			err.Error(),
-		)
+		resp.Diagnostics.AddError(fmt.Sprintf("deleting Timestream InfluxDB DB Instance (%s)", instanceID), err.Error())
 		return
 	}
 
-	deleteTimeout := r.DeleteTimeout(ctx, state.Timeouts)
-	_, err = waitDBInstanceDeleted(ctx, conn, state.ID.ValueString(), deleteTimeout)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.TimestreamInfluxDB, create.ErrActionWaitingForDeletion, ResNameDBInstance, state.ID.String(), err),
-			err.Error(),
-		)
+	if _, err := waitDBInstanceDeleted(ctx, conn, state.ID.ValueString(), r.DeleteTimeout(ctx, state.Timeouts)); err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("waiting for Timestream InfluxDB DB Instance (%s) delete", instanceID), err.Error())
 		return
 	}
 }

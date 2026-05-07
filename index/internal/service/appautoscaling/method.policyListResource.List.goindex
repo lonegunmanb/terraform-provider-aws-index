@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *policyListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().AppAutoScalingClient(ctx)
+
+	var query listPolicyModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	serviceNamespace := query.ServiceNamespace.ValueString()
+
+	tflog.Info(ctx, "Listing Application Auto Scaling Policies", map[string]any{
+		logging.ResourceAttributeKey("service_namespace"): serviceNamespace,
+	})
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := applicationautoscaling.DescribeScalingPoliciesInput{
+			ServiceNamespace: awstypes.ServiceNamespace(serviceNamespace),
+		}
+		for item, err := range listScalingPoliciesForList(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			policyName := aws.ToString(item.PolicyName)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrName), policyName)
+
+			result := request.NewListResult(ctx)
+
+			rd := l.ResourceData()
+			rd.SetId(policyName)
+			rd.Set(names.AttrName, policyName)
+			rd.Set("service_namespace", item.ServiceNamespace)
+			rd.Set(names.AttrResourceID, item.ResourceId)
+			rd.Set("scalable_dimension", item.ScalableDimension)
+
+			if request.IncludeResource {
+				if err := resourcePolicyFlatten(&item, rd); err != nil {
+					tflog.Error(ctx, "Reading Application Auto Scaling Policy", map[string]any{
+						"error": err.Error(),
+					})
+					continue
+				}
+			}
+
+			result.DisplayName = policyName
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

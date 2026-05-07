@@ -1,0 +1,101 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/outposts
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/outposts"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/outposts/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *capacityTaskResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().OutpostsClient(ctx)
+
+	var plan capacityTaskResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Preserve the user-supplied outpost identifier form (ARN or ID); the composite state ID
+	// and API calls use the canonical Outpost ID (BR-ID-Canonicalization).
+	userOutpostIdentifier := plan.OutpostIdentifier.ValueString()
+	outpostID := outpostIDFromIdentifier(userOutpostIdentifier)
+
+	var input outposts.StartCapacityTaskInput
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, plan, &input))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	out, err := conn.StartCapacityTask(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, fmt.Errorf("starting Outposts Capacity Task: %w", err), smerr.ID, outpostID)
+		return
+	}
+	if out == nil || out.CapacityTaskId == nil {
+		smerr.AddError(ctx, &resp.Diagnostics, errors.New("starting Outposts Capacity Task: empty response"), smerr.ID, outpostID)
+		return
+	}
+
+	taskID := aws.ToString(out.CapacityTaskId)
+	plan.CapacityTaskID = types.StringValue(taskID)
+
+	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
+	finalOut, err := waitCapacityTaskCreated(ctx, conn, outpostID, taskID, createTimeout)
+	if err != nil {
+		// Per BR-No-State-On-Failed-Create: on terminal FAILED state, do NOT persist state.
+		var failureErr *capacityTaskFailureError
+		if errors.As(err, &failureErr) {
+			smerr.AddError(ctx, &resp.Diagnostics, fmt.Errorf("waiting for Outposts Capacity Task (%s/%s): %w", outpostID, taskID, failureErr), smerr.ID, taskID)
+			return
+		}
+		smerr.AddError(ctx, &resp.Diagnostics, fmt.Errorf("waiting for Outposts Capacity Task (%s/%s): %w", outpostID, taskID, err), smerr.ID, taskID)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Flatten(ctx, finalOut, &plan, fwflex.WithFieldNamePrefix("CapacityTask")))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// Manual overrides for fields AutoFlex cannot map:
+	//   - RequestedInstancePools (output) → InstancePool (model) — name mismatch.
+	//   - Failed (*CapacityTaskFailure) → FailureReason (flat string per Q6 = A).
+	plan.InstancePool = flattenInstancePools(ctx, finalOut.RequestedInstancePools)
+	plan.FailureReason = flattenCapacityTaskFailureReason(finalOut.Failed)
+	// Preserve the user-facing outpost_identifier form (ARN or ID).
+	plan.OutpostIdentifier = types.StringValue(userOutpostIdentifier)
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

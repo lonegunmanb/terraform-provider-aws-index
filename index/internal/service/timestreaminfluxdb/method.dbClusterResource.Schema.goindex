@@ -1,8 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/timestreaminfluxdb
 import (
 	"context"
-	"errors"
-	"math"
+	"fmt"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -27,7 +26,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
@@ -117,19 +115,19 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 				Description: `Specifies the type of cluster to create. This field is forbidden for InfluxDB V3 clusters
 					(when using an InfluxDB V3 db parameter group).`,
 			},
-			"engine_type": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-				Description: `The database engine type of the DB cluster.`,
-			},
 			names.AttrEndpoint: schema.StringAttribute{
 				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
 				Description: `The endpoint used to connect to InfluxDB. The default InfluxDB port is 8086.`,
+			},
+			"engine_type": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+				Description: `The database engine type of the DB cluster.`,
 			},
 			"failover_mode": schema.StringAttribute{
 				CustomType: fwtypes.StringEnumType[awstypes.FailoverMode](),
@@ -181,8 +179,6 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 					IPV4, which can communicate over IPv4 protocol only, or DUAL, which can communicate 
 					over both IPv4 and IPv6 protocols.`,
 			},
-			names.AttrTags:    tftags.TagsAttribute(),
-			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
 			"organization": schema.StringAttribute{
 				Optional: true,
 				PlanModifiers: []planmodifier.String{
@@ -243,6 +239,8 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 				Description: `The endpoint used to connect to the Timestream for InfluxDB cluster for 
 					read-only operations.`,
 			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
 			names.AttrUsername: schema.StringAttribute{
 				Optional: true,
 				PlanModifiers: []planmodifier.String{
@@ -296,7 +294,7 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 		},
 		Blocks: map[string]schema.Block{
 			"log_delivery_configuration": schema.ListNestedBlock{
-				CustomType: fwtypes.NewListNestedObjectTypeOf[dbClusterLogDeliveryConfigurationData](ctx),
+				CustomType: fwtypes.NewListNestedObjectTypeOf[logDeliveryConfigurationModel](ctx),
 				Validators: []validator.List{
 					listvalidator.SizeAtMost(1),
 				},
@@ -304,7 +302,7 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 				NestedObject: schema.NestedBlockObject{
 					Blocks: map[string]schema.Block{
 						"s3_configuration": schema.ListNestedBlock{
-							CustomType: fwtypes.NewListNestedObjectTypeOf[dbClusterS3ConfigurationData](ctx),
+							CustomType: fwtypes.NewListNestedObjectTypeOf[s3ConfigurationModel](ctx),
 							Validators: []validator.List{
 								listvalidator.SizeAtMost(1),
 							},
@@ -325,6 +323,40 @@ func (r *dbClusterResource) Schema(ctx context.Context, req resource.SchemaReque
 								},
 							},
 							Description: `Configuration for S3 bucket log delivery.`,
+						},
+					},
+				},
+			},
+			"maintenance_schedule": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[maintenanceScheduleModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				Description: `Specifies the maintenance schedule for the DB cluster, including the preferred
+					maintenance window and timezone. This field is only supported for InfluxDB V3 clusters
+					(when using an InfluxDB V3 db parameter group).`,
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrPreferredMaintenanceWindow: schema.StringAttribute{
+							Required: true,
+							Validators: []validator.String{
+								stringvalidator.LengthAtMost(19),
+								stringvalidator.RegexMatches(
+									regexache.MustCompile(`^$|^(Mon|Tue|Wed|Thu|Fri|Sat|Sun):([01]\d|2[0-3]):[0-5]\d-(Mon|Tue|Wed|Thu|Fri|Sat|Sun):([01]\d|2[0-3]):[0-5]\d$`),
+									"must be in the format ddd:HH:MM-ddd:HH:MM or an empty string",
+								),
+							},
+							Description: `The preferred maintenance window in the format ddd:HH:MM-ddd:HH:MM.
+								Day must be one of Mon, Tue, Wed, Thu, Fri, Sat, or Sun. Provide an empty
+								string to let the system choose a window.`,
+						},
+						"timezone": schema.StringAttribute{
+							Required: true,
+							Validators: []validator.String{
+								stringvalidator.LengthAtLeast(1),
+							},
+							Description: `The IANA timezone identifier for the maintenance window. For
+								example, America/New_York or UTC.`,
 						},
 					},
 				},

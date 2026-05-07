@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/arczonalshift
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/arczonalshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/arczonalshift/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	flex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourceZonalAutoshiftConfiguration) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	conn := r.Meta().ARCZonalShiftClient(ctx)
+
+	var state resourceZonalAutoshiftConfigurationModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resourceIdentifier := state.ResourceARN.ValueString()
+
+	statusInput := arczonalshift.UpdateZonalAutoshiftConfigurationInput{
+		ResourceIdentifier:   aws.String(resourceIdentifier),
+		ZonalAutoshiftStatus: awstypes.ZonalAutoshiftStatusDisabled,
+	}
+	_, err := conn.UpdateZonalAutoshiftConfiguration(ctx, &statusInput)
+	if err != nil {
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return
+		}
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, resourceIdentifier)
+		return
+	}
+
+	deleteInput := arczonalshift.DeletePracticeRunConfigurationInput{
+		ResourceIdentifier: aws.String(resourceIdentifier),
+	}
+	_, err = conn.DeletePracticeRunConfiguration(ctx, &deleteInput)
+	if err != nil {
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return
+		}
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, resourceIdentifier)
+		return
+	}
+}

@@ -89,6 +89,10 @@ func resourceClientVPNEndpointCreate(ctx context.Context, d *schema.ResourceData
 		input.TrafficIpAddressType = awstypes.TrafficIpAddressType(v.(string))
 	}
 
+	if v, ok := d.GetOk("transit_gateway_configuration"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
+		input.TransitGatewayConfiguration = expandTransitGatewayConfiguration(v.([]any)[0].(map[string]any))
+	}
+
 	if v, ok := d.GetOk(names.AttrVPCID); ok {
 		input.VpcId = aws.String(v.(string))
 	}
@@ -100,6 +104,19 @@ func resourceClientVPNEndpointCreate(ctx context.Context, d *schema.ResourceData
 	}
 
 	d.SetId(aws.ToString(output.ClientVpnEndpointId))
+
+	if input.TransitGatewayConfiguration != nil {
+		ep, err := findClientVPNEndpointByID(ctx, conn, d.Id())
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "finding EC2 Client VPN Endpoint: %s", err)
+		}
+		if ep.TransitGatewayConfiguration == nil {
+			return sdkdiag.AppendErrorf(diags, "finding EC2 Client VPN Endpoint TransitGatewayConfiguration: %s", err)
+		}
+		if _, err := waitTransitGatewayAttachmentAccepted(ctx, conn, aws.ToString(ep.TransitGatewayConfiguration.TransitGatewayAttachmentId), d.Timeout(schema.TimeoutDefault)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for transit gateway configuration to be available for EC2 Client VPN Endpoint (%s): %s", d.Id(), err)
+		}
+	}
 
 	return append(diags, resourceClientVPNEndpointRead(ctx, d, meta)...)
 }

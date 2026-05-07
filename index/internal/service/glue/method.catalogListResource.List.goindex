@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/glue
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *catalogListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	awsClient := r.Meta()
+	conn := awsClient.GlueClient(ctx)
+
+	var query catalogListModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		result := request.NewListResult(ctx)
+		for catalog, err := range listCatalogs(ctx, conn, &glue.GetCatalogsInput{}) {
+			if err != nil {
+				result = fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			name := aws.ToString(catalog.Name)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrName), name)
+
+			var data catalogResourceModel
+			r.SetResult(ctx, awsClient, request.IncludeResource, &data, &result, func() {
+				var diags diag.Diagnostics
+				readCatalogIntoModel(ctx, &catalog, &data, false, &diags)
+				result.Diagnostics.Append(diags...)
+				if result.Diagnostics.HasError() {
+					return
+				}
+
+				tags, err := listTags(ctx, conn, data.ARN.ValueString())
+				if err != nil {
+					tflog.Error(ctx, "Listing Glue Catalog tags", map[string]any{
+						names.AttrName: name,
+						"error":        err.Error(),
+					})
+				} else {
+					setTagsOut(ctx, tags.Map())
+				}
+
+				result.DisplayName = name
+			})
+
+			if result.Diagnostics.HasError() {
+				result = list.ListResult{Diagnostics: result.Diagnostics}
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

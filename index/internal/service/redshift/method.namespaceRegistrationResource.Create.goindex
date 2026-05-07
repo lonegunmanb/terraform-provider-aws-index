@@ -1,0 +1,135 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
+	redshiftserverlesstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (r *namespaceRegistrationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data namespaceRegistrationResourceModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().RedshiftClient(ctx)
+
+	input := &redshift.RegisterNamespaceInput{
+		ConsumerIdentifiers: []string{data.ConsumerIdentifier.ValueString()},
+	}
+
+	if data.NamespaceType.ValueString() == namespaceTypeServerless {
+		input.NamespaceIdentifier = &awstypes.NamespaceIdentifierUnionMemberServerlessIdentifier{
+			Value: awstypes.ServerlessIdentifier{
+				NamespaceIdentifier: fwflex.StringFromFramework(ctx, data.ServerlessNamespaceIdentifier),
+				WorkgroupIdentifier: fwflex.StringFromFramework(ctx, data.ServerlessWorkgroupIdentifier),
+			},
+		}
+	} else {
+		input.NamespaceIdentifier = &awstypes.NamespaceIdentifierUnionMemberProvisionedIdentifier{
+			Value: awstypes.ProvisionedIdentifier{
+				ClusterIdentifier: fwflex.StringFromFramework(ctx, data.ProvisionedClusterIdentifier),
+			},
+		}
+	}
+
+	_, err := tfresource.RetryWhenIsA[any, *awstypes.InvalidClusterStateFault](ctx, namespaceRegistrationInvalidClusterStateFaultTimeout,
+		func(ctx context.Context) (any, error) {
+			return conn.RegisterNamespace(ctx, input)
+		})
+	if err != nil {
+		response.Diagnostics.AddError("creating Redshift Namespace Registration", err.Error())
+		return
+	}
+
+	// Wait for the internal data share to be created
+	if data.NamespaceType.ValueString() == namespaceTypeServerless {
+		// Get the namespace ID (UUID) for building the data share ARN
+		// serverless_namespace_identifier can be either name or ID
+		serverlessConn := r.Meta().RedshiftServerlessClient(ctx)
+		namespaceIdentifier := data.ServerlessNamespaceIdentifier.ValueString()
+
+		namespace, err := serverlessConn.GetNamespace(ctx, &redshiftserverless.GetNamespaceInput{
+			NamespaceName: aws.String(namespaceIdentifier),
+		})
+
+		var namespaceID string
+		if err != nil {
+			// If GetNamespace fails, assume the identifier is already the namespace ID
+			namespaceID = namespaceIdentifier
+		} else {
+			namespaceID = aws.ToString(namespace.Namespace.NamespaceId)
+		}
+
+		err = waitInternalDataShareCreated(ctx, conn,
+			namespaceID,
+			r.Meta().AccountID(ctx),
+			r.Meta().Region(ctx),
+			r.Meta().Partition(ctx),
+			namespaceRegistrationInvalidClusterStateFaultTimeout)
+		if err != nil {
+			response.Diagnostics.AddError("waiting for Redshift internal data share creation", err.Error())
+			return
+		}
+	} else if data.NamespaceType.ValueString() == namespaceTypeProvisioned {
+		// Get the namespace ID from the cluster
+		cluster, err := findClusterByID(ctx, conn, data.ProvisionedClusterIdentifier.ValueString())
+		if err != nil {
+			response.Diagnostics.AddError("reading Redshift Cluster for namespace ID", err.Error())
+			return
+		}
+
+		// Extract namespace ID from ClusterNamespaceArn
+		// Format: arn:aws:redshift:region:account:namespace:namespace-id
+		namespaceArn := aws.ToString(cluster.ClusterNamespaceArn)
+		parts := strings.Split(namespaceArn, ":")
+		if len(parts) < 7 {
+			response.Diagnostics.AddError("parsing cluster namespace ARN", fmt.Sprintf("invalid ARN format: %s", namespaceArn))
+			return
+		}
+		namespaceID := parts[6]
+
+		err = waitInternalDataShareCreated(ctx, conn,
+			namespaceID,
+			r.Meta().AccountID(ctx),
+			r.Meta().Region(ctx),
+			r.Meta().Partition(ctx),
+			namespaceRegistrationInvalidClusterStateFaultTimeout)
+		if err != nil {
+			response.Diagnostics.AddError("waiting for Redshift internal data share creation", err.Error())
+			return
+		}
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	r.readNamespaceRegistration(ctx, &data, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

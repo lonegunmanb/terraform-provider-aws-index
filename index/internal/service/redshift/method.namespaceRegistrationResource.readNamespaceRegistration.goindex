@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/redshift
+import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/redshift"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
+	redshiftserverlesstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (r *namespaceRegistrationResource) readNamespaceRegistration(ctx context.Context, data *namespaceRegistrationResourceModel, diags *diag.Diagnostics) (notFound bool) {
+	conn := r.Meta().RedshiftClient(ctx)
+	serverlessConn := r.Meta().RedshiftServerlessClient(ctx)
+
+	var namespaceID string
+
+	if data.NamespaceType.ValueString() == namespaceTypeServerless {
+		identifier := data.ServerlessNamespaceIdentifier.ValueString()
+		if len(identifier) == 36 && identifier[8] == '-' && identifier[13] == '-' {
+			namespaceID = identifier
+		} else {
+			namespace, err := serverlessConn.GetNamespace(ctx, &redshiftserverless.GetNamespaceInput{
+				NamespaceName: aws.String(identifier),
+			})
+			if err != nil {
+				if errs.IsA[*redshiftserverlesstypes.ResourceNotFoundException](err) {
+					return true
+				}
+				diags.AddError("reading Redshift Serverless Namespace", err.Error())
+				return false
+			}
+			namespaceID = aws.ToString(namespace.Namespace.NamespaceId)
+		}
+	} else {
+		cluster, err := findClusterByID(ctx, conn, data.ProvisionedClusterIdentifier.ValueString())
+		if retry.NotFound(err) {
+			return true
+		}
+		if err != nil {
+			diags.AddError("reading Redshift Cluster", err.Error())
+			return false
+		}
+
+		namespaceArn := aws.ToString(cluster.ClusterNamespaceArn)
+		parts := strings.Split(namespaceArn, ":")
+		if len(parts) < 7 {
+			diags.AddError("parsing cluster namespace ARN", fmt.Sprintf("invalid ARN format: %s", namespaceArn))
+			return false
+		}
+		namespaceID = parts[6]
+	}
+
+	_, err := findInternalDataShareByNamespaceID(ctx, conn, namespaceID, r.Meta().AccountID(ctx), r.Meta().Region(ctx), r.Meta().Partition(ctx))
+	if retry.NotFound(err) {
+		return true
+	}
+	if err != nil {
+		diags.AddError("reading Redshift Namespace Registration", err.Error())
+	}
+	return false
+}

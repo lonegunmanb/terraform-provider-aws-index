@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/fsx"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -100,8 +101,15 @@ func resourceWindowsFileSystemCreate(ctx context.Context, d *schema.ResourceData
 	}
 
 	if v, ok := d.GetOk("self_managed_active_directory"); ok {
-		inputCFS.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration = expandWindowsFileSystemSelfManagedActiveDirectoryConfiguration(v.([]any))
-		inputCFSFB.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration = expandWindowsFileSystemSelfManagedActiveDirectoryConfiguration(v.([]any))
+		// get write-only value from configuration
+		passwordWO, getWODiags := flex.GetWriteOnlyStringValue(d, cty.GetAttrPath("self_managed_active_directory").IndexInt(0).GetAttr("password_wo"))
+		diags = append(diags, getWODiags...)
+		if diags.HasError() {
+			return diags
+		}
+
+		inputCFS.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration = expandWindowsFileSystemSelfManagedActiveDirectoryConfiguration(v.([]any), passwordWO)
+		inputCFSFB.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration = expandWindowsFileSystemSelfManagedActiveDirectoryConfiguration(v.([]any), passwordWO)
 	}
 
 	if v, ok := d.GetOk(names.AttrStorageType); ok {

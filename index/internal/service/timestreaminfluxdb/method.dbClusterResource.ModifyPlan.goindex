@@ -1,8 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/timestreaminfluxdb
 import (
 	"context"
-	"errors"
-	"math"
+	"fmt"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -27,7 +26,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
@@ -40,25 +38,74 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *dbClusterResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if !req.Plan.Raw.IsNull() {
-		var data dbClusterResourceModel
-		resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if req.Plan.Raw.IsNull() {
+		// Resource deletion.
+		return
+	}
+
+	var data dbClusterResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var isV3Cluster bool
+	if !isNullOrUnknownValue(data.DBParameterGroupIdentifier) {
+		conn := r.Meta().TimestreamInfluxDBClient(ctx)
+
+		paramGroupID := fwflex.StringValueFromFramework(ctx, data.DBParameterGroupIdentifier)
+		isV3, diags := isParameterGroupV3(ctx, conn, paramGroupID)
+		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
+		isV3Cluster = isV3
+	}
 
-		var isV3Cluster bool
-		if !data.DBParameterGroupIdentifier.IsNull() {
-			isV3, diags := isParameterGroupV3(ctx, r.Meta().TimestreamInfluxDBClient(ctx), data.DBParameterGroupIdentifier.ValueString())
-			resp.Diagnostics.Append(diags...)
-			if resp.Diagnostics.HasError() {
-				return
+	v2Fields := []struct {
+		val  attr.Value
+		path string
+	}{
+		{data.AllocatedStorage, names.AttrAllocatedStorage},
+		{data.Bucket, names.AttrBucket},
+		{data.DeploymentType, "deployment_type"},
+		{data.Organization, "organization"},
+		{data.Password, names.AttrPassword},
+		{data.Username, names.AttrUsername},
+	}
+
+	// Validate V3-specific field restrictions
+	if isV3Cluster {
+		for _, v := range v2Fields {
+			if !isNullOrUnknownValue(v.val) {
+				resp.Diagnostics.AddAttributeError(
+					path.Root(v.path),
+					"Invalid Configuration for InfluxDB V3",
+					v.path+" must not be set when using an InfluxDB V3 db parameter group",
+				)
 			}
-			isV3Cluster = isV3
+		}
+	} else {
+		for _, v := range v2Fields {
+			if isNullOrUnknownValue(v.val) {
+				if rootAttributeName := v.path; rootAttributeName == "deployment_type" {
+					resp.Plan.SetAttribute(ctx, path.Root(rootAttributeName), fwtypes.StringEnumValue(awstypes.ClusterDeploymentTypeMultiNodeReadReplicas))
+				} else {
+					resp.Diagnostics.AddAttributeError(
+						path.Root(v.path),
+						"Missing Required Configuration for InfluxDB V2",
+						rootAttributeName+" is required for InfluxDB V2 clusters",
+					)
+				}
+			}
 		}
 
-		if !isV3Cluster && data.DeploymentType.IsUnknown() {
-			resp.Plan.SetAttribute(ctx, path.Root("deployment_type"), fwtypes.StringEnumValue(awstypes.ClusterDeploymentTypeMultiNodeReadReplicas))
+		if !isNullOrUnknownValue(data.MaintenanceSchedule) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("maintenance_schedule"),
+				"Invalid Configuration for InfluxDB V2",
+				"maintenance_schedule is only supported for InfluxDB V3 clusters (when using an InfluxDB V3 db parameter group)",
+			)
 		}
 	}
 }

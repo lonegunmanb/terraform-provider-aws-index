@@ -1,0 +1,51 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/appautoscaling
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/applicationautoscaling"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/applicationautoscaling/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourcePolicyFlatten(policy *awstypes.ScalingPolicy, d *schema.ResourceData) error {
+	d.Set("alarm_arns", tfslices.ApplyToAll(policy.Alarms, func(v awstypes.Alarm) string {
+		return aws.ToString(v.AlarmARN)
+	}))
+	d.Set(names.AttrARN, policy.PolicyARN)
+	d.Set(names.AttrName, policy.PolicyName)
+	d.Set("policy_type", policy.PolicyType)
+	if policy.PredictiveScalingPolicyConfiguration != nil {
+		if err := d.Set("predictive_scaling_policy_configuration", []any{flattenPredictiveScalingPolicyConfiguration(policy.PredictiveScalingPolicyConfiguration)}); err != nil {
+			return fmt.Errorf("setting predictive_scaling_policy_configuration: %w", err)
+		}
+	} else {
+		d.Set("predictive_scaling_policy_configuration", nil)
+	}
+	d.Set(names.AttrResourceID, policy.ResourceId)
+	d.Set("scalable_dimension", policy.ScalableDimension)
+	d.Set("service_namespace", policy.ServiceNamespace)
+	if err := d.Set("step_scaling_policy_configuration", flattenStepScalingPolicyConfiguration(policy.StepScalingPolicyConfiguration)); err != nil {
+		return fmt.Errorf("setting step_scaling_policy_configuration: %w", err)
+	}
+	if err := d.Set("target_tracking_scaling_policy_configuration", flattenTargetTrackingScalingPolicyConfiguration(policy.TargetTrackingScalingPolicyConfiguration)); err != nil {
+		return fmt.Errorf("setting target_tracking_scaling_policy_configuration: %w", err)
+	}
+
+	return nil
+}
