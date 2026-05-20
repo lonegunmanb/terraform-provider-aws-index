@@ -1,19 +1,20 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/xray
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/xray"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/xray/types"
 	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
@@ -22,42 +23,34 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *resourcePolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	conn := r.Meta().XRayClient(ctx)
-
 	var plan resourcePolicyResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	in := xray.PutResourcePolicyInput{
-		PolicyDocument: plan.PolicyDocument.ValueStringPointer(),
-		PolicyName:     plan.PolicyName.ValueStringPointer(),
-	}
+	conn := r.Meta().XRayClient(ctx)
+
+	name := fwflex.StringValueFromFramework(ctx, plan.PolicyName)
+	var in xray.PutResourcePolicyInput
 	resp.Diagnostics.Append(fwflex.Expand(ctx, plan, &in)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	out, err := conn.PutResourcePolicy(ctx, &in)
+	_, err := conn.PutResourcePolicy(ctx, &in)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.XRay, create.ErrActionCreating, ResNameResourcePolicy, plan.PolicyName.String(), err),
-			err.Error(),
-		)
-		return
-	}
-	if out == nil || out.ResourcePolicy == nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.XRay, create.ErrActionCreating, ResNameResourcePolicy, plan.PolicyName.String(), nil),
-			errors.New("empty output").Error(),
-		)
+		resp.Diagnostics.AddError(fmt.Sprintf("creating XRay Resource Policy (%s)", name), err.Error())
 		return
 	}
 
-	plan.LastUpdatedTime = fwflex.TimeToFramework(ctx, out.ResourcePolicy.LastUpdatedTime)
-	plan.PolicyRevisionID = fwflex.StringValueToFramework(ctx, *out.ResourcePolicy.PolicyRevisionId)
+	out, err := findResourcePolicyByName(ctx, conn, name)
+	if err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("reading XRay Resource Policy (%s)", name), err.Error())
+		return
+	}
 
+	// Set values for unknowns.
 	resp.Diagnostics.Append(fwflex.Flatten(ctx, out, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
