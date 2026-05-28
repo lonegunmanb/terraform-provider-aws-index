@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kafka"
 	"github.com/aws/aws-sdk-go-v2/service/kafka/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
@@ -92,6 +93,79 @@ func resourceReplicator() *schema.Resource {
 										ForceNew: true,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"log_delivery": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"replicator_log_delivery": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									names.AttrCloudWatchLogs: {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												names.AttrEnabled: {
+													Type:     schema.TypeBool,
+													Required: true,
+												},
+												"log_group": {
+													Type:     schema.TypeString,
+													Optional: true,
+												},
+											},
+										},
+									},
+									"firehose": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"delivery_stream": {
+													Type:     schema.TypeString,
+													Optional: true,
+												},
+												names.AttrEnabled: {
+													Type:     schema.TypeBool,
+													Required: true,
+												},
+											},
+										},
+									},
+									"s3": {
+										Type:     schema.TypeList,
+										Optional: true,
+										MaxItems: 1,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												names.AttrBucket: {
+													Type:     schema.TypeString,
+													Optional: true,
+												},
+												names.AttrEnabled: {
+													Type:     schema.TypeBool,
+													Required: true,
+												},
+												names.AttrPrefix: {
+													Type:     schema.TypeString,
+													Optional: true,
+												},
+											},
 										},
 									},
 								},
@@ -187,6 +261,7 @@ func resourceReplicator() *schema.Resource {
 									"topics_to_exclude": {
 										Type:     schema.TypeSet,
 										Optional: true,
+										Computed: true,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
@@ -209,6 +284,7 @@ func resourceReplicator() *schema.Resource {
 									"consumer_groups_to_exclude": {
 										Type:     schema.TypeSet,
 										Optional: true,
+										Computed: true,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
@@ -248,5 +324,36 @@ func resourceReplicator() *schema.Resource {
 			names.AttrTags:    tftags.TagsSchema(),
 			names.AttrTagsAll: tftags.TagsSchemaComputed(),
 		},
+		CustomizeDiff: customdiff.Sequence(
+			func(ctx context.Context, d *schema.ResourceDiff, meta any) error {
+				var diags diag.Diagnostics
+				cloudwatchLogsBlock := "log_delivery.0.replicator_log_delivery.0.cloudwatch_logs.0"
+				firehoseLogBlock := "log_delivery.0.replicator_log_delivery.0.firehose.0"
+				s3LogBlock := "log_delivery.0.replicator_log_delivery.0.s3.0"
+				if v, ok := d.Get(fmt.Sprintf("%s.%s", cloudwatchLogsBlock, names.AttrEnabled)).(bool); ok && !v {
+					if _, ok := d.GetOk(fmt.Sprintf("%s.%s", cloudwatchLogsBlock, "log_group")); ok {
+						diags = sdkdiag.AppendErrorf(diags, "cannot specify log_group when CloudWatch Logs logging is disabled")
+					}
+				}
+				if v, ok := d.Get(fmt.Sprintf("%s.%s", firehoseLogBlock, names.AttrEnabled)).(bool); ok && !v {
+					if _, ok := d.GetOk(fmt.Sprintf("%s.%s", firehoseLogBlock, "delivery_stream")); ok {
+						diags = sdkdiag.AppendErrorf(diags, "cannot specify delivery_stream when Firehose logging is disabled")
+					}
+				}
+				if v, ok := d.Get(fmt.Sprintf("%s.%s", s3LogBlock, names.AttrEnabled)).(bool); ok && !v {
+					if _, ok := d.GetOk(fmt.Sprintf("%s.%s", s3LogBlock, names.AttrBucket)); ok {
+						diags = sdkdiag.AppendErrorf(diags, "cannot specify bucket when S3 logging is disabled")
+					}
+					if _, ok := d.GetOk(fmt.Sprintf("%s.%s", s3LogBlock, names.AttrPrefix)); ok {
+						diags = sdkdiag.AppendErrorf(diags, "cannot specify prefix when S3 logging is disabled")
+					}
+				}
+				if diags.HasError() {
+					return sdkdiag.DiagnosticsError(diags)
+				}
+
+				return nil
+			},
+		),
 	}
 }
