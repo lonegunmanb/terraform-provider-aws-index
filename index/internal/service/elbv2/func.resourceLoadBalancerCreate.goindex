@@ -63,7 +63,7 @@ func resourceLoadBalancerCreate(ctx context.Context, d *schema.ResourceData, met
 	d.Set(names.AttrName, name)
 
 	lbType := awstypes.LoadBalancerTypeEnum(d.Get("load_balancer_type").(string))
-	input := &elasticloadbalancingv2.CreateLoadBalancerInput{
+	input := elasticloadbalancingv2.CreateLoadBalancerInput{
 		Name: aws.String(name),
 		Tags: getTagsIn(ctx),
 		Type: lbType,
@@ -71,6 +71,10 @@ func resourceLoadBalancerCreate(ctx context.Context, d *schema.ResourceData, met
 
 	if v, ok := d.GetOk("customer_owned_ipv4_pool"); ok {
 		input.CustomerOwnedIpv4Pool = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("enable_prefix_for_ipv6_source_nat"); ok {
+		input.EnablePrefixForIpv6SourceNat = awstypes.EnablePrefixForIpv6SourceNatEnum(v.(string))
 	}
 
 	if _, ok := d.GetOk("internal"); ok {
@@ -97,13 +101,13 @@ func resourceLoadBalancerCreate(ctx context.Context, d *schema.ResourceData, met
 		input.Subnets = flex.ExpandStringValueSet(v.(*schema.Set))
 	}
 
-	output, err := conn.CreateLoadBalancer(ctx, input)
+	output, err := conn.CreateLoadBalancer(ctx, &input)
 
 	// Some partitions (e.g. ISO) may not support tag-on-create.
 	if input.Tags != nil && errs.IsUnsupportedOperationInPartitionError(partition, err) {
 		input.Tags = nil
 
-		output, err = conn.CreateLoadBalancer(ctx, input)
+		output, err = conn.CreateLoadBalancer(ctx, &input)
 	}
 
 	if err != nil {
@@ -188,7 +192,7 @@ func resourceLoadBalancerCreate(ctx context.Context, d *schema.ResourceData, met
 	}
 
 	if v, ok := d.GetOk("enforce_security_group_inbound_rules_on_private_link_traffic"); ok && lbType == awstypes.LoadBalancerTypeEnumNetwork {
-		input := &elasticloadbalancingv2.SetSecurityGroupsInput{
+		input := elasticloadbalancingv2.SetSecurityGroupsInput{
 			EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: awstypes.EnforceSecurityGroupInboundRulesOnPrivateLinkTrafficEnum(v.(string)),
 			LoadBalancerArn: aws.String(d.Id()),
 		}
@@ -197,7 +201,7 @@ func resourceLoadBalancerCreate(ctx context.Context, d *schema.ResourceData, met
 			input.SecurityGroups = flex.ExpandStringValueSet(v.(*schema.Set))
 		}
 
-		_, err := conn.SetSecurityGroups(ctx, input)
+		_, err := conn.SetSecurityGroups(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "setting ELBv2 Load Balancer (%s) security groups: %s", d.Id(), err)

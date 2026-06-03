@@ -1,0 +1,158 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pinpointsmsvoicev2
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *eventDestinationResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"configuration_set_arn": schema.StringAttribute{
+				Description: "ARN of the parent configuration set.",
+				CustomType:  fwtypes.ARNType,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"configuration_set_name": schema.StringAttribute{
+				Description: "Name of the configuration set this event destination belongs to.",
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 256),
+					stringvalidator.RegexMatches(regexache.MustCompile(`^[A-Za-z0-9_:/-]+$`), "must contain only alphanumeric characters, underscores, hyphens, colons, and slashes"),
+				},
+			},
+			names.AttrEnabled: schema.BoolAttribute{
+				Description: "Whether the event destination is enabled. Defaults to `true`.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(true),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"event_destination_name": schema.StringAttribute{
+				Description: "Name of the event destination.",
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 64),
+					stringvalidator.RegexMatches(regexache.MustCompile(`^[A-Za-z0-9_-]+$`), "must contain only alphanumeric characters, underscores, and hyphens"),
+				},
+			},
+			"matching_event_types": schema.SetAttribute{
+				Description: "Event types for which the destination receives records.",
+				CustomType:  fwtypes.NewSetTypeOf[fwtypes.StringEnum[awstypes.EventType]](ctx),
+				Required:    true,
+				ElementType: fwtypes.StringEnumType[awstypes.EventType](),
+				Validators: []validator.Set{
+					setvalidator.SizeAtLeast(1),
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"cloudwatch_logs_destination": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[cloudWatchLogsDestinationModel](ctx),
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplaceIf(sinkTypeSwapRequiresReplace, sinkTypeSwapReplaceDescription, sinkTypeSwapReplaceDescription),
+				},
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrIAMRoleARN: schema.StringAttribute{
+							Description: "ARN of the IAM role that End User Messaging SMS assumes to write to the log group.",
+							CustomType:  fwtypes.ARNType,
+							Required:    true,
+						},
+						"log_group_arn": schema.StringAttribute{
+							Description: "ARN of the Amazon CloudWatch log group that receives the events.",
+							CustomType:  fwtypes.ARNType,
+							Required:    true,
+						},
+					},
+				},
+			},
+			"kinesis_firehose_destination": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[kinesisFirehoseDestinationModel](ctx),
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplaceIf(sinkTypeSwapRequiresReplace, sinkTypeSwapReplaceDescription, sinkTypeSwapReplaceDescription),
+				},
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"delivery_stream_arn": schema.StringAttribute{
+							Description: "ARN of the Amazon Data Firehose delivery stream that receives the events.",
+							CustomType:  fwtypes.ARNType,
+							Required:    true,
+						},
+						names.AttrIAMRoleARN: schema.StringAttribute{
+							Description: "ARN of the IAM role that End User Messaging SMS assumes to write to the delivery stream.",
+							CustomType:  fwtypes.ARNType,
+							Required:    true,
+						},
+					},
+				},
+			},
+			"sns_destination": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[snsDestinationModel](ctx),
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplaceIf(sinkTypeSwapRequiresReplace, sinkTypeSwapReplaceDescription, sinkTypeSwapReplaceDescription),
+				},
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						names.AttrTopicARN: schema.StringAttribute{
+							Description: "ARN of the Amazon SNS topic that receives the events.",
+							CustomType:  fwtypes.ARNType,
+							Required:    true,
+						},
+					},
+				},
+			},
+		},
+	}
+}

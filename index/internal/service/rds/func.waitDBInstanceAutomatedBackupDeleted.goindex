@@ -22,8 +22,6 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func waitDBInstanceAutomatedBackupDeleted(ctx context.Context, conn *rds.Client, dbInstanceID, dbInstanceAutomatedBackupsARN string, timeout time.Duration, optFns ...func(*rds.Options)) (*types.DBInstance, error) {
-	var output *types.DBInstance
-
 	_, err := tfresource.RetryUntilEqual(ctx, timeout, false, func(ctx context.Context) (bool, error) {
 		dbInstance, err := findDBInstanceByID(ctx, conn, dbInstanceID, optFns...)
 
@@ -35,8 +33,6 @@ func waitDBInstanceAutomatedBackupDeleted(ctx context.Context, conn *rds.Client,
 			return false, err
 		}
 
-		output = dbInstance
-
 		return slices.ContainsFunc(dbInstance.DBInstanceAutomatedBackupsReplications, func(v types.DBInstanceAutomatedBackupsReplication) bool {
 			return aws.ToString(v.DBInstanceAutomatedBackupsArn) == dbInstanceAutomatedBackupsARN
 		}), nil
@@ -46,5 +42,22 @@ func waitDBInstanceAutomatedBackupDeleted(ctx context.Context, conn *rds.Client,
 		return nil, err
 	}
 
-	return output, nil
+	// "InvalidDBInstanceState: Cannot create a snapshot because the database instance ... is not currently in the available state".
+	stateConf := &retry.StateChangeConf{
+		Pending: []string{
+			instanceStatusModifying,
+			instanceStatusBackingUp,
+		},
+		Target:  []string{instanceStatusAvailable},
+		Refresh: statusDBInstance(conn, dbInstanceID, optFns...),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*types.DBInstance); ok {
+		return output, err
+	}
+
+	return nil, err
 }

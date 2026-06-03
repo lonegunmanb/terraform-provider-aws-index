@@ -1,0 +1,130 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	smithydocument "github.com/aws/smithy-go/document"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
+	"github.com/shopspring/decimal"
+)
+func flattenSliceOfPrimitiveToSet(ctx context.Context, _ *autoFlattener, vFrom reflect.Value, tTo basetypes.SetTypable, vTo reflect.Value, elementType attr.Type, attrValueFromReflectValue attrValueFromReflectValueFunc, fieldOpts fieldOpts) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	if fieldOpts.legacy {
+		tflog.SubsystemDebug(ctx, subsystemName, "Using legacy flattener")
+		if vFrom.IsNil() {
+			set, d := types.SetValue(elementType, []attr.Value{})
+			diags.Append(d...)
+			if diags.HasError() {
+				return diags
+			}
+
+			to, d := tTo.ValueFromSet(ctx, set)
+			diags.Append(d...)
+			if diags.HasError() {
+				return diags
+			}
+
+			vTo.Set(reflect.ValueOf(to))
+			return diags
+		}
+	} else {
+		if vFrom.IsNil() {
+			// If omitempty is set, return null
+			if fieldOpts.omitempty {
+				tflog.SubsystemTrace(ctx, subsystemName, "Flattening with SetNull (omitempty)")
+				to, d := tTo.ValueFromSet(ctx, types.SetNull(elementType))
+				diags.Append(d...)
+				if diags.HasError() {
+					return diags
+				}
+
+				vTo.Set(reflect.ValueOf(to))
+				return diags
+			}
+
+			// If legacy mode, return empty set
+			if fieldOpts.legacy {
+				tflog.SubsystemTrace(ctx, subsystemName, "Flattening with SetValue (empty for nil in legacy mode)")
+				set, d := types.SetValue(elementType, []attr.Value{})
+				diags.Append(d...)
+				if diags.HasError() {
+					return diags
+				}
+				to, d := tTo.ValueFromSet(ctx, set)
+				diags.Append(d...)
+				if diags.HasError() {
+					return diags
+				}
+
+				vTo.Set(reflect.ValueOf(to))
+				return diags
+			}
+
+			// Default: return null set
+			tflog.SubsystemTrace(ctx, subsystemName, "Flattening with SetNull")
+			to, d := tTo.ValueFromSet(ctx, types.SetNull(elementType))
+			diags.Append(d...)
+			if diags.HasError() {
+				return diags
+			}
+
+			vTo.Set(reflect.ValueOf(to))
+			return diags
+		}
+	}
+
+	// Check if slice is empty and omitempty is set - return null instead of empty set
+	if vFrom.Len() == 0 && fieldOpts.omitempty {
+		tflog.SubsystemTrace(ctx, subsystemName, "Flattening with SetValue (null for empty slice with omitempty)")
+		to, d := tTo.ValueFromSet(ctx, types.SetNull(elementType))
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+
+		vTo.Set(reflect.ValueOf(to))
+		return diags
+	}
+
+	tflog.SubsystemTrace(ctx, subsystemName, "Flattening with SetValue", map[string]any{
+		logAttrKeySourceSize: vFrom.Len(),
+	})
+	elements := make([]attr.Value, vFrom.Len())
+	for i := range vFrom.Len() {
+		value, d := attrValueFromReflectValue(vFrom.Index(i))
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+
+		elements[i] = value
+	}
+	set, d := types.SetValue(elementType, elements)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	to, d := tTo.ValueFromSet(ctx, set)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	vTo.Set(reflect.ValueOf(to))
+	return diags
+}

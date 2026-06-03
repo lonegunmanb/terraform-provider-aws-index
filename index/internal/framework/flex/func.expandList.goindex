@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func expandList(ctx context.Context, expander *autoExpander, sourcePath path.Path, vFrom basetypes.ListValuable, targetPath path.Path, vTo reflect.Value, fieldOpts fieldOpts) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	v, d := vFrom.ToListValue(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	switch v.ElementType(ctx).(type) {
+	case basetypes.Int64Typable:
+		diags.Append(expandListOrSetOfInt64(ctx, expander, v, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.StringTypable:
+		diags.Append(expandListOrSetOfString(ctx, expander, v, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.ObjectTypable:
+		if vFrom, ok := vFrom.(fwtypes.NestedObjectCollectionValue); ok {
+			diags.Append(expandNestedObjectCollection(ctx, expander, sourcePath, vFrom, targetPath, vTo, fieldOpts)...)
+			return diags
+		}
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "AutoFlex Expand; incompatible types", map[string]any{
+		"from list[%s]": v.ElementType(ctx),
+		logAttrKeyTo:    vTo.Kind(),
+	})
+
+	return diags
+}

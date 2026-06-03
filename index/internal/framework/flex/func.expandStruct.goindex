@@ -16,7 +16,7 @@ import (
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
 )
-func expandStruct(ctx context.Context, sourcePath path.Path, from any, targetPath path.Path, to any, flexer autoFlexer) diag.Diagnostics {
+func expandStruct(ctx context.Context, sourcePath path.Path, from any, targetPath path.Path, to any, expander *autoExpander) diag.Diagnostics {
 	var diags diag.Diagnostics
 
 	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourcePath, sourcePath.String())
@@ -53,12 +53,12 @@ func expandStruct(ctx context.Context, sourcePath path.Path, from any, targetPat
 	// Handle XML wrapper collapse patterns where multiple source fields
 	// need to be combined into a single complex target field
 	processedFields := make(map[string]bool)
-	diags.Append(flexer.handleXMLWrapperCollapse(ctx, sourcePath, valFrom, targetPath, valTo, typeFrom, typeTo, processedFields)...)
+	diags.Append(expandHandleXMLWrapperCollapse(ctx, expander, sourcePath, valFrom, targetPath, valTo, typeFrom, typeTo, processedFields)...)
 	if diags.HasError() {
 		return diags
 	}
 
-	for fromField := range expandSourceFields(ctx, typeFrom, flexer.getOptions()) {
+	for fromField := range expandSourceFields(ctx, typeFrom, expander.Options) {
 		fromFieldName := fromField.Name
 		_, fromFieldOpts := autoflexTags(fromField)
 		if fromFieldOpts.NoExpand() {
@@ -84,7 +84,7 @@ func expandStruct(ctx context.Context, sourcePath path.Path, from any, targetPat
 			continue
 		}
 
-		toField, ok := (&fuzzyFieldFinder{}).findField(ctx, fromFieldName, typeFrom, typeTo, flexer)
+		toField, ok := (&fuzzyFieldFinder{}).findField(ctx, fromFieldName, typeFrom, typeTo, expander.Options)
 		if !ok {
 			// Corresponding field not found in to.
 			tflog.SubsystemDebug(ctx, subsystemName, "No corresponding target field", map[string]any{
@@ -115,7 +115,7 @@ func expandStruct(ctx context.Context, sourcePath path.Path, from any, targetPat
 			xmlWrapperField: fromFieldOpts.XMLWrapperField(),
 		}
 
-		diags.Append(flexer.convert(ctx, sourcePath.AtName(fromFieldName), valFrom.FieldByIndex(fromField.Index), targetPath.AtName(toFieldName), toFieldVal, opts)...)
+		diags.Append(expandConvert(ctx, expander, sourcePath.AtName(fromFieldName), valFrom.FieldByIndex(fromField.Index), targetPath.AtName(toFieldName), toFieldVal, opts)...)
 		if diags.HasError() {
 			break
 		}

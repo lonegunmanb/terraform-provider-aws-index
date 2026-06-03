@@ -87,7 +87,7 @@ func resourceLoadBalancerUpdate(ctx context.Context, d *schema.ResourceData, met
 	}
 
 	if d.HasChanges("enforce_security_group_inbound_rules_on_private_link_traffic", names.AttrSecurityGroups) {
-		input := &elasticloadbalancingv2.SetSecurityGroupsInput{
+		input := elasticloadbalancingv2.SetSecurityGroupsInput{
 			LoadBalancerArn: aws.String(d.Id()),
 			SecurityGroups:  flex.ExpandStringValueSet(d.Get(names.AttrSecurityGroups).(*schema.Set)),
 		}
@@ -98,16 +98,25 @@ func resourceLoadBalancerUpdate(ctx context.Context, d *schema.ResourceData, met
 			}
 		}
 
-		_, err := conn.SetSecurityGroups(ctx, input)
+		_, err := conn.SetSecurityGroups(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "setting ELBv2 Load Balancer (%s) security groups: %s", d.Id(), err)
 		}
 	}
 
-	if d.HasChanges("subnet_mapping", names.AttrSubnets) {
-		input := &elasticloadbalancingv2.SetSubnetsInput{
+	if d.HasChanges("enable_prefix_for_ipv6_source_nat", "subnet_mapping", names.AttrSubnets) {
+		input := elasticloadbalancingv2.SetSubnetsInput{
 			LoadBalancerArn: aws.String(d.Id()),
+		}
+
+		if d.HasChange("enable_prefix_for_ipv6_source_nat") {
+			input.EnablePrefixForIpv6SourceNat = awstypes.EnablePrefixForIpv6SourceNatEnum(d.Get("enable_prefix_for_ipv6_source_nat").(string))
+
+			if !d.HasChanges("subnet_mapping", names.AttrSubnets) {
+				// "ValidationError: At least one subnet must be specified".
+				input.Subnets = flex.ExpandStringValueSet(d.Get(names.AttrSubnets).(*schema.Set))
+			}
 		}
 
 		if d.HasChange("subnet_mapping") {
@@ -122,7 +131,7 @@ func resourceLoadBalancerUpdate(ctx context.Context, d *schema.ResourceData, met
 			}
 		}
 
-		_, err := conn.SetSubnets(ctx, input)
+		_, err := conn.SetSubnets(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "setting ELBv2 Load Balancer (%s) subnets: %s", d.Id(), err)
@@ -130,12 +139,12 @@ func resourceLoadBalancerUpdate(ctx context.Context, d *schema.ResourceData, met
 	}
 
 	if d.HasChange(names.AttrIPAddressType) {
-		input := &elasticloadbalancingv2.SetIpAddressTypeInput{
+		input := elasticloadbalancingv2.SetIpAddressTypeInput{
 			IpAddressType:   awstypes.IpAddressType(d.Get(names.AttrIPAddressType).(string)),
 			LoadBalancerArn: aws.String(d.Id()),
 		}
 
-		_, err := conn.SetIpAddressType(ctx, input)
+		_, err := conn.SetIpAddressType(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "setting ELBv2 Load Balancer (%s) address type: %s", d.Id(), err)

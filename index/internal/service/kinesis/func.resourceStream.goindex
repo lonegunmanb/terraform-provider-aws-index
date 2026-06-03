@@ -3,7 +3,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -33,7 +33,29 @@ func resourceStream() *schema.Resource {
 		DeleteWithoutTimeout: resourceStreamDelete,
 
 		Importer: &schema.ResourceImporter{
-			StateContext: resourceStreamImport,
+			StateContext: func(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+				if err := importer.Import(ctx, d, meta); err != nil {
+					return nil, err
+				}
+
+				conn := meta.(*conns.AWSClient).KinesisClient(ctx)
+
+				// Region may be overridden in the import block.
+				var optFns []func(*kinesis.Options)
+				if v, ok := d.GetOk(names.AttrRegion); ok {
+					optFns = append(optFns, func(o *kinesis.Options) {
+						o.Region = v.(string)
+					})
+				}
+				output, err := findStreamByName(ctx, conn, d.Id(), optFns...)
+
+				if err != nil {
+					return nil, err
+				}
+
+				d.SetId(aws.ToString(output.StreamARN))
+				return []*schema.ResourceData{d}, nil
+			},
 		},
 
 		CustomizeDiff: customdiff.Sequence(
@@ -93,74 +115,83 @@ func resourceStream() *schema.Resource {
 			Delete: schema.DefaultTimeout(120 * time.Minute),
 		},
 
-		Schema: map[string]*schema.Schema{
-			names.AttrARN: {
-				Type:     schema.TypeString,
-				Optional: true,
-				Computed: true,
-			},
-			"encryption_type": {
-				Type:             schema.TypeString,
-				Optional:         true,
-				Default:          types.EncryptionTypeNone,
-				ValidateDiagFunc: enum.Validate[types.EncryptionType](),
-				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
-					return strings.EqualFold(old, new)
+		SchemaFunc: func() map[string]*schema.Schema {
+			return map[string]*schema.Schema{
+				names.AttrARN: {
+					Type:     schema.TypeString,
+					Optional: true,
+					Computed: true,
 				},
-			},
-			"enforce_consumer_deletion": {
-				Type:     schema.TypeBool,
-				Optional: true,
-				Default:  false,
-			},
-			names.AttrKMSKeyID: {
-				Type:     schema.TypeString,
-				Optional: true,
-			},
-			"max_record_size_in_kib": {
-				Type:         schema.TypeInt,
-				Optional:     true,
-				Computed:     true,
-				ValidateFunc: validation.IntBetween(1024, 10240),
-			},
-			names.AttrName: {
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
-			},
-			names.AttrRetentionPeriod: {
-				Type:         schema.TypeInt,
-				Optional:     true,
-				Default:      24,
-				ValidateFunc: validation.IntBetween(24, 8760),
-			},
-			"shard_count": {
-				Type:     schema.TypeInt,
-				Optional: true,
-			},
-			"shard_level_metrics": {
-				Type:     schema.TypeSet,
-				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
-			},
-			"stream_mode_details": {
-				Type:     schema.TypeList,
-				Optional: true,
-				Computed: true,
-				MaxItems: 1,
-				Elem: &schema.Resource{
-					Schema: map[string]*schema.Schema{
-						"stream_mode": {
-							Type:             schema.TypeString,
-							Required:         true,
-							ValidateDiagFunc: enum.Validate[types.StreamMode](),
-						},
+				"encryption_type": {
+					Type:             schema.TypeString,
+					Optional:         true,
+					Default:          types.EncryptionTypeNone,
+					ValidateDiagFunc: enum.Validate[types.EncryptionType](),
+					DiffSuppressFunc: sdkv2.SuppressEquivalentStringCaseInsensitive,
+				},
+				"enforce_consumer_deletion": {
+					Type:     schema.TypeBool,
+					Optional: true,
+					Default:  false,
+				},
+				names.AttrKMSKeyID: {
+					Type:     schema.TypeString,
+					Optional: true,
+				},
+				"max_record_size_in_kib": {
+					Type:         schema.TypeInt,
+					Optional:     true,
+					Computed:     true,
+					ValidateFunc: validation.IntBetween(1024, 10240),
+				},
+				names.AttrName: {
+					Type:     schema.TypeString,
+					Required: true,
+					ForceNew: true,
+				},
+				names.AttrRetentionPeriod: {
+					Type:         schema.TypeInt,
+					Optional:     true,
+					Default:      24,
+					ValidateFunc: validation.IntBetween(24, 8760),
+				},
+				"shard_count": {
+					Type:          schema.TypeInt,
+					Optional:      true,
+					ConflictsWith: []string{"warm_throughput_mib_ps"},
+				},
+				"shard_level_metrics": {
+					Type:     schema.TypeSet,
+					Optional: true,
+					Elem: &schema.Schema{
+						Type:             schema.TypeString,
+						ValidateDiagFunc: enum.Validate[types.MetricsName](),
 					},
 				},
-				DiffSuppressFunc: verify.SuppressMissingOptionalConfigurationBlock,
-			},
-			names.AttrTags:    tftags.TagsSchema(),
-			names.AttrTagsAll: tftags.TagsSchemaComputed(),
+				"stream_mode_details": {
+					Type:     schema.TypeList,
+					Optional: true,
+					Computed: true,
+					MaxItems: 1,
+					Elem: &schema.Resource{
+						Schema: map[string]*schema.Schema{
+							"stream_mode": {
+								Type:             schema.TypeString,
+								Required:         true,
+								ValidateDiagFunc: enum.Validate[types.StreamMode](),
+							},
+						},
+					},
+					DiffSuppressFunc: verify.SuppressMissingOptionalConfigurationBlock,
+				},
+				names.AttrTags:    tftags.TagsSchema(),
+				names.AttrTagsAll: tftags.TagsSchemaComputed(),
+				"warm_throughput_mib_ps": {
+					Type:          schema.TypeInt,
+					Optional:      true,
+					ConflictsWith: []string{"shard_count"},
+				},
+			}
 		},
 	}
 }

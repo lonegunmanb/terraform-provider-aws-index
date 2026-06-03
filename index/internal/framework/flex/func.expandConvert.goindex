@@ -1,0 +1,154 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func expandConvert(ctx context.Context, expander *autoExpander, sourcePath path.Path, valFrom reflect.Value, targetPath path.Path, vTo reflect.Value, fieldOpts fieldOpts) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourcePath, sourcePath.String())
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeyTargetPath, targetPath.String())
+
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourceType, fullTypeName(valueType(valFrom)))
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeyTargetType, fullTypeName(valueType(vTo)))
+
+	if valFrom.Kind() == reflect.Invalid {
+		tflog.SubsystemError(ctx, subsystemName, "Source is nil")
+		diags.Append(diagExpandingSourceIsNil(valueType(valFrom)))
+		return diags
+	}
+
+	tflog.SubsystemInfo(ctx, subsystemName, "Converting")
+
+	if fromExpander, ok := valFrom.Interface().(Expander); ok {
+		tflog.SubsystemInfo(ctx, subsystemName, "Source implements flex.Expander")
+		diags.Append(expandExpander(ctx, fromExpander, vTo)...)
+		return diags
+	}
+
+	if fromTypedExpander, ok := valFrom.Interface().(TypedExpander); ok {
+		tflog.SubsystemInfo(ctx, subsystemName, "Source implements flex.TypedExpander")
+		diags.Append(expandTypedExpander(ctx, fromTypedExpander, vTo)...)
+		return diags
+	}
+
+	vFrom, ok := valFrom.Interface().(attr.Value)
+	if !ok {
+		tflog.SubsystemError(ctx, subsystemName, "Source does not implement attr.Value")
+		diags.Append(diagExpandingSourceDoesNotImplementAttrValue(reflect.TypeOf(valFrom.Interface())))
+		return diags
+	}
+
+	// No need to set the target value if there's no source value.
+	if vFrom.IsNull() {
+		// Special case: if target is XML wrapper struct and no omitempty, create zero-value
+		if vTo.Kind() == reflect.Pointer && !fieldOpts.omitempty {
+			targetType := vTo.Type().Elem()
+			if targetType.Kind() == reflect.Struct && potentialXMLWrapperStruct(targetType) {
+				tflog.SubsystemDebug(ctx, subsystemName, "Source is null but target is XML wrapper without omitempty - creating zero-value struct")
+				zeroStruct := reflect.New(targetType)
+				// Initialize Items slice and Quantity
+				wrapperFieldName := getXMLWrapperSliceFieldName(targetType)
+				itemsField := zeroStruct.Elem().FieldByName(wrapperFieldName)
+				if itemsField.IsValid() && itemsField.Kind() == reflect.Slice {
+					itemsField.Set(reflect.MakeSlice(itemsField.Type(), 0, 0))
+				}
+				quantityField := zeroStruct.Elem().FieldByName(xmlWrapperFieldQuantity)
+				if quantityField.IsValid() && quantityField.Kind() == reflect.Pointer {
+					zero := int32(0)
+					quantityField.Set(reflect.ValueOf(&zero))
+				}
+				// Set zero values for other pointer fields
+				for i := 0; i < zeroStruct.Elem().NumField(); i++ {
+					field := zeroStruct.Elem().Field(i)
+					fieldType := targetType.Field(i)
+					if fieldType.Name == wrapperFieldName || fieldType.Name == xmlWrapperFieldQuantity {
+						continue
+					}
+					if field.Kind() == reflect.Pointer && field.CanSet() && field.IsNil() {
+						switch fieldType.Type.Elem().Kind() {
+						case reflect.Bool:
+							falseVal := false
+							field.Set(reflect.ValueOf(&falseVal))
+						case reflect.Int32:
+							zeroVal := int32(0)
+							field.Set(reflect.ValueOf(&zeroVal))
+						}
+					}
+				}
+				vTo.Set(zeroStruct)
+				return diags
+			}
+		}
+		tflog.SubsystemTrace(ctx, subsystemName, "Expanding null value")
+		return diags
+	}
+	if vFrom.IsUnknown() {
+		tflog.SubsystemTrace(ctx, subsystemName, "Expanding unknown value")
+		return diags
+	}
+
+	switch vFrom := vFrom.(type) {
+	// Primitive types.
+	case basetypes.BoolValuable:
+		diags.Append(expandBool(ctx, expander, vFrom, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.Float64Valuable:
+		diags.Append(expandFloat64(ctx, expander, vFrom, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.Float32Valuable:
+		diags.Append(expandFloat32(ctx, expander, vFrom, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.Int64Valuable:
+		diags.Append(expandInt64(ctx, expander, vFrom, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.Int32Valuable:
+		diags.Append(expandInt32(ctx, expander, vFrom, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.StringValuable:
+		diags.Append(expandString(ctx, expander, vFrom, vTo, fieldOpts)...)
+		return diags
+
+	// Aggregate types.
+	case basetypes.ObjectValuable:
+		diags.Append(expandObject(ctx, expander, sourcePath, vFrom, targetPath, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.ListValuable:
+		diags.Append(expandList(ctx, expander, sourcePath, vFrom, targetPath, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.MapValuable:
+		diags.Append(expandMap(ctx, expander, vFrom, vTo, fieldOpts)...)
+		return diags
+
+	case basetypes.SetValuable:
+		diags.Append(expandSet(ctx, expander, sourcePath, vFrom, targetPath, vTo, fieldOpts)...)
+		return diags
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "AutoFlex Expand; incompatible types", map[string]any{
+		logAttrKeyFrom: vFrom.Type(ctx),
+		logAttrKeyTo:   vTo.Kind(),
+	})
+
+	return diags
+}

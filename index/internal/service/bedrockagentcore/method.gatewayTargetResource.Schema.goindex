@@ -3,6 +3,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"strings"
 	"time"
 
@@ -32,11 +33,13 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
@@ -74,12 +77,14 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 				NestedObject: schema.NestedBlockObject{
 					Blocks: map[string]schema.Block{
 						"api_key": schema.ListNestedBlock{
-							CustomType: fwtypes.NewListNestedObjectTypeOf[apiKeyCredentialProviderModel](ctx),
+							CustomType: fwtypes.NewListNestedObjectTypeOf[gatewayAPIKeyCredentialProviderModel](ctx),
 							Validators: []validator.List{
 								listvalidator.SizeAtMost(1),
 								listvalidator.ConflictsWith(
-									path.MatchRelative().AtParent().AtName("oauth"),
+									path.MatchRelative().AtParent().AtName("caller_iam_credentials"),
 									path.MatchRelative().AtParent().AtName("gateway_iam_role"),
+									path.MatchRelative().AtParent().AtName("jwt_passthrough"),
+									path.MatchRelative().AtParent().AtName("oauth"),
 								),
 							},
 							NestedObject: schema.NestedBlockObject{
@@ -99,6 +104,78 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 										Required:   true,
 									},
 								},
+							},
+						},
+						"caller_iam_credentials": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[iamCredentialProviderModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+								listvalidator.ConflictsWith(
+									path.MatchRelative().AtParent().AtName("api_key"),
+									path.MatchRelative().AtParent().AtName("gateway_iam_role"),
+									path.MatchRelative().AtParent().AtName("jwt_passthrough"),
+									path.MatchRelative().AtParent().AtName("oauth"),
+								),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrRegion: schema.StringAttribute{
+										Optional: true,
+										Validators: []validator.String{
+											stringvalidator.AlsoRequires(path.MatchRelative().AtParent().AtName("service")),
+											fwvalidators.AWSRegion(),
+										},
+									},
+									"service": schema.StringAttribute{
+										Required: true,
+									},
+								},
+							},
+						},
+						"gateway_iam_role": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[iamCredentialProviderModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+								listvalidator.ConflictsWith(
+									path.MatchRelative().AtParent().AtName("api_key"),
+									path.MatchRelative().AtParent().AtName("caller_iam_credentials"),
+									path.MatchRelative().AtParent().AtName("jwt_passthrough"),
+									path.MatchRelative().AtParent().AtName("oauth"),
+								),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrRegion: schema.StringAttribute{
+										Optional: true,
+										Description: "AWS Region used for SigV4 signing of upstream requests. " +
+											"Defaults to the gateway's Region when omitted. Only meaningful when `service` is set.",
+										Validators: []validator.String{
+											stringvalidator.AlsoRequires(path.MatchRelative().AtParent().AtName("service")),
+											fwvalidators.AWSRegion(),
+										},
+									},
+									"service": schema.StringAttribute{
+										Optional: true,
+										Description: "The target AWS service name used for SigV4 signing of upstream requests. " +
+											"Required when calling SigV4-protected endpoints such as another Bedrock AgentCore " +
+											"Runtime (use `bedrock-agentcore`). Omit for non-SigV4 IAM-role-based authentication.",
+									},
+								},
+							},
+						},
+						"jwt_passthrough": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[jwtPassthroughCredentialProviderModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+								listvalidator.ConflictsWith(
+									path.MatchRelative().AtParent().AtName("api_key"),
+									path.MatchRelative().AtParent().AtName("caller_iam_credentials"),
+									path.MatchRelative().AtParent().AtName("gateway_iam_role"),
+									path.MatchRelative().AtParent().AtName("oauth"),
+								),
+							},
+							NestedObject: schema.NestedBlockObject{
+								// Empty block - no attributes needed for JWT Passthrough
 							},
 						},
 						"oauth": schema.ListNestedBlock{
@@ -135,17 +212,40 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 								},
 							},
 						},
-						"gateway_iam_role": schema.ListNestedBlock{
-							CustomType: fwtypes.NewListNestedObjectTypeOf[gatewayIAMRoleProviderModel](ctx),
-							Validators: []validator.List{
-								listvalidator.SizeAtMost(1),
-								listvalidator.ConflictsWith(
-									path.MatchRelative().AtParent().AtName("api_key"),
-									path.MatchRelative().AtParent().AtName("oauth"),
-								),
+					},
+				},
+			},
+			"metadata_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[metadataConfigurationModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"allowed_query_parameters": schema.SetAttribute{
+							CustomType:  fwtypes.SetOfStringType,
+							Optional:    true,
+							Description: "A list of URL query parameters that are allowed to be propagated from incoming gateway URL to the target.",
+							Validators: []validator.Set{
+								setvalidator.SizeAtMost(10),
 							},
-							NestedObject: schema.NestedBlockObject{
-								// Empty block - no attributes needed for Gateway IAM Role
+						},
+						"allowed_request_headers": schema.SetAttribute{
+							CustomType:  fwtypes.SetOfStringType,
+							Optional:    true,
+							Description: "A list of HTTP headers that are allowed to be propagated from incoming client requests to the target.",
+							Validators: []validator.Set{
+								setvalidator.SizeAtMost(10),
+								setvalidator.ValueStringsAre(headerNameValidators()...),
+							},
+						},
+						"allowed_response_headers": schema.SetAttribute{
+							CustomType:  fwtypes.SetOfStringType,
+							Optional:    true,
+							Description: "A list of HTTP headers that are allowed to be propagated from the target response back to the client.",
+							Validators: []validator.Set{
+								setvalidator.SizeAtMost(10),
+								setvalidator.ValueStringsAre(headerNameValidators()...),
 							},
 						},
 					},
@@ -159,15 +259,46 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 				},
 				NestedObject: schema.NestedBlockObject{
 					Blocks: map[string]schema.Block{
+						"http": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[httpTargetConfigurationModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+								listvalidator.ExactlyOneOf(
+									path.MatchRelative().AtParent().AtName("http"),
+									path.MatchRelative().AtParent().AtName("mcp"),
+								),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"agentcore_runtime": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[runtimeTargetConfigurationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												names.AttrARN: schema.StringAttribute{
+													Required:   true,
+													CustomType: fwtypes.ARNType,
+												},
+												"qualifier": schema.StringAttribute{
+													Optional: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
 						"mcp": schema.ListNestedBlock{
-							CustomType: fwtypes.NewListNestedObjectTypeOf[mcpConfigurationModel](ctx),
+							CustomType: fwtypes.NewListNestedObjectTypeOf[mcpTargetConfigurationModel](ctx),
 							Validators: []validator.List{
 								listvalidator.SizeAtMost(1),
 							},
 							NestedObject: schema.NestedBlockObject{
 								Blocks: map[string]schema.Block{
 									"api_gateway": schema.ListNestedBlock{
-										CustomType: fwtypes.NewListNestedObjectTypeOf[mcpApiGatewayConfigurationModel](ctx),
+										CustomType: fwtypes.NewListNestedObjectTypeOf[apiGatewayTargetConfigurationModel](ctx),
 										Validators: []validator.List{
 											listvalidator.SizeAtMost(1),
 										},
@@ -182,14 +313,14 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 											},
 											Blocks: map[string]schema.Block{
 												"api_gateway_tool_configuration": schema.ListNestedBlock{
-													CustomType: fwtypes.NewListNestedObjectTypeOf[mcpApiGatewayToolConfigurationModel](ctx),
+													CustomType: fwtypes.NewListNestedObjectTypeOf[apiGatewayToolConfigurationModel](ctx),
 													Validators: []validator.List{
 														listvalidator.SizeAtMost(1),
 													},
 													NestedObject: schema.NestedBlockObject{
 														Blocks: map[string]schema.Block{
 															"tool_filter": schema.SetNestedBlock{
-																CustomType: fwtypes.NewSetNestedObjectTypeOf[mcpApiGatewayToolFilterModel](ctx),
+																CustomType: fwtypes.NewSetNestedObjectTypeOf[apiGatewayToolFilterModel](ctx),
 																NestedObject: schema.NestedBlockObject{
 																	Attributes: map[string]schema.Attribute{
 																		"filter_path": schema.StringAttribute{
@@ -203,7 +334,7 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 																},
 															},
 															"tool_override": schema.SetNestedBlock{
-																CustomType: fwtypes.NewSetNestedObjectTypeOf[mcpApiGatewayToolOverrideModel](ctx),
+																CustomType: fwtypes.NewSetNestedObjectTypeOf[apiGatewayToolOverrideModel](ctx),
 																NestedObject: schema.NestedBlockObject{
 																	Attributes: map[string]schema.Attribute{
 																		names.AttrDescription: schema.StringAttribute{
@@ -229,7 +360,7 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 										},
 									},
 									"lambda": schema.ListNestedBlock{
-										CustomType: fwtypes.NewListNestedObjectTypeOf[mcpLambdaConfigurationModel](ctx),
+										CustomType: fwtypes.NewListNestedObjectTypeOf[mcpLambdaTargetConfigurationModel](ctx),
 										Validators: []validator.List{
 											listvalidator.SizeAtMost(1),
 										},
@@ -301,7 +432,7 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 										},
 									},
 									"mcp_server": schema.ListNestedBlock{
-										CustomType: fwtypes.NewListNestedObjectTypeOf[mcpServerConfigurationModel](ctx),
+										CustomType: fwtypes.NewListNestedObjectTypeOf[mcpServerTargetConfigurationModel](ctx),
 										Validators: []validator.List{
 											listvalidator.SizeAtMost(1),
 										},
@@ -398,42 +529,6 @@ func (r *gatewayTargetResource) Schema(ctx context.Context, request resource.Sch
 										},
 									},
 								},
-							},
-						},
-					},
-				},
-			},
-			"metadata_configuration": schema.ListNestedBlock{
-				CustomType: fwtypes.NewListNestedObjectTypeOf[metadataConfigurationModel](ctx),
-				Validators: []validator.List{
-					listvalidator.SizeAtMost(1),
-				},
-				NestedObject: schema.NestedBlockObject{
-					Attributes: map[string]schema.Attribute{
-						"allowed_query_parameters": schema.SetAttribute{
-							CustomType:  fwtypes.SetOfStringType,
-							Optional:    true,
-							Description: "A list of URL query parameters that are allowed to be propagated from incoming gateway URL to the target.",
-							Validators: []validator.Set{
-								setvalidator.SizeAtMost(10),
-							},
-						},
-						"allowed_request_headers": schema.SetAttribute{
-							CustomType:  fwtypes.SetOfStringType,
-							Optional:    true,
-							Description: "A list of HTTP headers that are allowed to be propagated from incoming client requests to the target.",
-							Validators: []validator.Set{
-								setvalidator.SizeAtMost(10),
-								setvalidator.ValueStringsAre(headerNameValidators()...),
-							},
-						},
-						"allowed_response_headers": schema.SetAttribute{
-							CustomType:  fwtypes.SetOfStringType,
-							Optional:    true,
-							Description: "A list of HTTP headers that are allowed to be propagated from the target response back to the client.",
-							Validators: []validator.Set{
-								setvalidator.SizeAtMost(10),
-								setvalidator.ValueStringsAre(headerNameValidators()...),
 							},
 						},
 					},

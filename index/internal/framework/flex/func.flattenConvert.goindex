@@ -1,0 +1,103 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"time"
+
+	smithydocument "github.com/aws/smithy-go/document"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
+	"github.com/shopspring/decimal"
+)
+func flattenConvert(ctx context.Context, flattener *autoFlattener, sourcePath path.Path, vFrom reflect.Value, targetPath path.Path, vTo reflect.Value, fieldOpts fieldOpts) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourcePath, sourcePath.String())
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeyTargetPath, targetPath.String())
+
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeySourceType, fullTypeName(valueType(vFrom)))
+	ctx = tflog.SubsystemSetField(ctx, subsystemName, logAttrKeyTargetType, fullTypeName(valueType(vTo)))
+
+	valTo, ok := vTo.Interface().(attr.Value)
+	if !ok {
+		// Check for `nil` (i.e. Kind == Invalid) here, because we allow primitive types to be `nil`
+		if vFrom.Kind() == reflect.Invalid {
+			tflog.SubsystemError(ctx, subsystemName, "Source is nil")
+			diags.Append(diagFlatteningSourceIsNil(valueType(vFrom)))
+			return diags
+		}
+
+		tflog.SubsystemError(ctx, subsystemName, "Target does not implement attr.Value")
+		diags.Append(diagFlatteningTargetDoesNotImplementAttrValue(reflect.TypeOf(vTo.Interface())))
+		return diags
+	}
+
+	tflog.SubsystemInfo(ctx, subsystemName, "Converting")
+
+	// main control flow
+	tTo := valTo.Type(ctx)
+	switch k := vFrom.Kind(); k {
+	case reflect.Bool:
+		diags.Append(flattenBool(ctx, flattener, vFrom, false, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Float64:
+		diags.Append(flattenFloat64(ctx, flattener, vFrom, vFrom.Type(), false, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Float32:
+		diags.Append(flattenFloat32(ctx, flattener, vFrom, false, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Int64:
+		diags.Append(flattenInt64(ctx, flattener, vFrom, vFrom.Type(), false, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Int32:
+		diags.Append(flattenInt32(ctx, flattener, vFrom, false, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.String:
+		// []byte (or []uint8) is also handled like string but in flattenSlice
+		diags.Append(flattenString(ctx, flattener, vFrom, false, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Pointer:
+		diags.Append(flattenPointer(ctx, flattener, sourcePath, vFrom, targetPath, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Slice:
+		diags.Append(flattenSlice(ctx, flattener, sourcePath, vFrom, targetPath, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Map:
+		diags.Append(flattenMap(ctx, flattener, sourcePath, vFrom, targetPath, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Struct:
+		diags.Append(flattenStruct_(ctx, flattener, sourcePath, vFrom, false, targetPath, tTo, vTo, fieldOpts)...)
+		return diags
+
+	case reflect.Interface:
+		diags.Append(flattenInterface(ctx, flattener, vFrom, tTo, vTo, fieldOpts)...)
+		return diags
+	}
+
+	tflog.SubsystemError(ctx, subsystemName, "AutoFlex Flatten; incompatible types", map[string]any{
+		logAttrKeyFrom: vFrom.Kind(),
+		logAttrKeyTo:   tTo,
+	})
+
+	return diags
+}

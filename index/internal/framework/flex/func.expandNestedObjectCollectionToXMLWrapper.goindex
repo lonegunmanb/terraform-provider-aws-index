@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/flex
+import (
+	"context"
+	"fmt"
+	"iter"
+	"reflect"
+	"strings"
+	"sync"
+
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfreflect "github.com/hashicorp/terraform-provider-aws/internal/reflect"
+)
+func expandNestedObjectCollectionToXMLWrapper(ctx context.Context, expander *autoExpander, _ path.Path, vFrom fwtypes.NestedObjectCollectionValue, _ path.Path, vTo reflect.Value, wrapperField string) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	tflog.SubsystemTrace(ctx, subsystemName, "Expanding NestedObjectCollection to XML wrapper")
+
+	// Get the nested Objects as a slice
+	from, d := vFrom.ToObjectSlice(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	// Get reflect value of the slice
+	fromSlice := reflect.ValueOf(from)
+	if fromSlice.Kind() != reflect.Slice {
+		diags.AddError("Invalid source", "ToObjectSlice did not return a slice")
+		return diags
+	}
+
+	// Check if this is Rule 2 pattern (single nested object with items + additional fields)
+	if fromSlice.Len() == 1 {
+		nestedObj := fromSlice.Index(0)
+
+		// TRACE: Log Rule 2 detection attempt
+		tflog.SubsystemTrace(ctx, subsystemName, "TRACE: Checking for Rule 2 pattern", map[string]any{
+			"fromSlice_len": fromSlice.Len(),
+			"nested_kind":   nestedObj.Kind().String(),
+		})
+
+		// Handle pointer to struct (which is what NestedObjectCollection contains)
+		if nestedObj.Kind() == reflect.Pointer && !nestedObj.IsNil() {
+			structObj := nestedObj.Elem()
+			if structObj.Kind() == reflect.Struct {
+				// Check if the struct has a wrapper field - indicates Rule 2
+				itemsField := structObj.FieldByName(wrapperField)
+				if itemsField.IsValid() {
+					tflog.SubsystemTrace(ctx, subsystemName, "TRACE: Detected Rule 2 - delegating to expandRule2XMLWrapper", map[string]any{
+						logAttrKeyWrapperField: wrapperField,
+					})
+					return expandRule2XMLWrapper(ctx, expander, nestedObj, vTo, wrapperField)
+				}
+			}
+		}
+	}
+
+	tflog.SubsystemTrace(ctx, subsystemName, "TRACE: Using Rule 1 - direct collection to XML wrapper")
+
+	// Rule 1: Direct collection to XML wrapper (existing logic)
+	return expandRule1XMLWrapper(ctx, expander, fromSlice, vTo, wrapperField)
+}

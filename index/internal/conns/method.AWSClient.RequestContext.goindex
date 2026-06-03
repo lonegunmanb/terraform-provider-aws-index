@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/conns
+import (
+	"context"
+	"fmt"
+	"iter"
+	"maps"
+	"math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used -- Deterministic PRNG required for VCR test reproducibility
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	apigatewayv2_types "github.com/aws/aws-sdk-go-v2/service/apigatewayv2/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	baselogging "github.com/hashicorp/aws-sdk-go-base/v2/logging"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns/apicall"
+	"github.com/hashicorp/terraform-provider-aws/internal/dns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/vcr"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (c *AWSClient) RequestContext(ctx context.Context) context.Context {
+	if c == nil {
+		return ctx
+	}
+	ctx = tftags.NewContext(ctx, c.DefaultTagsConfig(ctx), c.IgnoreTagsConfig(ctx), c.TagPolicyConfig(ctx))
+	ctx = c.RegisterLogger(ctx)
+	if s := c.RandomnessSource(); s != nil {
+		ctx = vcr.NewContext(ctx, s)
+	}
+	ctx = apicall.NewContext(ctx, c.callRecorder)
+	ctx = fwflex.RegisterLogger(ctx)
+	return logging.MaskSensitiveValuesByKey(ctx, logging.HTTPKeyRequestBody, logging.HTTPKeyResponseBody)
+}
