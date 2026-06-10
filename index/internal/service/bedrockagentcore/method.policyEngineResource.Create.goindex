@@ -12,6 +12,7 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -32,13 +33,13 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *policyEngineResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	conn := r.Meta().BedrockAgentCoreClient(ctx)
-
 	var plan policyEngineResourceModel
 	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	conn := r.Meta().BedrockAgentCoreClient(ctx)
 
 	var input bedrockagentcorecontrol.CreatePolicyEngineInput
 	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, plan, &input))
@@ -57,13 +58,10 @@ func (r *policyEngineResource) Create(ctx context.Context, req resource.CreateRe
 
 	policyEngineID := aws.ToString(out.PolicyEngineId)
 
-	if _, err := waitPolicyEngineCreated(ctx, conn, policyEngineID, r.CreateTimeout(ctx, plan.Timeouts)); err != nil {
-		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, policyEngineID)
-		return
-	}
-
-	policyEngine, err := findPolicyEngineByID(ctx, conn, policyEngineID)
+	policyEngine, err := waitPolicyEngineCreated(ctx, conn, policyEngineID, r.CreateTimeout(ctx, plan.Timeouts))
 	if err != nil {
+		// Taint the resource.
+		resp.State.SetAttribute(ctx, path.Root("policy_engine_id"), policyEngineID)
 		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, policyEngineID)
 		return
 	}

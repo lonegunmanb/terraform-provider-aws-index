@@ -1,0 +1,70 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagentcore
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *policyListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().BedrockAgentCoreClient(ctx)
+
+	var query listPolicyModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	policyEngineID := fwflex.StringValueFromFramework(ctx, query.PolicyEngineID)
+
+	tflog.Info(ctx, "Listing Resources", map[string]any{
+		logging.ResourceAttributeKey("policy_engine_id"): policyEngineID,
+	})
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := bedrockagentcorecontrol.ListPoliciesInput{
+			PolicyEngineId: aws.String(policyEngineID),
+		}
+		for item, err := range listPolicies(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			arn := aws.ToString(item.PolicyArn)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrARN), arn)
+
+			result := request.NewListResult(ctx)
+
+			var data policyResourceModel
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, &data, &result, func() {
+				smerr.AddEnrich(ctx, &result.Diagnostics, l.flatten(ctx, &item, &data))
+				if result.Diagnostics.HasError() {
+					return
+				}
+
+				result.DisplayName = aws.ToString(item.Name)
+			})
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

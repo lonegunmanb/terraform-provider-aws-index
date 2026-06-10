@@ -38,6 +38,7 @@ import (
 	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -85,10 +86,19 @@ func (r *gatewayTargetResource) Create(ctx context.Context, request resource.Cre
 	}
 
 	targetID := aws.ToString(out.TargetId)
-	data.TargetID = fwflex.StringValueToFramework(ctx, targetID)
 
-	if _, err := waitGatewayTargetCreated(ctx, conn, gatewayIdentifier, targetID, r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+	target, err := waitGatewayTargetCreated(ctx, conn, gatewayIdentifier, targetID, r.CreateTimeout(ctx, data.Timeouts))
+	if err != nil {
+		// Taint the resource.
+		response.State.SetAttribute(ctx, path.Root("gateway_identifier"), gatewayIdentifier)
+		response.State.SetAttribute(ctx, path.Root("target_id"), targetID)
 		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, targetID)
+		return
+	}
+
+	// Set values for unknowns.
+	smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Flatten(ctx, target, &data))
+	if response.Diagnostics.HasError() {
 		return
 	}
 

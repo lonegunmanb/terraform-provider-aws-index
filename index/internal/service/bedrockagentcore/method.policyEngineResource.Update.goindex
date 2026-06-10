@@ -12,6 +12,7 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -41,27 +42,35 @@ func (r *policyEngineResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
-	// Only description can be updated in place.
-	// Description removal is sent to AWS and any API error is surfaced to the user.
-	if !plan.Description.Equal(state.Description) {
-		descriptionValue := plan.Description.ValueString()
-		description := &awstypes.UpdatedDescription{
-			OptionalValue: &descriptionValue,
+	diff, d := fwflex.Diff(ctx, plan, state)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		policyEngineID := fwflex.StringValueFromFramework(ctx, plan.PolicyEngineID)
+		var input bedrockagentcorecontrol.UpdatePolicyEngineInput
+		smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, plan, &input, fwflex.WithIgnoredFieldNamesAppend("Description")))
+		if resp.Diagnostics.HasError() {
+			return
 		}
 
-		input := bedrockagentcorecontrol.UpdatePolicyEngineInput{
-			PolicyEngineId: plan.PolicyEngineID.ValueStringPointer(),
-			Description:    description,
+		if !plan.Description.Equal(state.Description) {
+			input.Description = &awstypes.UpdatedDescription{}
+			if !plan.Description.IsNull() {
+				input.Description.OptionalValue = plan.Description.ValueStringPointer()
+			}
 		}
 
 		_, err := conn.UpdatePolicyEngine(ctx, &input)
 		if err != nil {
-			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.PolicyEngineID.String())
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, policyEngineID)
 			return
 		}
 
-		if _, err := waitPolicyEngineUpdated(ctx, conn, plan.PolicyEngineID.ValueString(), r.UpdateTimeout(ctx, plan.Timeouts)); err != nil {
-			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.PolicyEngineID.String())
+		if _, err := waitPolicyEngineUpdated(ctx, conn, policyEngineID, r.UpdateTimeout(ctx, plan.Timeouts)); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, policyEngineID)
 			return
 		}
 	}
