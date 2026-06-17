@@ -23,9 +23,10 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func updateDistributionTenantWithManagedCertificate(ctx context.Context, conn *cloudfront.Client, dtOutput *cloudfront.GetDistributionTenantOutput, mcOutput *cloudfront.GetManagedCertificateDetailsOutput) error {
+func updateDistributionTenantWithManagedCertificate(ctx context.Context, conn *cloudfront.Client, dtOutput *cloudfront.GetDistributionTenantOutput, mcOutput *cloudfront.GetManagedCertificateDetailsOutput, timeout time.Duration) error {
 	if mcOutput == nil {
 		return nil
 	}
@@ -43,7 +44,7 @@ func updateDistributionTenantWithManagedCertificate(ctx context.Context, conn *c
 	}
 
 	// Update distribution tenant with managed certificate ARN
-	updateInput := &cloudfront.UpdateDistributionTenantInput{
+	input := cloudfront.UpdateDistributionTenantInput{
 		Id:      dtOutput.DistributionTenant.Id,
 		IfMatch: freshOutput.ETag,
 		Customizations: &awstypes.Customizations{
@@ -54,19 +55,19 @@ func updateDistributionTenantWithManagedCertificate(ctx context.Context, conn *c
 	}
 
 	// Copy other required fields from current distribution tenant
-	updateInput.ConnectionGroupId = dtOutput.DistributionTenant.ConnectionGroupId
-	updateInput.DistributionId = dtOutput.DistributionTenant.DistributionId
-	updateInput.Domains = convertDomainResultsToDomainItems(dtOutput.DistributionTenant.Domains)
-	updateInput.Enabled = dtOutput.DistributionTenant.Enabled
-	updateInput.Parameters = dtOutput.DistributionTenant.Parameters
+	input.ConnectionGroupId = dtOutput.DistributionTenant.ConnectionGroupId
+	input.DistributionId = dtOutput.DistributionTenant.DistributionId
+	input.Domains = convertDomainResultsToDomainItems(dtOutput.DistributionTenant.Domains)
+	input.Enabled = dtOutput.DistributionTenant.Enabled
+	input.Parameters = dtOutput.DistributionTenant.Parameters
 
-	_, err = conn.UpdateDistributionTenant(ctx, updateInput)
+	_, err = conn.UpdateDistributionTenant(ctx, &input)
 	if err != nil {
 		return fmt.Errorf("updating CloudFront Distribution Tenant (%s) with managed certificate: %w", aws.ToString(dtOutput.DistributionTenant.Id), err)
 	}
 
 	// Wait for the distribution tenant update to be deployed
-	_, err = waitForDistributionTenantDeployed(ctx, conn, aws.ToString(dtOutput.DistributionTenant.Id))
+	_, err = waitDistributionTenantDeployed(ctx, conn, aws.ToString(dtOutput.DistributionTenant.Id), timeout)
 	if err != nil {
 		return fmt.Errorf("failed waiting for CloudFront Distribution Tenant (%s) deploy: %w", aws.ToString(dtOutput.DistributionTenant.Id), err)
 	}

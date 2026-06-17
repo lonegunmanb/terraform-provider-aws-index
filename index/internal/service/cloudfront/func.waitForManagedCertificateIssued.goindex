@@ -23,18 +23,19 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func waitForManagedCertificateIssued(ctx context.Context, conn *cloudfront.Client, id string) (*cloudfront.GetManagedCertificateDetailsOutput, error) {
-	timeout := 3 * time.Hour
+	timeout := managedCertificateTimeout
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		mcInput := &cloudfront.GetManagedCertificateDetailsInput{
+		input := cloudfront.GetManagedCertificateDetailsInput{
 			Identifier: aws.String(id),
 		}
 
-		mcOutput, err := conn.GetManagedCertificateDetails(ctx, mcInput)
+		output, err := conn.GetManagedCertificateDetails(ctx, &input)
 		if errs.IsA[*awstypes.EntityNotFound](err) {
 			// No managed certificate found - domains are covered by existing certs
 			return nil, nil
@@ -44,9 +45,9 @@ func waitForManagedCertificateIssued(ctx context.Context, conn *cloudfront.Clien
 		}
 
 		// Check certificate status
-		switch mcOutput.ManagedCertificateDetails.CertificateStatus {
+		switch output.ManagedCertificateDetails.CertificateStatus {
 		case awstypes.ManagedCertificateStatusIssued:
-			return mcOutput, nil
+			return output, nil
 
 		case awstypes.ManagedCertificateStatusPendingValidation:
 			// Certificate still being validated, continue waiting
@@ -54,9 +55,9 @@ func waitForManagedCertificateIssued(ctx context.Context, conn *cloudfront.Clien
 			continue
 
 		default:
-			return nil, fmt.Errorf("CloudFront Distribution Tenant (%s) managed certificate failed with status: %s", id, mcOutput.ManagedCertificateDetails.CertificateStatus)
+			return nil, fmt.Errorf("CloudFront Distribution Tenant (%s) managed certificate failed with status: %s", id, output.ManagedCertificateDetails.CertificateStatus)
 		}
 	}
 
-	return nil, fmt.Errorf("CloudFront Distribution Tenant (%s) timeout after 3 hours waiting for managed certificate to be issued", id)
+	return nil, fmt.Errorf("CloudFront Distribution Tenant (%s) timeout after %s waiting for managed certificate to be issued", id, timeout)
 }

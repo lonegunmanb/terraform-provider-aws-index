@@ -1,0 +1,32 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+)
+func waitHubContentReferenceAvailable(ctx context.Context, conn *sagemaker.Client, hubName, hubContentName string, timeout time.Duration) (*sagemaker.DescribeHubContentOutput, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.HubContentStatusImporting, awstypes.HubContentStatusPendingImport),
+		Target:  enum.Slice(awstypes.HubContentStatusAvailable),
+		Refresh: statusHubContentReference(conn, hubName, hubContentName),
+		Timeout: timeout,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*sagemaker.DescribeHubContentOutput); ok {
+		if status, reason := output.HubContentStatus, aws.ToString(output.FailureReason); status == awstypes.HubContentStatusImportFailed && reason != "" {
+			retry.SetLastError(err, errors.New(reason))
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}

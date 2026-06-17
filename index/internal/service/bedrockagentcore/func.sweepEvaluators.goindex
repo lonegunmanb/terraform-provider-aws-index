@@ -1,0 +1,41 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagentcore
+import (
+	"context"
+	"strings"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepEvaluators(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	input := bedrockagentcorecontrol.ListEvaluatorsInput{}
+	conn := client.BedrockAgentCoreClient(ctx)
+	var sweepResources []sweep.Sweepable
+
+	pages := bedrockagentcorecontrol.NewListEvaluatorsPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, smarterr.NewError(err)
+		}
+
+		for _, v := range page.Evaluators {
+			evaluatorID := aws.ToString(v.EvaluatorId)
+			if strings.HasPrefix(evaluatorID, "Builtin.") {
+				// Skip built-in evaluators, which cannot be deleted.
+				continue
+			}
+
+			sweepResources = append(sweepResources, framework.NewSweepResource(newEvaluatorResource, client,
+				framework.NewAttribute("evaluator_id", evaluatorID)),
+			)
+		}
+	}
+
+	return sweepResources, nil
+}

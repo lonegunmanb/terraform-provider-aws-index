@@ -6,7 +6,6 @@ import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/efs"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
@@ -26,14 +25,15 @@ import ( // nosemgrep:ci.semgrep.aws.multiple-service-imports
 )
 func resourceMountTargetCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).EFSClient(ctx)
+	c := meta.(*conns.AWSClient)
+	conn := c.EFSClient(ctx)
 
 	// CreateMountTarget would return the same Mount Target ID
 	// to parallel requests if they both include the same AZ
 	// and we would end up managing the same MT as 2 resources.
 	// So we make it fail by calling 1 request per AZ at a time.
 	subnetID := d.Get(names.AttrSubnetID).(string)
-	az, err := getAZFromSubnetID(ctx, meta.(*conns.AWSClient).EC2Client(ctx), subnetID)
+	az, err := getAZFromSubnetID(ctx, c.EC2Client(ctx), subnetID)
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "reading EC2 Subnet (%s): %s", subnetID, err)
@@ -44,7 +44,7 @@ func resourceMountTargetCreate(ctx context.Context, d *schema.ResourceData, meta
 	conns.GlobalMutexKV.Lock(mtKey)
 	defer conns.GlobalMutexKV.Unlock(mtKey)
 
-	input := &efs.CreateMountTargetInput{
+	input := efs.CreateMountTargetInput{
 		FileSystemId: aws.String(fsID),
 		SubnetId:     aws.String(subnetID),
 	}
@@ -65,7 +65,7 @@ func resourceMountTargetCreate(ctx context.Context, d *schema.ResourceData, meta
 		input.SecurityGroups = flex.ExpandStringValueSet(v.(*schema.Set))
 	}
 
-	mt, err := conn.CreateMountTarget(ctx, input)
+	mt, err := conn.CreateMountTarget(ctx, &input)
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "creating EFS Mount Target (%s): %s", fsID, err)

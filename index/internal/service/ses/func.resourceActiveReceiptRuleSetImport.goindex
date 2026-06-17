@@ -5,7 +5,6 @@ import (
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/ses"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/ses/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -21,31 +20,23 @@ import (
 func resourceActiveReceiptRuleSetImport(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
 	conn := meta.(*conns.AWSClient).SESClient(ctx)
 
-	describeOpts := &ses.DescribeActiveReceiptRuleSetInput{}
+	// Region may be overridden in the import block.
+	var optFns []func(*ses.Options)
+	if v, ok := d.GetOk(names.AttrRegion); ok {
+		optFns = append(optFns, func(o *ses.Options) {
+			o.Region = v.(string)
+		})
+	}
 
-	response, err := conn.DescribeActiveReceiptRuleSet(ctx, describeOpts)
+	output, err := findActiveReceiptRuleSet(ctx, conn, optFns...)
+
 	if err != nil {
 		return nil, err
 	}
 
-	if response.Metadata == nil {
-		return nil, fmt.Errorf("no active Receipt Rule Set found")
+	if got, want := aws.ToString(output.Name), d.Id(); got != want {
+		return nil, fmt.Errorf("SES Receipt Rule Set (%s) is not the SES Active Receipt Rule Set (%s)", want, got)
 	}
-
-	if aws.ToString(response.Metadata.Name) != d.Id() {
-		return nil, fmt.Errorf("SES Receipt Rule Set (%s) belonging to SES Active Receipt Rule Set not found", d.Id())
-	}
-
-	d.Set("rule_set_name", response.Metadata.Name)
-
-	arnValue := arn.ARN{
-		Partition: meta.(*conns.AWSClient).Partition(ctx),
-		Service:   "ses",
-		Region:    meta.(*conns.AWSClient).Region(ctx),
-		AccountID: meta.(*conns.AWSClient).AccountID(ctx),
-		Resource:  fmt.Sprintf("receipt-rule-set/%s", d.Id()),
-	}.String()
-	d.Set(names.AttrARN, arnValue)
 
 	return []*schema.ResourceData{d}, nil
 }
