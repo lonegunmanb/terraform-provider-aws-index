@@ -1,6 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
@@ -27,11 +29,29 @@ func resourceTableItemRead(ctx context.Context, d *schema.ResourceData, meta any
 	tableName := d.Get(names.AttrTableName).(string)
 	hashKey := d.Get("hash_key").(string)
 	rangeKey := d.Get("range_key").(string)
-	attributes, err := expandTableItemAttributes(d.Get("item").(string))
-	if err != nil {
-		return sdkdiag.AppendFromErr(diags, err)
+	itemJSON := d.Get("item").(string)
+
+	var key map[string]awstypes.AttributeValue
+
+	if itemJSON != "" {
+		// Normal path: derive the key from the `item` JSON in state.
+		attrs, err := expandTableItemAttributes(itemJSON)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		key = expandTableItemQueryKey(attrs, hashKey, rangeKey)
+	} else {
+		// Post-import path: state has identity attributes but no `item`. Recover the key names
+		// and AttributeValue types from the table's KeySchema/AttributeDefinitions.
+		recoveredKey, recoveredHashKey, recoveredRangeKey, err := tableItemKeyFromIdentity(ctx, conn, d, tableName)
+		if err != nil {
+			return sdkdiag.AppendFromErr(diags, err)
+		}
+		key = recoveredKey
+		hashKey = recoveredHashKey
+		rangeKey = recoveredRangeKey
 	}
-	key := expandTableItemQueryKey(attributes, hashKey, rangeKey)
+
 	item, err := findTableItemByTwoPartKey(ctx, conn, tableName, key)
 
 	if !d.IsNewResource() && retry.NotFound(err) {
@@ -44,15 +64,5 @@ func resourceTableItemRead(ctx context.Context, d *schema.ResourceData, meta any
 		return sdkdiag.AppendErrorf(diags, "reading DynamoDB Table Item (%s): %s", d.Id(), err)
 	}
 
-	// The record exists, now test if it differs from what is desired
-	if !reflect.DeepEqual(item, attributes) {
-		itemAttrs, err := flattenTableItemAttributes(item)
-		if err != nil {
-			return sdkdiag.AppendFromErr(diags, err)
-		}
-		d.Set("item", itemAttrs)
-		d.SetId(tableItemCreateResourceID(tableName, hashKey, rangeKey, item))
-	}
-
-	return diags
+	return append(diags, resourceTableItemFlatten(d, tableName, hashKey, rangeKey, item)...)
 }

@@ -7,7 +7,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -34,8 +33,8 @@ func (r *anomalyDetectorResource) Create(ctx context.Context, request resource.C
 
 	conn := r.Meta().LogsClient(ctx)
 
-	input := &cloudwatchlogs.CreateLogAnomalyDetectorInput{}
-	response.Diagnostics.Append(fwflex.Expand(ctx, data, input)...)
+	var input cloudwatchlogs.CreateLogAnomalyDetectorInput
+	response.Diagnostics.Append(fwflex.Expand(ctx, data, &input)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -43,7 +42,7 @@ func (r *anomalyDetectorResource) Create(ctx context.Context, request resource.C
 	// Additional fields.
 	input.Tags = getTagsIn(ctx)
 
-	outputCLAD, err := conn.CreateLogAnomalyDetector(ctx, input)
+	outputCLAD, err := conn.CreateLogAnomalyDetector(ctx, &input)
 
 	if err != nil {
 		response.Diagnostics.AddError("creating CloudWatch Logs Anomaly Detector", err.Error())
@@ -52,12 +51,13 @@ func (r *anomalyDetectorResource) Create(ctx context.Context, request resource.C
 	}
 
 	// Set values for unknowns.
-	data.AnomalyDetectorARN = fwflex.StringToFramework(ctx, outputCLAD.AnomalyDetectorArn)
+	arn := aws.ToString(outputCLAD.AnomalyDetectorArn)
+	data.AnomalyDetectorARN = fwflex.StringValueToFramework(ctx, arn)
 
-	outputGLAD, err := findLogAnomalyDetectorByARN(ctx, conn, data.AnomalyDetectorARN.ValueString())
+	outputGLAD, err := findLogAnomalyDetectorByARN(ctx, conn, arn)
 
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("reading CloudWatch Logs Anomaly Detector (%s)", data.AnomalyDetectorARN.ValueString()), err.Error())
+		response.Diagnostics.AddError(fmt.Sprintf("reading CloudWatch Logs Anomaly Detector (%s)", arn), err.Error())
 
 		return
 	}

@@ -3,6 +3,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
@@ -23,22 +25,29 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceQueryDefinitionImport(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {
+	if err := importer.Import(ctx, d, meta); err != nil {
+		return nil, err
+	}
+
+	if !arn.IsARN(d.Id()) {
+		return []*schema.ResourceData{d}, nil
+	}
+
+	errUnexpectedFormat := fmt.Errorf("unexpected format for ID (%s), expected a CloudWatch Logs query definition ARN", d.Id())
 	arn, err := arn.Parse(d.Id())
 	if err != nil {
-		return nil, fmt.Errorf("unexpected format for ID (%s), expected a CloudWatch query definition ARN", d.Id())
+		return nil, errUnexpectedFormat
 	}
 
 	if arn.Service != "logs" {
-		return nil, fmt.Errorf("unexpected format for ID (%s), expected a CloudWatch query definition ARN", d.Id())
+		return nil, errUnexpectedFormat
 	}
 
-	matcher := regexache.MustCompile("^query-definition:(" + verify.UUIDRegexPattern + ")$")
-	matches := matcher.FindStringSubmatch(arn.Resource)
-	if len(matches) != 2 {
-		return nil, fmt.Errorf("unexpected format for ID (%s), expected a CloudWatch query definition ARN", d.Id())
+	if queryDefinitionID, ok := strings.CutPrefix(arn.Resource, "query-definition:"); ok {
+		d.SetId(queryDefinitionID)
+	} else {
+		return nil, errUnexpectedFormat
 	}
-
-	d.SetId(matches[1])
 
 	return []*schema.ResourceData{d}, nil
 }

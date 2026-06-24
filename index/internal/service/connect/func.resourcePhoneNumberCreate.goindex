@@ -8,11 +8,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/connect"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
-	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -31,7 +31,7 @@ func resourcePhoneNumberCreate(ctx context.Context, d *schema.ResourceData, meta
 
 	{
 		phoneNumberType := d.Get(names.AttrType).(string)
-		input := &connect.SearchAvailablePhoneNumbersInput{
+		input := connect.SearchAvailablePhoneNumbersInput{
 			MaxResults:             aws.Int32(1),
 			PhoneNumberCountryCode: awstypes.PhoneNumberCountryCode(d.Get("country_code").(string)),
 			PhoneNumberType:        awstypes.PhoneNumberType(phoneNumberType),
@@ -42,7 +42,7 @@ func resourcePhoneNumberCreate(ctx context.Context, d *schema.ResourceData, meta
 			input.PhoneNumberPrefix = aws.String(v.(string))
 		}
 
-		output, err := conn.SearchAvailablePhoneNumbers(ctx, input)
+		output, err := conn.SearchAvailablePhoneNumbers(ctx, &input)
 
 		if err == nil && (output == nil || len(output.AvailableNumbersList) == 0) {
 			err = tfresource.NewEmptyResultError()
@@ -56,13 +56,8 @@ func resourcePhoneNumberCreate(ctx context.Context, d *schema.ResourceData, meta
 	}
 
 	{
-		uuid, err := uuid.GenerateUUID()
-		if err != nil {
-			return sdkdiag.AppendFromErr(diags, err)
-		}
-
-		input := &connect.ClaimPhoneNumberInput{
-			ClientToken: aws.String(uuid), // can't use aws.String(id.UniqueId()), because it's not a valid uuid
+		input := connect.ClaimPhoneNumberInput{
+			ClientToken: aws.String(create.UUID(ctx)),
 			PhoneNumber: aws.String(phoneNumber),
 			Tags:        getTagsIn(ctx),
 			TargetArn:   aws.String(targetARN),
@@ -72,7 +67,7 @@ func resourcePhoneNumberCreate(ctx context.Context, d *schema.ResourceData, meta
 			input.PhoneNumberDescription = aws.String(v.(string))
 		}
 
-		output, err := conn.ClaimPhoneNumber(ctx, input)
+		output, err := conn.ClaimPhoneNumber(ctx, &input)
 
 		if err != nil {
 			return sdkdiag.AppendErrorf(diags, "claiming Connect Phone Number (%s,%s): %s", targetARN, phoneNumber, err)

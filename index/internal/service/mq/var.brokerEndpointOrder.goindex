@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/mq
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"math"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/mq"
+	"github.com/aws/aws-sdk-go-v2/service/mq/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	sdkid "github.com/hashicorp/terraform-plugin-sdk/v2/helper/id"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+	"github.com/mitchellh/copystructure"
+)
+var brokerEndpointOrder = map[string]int{
+	"activemq:ssl:61617":       0, // ActiveMQ OpenWire
+	"activemq:amqp+ssl:5671":   1, // ActiveMQ AMQP Secure
+	"activemq:stomp+ssl:61614": 2, // ActiveMQ STOMP Secure
+	"activemq:mqtt+ssl:8883":   3, // ActiveMQ MQTT Secure
+	"activemq:wss:61619":       4, // ActiveMQ WebSocket Secure
+	"rabbitmq:amqps:5671":      0, // RabbitMQ AMQP Secure
+	"rabbitmq:https:16001":     1, // RabbitMQ Prometheus metrics (4.2+)
+}

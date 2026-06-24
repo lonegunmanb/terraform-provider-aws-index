@@ -1,0 +1,119 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagentcore
+import (
+	"context"
+	"errors"
+	"reflect"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *registryResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().BedrockAgentCoreClient(ctx)
+
+	var plan, state registryResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	diff, d := fwflex.Diff(ctx, plan, state)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		registryID := fwflex.StringValueFromFramework(ctx, plan.RegistryID)
+		input := bedrockagentcorecontrol.UpdateRegistryInput{
+			RegistryId: aws.String(registryID),
+		}
+
+		if !plan.ApprovalConfiguration.Equal(state.ApprovalConfiguration) {
+			if plan.ApprovalConfiguration.IsNull() {
+				input.ApprovalConfiguration = &awstypes.UpdatedApprovalConfiguration{}
+			} else {
+				v, d := plan.ApprovalConfiguration.ToPtr(ctx)
+				smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				input.ApprovalConfiguration = &awstypes.UpdatedApprovalConfiguration{
+					OptionalValue: &awstypes.ApprovalConfiguration{
+						AutoApproval: fwflex.BoolValueFromFramework(ctx, v.AutoApproval),
+					},
+				}
+			}
+		}
+
+		if !plan.Description.Equal(state.Description) {
+			if plan.Description.IsNull() {
+				input.Description = &awstypes.UpdatedDescription{}
+			} else {
+				input.Description = &awstypes.UpdatedDescription{
+					OptionalValue: fwflex.StringFromFramework(ctx, plan.Description),
+				}
+			}
+		}
+
+		if !plan.Name.Equal(state.Name) {
+			input.Name = plan.Name.ValueStringPointer()
+		}
+
+		if !plan.AuthorizerConfiguration.Equal(state.AuthorizerConfiguration) {
+			authorizerConfiguration, d := plan.AuthorizerConfiguration.ToPtr(ctx)
+			smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+
+			if authorizerConfiguration != nil {
+				expanded, d := authorizerConfiguration.ExpandTo(ctx, reflect.TypeFor[awstypes.UpdatedAuthorizerConfiguration]())
+				smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				input.AuthorizerConfiguration = expanded.(*awstypes.UpdatedAuthorizerConfiguration)
+			}
+		}
+
+		_, err := conn.UpdateRegistry(ctx, &input)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, registryID)
+			return
+		}
+
+		if _, err := waitRegistryUpdated(ctx, conn, registryID, r.UpdateTimeout(ctx, plan.Timeouts)); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.RegistryID.String())
+			return
+		}
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

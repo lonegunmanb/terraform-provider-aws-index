@@ -1,0 +1,83 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"log"
+	"reflect"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func tableItemKeyFromIdentity(ctx context.Context, conn *dynamodb.Client, d *schema.ResourceData, tableName string) (map[string]awstypes.AttributeValue, string, string, error) {
+	hashKeyValue := d.Get("hash_key_value").(string)
+	rangeKeyValue := d.Get("range_key_value").(string)
+
+	if hashKeyValue == "" {
+		return nil, "", "", fmt.Errorf("hash_key_value must be set to import DynamoDB Table Item from %s", tableName)
+	}
+
+	table, err := findTableByName(ctx, conn, tableName)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("describing DynamoDB Table (%s): %w", tableName, err)
+	}
+
+	var hashKeyName, rangeKeyName string
+	for _, k := range table.KeySchema {
+		switch k.KeyType {
+		case awstypes.KeyTypeHash:
+			hashKeyName = aws.ToString(k.AttributeName)
+		case awstypes.KeyTypeRange:
+			rangeKeyName = aws.ToString(k.AttributeName)
+		}
+	}
+
+	attrTypes := make(map[string]awstypes.ScalarAttributeType, len(table.AttributeDefinitions))
+	for _, ad := range table.AttributeDefinitions {
+		attrTypes[aws.ToString(ad.AttributeName)] = ad.AttributeType
+	}
+
+	hashKeyType, ok := attrTypes[hashKeyName]
+	if !ok {
+		return nil, "", "", fmt.Errorf("table %s missing AttributeDefinition for hash key %q", tableName, hashKeyName)
+	}
+	hashKeyAV, err := attributeValueFromString(hashKeyValue, hashKeyType)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("hash_key_value: %w", err)
+	}
+
+	key := map[string]awstypes.AttributeValue{hashKeyName: hashKeyAV}
+
+	switch {
+	case rangeKeyName != "":
+		if rangeKeyValue == "" {
+			return nil, "", "", fmt.Errorf("table %s has range key %q but range_key_value is not set", tableName, rangeKeyName)
+		}
+		rangeKeyType, ok := attrTypes[rangeKeyName]
+		if !ok {
+			return nil, "", "", fmt.Errorf("table %s missing AttributeDefinition for range key %q", tableName, rangeKeyName)
+		}
+		rangeKeyAV, err := attributeValueFromString(rangeKeyValue, rangeKeyType)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("range_key_value: %w", err)
+		}
+		key[rangeKeyName] = rangeKeyAV
+	case rangeKeyValue != "":
+		return nil, "", "", fmt.Errorf("table %s has no range key but range_key_value is set to %q", tableName, rangeKeyValue)
+	}
+
+	return key, hashKeyName, rangeKeyName, nil
+}

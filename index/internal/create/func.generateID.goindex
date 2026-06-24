@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/create
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	mathrand "math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used -- Deterministic PRNG required for VCR test reproducibility
+
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/vcr"
+)
+func generateID(alphabet string, length int) (string, error) {
+	n := len(alphabet)
+	if n == 0 || n > 256 {
+		return "", errors.New("alphabet must be 1..256 bytes")
+	}
+	if length <= 0 {
+		return "", errors.New("length must be positive")
+	}
+
+	// Largest multiple of n that fits in a byte; values >= this are rejected
+	// so the modulo is unbiased.
+	limit := 256 - (256 % n)
+
+	id := make([]byte, length)
+	buf := make([]byte, length) // read in batches; refill as needed
+	i := 0
+	for i < length {
+		rand.Read(buf) //nolint:errcheck // crypto/rand.Read returns nil on Go 1.24+ (or the program crashes)
+		for _, b := range buf {
+			if int(b) >= limit {
+				continue // reject to keep the distribution uniform
+			}
+			id[i] = alphabet[int(b)%n]
+			i++
+			if i == length {
+				break
+			}
+		}
+	}
+	return string(id), nil
+}

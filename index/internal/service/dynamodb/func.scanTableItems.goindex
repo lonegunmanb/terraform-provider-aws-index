@@ -1,0 +1,37 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dynamodb
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func scanTableItems(ctx context.Context, conn *dynamodb.Client, input *dynamodb.ScanInput) iter.Seq2[map[string]awstypes.AttributeValue, error] {
+	return func(yield func(map[string]awstypes.AttributeValue, error) bool) {
+		pages := dynamodb.NewScanPaginator(conn, input)
+		for pages.HasMorePages() {
+			page, err := pages.NextPage(ctx)
+			if err != nil {
+				yield(nil, fmt.Errorf("scanning DynamoDB Table Items: %w", err))
+				return
+			}
+
+			for _, item := range page.Items {
+				if !yield(item, nil) {
+					return
+				}
+			}
+		}
+	}
+}
