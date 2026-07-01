@@ -1,17 +1,19 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
@@ -25,7 +27,8 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *contributorInsightRuleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	conn := r.Meta().CloudWatchClient(ctx)
+	c := r.Meta()
+	conn := c.CloudWatchClient(ctx)
 
 	var plan contributorInsightRuleResourceModel
 	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
@@ -33,42 +36,42 @@ func (r *contributorInsightRuleResource) Create(ctx context.Context, req resourc
 		return
 	}
 
-	input := cloudwatch.PutInsightRuleInput{
-		RuleDefinition: plan.RuleDefinition.ValueStringPointer(),
-		RuleName:       plan.RuleName.ValueStringPointer(),
-	}
+	ruleName := fwflex.StringValueFromFramework(ctx, plan.RuleName)
+	var input cloudwatch.PutInsightRuleInput
 	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, plan, &input))
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	// Additional fields.
 	input.Tags = getTagsIn(ctx)
 
-	out, err := conn.PutInsightRule(ctx, &input)
+	_, err := conn.PutInsightRule(ctx, &input)
 	if err != nil {
-		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.RuleName.String())
-		return
-	}
-	if out == nil {
-		smerr.AddError(ctx, &resp.Diagnostics, errors.New("empty output"), smerr.ID, plan.RuleName.String())
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, ruleName)
 		return
 	}
 
-	cirARN := r.Meta().RegionalARN(ctx, "cloudwatch", fmt.Sprintf("insight-rule/%s", plan.RuleName.ValueString()))
-	plan.ResourceARN = fwflex.StringValueToFramework(ctx, cirARN)
+	// Taint the resource.
+	resp.State.SetAttribute(ctx, path.Root("rule_name"), ruleName)
 
-	if !plan.RuleState.IsNull() {
-		if plan.RuleState.ValueEnum() == stateValueEnabled {
-			input := cloudwatch.EnableInsightRulesInput{
-				RuleNames: []string{plan.RuleName.ValueString()},
-			}
-			_, err = conn.EnableInsightRules(ctx, &input)
-		}
-
-		if err != nil {
-			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.RuleName.String())
+	switch ruleState := plan.RuleState.ValueEnum(); ruleState {
+	case stateValueEnabled:
+		if err := enableInsightRule(ctx, conn, ruleName); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, ruleName)
 			return
 		}
+	case stateValueDisabled:
+		if err := disableInsightRule(ctx, conn, ruleName); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, ruleName)
+			return
+		}
+	}
+
+	// Set values for unknowns.
+	plan.ResourceARN = fwflex.StringValueToFramework(ctx, insightRuleARN(ctx, c, ruleName))
+	if plan.RuleState.IsUnknown() {
+		plan.RuleState = fwtypes.StringEnumValue(stateValueEnabled)
 	}
 
 	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, plan))

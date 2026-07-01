@@ -2,6 +2,7 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/logs
 import (
 	"context"
 	"fmt"
+	"iter"
 	"log"
 	"strings"
 
@@ -25,32 +26,17 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func findMetricFilters(ctx context.Context, conn *cloudwatchlogs.Client, input *cloudwatchlogs.DescribeMetricFiltersInput, filter tfslices.Predicate[*awstypes.MetricFilter], optFns ...tfslices.FinderOptionsFunc) ([]awstypes.MetricFilter, error) {
-	var output []awstypes.MetricFilter
-	opts := tfslices.NewFinderOptions(optFns)
+func findMetricFilters(ctx context.Context, conn *cloudwatchlogs.Client, input *cloudwatchlogs.DescribeMetricFiltersInput, optFns ...tfslices.FinderOptionsFunc[awstypes.MetricFilter]) ([]awstypes.MetricFilter, error) {
+	output, err := tfslices.CollectAndConcatWithError(listMetricFilterPages(ctx, conn, input), optFns...)
 
-	pages := cloudwatchlogs.NewDescribeMetricFiltersPaginator(conn, input)
-	for pages.HasMorePages() {
-		page, err := pages.NextPage(ctx)
-
-		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
-			return nil, &retry.NotFoundError{
-				LastError: err,
-			}
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return nil, &retry.NotFoundError{
+			LastError: err,
 		}
+	}
 
-		if err != nil {
-			return nil, err
-		}
-
-		for _, v := range page.MetricFilters {
-			if filter(&v) {
-				output = append(output, v)
-				if opts.ReturnFirstMatch() {
-					return output, nil
-				}
-			}
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	return output, nil

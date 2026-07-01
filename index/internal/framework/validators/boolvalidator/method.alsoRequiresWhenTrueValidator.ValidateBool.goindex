@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/validators/boolvalidator
+import (
+	"context"
+	"fmt"
+
+	"github.com/hashicorp/terraform-plugin-framework-validators/helpers/validatordiag"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+)
+func (v alsoRequiresWhenTrueValidator) ValidateBool(ctx context.Context, req validator.BoolRequest, resp *validator.BoolResponse) {
+	// If the gating attribute is not configured, the condition cannot be
+	// "true," so there is nothing to enforce. If it is unknown, defer
+	// validation until it becomes known.
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	// Only fire when the gating attribute is true.
+	if !req.ConfigValue.ValueBool() {
+		return
+	}
+
+	expressions := req.PathExpression.MergeExpressions(v.pathExpressions...)
+
+	for _, expression := range expressions {
+		matchedPaths, diags := req.Config.PathMatches(ctx, expression)
+		resp.Diagnostics.Append(diags...)
+		if diags.HasError() {
+			continue
+		}
+
+		for _, mp := range matchedPaths {
+			// Skip self.
+			if mp.Equal(req.Path) {
+				continue
+			}
+
+			var mpVal attr.Value
+			diags := req.Config.GetAttribute(ctx, mp, &mpVal)
+			resp.Diagnostics.Append(diags...)
+			if diags.HasError() {
+				continue
+			}
+
+			// Defer if any target is unknown; we cannot decide yet.
+			if mpVal.IsUnknown() {
+				return
+			}
+
+			if mpVal.IsNull() {
+				resp.Diagnostics.Append(validatordiag.InvalidAttributeCombinationDiagnostic(
+					req.Path,
+					fmt.Sprintf("Attribute %q must be specified when %q is true", mp, req.Path),
+				))
+			}
+		}
+	}
+}

@@ -1,17 +1,19 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
@@ -26,7 +28,6 @@ import (
 )
 func (r *contributorInsightRuleResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var old, new contributorInsightRuleResourceModel
-
 	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &old))
 	if resp.Diagnostics.HasError() {
 		return
@@ -38,24 +39,34 @@ func (r *contributorInsightRuleResource) Update(ctx context.Context, req resourc
 
 	conn := r.Meta().CloudWatchClient(ctx)
 
-	if !new.RuleState.IsNull() && !old.RuleState.Equal(new.RuleState) {
-		if new.RuleState.ValueEnum() == stateValueEnabled {
-			input := cloudwatch.EnableInsightRulesInput{
-				RuleNames: []string{new.RuleName.ValueString()},
+	ruleName := fwflex.StringValueFromFramework(ctx, new.RuleName)
+
+	if !new.RuleDefinition.Equal(old.RuleDefinition) {
+		input := cloudwatch.PutInsightRuleInput{
+			RuleDefinition: fwflex.StringFromFramework(ctx, new.RuleDefinition),
+			RuleName:       aws.String(ruleName),
+		}
+		_, err := conn.PutInsightRule(ctx, &input)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, ruleName)
+			return
+		}
+	}
+
+	if !new.RuleState.Equal(old.RuleState) {
+		switch ruleState := new.RuleState.ValueEnum(); ruleState {
+		case stateValueEnabled:
+			if err := enableInsightRule(ctx, conn, ruleName); err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, ruleName)
+				return
 			}
-			_, err := conn.EnableInsightRules(ctx, &input)
-			if err != nil {
-				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, new.RuleName.String())
-			}
-		} else if new.RuleState.ValueEnum() == stateValueDisabled {
-			input := cloudwatch.DisableInsightRulesInput{
-				RuleNames: []string{new.RuleName.ValueString()},
-			}
-			_, err := conn.DisableInsightRules(ctx, &input)
-			if err != nil {
-				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, new.RuleName.String())
+		case stateValueDisabled:
+			if err := disableInsightRule(ctx, conn, ruleName); err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, ruleName)
+				return
 			}
 		}
 	}
-	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &new), smerr.ID, new.RuleName.String())
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &new))
 }

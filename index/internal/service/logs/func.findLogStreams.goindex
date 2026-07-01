@@ -2,6 +2,7 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/logs
 import (
 	"context"
 	"fmt"
+	"iter"
 	"log"
 	"strings"
 
@@ -19,32 +20,17 @@ import (
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func findLogStreams(ctx context.Context, conn *cloudwatchlogs.Client, input *cloudwatchlogs.DescribeLogStreamsInput, filter tfslices.Predicate[*awstypes.LogStream], optFns ...tfslices.FinderOptionsFunc) ([]awstypes.LogStream, error) { // nosemgrep:ci.logs-in-func-name
-	var output []awstypes.LogStream
-	opts := tfslices.NewFinderOptions(optFns)
+func findLogStreams(ctx context.Context, conn *cloudwatchlogs.Client, input *cloudwatchlogs.DescribeLogStreamsInput, optFns ...tfslices.FinderOptionsFunc[awstypes.LogStream]) ([]awstypes.LogStream, error) { // nosemgrep:ci.logs-in-func-name
+	output, err := tfslices.CollectAndConcatWithError(listLogStreamPages(ctx, conn, input), optFns...)
 
-	pages := cloudwatchlogs.NewDescribeLogStreamsPaginator(conn, input)
-	for pages.HasMorePages() {
-		page, err := pages.NextPage(ctx)
-
-		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
-			return nil, &retry.NotFoundError{
-				LastError: err,
-			}
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return nil, &retry.NotFoundError{
+			LastError: err,
 		}
+	}
 
-		if err != nil {
-			return nil, err
-		}
-
-		for _, v := range page.LogStreams {
-			if filter(&v) {
-				output = append(output, v)
-				if opts.ReturnFirstMatch() {
-					return output, nil
-				}
-			}
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	return output, nil
