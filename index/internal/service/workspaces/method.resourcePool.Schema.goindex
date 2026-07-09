@@ -1,0 +1,149 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workspaces
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/service/workspaces"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/workspaces/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourcePool) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"application_settings": framework.ResourceOptionalComputedListOfObjectsAttribute[applicationSettingsModel](ctx, 1, nil, listplanmodifier.UseStateForUnknown()),
+			"bundle_id": schema.StringAttribute{
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 64),
+					stringvalidator.RegexMatches(
+						regexache.MustCompile(`^wsb-[0-9a-z]{8,63}$`),
+						"Bundle ID must be in the format 'wsb-xxxxxxxx' where 'xxxxxxxx' is a 8-63 character long string of lowercase letters and numbers",
+					),
+				},
+			},
+			"capacity_status": framework.ResourceComputedListOfObjectsAttribute[capacityStatusModel](ctx, listplanmodifier.UseStateForUnknown()),
+			names.AttrCreatedAt: schema.StringAttribute{
+				Computed:   true,
+				CustomType: timetypes.RFC3339Type{},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrDescription: schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 255),
+					stringvalidator.RegexMatches(
+						regexache.MustCompile(`^[a-zA-Z0-9_./() -]+$`),
+						"Description must contain only alphanumeric characters, underscores, periods, forward slashes, parentheses, spaces, and hyphens",
+					),
+				},
+			},
+			"directory_id": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexache.MustCompile(`^(d-[0-9a-f]{8,63}$)|(wsd-[0-9a-z]{8,63}$)`),
+						"Directory ID must be in the format 'wsd-xxxxxxxx' where 'xxxxxxxx' is a 8-63 character long string of lowercase letters and numbers",
+					),
+				},
+			},
+			"pool_arn": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"pool_id": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"pool_name": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 64),
+					stringvalidator.RegexMatches(
+						regexache.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`),
+						"Name must start with an alphanumeric character and can only contain alphanumeric characters, underscores, periods, and hyphens",
+					),
+				},
+			},
+			"running_mode": schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.PoolsRunningMode](),
+				Required:   true,
+			},
+			names.AttrS3BucketName: schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrState: schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			names.AttrTags:     tftags.TagsAttribute(),
+			names.AttrTagsAll:  tftags.TagsAttributeComputedOnly(),
+			"timeout_settings": framework.ResourceOptionalComputedListOfObjectsAttribute[timeoutSettingsModel](ctx, 1, nil, listplanmodifier.UseStateForUnknown()),
+		},
+		Blocks: map[string]schema.Block{
+			"capacity": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[capacityModel](ctx),
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"desired_user_sessions": schema.Int64Attribute{
+							Required: true,
+						},
+					},
+				},
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
+					listvalidator.SizeAtMost(1),
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+	}
+}

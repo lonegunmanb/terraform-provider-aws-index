@@ -31,38 +31,37 @@ func resourceEndpointConfigurationCreate(ctx context.Context, d *schema.Resource
 	conn := meta.(*conns.AWSClient).SageMakerClient(ctx)
 
 	name := create.Name(ctx, d.Get(names.AttrName).(string), d.Get(names.AttrNamePrefix).(string))
-
-	createOpts := &sagemaker.CreateEndpointConfigInput{
+	input := sagemaker.CreateEndpointConfigInput{
 		EndpointConfigName: aws.String(name),
 		ProductionVariants: expandProductionVariants(d.Get("production_variants").([]any)),
 		Tags:               getTagsIn(ctx),
 	}
 
-	if v, ok := d.GetOk(names.AttrExecutionRoleARN); ok {
-		createOpts.ExecutionRoleArn = aws.String(v.(string))
-	}
-
-	if v, ok := d.GetOk(names.AttrKMSKeyARN); ok {
-		createOpts.KmsKeyId = aws.String(v.(string))
-	}
-
-	if v, ok := d.GetOk("shadow_production_variants"); ok && len(v.([]any)) > 0 {
-		createOpts.ShadowProductionVariants = expandProductionVariants(v.([]any))
+	if v, ok := d.GetOk("async_inference_config"); ok {
+		input.AsyncInferenceConfig = expandEndpointConfigAsyncInferenceConfig(v.([]any))
 	}
 
 	if v, ok := d.GetOk("data_capture_config"); ok {
-		createOpts.DataCaptureConfig = expandDataCaptureConfig(v.([]any))
+		input.DataCaptureConfig = expandDataCaptureConfig(v.([]any))
 	}
 
-	if v, ok := d.GetOk("async_inference_config"); ok {
-		createOpts.AsyncInferenceConfig = expandEndpointConfigAsyncInferenceConfig(v.([]any))
+	if v, ok := d.GetOk(names.AttrExecutionRoleARN); ok {
+		input.ExecutionRoleArn = aws.String(v.(string))
 	}
 
-	log.Printf("[DEBUG] SageMaker AI Endpoint Configuration create config: %#v", *createOpts)
-	_, err := conn.CreateEndpointConfig(ctx, createOpts)
+	if v, ok := d.GetOk(names.AttrKMSKeyARN); ok {
+		input.KmsKeyId = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("shadow_production_variants"); ok && len(v.([]any)) > 0 {
+		input.ShadowProductionVariants = expandProductionVariants(v.([]any))
+	}
+
+	_, err := conn.CreateEndpointConfig(ctx, &input)
 	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Endpoint Configuration: %s", err)
+		return sdkdiag.AppendErrorf(diags, "creating SageMaker AI Endpoint Configuration (%s): %s", name, err)
 	}
+
 	d.SetId(name)
 
 	return append(diags, resourceEndpointConfigurationRead(ctx, d, meta)...)

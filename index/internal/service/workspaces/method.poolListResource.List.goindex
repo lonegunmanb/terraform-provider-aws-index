@@ -1,0 +1,42 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/workspaces
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workspaces"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/workspaces/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+)
+func (l *poolListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().WorkSpacesClient(ctx)
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		for item, err := range listPools(ctx, conn, &workspaces.DescribeWorkspacesPoolsInput{}) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			result := request.NewListResult(ctx)
+
+			var data resourcePoolModel
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, &data, &result, func() {
+				result.Diagnostics.Append(l.flatten(ctx, &item, &data)...)
+				if result.Diagnostics.HasError() {
+					return
+				}
+			})
+
+			result.DisplayName = aws.ToString(item.PoolName)
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

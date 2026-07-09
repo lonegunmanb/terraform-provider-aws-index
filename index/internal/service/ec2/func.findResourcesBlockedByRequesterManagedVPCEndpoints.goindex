@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findResourcesBlockedByRequesterManagedVPCEndpoints(ctx context.Context, conn *ec2.Client) (subnetIDs, vpcIDs map[string][]string, err error) {
+	input := ec2.DescribeVpcEndpointsInput{
+		Filters: newAttributeFilterList(map[string]string{
+			"vpc-endpoint-state": vpcEndpointStateAvailable,
+		}),
+	}
+
+	endpoints, err := findVPCEndpoints(ctx, conn, &input)
+	if err != nil {
+		if retry.NotFound(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+
+	subnetIDs = make(map[string][]string)
+	vpcIDs = make(map[string][]string)
+	for _, ep := range endpoints {
+		if !aws.ToBool(ep.RequesterManaged) {
+			continue
+		}
+		endpointID := aws.ToString(ep.VpcEndpointId)
+		for _, subnetID := range ep.SubnetIds {
+			subnetIDs[subnetID] = append(subnetIDs[subnetID], endpointID)
+		}
+		if vpcID := aws.ToString(ep.VpcId); vpcID != "" {
+			vpcIDs[vpcID] = append(vpcIDs[vpcID], endpointID)
+		}
+	}
+	return subnetIDs, vpcIDs, nil
+}

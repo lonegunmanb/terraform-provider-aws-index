@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -31,33 +32,20 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func fixCacheBehaviors(config *awstypes.DistributionConfig) {
-	if config == nil {
-		return
+func flattenMultiTenantDistribution(ctx context.Context, output *cloudfront.GetDistributionOutput, data *multiTenantDistributionResourceModel) (diags diag.Diagnostics) { // nosemgrep:ci.semgrep.framework.manual-flattener-functions
+	data.ETag = fwflex.StringToFramework(ctx, output.ETag)
+
+	diags.Append(fwflex.Flatten(ctx, output.Distribution, data)...)
+	if diags.HasError() {
+		return diags
 	}
 
-	// Fix default cache behavior
-	if config.DefaultCacheBehavior != nil && config.DefaultCacheBehavior.LambdaFunctionAssociations != nil {
-		for i := range config.DefaultCacheBehavior.LambdaFunctionAssociations.Items {
-			assoc := &config.DefaultCacheBehavior.LambdaFunctionAssociations.Items[i]
-			if assoc.IncludeBody == nil {
-				assoc.IncludeBody = aws.Bool(false)
-			}
-		}
+	diags.Append(fwflex.Flatten(ctx, output.Distribution.DistributionConfig, data)...)
+	if diags.HasError() {
+		return diags
 	}
 
-	// Fix cache behaviors
-	if config.CacheBehaviors != nil {
-		for i := range config.CacheBehaviors.Items {
-			behavior := &config.CacheBehaviors.Items[i]
-			if behavior.LambdaFunctionAssociations != nil {
-				for j := range behavior.LambdaFunctionAssociations.Items {
-					assoc := &behavior.LambdaFunctionAssociations.Items[j]
-					if assoc.IncludeBody == nil {
-						assoc.IncludeBody = aws.Bool(false)
-					}
-				}
-			}
-		}
-	}
+	data.WebACLID = fwflex.EmptyStringAsNull(data.WebACLID)
+
+	return diags
 }

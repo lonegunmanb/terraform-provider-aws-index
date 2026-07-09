@@ -133,7 +133,12 @@ func resourceEventSourceMappingUpdate(ctx context.Context, d *schema.ResourceDat
 			input.TumblingWindowInSeconds = aws.Int32(int32(d.Get("tumbling_window_in_seconds").(int)))
 		}
 
-		_, err := retryEventSourceMapping(ctx, func(ctx context.Context) (*lambda.UpdateEventSourceMappingOutput, error) {
+		updateTimeout := d.Timeout(schema.TimeoutUpdate)
+		propagationTimeout := lambdaPropagationTimeout
+		if d.Get("use_resource_timeout_for_propagation").(bool) {
+			propagationTimeout = updateTimeout
+		}
+		_, err := retryEventSourceMapping(ctx, propagationTimeout, func(ctx context.Context) (*lambda.UpdateEventSourceMappingOutput, error) {
 			return conn.UpdateEventSourceMapping(ctx, &input)
 		})
 
@@ -141,7 +146,7 @@ func resourceEventSourceMappingUpdate(ctx context.Context, d *schema.ResourceDat
 			return sdkdiag.AppendErrorf(diags, "updating Lambda Event Source Mapping (%s): %s", d.Id(), err)
 		}
 
-		if _, err := waitEventSourceMappingUpdated(ctx, conn, d.Id()); err != nil {
+		if _, err := waitEventSourceMappingUpdated(ctx, conn, d.Id(), updateTimeout); err != nil {
 			return sdkdiag.AppendErrorf(diags, "waiting for Lambda Event Source Mapping (%s) update: %s", d.Id(), err)
 		}
 	}

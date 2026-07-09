@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ssoadmin
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ssoadmin"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ssoadmin/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+)
+func (l *regionListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().SSOAdminClient(ctx)
+
+	var query listRegionModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	instanceARN := query.InstanceARN.ValueString()
+
+	tflog.Info(ctx, "Listing SSO Admin Regions", map[string]any{
+		"instance_arn": instanceARN,
+	})
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := ssoadmin.ListRegionsInput{
+			InstanceArn: aws.String(instanceARN),
+		}
+
+		for item, err := range listRegions(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			regionName := aws.ToString(item.RegionName)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey("region_name"), regionName)
+
+			result := request.NewListResult(ctx)
+
+			var data regionResourceModel
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, &data, &result, func() {
+				data.InstanceARN = fwtypes.ARNValue(instanceARN)
+				data.RegionName = fwflex.StringValueToFramework(ctx, regionName)
+
+				if request.IncludeResource {
+					result.Diagnostics.Append(fwflex.Flatten(ctx, &item, &data)...)
+					if result.Diagnostics.HasError() {
+						return
+					}
+				}
+
+				result.DisplayName = regionName
+			})
+
+			if result.Diagnostics.HasError() {
+				yield(list.ListResult{Diagnostics: result.Diagnostics})
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

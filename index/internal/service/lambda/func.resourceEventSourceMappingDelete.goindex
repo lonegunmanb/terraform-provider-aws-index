@@ -32,13 +32,17 @@ func resourceEventSourceMappingDelete(ctx context.Context, d *schema.ResourceDat
 	conn := meta.(*conns.AWSClient).LambdaClient(ctx)
 
 	log.Printf("[INFO] Deleting Lambda Event Source Mapping: %s", d.Id())
-	const (
-		timeout = 5 * time.Minute
-	)
+
+	deleteTimeout := d.Timeout(schema.TimeoutDelete)
+	propagationTimeout := lambdaPropagationTimeout
+	if d.Get("use_resource_timeout_for_propagation").(bool) {
+		propagationTimeout = deleteTimeout
+	}
+
 	input := lambda.DeleteEventSourceMappingInput{
 		UUID: aws.String(d.Id()),
 	}
-	_, err := tfresource.RetryWhenIsA[any, *awstypes.ResourceInUseException](ctx, timeout, func(ctx context.Context) (any, error) {
+	_, err := tfresource.RetryWhenIsA[any, *awstypes.ResourceInUseException](ctx, propagationTimeout, func(ctx context.Context) (any, error) {
 		return conn.DeleteEventSourceMapping(ctx, &input)
 	})
 
@@ -50,7 +54,7 @@ func resourceEventSourceMappingDelete(ctx context.Context, d *schema.ResourceDat
 		return sdkdiag.AppendErrorf(diags, "deleting Lambda Event Source Mapping (%s): %s", d.Id(), err)
 	}
 
-	if _, err := waitEventSourceMappingDeleted(ctx, conn, d.Id()); err != nil {
+	if _, err := waitEventSourceMappingDeleted(ctx, conn, d.Id(), deleteTimeout); err != nil {
 		return sdkdiag.AppendErrorf(diags, "waiting for Lambda Event Source Mapping (%s) delete: %s", d.Id(), err)
 	}
 

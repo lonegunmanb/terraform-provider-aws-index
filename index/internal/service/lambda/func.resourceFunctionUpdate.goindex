@@ -42,6 +42,12 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 		}
 	}()
 
+	updateTimeout := d.Timeout(schema.TimeoutUpdate)
+	propagationTimeout := lambdaPropagationTimeout
+	if d.Get("use_resource_timeout_for_propagation").(bool) {
+		propagationTimeout = updateTimeout
+	}
+
 	if d.HasChange("code_signing_config_arn") {
 		if v, ok := d.GetOk("code_signing_config_arn"); ok {
 			input := lambda.PutFunctionCodeSigningConfigInput{
@@ -204,7 +210,7 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 			}
 		}
 
-		_, err := retryFunctionOp(ctx, func() (*lambda.UpdateFunctionConfigurationOutput, error) {
+		_, err := retryFunctionOp(ctx, propagationTimeout, func() (*lambda.UpdateFunctionConfigurationOutput, error) {
 			return conn.UpdateFunctionConfiguration(ctx, &input)
 		})
 
@@ -212,7 +218,7 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 			return sdkdiag.AppendErrorf(diags, "updating Lambda Function (%s) configuration: %s", d.Id(), err)
 		}
 
-		if _, err := waitFunctionUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate)); err != nil {
+		if _, err := waitFunctionUpdated(ctx, conn, d.Id(), updateTimeout); err != nil {
 			return sdkdiag.AppendErrorf(diags, "waiting for Lambda Function (%s) configuration update: %s", d.Id(), err)
 		}
 	}
@@ -307,7 +313,7 @@ func resourceFunctionUpdate(ctx context.Context, d *schema.ResourceData, meta an
 			input.PublishTo = awstypes.FunctionVersionLatestPublished(v.(string))
 		}
 
-		outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[any, *awstypes.ResourceConflictException](ctx, lambdaPropagationTimeout, func(ctx context.Context) (any, error) {
+		outputRaw, err := tfresource.RetryWhenIsAErrorMessageContains[any, *awstypes.ResourceConflictException](ctx, propagationTimeout, func(ctx context.Context) (any, error) {
 			return conn.PublishVersion(ctx, &input)
 		}, "in progress")
 

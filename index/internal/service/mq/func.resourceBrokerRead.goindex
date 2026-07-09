@@ -69,6 +69,22 @@ func resourceBrokerRead(ctx context.Context, d *schema.ResourceData, meta any) d
 	d.Set(names.AttrStorageType, output.StorageType)
 	d.Set(names.AttrSubnetIDs, output.SubnetIds)
 
+	// Shared resources are only supported for RabbitMQ brokers and are read
+	// via a separate API not exposed by DescribeBroker.
+	if strings.EqualFold(string(output.EngineType), string(types.EngineTypeRabbitmq)) {
+		sharedResources, err := findSharedResourcesByBrokerID(ctx, conn, d.Id())
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "reading MQ Broker (%s) shared resources: %s", d.Id(), err)
+		}
+
+		d.Set("resource_share_arns", flattenResourceShareARNs(sharedResources))
+
+		if err := d.Set("shared_resources", flattenSharedResources(sharedResources)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "setting shared_resources: %s", err)
+		}
+	}
+
 	if err := d.Set(names.AttrConfiguration, flattenConfiguration(output.Configurations)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "setting configuration: %s", err)
 	}

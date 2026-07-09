@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
@@ -21,6 +22,13 @@ import (
 )
 func sweepSubnets(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
 	conn := client.EC2Client(ctx)
+
+	// Skip subnets anchored by a VPC endpoint we cannot remove;
+	// see findResourcesBlockedByRequesterManagedVPCEndpoints for rationale.
+	blockedSubnets, _, err := findResourcesBlockedByRequesterManagedVPCEndpoints(ctx, conn)
+	if err != nil {
+		return nil, fmt.Errorf("listing requester-managed VPC endpoints: %w", err)
+	}
 
 	var sweepResources []sweep.Sweepable
 
@@ -41,8 +49,16 @@ func sweepSubnets(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepab
 		}
 
 		for _, v := range page.Subnets {
+			subnetID := aws.ToString(v.SubnetId)
+
+			if endpointIDs, blocked := blockedSubnets[subnetID]; blocked {
+				logSweepBlockedByRequesterManagedVPCEndpoint("EC2 Subnet", subnetID, endpointIDs)
+				continue
+			}
+
 			d := r.Data(nil)
-			d.SetId(aws.ToString(v.SubnetId))
+			d.SetId(subnetID)
+			d.Set(names.AttrVPCID, v.VpcId)
 
 			sweepResources = append(sweepResources, sweep.NewSweepResource(r, d, client))
 		}

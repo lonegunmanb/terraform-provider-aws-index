@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambda
+import (
+	"context"
+	"fmt"
+	"iter"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+)
+func listFunctionVersionsByCapacityProvider(ctx context.Context, conn *lambda.Client, capacityProviderName string) iter.Seq2[awstypes.FunctionVersionsByCapacityProviderListItem, error] {
+	return func(yield func(awstypes.FunctionVersionsByCapacityProviderListItem, error) bool) {
+		input := lambda.ListFunctionVersionsByCapacityProviderInput{
+			CapacityProviderName: aws.String(capacityProviderName),
+		}
+
+		for {
+			page, err := conn.ListFunctionVersionsByCapacityProvider(ctx, &input)
+			if err != nil {
+				yield(awstypes.FunctionVersionsByCapacityProviderListItem{}, fmt.Errorf("listing Lambda Function Versions for Capacity Provider (%s): %w", capacityProviderName, err))
+				return
+			}
+
+			for _, functionVersion := range page.FunctionVersions {
+				if !yield(functionVersion, nil) {
+					return
+				}
+			}
+
+			if aws.ToString(page.NextMarker) == "" {
+				return
+			}
+			input.Marker = page.NextMarker
+		}
+	}
+}

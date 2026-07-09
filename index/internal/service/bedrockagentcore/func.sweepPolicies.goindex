@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagentcore
+import (
+	"context"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepPolicies(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	if region := client.Region(ctx); region == endpoints.UsGovEast1RegionID || region == endpoints.UsGovWest1RegionID {
+		log.Printf("[WARN] Skipping Bedrock AgentCore Policy sweep for region: %s", region)
+		return nil, nil // nosemgrep:ci.semgrep.smarterr.go-no-bare-return-err
+	}
+	var input bedrockagentcorecontrol.ListPolicyEnginesInput
+	conn := client.BedrockAgentCoreClient(ctx)
+	var sweepResources []sweep.Sweepable
+
+	pages := bedrockagentcorecontrol.NewListPolicyEnginesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, smarterr.NewError(err)
+		}
+
+		for _, v := range page.PolicyEngines {
+			policyEngineID := aws.ToString(v.PolicyEngineId)
+			input := bedrockagentcorecontrol.ListPoliciesInput{
+				PolicyEngineId: aws.String(policyEngineID),
+			}
+
+			pages := bedrockagentcorecontrol.NewListPoliciesPaginator(conn, &input)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+				if err != nil {
+					return nil, smarterr.NewError(err)
+				}
+
+				for _, v := range page.Policies {
+					sweepResources = append(sweepResources, framework.NewSweepResource(newEvaluatorResource, client,
+						framework.NewAttribute("policy_engine_id", policyEngineID),
+						framework.NewAttribute("policy_id", aws.ToString(v.PolicyId))),
+					)
+				}
+			}
+		}
+	}
+
+	return sweepResources, nil
+}

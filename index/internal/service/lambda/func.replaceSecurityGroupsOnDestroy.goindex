@@ -65,13 +65,19 @@ func replaceSecurityGroupsOnDestroy(ctx context.Context, d *schema.ResourceData,
 		},
 	}
 
-	if _, err := retryFunctionOp(ctx, func() (*lambda.UpdateFunctionConfigurationOutput, error) {
+	deleteTimeout := d.Timeout(schema.TimeoutDelete)
+	propagationTimeout := lambdaPropagationTimeout
+	if d.Get("use_resource_timeout_for_propagation").(bool) {
+		propagationTimeout = deleteTimeout
+	}
+
+	if _, err := retryFunctionOp(ctx, propagationTimeout, func() (*lambda.UpdateFunctionConfigurationOutput, error) {
 		return conn.UpdateFunctionConfiguration(ctx, input)
 	}); err != nil {
 		return fmt.Errorf("updating Lambda Function (%s) configuration: %w", d.Id(), err)
 	}
 
-	if _, err := waitFunctionUpdated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutDelete)); err != nil {
+	if _, err := waitFunctionUpdated(ctx, conn, d.Id(), deleteTimeout); err != nil {
 		return fmt.Errorf("waiting for Lambda Function (%s) configuration update: %w", d.Id(), err)
 	}
 

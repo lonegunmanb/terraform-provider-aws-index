@@ -143,13 +143,19 @@ func resourceEventSourceMappingCreate(ctx context.Context, d *schema.ResourceDat
 		input.TumblingWindowInSeconds = aws.Int32(int32(v.(int)))
 	}
 
+	createTimeout := d.Timeout(schema.TimeoutCreate)
+	propagationTimeout := lambdaPropagationTimeout
+	if d.Get("use_resource_timeout_for_propagation").(bool) {
+		propagationTimeout = createTimeout
+	}
+
 	// IAM profiles and roles can take some time to propagate in AWS:
 	//  http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#launch-instance-with-role-console
 	// Error creating Lambda function: InvalidParameterValueException: The
 	// function defined for the task cannot be assumed by Lambda.
 	//
 	// The role may exist, but the permissions may not have propagated, so we retry.
-	output, err := retryEventSourceMapping(ctx, func(ctx context.Context) (*lambda.CreateEventSourceMappingOutput, error) {
+	output, err := retryEventSourceMapping(ctx, propagationTimeout, func(ctx context.Context) (*lambda.CreateEventSourceMappingOutput, error) {
 		return conn.CreateEventSourceMapping(ctx, &input)
 	})
 
@@ -157,7 +163,7 @@ func resourceEventSourceMappingCreate(ctx context.Context, d *schema.ResourceDat
 	if input.Tags != nil && errs.IsUnsupportedOperationInPartitionError(meta.(*conns.AWSClient).Partition(ctx), err) {
 		input.Tags = nil
 
-		output, err = retryEventSourceMapping(ctx, func(ctx context.Context) (*lambda.CreateEventSourceMappingOutput, error) {
+		output, err = retryEventSourceMapping(ctx, propagationTimeout, func(ctx context.Context) (*lambda.CreateEventSourceMappingOutput, error) {
 			return conn.CreateEventSourceMapping(ctx, &input)
 		})
 	}
@@ -168,7 +174,7 @@ func resourceEventSourceMappingCreate(ctx context.Context, d *schema.ResourceDat
 
 	d.SetId(aws.ToString(output.UUID))
 
-	if _, err := waitEventSourceMappingCreated(ctx, conn, d.Id()); err != nil {
+	if _, err := waitEventSourceMappingCreated(ctx, conn, d.Id(), createTimeout); err != nil {
 		return sdkdiag.AppendErrorf(diags, "waiting for Lambda Event Source Mapping (%s) create: %s", d.Id(), err)
 	}
 

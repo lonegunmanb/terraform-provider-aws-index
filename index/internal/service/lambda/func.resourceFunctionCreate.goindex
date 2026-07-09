@@ -168,7 +168,13 @@ func resourceFunctionCreate(ctx context.Context, d *schema.ResourceData, meta an
 		}
 	}
 
-	_, err := retryFunctionOp(ctx, func() (*lambda.CreateFunctionOutput, error) {
+	createTimeout := d.Timeout(schema.TimeoutCreate)
+	propagationTimeout := lambdaPropagationTimeout
+	if d.Get("use_resource_timeout_for_propagation").(bool) {
+		propagationTimeout = createTimeout
+	}
+
+	_, err := retryFunctionOp(ctx, propagationTimeout, func() (*lambda.CreateFunctionOutput, error) {
 		return conn.CreateFunction(ctx, &input)
 	})
 
@@ -178,7 +184,7 @@ func resourceFunctionCreate(ctx context.Context, d *schema.ResourceData, meta an
 
 	d.SetId(functionName)
 
-	_, err = tfresource.RetryWhenNotFound(ctx, lambdaPropagationTimeout, func(ctx context.Context) (any, error) {
+	_, err = tfresource.RetryWhenNotFound(ctx, propagationTimeout, func(ctx context.Context) (any, error) {
 		return findFunctionByName(ctx, conn, d.Id())
 	})
 
@@ -186,7 +192,7 @@ func resourceFunctionCreate(ctx context.Context, d *schema.ResourceData, meta an
 		return sdkdiag.AppendErrorf(diags, "waiting for Lambda Function (%s) create: %s", d.Id(), err)
 	}
 
-	if _, err := waitFunctionCreated(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate)); err != nil {
+	if _, err := waitFunctionCreated(ctx, conn, d.Id(), createTimeout); err != nil {
 		return sdkdiag.AppendErrorf(diags, "waiting for Lambda Function (%s) create: %s", d.Id(), err)
 	}
 
