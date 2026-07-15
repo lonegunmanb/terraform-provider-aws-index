@@ -1,0 +1,123 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/firehose
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/firehose"
+	"github.com/aws/aws-sdk-go-v2/service/firehose/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/provider/sdkv2/importer"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceDeliveryStreamFlatten(_ context.Context, d *schema.ResourceData, s *types.DeliveryStreamDescription) error {
+	d.Set(names.AttrARN, s.DeliveryStreamARN)
+	if v := s.Source; v != nil {
+		if v := v.KinesisStreamSourceDescription; v != nil {
+			if err := d.Set("kinesis_source_configuration", flattenKinesisStreamSourceDescription(v)); err != nil {
+				return fmt.Errorf("setting kinesis_source_configuration: %w", err)
+			}
+		}
+		if v := v.MSKSourceDescription; v != nil {
+			if err := d.Set("msk_source_configuration", []any{flattenMSKSourceDescription(v)}); err != nil {
+				return fmt.Errorf("setting msk_source_configuration: %w", err)
+			}
+		}
+	}
+	d.Set(names.AttrName, s.DeliveryStreamName)
+	d.Set("version_id", s.VersionId)
+
+	tfMapSSEOptions := map[string]any{
+		names.AttrEnabled: false,
+		"key_type":        types.KeyTypeAwsOwnedCmk,
+	}
+	if v := s.DeliveryStreamEncryptionConfiguration; v != nil && v.Status == types.DeliveryStreamEncryptionStatusEnabled {
+		tfMapSSEOptions[names.AttrEnabled] = true
+		tfMapSSEOptions["key_type"] = v.KeyType
+
+		if v := v.KeyARN; v != nil {
+			tfMapSSEOptions["key_arn"] = aws.ToString(v)
+		}
+	}
+	if err := d.Set("server_side_encryption", []any{tfMapSSEOptions}); err != nil {
+		return fmt.Errorf("setting server_side_encryption: %w", err)
+	}
+
+	if len(s.Destinations) > 0 {
+		destination := s.Destinations[0]
+		switch {
+		case destination.ElasticsearchDestinationDescription != nil:
+			d.Set(names.AttrDestination, destinationTypeElasticsearch)
+			if err := d.Set("elasticsearch_configuration", flattenElasticsearchDestinationDescription(destination.ElasticsearchDestinationDescription)); err != nil {
+				return fmt.Errorf("setting elasticsearch_configuration: %w", err)
+			}
+		case destination.HttpEndpointDestinationDescription != nil:
+			d.Set(names.AttrDestination, destinationTypeHTTPEndpoint)
+			configuredAccessKey := d.Get("http_endpoint_configuration.0.access_key").(string)
+			if err := d.Set("http_endpoint_configuration", flattenHTTPEndpointDestinationDescription(destination.HttpEndpointDestinationDescription, configuredAccessKey)); err != nil {
+				return fmt.Errorf("setting http_endpoint_configuration: %w", err)
+			}
+		case destination.IcebergDestinationDescription != nil:
+			d.Set(names.AttrDestination, destinationTypeIceberg)
+			if err := d.Set("iceberg_configuration", flattenIcebergDestinationDescription(destination.IcebergDestinationDescription)); err != nil {
+				return fmt.Errorf("setting iceberg_configuration: %w", err)
+			}
+		case destination.AmazonopensearchserviceDestinationDescription != nil:
+			d.Set(names.AttrDestination, destinationTypeOpenSearch)
+			if err := d.Set("opensearch_configuration", flattenAmazonopensearchserviceDestinationDescription(destination.AmazonopensearchserviceDestinationDescription)); err != nil {
+				return fmt.Errorf("setting opensearch_configuration: %w", err)
+			}
+		case destination.AmazonOpenSearchServerlessDestinationDescription != nil:
+			d.Set(names.AttrDestination, destinationTypeOpenSearchServerless)
+			if err := d.Set("opensearchserverless_configuration", flattenAmazonOpenSearchServerlessDestinationDescription(destination.AmazonOpenSearchServerlessDestinationDescription)); err != nil {
+				return fmt.Errorf("setting opensearchserverless_configuration: %w", err)
+			}
+		case destination.RedshiftDestinationDescription != nil:
+			d.Set(names.AttrDestination, destinationTypeRedshift)
+			configuredPassword := d.Get("redshift_configuration.0.password").(string)
+			if err := d.Set("redshift_configuration", flattenRedshiftDestinationDescription(destination.RedshiftDestinationDescription, configuredPassword)); err != nil {
+				return fmt.Errorf("setting redshift_configuration: %w", err)
+			}
+		case destination.SnowflakeDestinationDescription != nil:
+			d.Set(names.AttrDestination, destinationTypeSnowflake)
+			configuredKeyPassphrase := d.Get("snowflake_configuration.0.key_passphrase").(string)
+			configuredPrivateKey := d.Get("snowflake_configuration.0.private_key").(string)
+			if err := d.Set("snowflake_configuration", flattenSnowflakeDestinationDescription(destination.SnowflakeDestinationDescription, configuredKeyPassphrase, configuredPrivateKey)); err != nil {
+				return fmt.Errorf("setting snowflake_configuration: %w", err)
+			}
+		case destination.SplunkDestinationDescription != nil:
+			d.Set(names.AttrDestination, destinationTypeSplunk)
+			if err := d.Set("splunk_configuration", flattenSplunkDestinationDescription(destination.SplunkDestinationDescription)); err != nil {
+				return fmt.Errorf("setting splunk_configuration: %w", err)
+			}
+		default:
+			d.Set(names.AttrDestination, destinationTypeExtendedS3)
+			if err := d.Set("extended_s3_configuration", flattenExtendedS3DestinationDescription(destination.ExtendedS3DestinationDescription)); err != nil {
+				return fmt.Errorf("setting extended_s3_configuration: %w", err)
+			}
+		}
+		d.Set("destination_id", destination.DestinationId)
+	}
+
+	return nil
+}

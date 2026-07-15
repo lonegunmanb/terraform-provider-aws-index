@@ -1,0 +1,53 @@
+package github.com/hashicorp/terraform-provider-aws/internal/framework/validators/internal
+import (
+	"context"
+	"fmt"
+
+	"github.com/hashicorp/terraform-plugin-framework-validators/helpers/validatordiag"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+)
+func (v whenValidator) validate(ctx context.Context, request ValidatorRequest, response *ValidatorResponse, cb func(context.Context, path.Path, path.Path, attr.Value) diag.Diagnostics) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+
+	if !v.when.Eval(ctx, request.ConfigValue) {
+		return
+	}
+
+	var responseDiags diag.Diagnostics
+
+	for _, expression := range request.PathExpression.MergeExpressions(v.pathExpressions...) {
+		matchedPaths, diags := request.Config.PathMatches(ctx, expression)
+		response.Diagnostics.Append(diags...)
+		if diags.HasError() {
+			continue
+		}
+
+		for _, mp := range matchedPaths {
+			// Skip self.
+			if mp.Equal(request.Path) {
+				continue
+			}
+
+			var mpVal attr.Value
+			response.Diagnostics.Append(request.Config.GetAttribute(ctx, mp, &mpVal)...)
+			if response.Diagnostics.HasError() {
+				return
+			}
+
+			// Defer if any target is unknown; we cannot decide yet.
+			if mpVal.IsUnknown() {
+				return
+			}
+
+			// Collect all errors.
+			responseDiags.Append(cb(ctx, request.Path, mp, mpVal)...)
+		}
+	}
+
+	response.Diagnostics.Append(responseDiags...)
+}

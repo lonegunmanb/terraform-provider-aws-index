@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -32,6 +33,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -45,6 +47,11 @@ func authorizerConfigurationSchema(ctx context.Context) schema.ListNestedBlock {
 			listvalidator.SizeAtMost(1),
 		},
 		NestedObject: schema.NestedBlockObject{
+			Validators: []validator.Object{
+				tfobjectvalidator.ExactlyOneOfChildren(
+					path.MatchRelative().AtName("custom_jwt_authorizer"),
+				),
+			},
 			Blocks: map[string]schema.Block{
 				"custom_jwt_authorizer": schema.ListNestedBlock{
 					CustomType: fwtypes.NewListNestedObjectTypeOf[customJWTAuthorizerConfigurationModel](ctx),
@@ -70,6 +77,39 @@ func authorizerConfigurationSchema(ctx context.Context) schema.ListNestedBlock {
 							},
 						},
 						Blocks: map[string]schema.Block{
+							"allowed_workload_configuration": schema.ListNestedBlock{
+								CustomType: fwtypes.NewListNestedObjectTypeOf[allowedWorkloadConfigurationModel](ctx),
+								Validators: []validator.List{
+									listvalidator.SizeAtMost(1),
+								},
+								NestedObject: schema.NestedBlockObject{
+									Attributes: map[string]schema.Attribute{
+										"workload_identities": schema.ListAttribute{
+											CustomType: fwtypes.ListOfStringType,
+											Optional:   true,
+											Validators: []validator.List{
+												listvalidator.SizeBetween(1, 10),
+											},
+										},
+									},
+									Blocks: map[string]schema.Block{
+										"hosting_environment": schema.ListNestedBlock{
+											CustomType: fwtypes.NewListNestedObjectTypeOf[hostingEnvironmentModel](ctx),
+											Validators: []validator.List{
+												listvalidator.SizeBetween(1, 10),
+											},
+											NestedObject: schema.NestedBlockObject{
+												Attributes: map[string]schema.Attribute{
+													names.AttrARN: schema.StringAttribute{
+														CustomType: fwtypes.ARNType,
+														Required:   true,
+													},
+												},
+											},
+										},
+									},
+								},
+							},
 							"custom_claim": schema.SetNestedBlock{
 								CustomType: fwtypes.NewSetNestedObjectTypeOf[customJWTAuthorizerCustomClaimModel](ctx),
 								NestedObject: schema.NestedBlockObject{
@@ -138,6 +178,29 @@ func authorizerConfigurationSchema(ctx context.Context) schema.ListNestedBlock {
 												},
 											},
 										},
+									},
+								},
+							},
+							"private_endpoint": privateEndpointSchema(ctx),
+							"private_endpoint_overrides": schema.ListNestedBlock{
+								CustomType: fwtypes.NewListNestedObjectTypeOf[privateEndpointOverrideModel](ctx),
+								Validators: []validator.List{
+									listvalidator.SizeAtMost(5),
+								},
+								NestedObject: schema.NestedBlockObject{
+									Attributes: map[string]schema.Attribute{
+										names.AttrDomain: schema.StringAttribute{
+											Required: true,
+											Validators: []validator.String{
+												stringvalidator.LengthBetween(1, 253),
+											},
+										},
+									},
+									Blocks: map[string]schema.Block{
+										// SDK PrivateEndpointOverride.PrivateEndpoint is a required member;
+										// enforce it offline so a missing private_endpoint fails at plan
+										// instead of a client-side SDK error at apply.
+										"private_endpoint": privateEndpointSchema(ctx, listvalidator.IsRequired()),
 									},
 								},
 							},
