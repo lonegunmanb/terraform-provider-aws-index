@@ -1,0 +1,98 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagent
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagent"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagent/document"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagent/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (m *managedKnowledgeBaseConnectorConfigurationModel) Flatten(ctx context.Context, v any) diag.Diagnostics {
+	var diags diag.Diagnostics
+	switch t := v.(type) {
+	case awstypes.ManagedKnowledgeBaseConnectorConfiguration:
+		if v := t.ConnectorParameters; v != nil {
+			v, err := tfsmithy.DocumentToJSONString(v)
+			if err != nil {
+				diags.AddError("reading Smithy document", err.Error())
+				return diags
+			}
+
+			// The Smithy document comes back as a string containing the JSON document (double quoted).
+			if strings.HasPrefix(v, `"{`) && strings.HasSuffix(v, `}"`) {
+				var inner string
+				if err := tfjson.DecodeFromString(v, &inner); err != nil {
+					diags.AddError("Decoding", fmt.Sprintf("managed_knowledge_base_connector_configuration flatten: %s", err))
+				}
+				v = inner
+			}
+
+			m.ConnectorParameters = fwtypes.NewSmithyJSONValue(v, document.NewLazyDocument)
+		} else {
+			m.ConnectorParameters = fwtypes.NewSmithyJSONNull[document.Interface]()
+		}
+
+		if v := t.DeletionProtectionConfiguration; v != nil {
+			var data deletionProtectionConfigurationModel
+			diags.Append(fwflex.Flatten(ctx, v, &data)...)
+			if diags.HasError() {
+				return diags
+			}
+			m.DeletionProtectionConfiguration = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &data)
+		} else {
+			m.DeletionProtectionConfiguration = fwtypes.NewListNestedObjectValueOfNull[deletionProtectionConfigurationModel](ctx)
+		}
+
+		if v := t.MediaExtractionConfiguration; v != nil {
+			var data mediaExtractionConfigurationModel
+			diags.Append(fwflex.Flatten(ctx, v, &data)...)
+			if diags.HasError() {
+				return diags
+			}
+			m.MediaExtractionConfiguration = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &data)
+		} else {
+			m.MediaExtractionConfiguration = fwtypes.NewListNestedObjectValueOfNull[mediaExtractionConfigurationModel](ctx)
+		}
+	default:
+		diags.AddError("Unsupported Type", fmt.Sprintf("managed_knowledge_base_connector_configuration flatten: %T", v))
+	}
+	return diags
+}

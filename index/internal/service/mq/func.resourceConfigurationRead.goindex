@@ -3,7 +3,7 @@ import (
 	"context"
 	"encoding/base64"
 	"log"
-	"strconv"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/mq"
@@ -19,11 +19,11 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func resourceConfigurationRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	var diags diag.Diagnostics
-
 	conn := meta.(*conns.AWSClient).MQClient(ctx)
 
 	configuration, err := findConfigurationByID(ctx, conn, d.Id())
@@ -46,17 +46,18 @@ func resourceConfigurationRead(ctx context.Context, d *schema.ResourceData, meta
 	d.Set("latest_revision", configuration.LatestRevision.Revision)
 	d.Set(names.AttrName, configuration.Name)
 
-	revision := strconv.FormatInt(int64(aws.ToInt32(configuration.LatestRevision.Revision)), 10)
-	configurationRevision, err := conn.DescribeConfigurationRevision(ctx, &mq.DescribeConfigurationRevisionInput{
+	revision := flex.Int32ToStringValue(configuration.LatestRevision.Revision)
+	input := mq.DescribeConfigurationRevisionInput{
 		ConfigurationId:       aws.String(d.Id()),
 		ConfigurationRevision: aws.String(revision),
-	})
+	}
+	output, err := conn.DescribeConfigurationRevision(ctx, &input)
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "reading MQ Configuration (%s) revision (%s): %s", d.Id(), revision, err)
 	}
 
-	data, err := base64.StdEncoding.DecodeString(aws.ToString(configurationRevision.Data))
+	data, err := inttypes.Base64Decode(aws.ToString(output.Data))
 
 	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "base64 decoding: %s", err)

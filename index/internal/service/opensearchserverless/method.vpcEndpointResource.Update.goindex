@@ -26,16 +26,14 @@ import (
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *vpcEndpointResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var new, old vpcEndpointResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &new)...)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &old))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &new))
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -76,18 +74,12 @@ func (r *vpcEndpointResource) Update(ctx context.Context, req resource.UpdateReq
 	_, err := conn.UpdateVpcEndpoint(ctx, input)
 
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionDeleting, resNameVPCEndpoint, new.Name.String(), nil),
-			err.Error(),
-		)
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, new.Name.ValueString())
 		return
 	}
 
 	if _, err := waitVPCEndpointUpdated(ctx, conn, new.ID.ValueString(), r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionWaitingForUpdate, resNameVPCEndpoint, new.Name.String(), nil),
-			err.Error(),
-		)
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, new.Name.ValueString())
 		return
 	}
 
@@ -95,10 +87,7 @@ func (r *vpcEndpointResource) Update(ctx context.Context, req resource.UpdateReq
 	vpce, err := tfec2.FindVPCEndpointByID(ctx, r.Meta().EC2Client(ctx), new.ID.ValueString())
 
 	if err != nil {
-		resp.Diagnostics.AddError(
-			create.ProblemStandardMessage(names.OpenSearchServerless, create.ErrActionReading, resNameVPCEndpoint, new.ID.ValueString(), err),
-			err.Error(),
-		)
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, new.ID.ValueString())
 		return
 	}
 
@@ -107,10 +96,10 @@ func (r *vpcEndpointResource) Update(ctx context.Context, req resource.UpdateReq
 		securityGroupIDs = append(securityGroupIDs, group.GroupId)
 	}
 
-	resp.Diagnostics.Append(fwflex.Flatten(ctx, securityGroupIDs, &new.SecurityGroupIDs)...)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Flatten(ctx, securityGroupIDs, &new.SecurityGroupIDs))
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &new)...)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &new))
 }

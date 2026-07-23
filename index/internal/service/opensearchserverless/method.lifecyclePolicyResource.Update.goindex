@@ -24,15 +24,13 @@ import (
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *lifecyclePolicyResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	var new, old lifecyclePolicyResourceModel
-	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
-	if response.Diagnostics.HasError() {
-		return
-	}
-	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &new))
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.State.Get(ctx, &old))
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -42,7 +40,7 @@ func (r *lifecyclePolicyResource) Update(ctx context.Context, request resource.U
 	if !new.Description.Equal(old.Description) || !new.Policy.Equal(old.Policy) {
 		name := fwflex.StringValueFromFramework(ctx, new.ID)
 		var input opensearchserverless.UpdateLifecyclePolicyInput
-		response.Diagnostics.Append(fwflex.Expand(ctx, new, &input)...)
+		smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Expand(ctx, new, &input))
 		if response.Diagnostics.HasError() {
 			return
 		}
@@ -54,7 +52,7 @@ func (r *lifecyclePolicyResource) Update(ctx context.Context, request resource.U
 		output, err := conn.UpdateLifecyclePolicy(ctx, &input)
 
 		if err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("updating OpenSearch Serverless Lifecycle Policy (%s)", name), err.Error())
+			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, name)
 
 			return
 		}
@@ -63,5 +61,5 @@ func (r *lifecyclePolicyResource) Update(ctx context.Context, request resource.U
 		new.PolicyVersion = fwflex.StringToFramework(ctx, output.LifecyclePolicyDetail.PolicyVersion)
 	}
 
-	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, &new))
 }

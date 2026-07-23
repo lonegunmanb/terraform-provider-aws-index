@@ -1,0 +1,88 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/eks
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tfiter "github.com/hashicorp/terraform-provider-aws/internal/iter"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *addonListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().EKSClient(ctx)
+
+	var query listAddonModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	clusterName := fwflex.StringValueFromFramework(ctx, query.ClusterName)
+
+	tflog.Info(ctx, "Listing Resources", map[string]any{
+		logging.ResourceAttributeKey(names.AttrClusterName): clusterName,
+	})
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := eks.ListAddonsInput{
+			ClusterName: aws.String(clusterName),
+		}
+		for item, err := range listAddons(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrName), item)
+
+			result := request.NewListResult(ctx)
+
+			rd := l.ResourceData()
+			rd.SetId(addonCreateResourceID(clusterName, item))
+			rd.Set("addon_name", item)
+			rd.Set(names.AttrClusterName, clusterName)
+
+			if request.IncludeResource {
+				addon, err := findAddonByTwoPartKey(ctx, conn, clusterName, item)
+				if err != nil {
+					tflog.Error(ctx, "Reading EKS Add-On", map[string]any{
+						"error": err.Error(),
+					})
+					continue
+				}
+
+				if err := resourceAddonFlatten(ctx, conn, addon, rd); err != nil {
+					tflog.Error(ctx, "Reading EKS Add-On", map[string]any{
+						"error": err.Error(),
+					})
+					continue
+				}
+			}
+
+			result.DisplayName = item
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}
