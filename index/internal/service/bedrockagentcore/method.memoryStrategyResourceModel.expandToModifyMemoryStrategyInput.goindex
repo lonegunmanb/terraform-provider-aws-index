@@ -3,15 +3,17 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -28,6 +30,8 @@ import (
 	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
+	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
@@ -36,7 +40,9 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (m memoryStrategyResourceModel) expandToModifyMemoryStrategyInput(ctx context.Context) (result any, diags diag.Diagnostics) {
+func (m memoryStrategyResourceModel) expandToModifyMemoryStrategyInput(ctx context.Context) (*awstypes.ModifyMemoryStrategyInput, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	// To prevent infinite recursion...
 	type modelAlias memoryStrategyResourceModel
 	alias := modelAlias(m)
 	var r awstypes.ModifyMemoryStrategyInput
@@ -44,11 +50,31 @@ func (m memoryStrategyResourceModel) expandToModifyMemoryStrategyInput(ctx conte
 	if diags.HasError() {
 		return nil, diags
 	}
+
 	// For non-CUSTOM types, Configuration should not be sent.
 	// Auto-flex may produce an empty ModifyStrategyConfiguration from the
 	// null model Configuration field, which the API rejects.
-	if m.Configuration.IsNull() || m.Configuration.IsUnknown() {
+	switch m.Type.ValueEnum() {
+	case awstypes.MemoryStrategyTypeCustom:
+	case awstypes.MemoryStrategyTypeEpisodic:
+		if !m.ReflectionConfiguration.IsNull() {
+			var rReflectionConfiguration awstypes.EpisodicReflectionConfigurationInput
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, m.ReflectionConfiguration, &rReflectionConfiguration))
+			if diags.HasError() {
+				return nil, diags
+			}
+
+			r.Configuration = &awstypes.ModifyStrategyConfiguration{
+				Reflection: &awstypes.ModifyReflectionConfigurationMemberEpisodicReflectionConfiguration{
+					Value: rReflectionConfiguration,
+				},
+			}
+		} else {
+			r.Configuration = nil
+		}
+	default:
 		r.Configuration = nil
 	}
+
 	return &r, diags
 }

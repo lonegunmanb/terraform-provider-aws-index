@@ -3,15 +3,17 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -28,6 +30,8 @@ import (
 	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
+	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
@@ -43,8 +47,9 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 				Optional: true,
 			},
 			"memory_execution_role_arn": schema.StringAttribute{
-				CustomType: fwtypes.ARNType,
-				Optional:   true,
+				CustomType:         fwtypes.ARNType,
+				Optional:           true,
+				DeprecationMessage: "memory_execution_role_arn is deprecated. The attribute can be removed from configuration.",
 			},
 			"memory_id": schema.StringAttribute{
 				Required: true,
@@ -60,11 +65,33 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 				},
 			},
 			names.AttrName: schema.StringAttribute{
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,47}$`), ""),
+				},
 				Required: true,
 			},
 			"namespaces": schema.SetAttribute{
+				CustomType:         fwtypes.SetOfStringType,
+				Optional:           true,
+				Computed:           true,
+				DeprecationMessage: "namespaces is deprecated. Use namespace_templates instead.",
+				PlanModifiers: []planmodifier.Set{
+					tfsetplanmodifier.DefaultValueFromPath[fwtypes.SetOfString](path.Root("namespace_templates")),
+				},
+			},
+			"namespace_templates": schema.SetAttribute{
 				CustomType: fwtypes.SetOfStringType,
-				Required:   true,
+				Optional:   true,
+				Computed:   true,
+				Validators: []validator.Set{
+					setvalidator.ExactlyOneOf(
+						path.MatchRelative().AtParent().AtName("namespaces"),
+						path.MatchRelative().AtParent().AtName("namespace_templates"),
+					),
+				},
+				PlanModifiers: []planmodifier.Set{
+					tfsetplanmodifier.DefaultValueFromPath[fwtypes.SetOfString](path.Root("namespaces")),
+				},
 			},
 			names.AttrType: schema.StringAttribute{
 				Required:   true,
@@ -77,6 +104,10 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 					tfstringvalidator.ConflictsWithWhenNotEquals(
 						awstypes.MemoryStrategyTypeCustom,
 						path.MatchRelative().AtParent().AtName(names.AttrConfiguration),
+					),
+					tfstringvalidator.ConflictsWithWhenNotEquals(
+						awstypes.MemoryStrategyTypeEpisodic,
+						path.MatchRelative().AtParent().AtName("reflection_configuration"),
 					),
 				},
 				PlanModifiers: []planmodifier.String{
@@ -96,6 +127,14 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 							Required:   true,
 							CustomType: fwtypes.StringEnumType[awstypes.OverrideType](),
 							Validators: []validator.String{
+								tfstringvalidator.AlsoRequiresWhenEquals(
+									awstypes.OverrideTypeEpisodicOverride,
+									path.MatchRelative().AtParent().AtName("reflection"),
+								),
+								tfstringvalidator.ConflictsWithWhenNotEquals(
+									awstypes.OverrideTypeEpisodicOverride,
+									path.MatchRelative().AtParent().AtName("reflection"),
+								),
 								tfstringvalidator.ConflictsWithWhenEquals(
 									awstypes.OverrideTypeSummaryOverride,
 									path.MatchRelative().AtParent().AtName("extraction"),
@@ -142,6 +181,46 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 									},
 								},
 							},
+						},
+						"reflection": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[episodicReflectionOverrideDetailsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							PlanModifiers: []planmodifier.List{
+								errorIfSingleBlockRemoved("reflection"),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"append_to_prompt": schema.StringAttribute{
+										Required: true,
+									},
+									"model_id": schema.StringAttribute{
+										Required: true,
+									},
+									"namespace_templates": schema.SetAttribute{
+										CustomType: fwtypes.SetOfStringType,
+										Required:   true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"reflection_configuration": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[episodicReflectionConfigurationModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				PlanModifiers: []planmodifier.List{
+					tflistplanmodifier.RequiresReplaceIfEmptied,
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"namespace_templates": schema.SetAttribute{
+							CustomType: fwtypes.SetOfStringType,
+							Required:   true,
 						},
 					},
 				},

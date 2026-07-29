@@ -3,15 +3,17 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -28,6 +30,8 @@ import (
 	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
+	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
@@ -39,7 +43,8 @@ import (
 func (r *resourceMemoryStrategy) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	conn := r.Meta().BedrockAgentCoreClient(ctx)
 
-	var plan memoryStrategyResourceModel
+	var config, plan memoryStrategyResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Config.Get(ctx, &config))
 	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &plan))
 	if response.Diagnostics.HasError() {
 		return
@@ -51,7 +56,7 @@ func (r *resourceMemoryStrategy) Create(ctx context.Context, request resource.Cr
 		return
 	}
 
-	memoryID := fwflex.StringValueFromFramework(ctx, plan.MemoryID)
+	memoryID, name := fwflex.StringValueFromFramework(ctx, plan.MemoryID), fwflex.StringValueFromFramework(ctx, plan.Name)
 	input := bedrockagentcorecontrol.UpdateMemoryInput{
 		ClientToken: aws.String(create.UniqueId(ctx)),
 		MemoryId:    aws.String(memoryID),
@@ -66,42 +71,45 @@ func (r *resourceMemoryStrategy) Create(ctx context.Context, request resource.Cr
 
 	withMemoryLock(ctx, memoryID, func(ctx context.Context) {
 		createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
-		out, err := updateMemoryWithRetry(ctx, conn, createTimeout, &input, false)
+		out, err := retryUpdateMemoryStrategy(ctx, conn, &input, createTimeout)
 		if err != nil {
-			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, plan.GetIdentifier())
+			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, name)
 			return
 		}
 
 		name := fwflex.StringValueFromFramework(ctx, plan.Name)
-		var found *awstypes.MemoryStrategy
-		if out != nil && out.Memory != nil {
-			for i := range out.Memory.Strategies {
-				s := &out.Memory.Strategies[i]
-				if s.Name != nil && aws.ToString(s.Name) == name {
-					found = s
-				}
-			}
-		}
-		if found == nil {
-			smerr.AddError(ctx, &response.Diagnostics, fmt.Errorf("create memory strategy: API response missing strategy name %q", name), smerr.ID, plan.GetIdentifier())
+		found, err := tfresource.AssertSingleValueResult(out.Memory.Strategies, func(v *awstypes.MemoryStrategy) bool {
+			return aws.ToString(v.Name) == name
+		})
+		if err != nil {
+			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, name)
 			return
 		}
-		// For non-CUSTOM types, clear Configuration from the API response before
-		// flattening. The API returns a StrategyConfiguration with Type values
-		// (e.g. "EPISODIC") that are not valid OverrideType enum values.
-		if plan.Type.ValueEnum() != awstypes.MemoryStrategyTypeCustom {
-			found.Configuration = nil
-		}
+
 		smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Flatten(ctx, found, &plan, fwflex.WithFieldNamePrefix("Memory")))
 		if response.Diagnostics.HasError() {
 			return
 		}
 
-		_, err = waitMemoryStrategyCreated(ctx, conn, memoryID, fwflex.StringValueFromFramework(ctx, plan.MemoryStrategyID), createTimeout)
-		if err != nil {
+		// If no `reflection_configuration` is configured, don't overwrite with returned value.
+		if config.ReflectionConfiguration.IsNull() {
+			plan.ReflectionConfiguration = fwtypes.NewListNestedObjectValueOfNull[episodicReflectionConfigurationModel](ctx)
+		}
+
+		memoryStrategyID := fwflex.StringValueFromFramework(ctx, plan.MemoryStrategyID)
+		if _, err := waitMemoryStrategyCreated(ctx, conn, memoryID, memoryStrategyID, createTimeout); err != nil {
 			// Taint the resource.
 			response.State.SetAttribute(ctx, path.Root("memory_id"), memoryID)
-			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, plan.GetIdentifier())
+			response.State.SetAttribute(ctx, path.Root("memory_strategy_id"), memoryStrategyID)
+			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, memoryStrategyID)
+			return
+		}
+
+		if _, err := waitMemoryUpdated(ctx, conn, memoryID, createTimeout); err != nil {
+			// Taint the resource.
+			response.State.SetAttribute(ctx, path.Root("memory_id"), memoryID)
+			response.State.SetAttribute(ctx, path.Root("memory_strategy_id"), memoryStrategyID)
+			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, memoryStrategyID)
 			return
 		}
 	})

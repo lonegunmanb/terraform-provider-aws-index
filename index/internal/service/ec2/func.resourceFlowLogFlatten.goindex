@@ -1,0 +1,72 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func resourceFlowLogFlatten(ctx context.Context, awsClient *conns.AWSClient, output *awstypes.FlowLog, d *schema.ResourceData) error {
+	d.Set(names.AttrARN, flowLogARN(ctx, awsClient, d.Id()))
+	d.Set("deliver_cross_account_role", output.DeliverCrossAccountRole)
+	if output.DestinationOptions != nil {
+		if err := d.Set("destination_options", []any{flattenDestinationOptionsResponse(output.DestinationOptions)}); err != nil {
+			return fmt.Errorf("setting destination_options: %w", err)
+		}
+	} else {
+		d.Set("destination_options", nil)
+	}
+	d.Set(names.AttrIAMRoleARN, output.DeliverLogsPermissionArn)
+	if output.LogDestinationType == awstypes.LogDestinationTypeCloudWatchLogs && output.LogDestination == nil {
+		// Legacy usage of LogGroupName. Either importing or migrating from old version of the proivder
+		d.Set("log_destination", cloudwatchLogGroupARNFromName(ctx, awsClient, aws.ToString(output.LogGroupName)))
+	} else {
+		d.Set("log_destination", output.LogDestination)
+	}
+	d.Set("log_destination_type", output.LogDestinationType)
+	d.Set("log_format", output.LogFormat)
+	d.Set("max_aggregation_interval", output.MaxAggregationInterval)
+	if err := d.Set("tag_field_specification", flattenTagFieldSpecificationResponses(output.TagFieldSpecifications)); err != nil {
+		return fmt.Errorf("setting tag_field_specification: %w", err)
+	}
+	switch resourceID := aws.ToString(output.ResourceId); {
+	case strings.HasPrefix(resourceID, "vpc-"):
+		d.Set(names.AttrVPCID, resourceID)
+	case strings.HasPrefix(resourceID, "tgw-"):
+		if strings.HasPrefix(resourceID, "tgw-attach-") {
+			d.Set(names.AttrTransitGatewayAttachmentID, resourceID)
+		} else {
+			d.Set(names.AttrTransitGatewayID, resourceID)
+		}
+	case strings.HasPrefix(resourceID, "subnet-"):
+		d.Set(names.AttrSubnetID, resourceID)
+	case strings.HasPrefix(resourceID, "eni-"):
+		d.Set("eni_id", resourceID)
+	case strings.HasPrefix(resourceID, "nat-"):
+		d.Set("regional_nat_gateway_id", resourceID)
+	}
+	if !strings.HasPrefix(aws.ToString(output.ResourceId), "tgw-") {
+		d.Set("traffic_type", output.TrafficType)
+	}
+
+	setTagsOut(ctx, output.Tags)
+
+	return nil
+}

@@ -3,15 +3,17 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -28,6 +30,8 @@ import (
 	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
+	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
@@ -36,61 +40,77 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (m customConfigurationModel) expandToModifyStrategyConfiguration(ctx context.Context) (result *awstypes.ModifyStrategyConfiguration, diags diag.Diagnostics) {
-	result = &awstypes.ModifyStrategyConfiguration{}
-
+func (m customConfigurationModel) expandToModifyStrategyConfiguration(ctx context.Context) (*awstypes.ModifyStrategyConfiguration, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	var r awstypes.ModifyStrategyConfiguration
+	var rConsolidation awstypes.ModifyConsolidationConfigurationMemberCustomConsolidationConfiguration
+	var rExtraction awstypes.ModifyExtractionConfigurationMemberCustomExtractionConfiguration
+	var rReflection awstypes.ModifyReflectionConfigurationMemberCustomReflectionConfiguration
 	var consolidation, extraction *overrideDetailsModel
-	var d diag.Diagnostics
+	var reflection *episodicReflectionOverrideDetailsModel
 
 	if !m.Consolidation.IsNull() {
+		var d diag.Diagnostics
 		consolidation, d = m.Consolidation.ToPtr(ctx)
 		smerr.AddEnrich(ctx, &diags, d)
 		if diags.HasError() {
 			return nil, diags
 		}
+
+		r.Consolidation = &rConsolidation
 	}
 	if !m.Extraction.IsNull() {
+		var d diag.Diagnostics
 		extraction, d = m.Extraction.ToPtr(ctx)
 		smerr.AddEnrich(ctx, &diags, d)
 		if diags.HasError() {
 			return nil, diags
 		}
+
+		r.Extraction = &rExtraction
+	}
+	if !m.Reflection.IsNull() {
+		var d diag.Diagnostics
+		reflection, d = m.Reflection.ToPtr(ctx)
+		smerr.AddEnrich(ctx, &diags, d)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		r.Reflection = &rReflection
 	}
 
 	switch m.Type.ValueEnum() {
 	case awstypes.OverrideTypeSemanticOverride:
 		if consolidation != nil {
-			var consolidationInput awstypes.CustomConsolidationConfigurationInputMemberSemanticConsolidationOverride
-			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, consolidation, &consolidationInput.Value))
+			var r awstypes.CustomConsolidationConfigurationInputMemberSemanticConsolidationOverride
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, consolidation, &r.Value))
 			if diags.HasError() {
 				return nil, diags
 			}
-			result.Consolidation = &awstypes.ModifyConsolidationConfigurationMemberCustomConsolidationConfiguration{
-				Value: &consolidationInput,
-			}
+
+			rConsolidation.Value = &r
 		}
 
 		if extraction != nil {
-			var extractionInput awstypes.CustomExtractionConfigurationInputMemberSemanticExtractionOverride
-			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, extraction, &extractionInput.Value))
+			var r awstypes.CustomExtractionConfigurationInputMemberSemanticExtractionOverride
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, extraction, &r.Value))
 			if diags.HasError() {
 				return nil, diags
 			}
-			result.Extraction = &awstypes.ModifyExtractionConfigurationMemberCustomExtractionConfiguration{
-				Value: &extractionInput,
-			}
+
+			rExtraction.Value = &r
 		}
 
 	case awstypes.OverrideTypeSummaryOverride:
 		if consolidation != nil {
-			var consolidationInput awstypes.CustomConsolidationConfigurationInputMemberSummaryConsolidationOverride
-			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, consolidation, &consolidationInput.Value))
+			var r awstypes.CustomConsolidationConfigurationInputMemberSummaryConsolidationOverride
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, consolidation, &r.Value))
 			if diags.HasError() {
 				return nil, diags
 			}
-			result.Consolidation = &awstypes.ModifyConsolidationConfigurationMemberCustomConsolidationConfiguration{
-				Value: &consolidationInput,
-			}
+
+			rConsolidation.Value = &r
 		}
 
 		// Note: AWS SDK doesn't have SummaryExtractionOverride - only Semantic and UserPreference
@@ -99,55 +119,63 @@ func (m customConfigurationModel) expandToModifyStrategyConfiguration(ctx contex
 
 	case awstypes.OverrideTypeUserPreferenceOverride:
 		if consolidation != nil {
-			var consolidationInput awstypes.CustomConsolidationConfigurationInputMemberUserPreferenceConsolidationOverride
-			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, consolidation, &consolidationInput.Value))
+			var r awstypes.CustomConsolidationConfigurationInputMemberUserPreferenceConsolidationOverride
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, consolidation, &r.Value))
 			if diags.HasError() {
 				return nil, diags
 			}
-			result.Consolidation = &awstypes.ModifyConsolidationConfigurationMemberCustomConsolidationConfiguration{
-				Value: &consolidationInput,
-			}
+
+			rConsolidation.Value = &r
 		}
 
 		if extraction != nil {
-			var extractionInput awstypes.CustomExtractionConfigurationInputMemberUserPreferenceExtractionOverride
-			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, extraction, &extractionInput.Value))
+			var r awstypes.CustomExtractionConfigurationInputMemberUserPreferenceExtractionOverride
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, extraction, &r.Value))
 			if diags.HasError() {
 				return nil, diags
 			}
-			result.Extraction = &awstypes.ModifyExtractionConfigurationMemberCustomExtractionConfiguration{
-				Value: &extractionInput,
-			}
+
+			rExtraction.Value = &r
 		}
 
 	case awstypes.OverrideTypeEpisodicOverride:
 		if consolidation != nil {
-			var consolidationInput awstypes.CustomConsolidationConfigurationInputMemberEpisodicConsolidationOverride
-			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, consolidation, &consolidationInput.Value))
+			var r awstypes.CustomConsolidationConfigurationInputMemberEpisodicConsolidationOverride
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, consolidation, &r.Value))
 			if diags.HasError() {
 				return nil, diags
 			}
-			result.Consolidation = &awstypes.ModifyConsolidationConfigurationMemberCustomConsolidationConfiguration{
-				Value: &consolidationInput,
-			}
+
+			rConsolidation.Value = &r
 		}
 
 		if extraction != nil {
-			var extractionInput awstypes.CustomExtractionConfigurationInputMemberEpisodicExtractionOverride
-			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, extraction, &extractionInput.Value))
+			var r awstypes.CustomExtractionConfigurationInputMemberEpisodicExtractionOverride
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, extraction, &r.Value))
 			if diags.HasError() {
 				return nil, diags
 			}
-			result.Extraction = &awstypes.ModifyExtractionConfigurationMemberCustomExtractionConfiguration{
-				Value: &extractionInput,
-			}
+
+			rExtraction.Value = &r
 		}
+
+		if reflection != nil {
+			var r awstypes.CustomReflectionConfigurationInputMemberEpisodicReflectionOverride
+			smerr.AddEnrich(ctx, &diags, fwflex.Expand(ctx, reflection, &r.Value))
+			if diags.HasError() {
+				return nil, diags
+			}
+
+			rReflection.Value = &r
+		}
+
 	default:
 		diags.AddError(
 			"Unsupported Type",
-			fmt.Sprintf("override type (modify strategy configuration): %q", m.Type.ValueString()),
+			fmt.Sprintf("customConfigurationModel.Type: %s", m.Type),
 		)
 		return nil, diags
 	}
-	return result, diags
+
+	return &r, diags
 }

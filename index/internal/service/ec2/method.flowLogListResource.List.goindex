@@ -1,0 +1,60 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *flowLogListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().EC2Client(ctx)
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := &ec2.DescribeFlowLogsInput{}
+		for item, err := range listFlowLogsPages(ctx, conn, input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			flowLogID := aws.ToString(item.FlowLogId)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrID), flowLogID)
+
+			result := request.NewListResult(ctx)
+
+			rd := l.ResourceData()
+			rd.SetId(flowLogID)
+
+			if request.IncludeResource {
+				if err := resourceFlowLogFlatten(ctx, l.Meta(), &item, rd); err != nil {
+					tflog.Error(ctx, "Reading Flow Log", map[string]any{
+						"error": err.Error(),
+					})
+					continue
+				}
+			}
+
+			result.DisplayName = flowLogID
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

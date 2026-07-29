@@ -3,15 +3,17 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -28,6 +30,8 @@ import (
 	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
+	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
@@ -36,8 +40,8 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func (m *customConfigurationModel) Flatten(ctx context.Context, v any) (diags diag.Diagnostics) {
-	var d diag.Diagnostics
+func (m *customConfigurationModel) Flatten(ctx context.Context, v any) diag.Diagnostics {
+	var diags diag.Diagnostics
 	switch t := v.(type) {
 	case awstypes.StrategyConfiguration:
 		m.Type = fwtypes.StringEnumValue(t.Type)
@@ -49,6 +53,7 @@ func (m *customConfigurationModel) Flatten(ctx context.Context, v any) (diags di
 				return diags
 			}
 			if !consolidation.AppendToPrompt.IsNull() && !consolidation.ModelID.IsNull() {
+				var d diag.Diagnostics
 				m.Consolidation, d = fwtypes.NewListNestedObjectValueOfPtr(ctx, &consolidation)
 				smerr.AddEnrich(ctx, &diags, d)
 				if diags.HasError() {
@@ -64,6 +69,7 @@ func (m *customConfigurationModel) Flatten(ctx context.Context, v any) (diags di
 				return diags
 			}
 			if !extraction.AppendToPrompt.IsNull() && !extraction.ModelID.IsNull() {
+				var d diag.Diagnostics
 				m.Extraction, d = fwtypes.NewListNestedObjectValueOfPtr(ctx, &extraction)
 				smerr.AddEnrich(ctx, &diags, d)
 				if diags.HasError() {
@@ -71,11 +77,29 @@ func (m *customConfigurationModel) Flatten(ctx context.Context, v any) (diags di
 				}
 			}
 		}
+
+		if t.Reflection != nil {
+			var reflection episodicReflectionOverrideDetailsModel
+			smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, t.Reflection, &reflection))
+			if diags.HasError() {
+				return diags
+			}
+			if !reflection.AppendToPrompt.IsNull() && !reflection.ModelID.IsNull() && !reflection.NamespaceTemplates.IsNull() {
+				var d diag.Diagnostics
+				m.Reflection, d = fwtypes.NewListNestedObjectValueOfPtr(ctx, &reflection)
+				smerr.AddEnrich(ctx, &diags, d)
+				if diags.HasError() {
+					return diags
+				}
+			}
+		}
+
 	default:
 		diags.AddError(
 			"Unsupported Type",
-			fmt.Sprintf("strategy configuration flatten: %s", reflect.TypeOf(v).String()),
+			fmt.Sprintf("customConfigurationModel.Flatten: %T", v),
 		)
 	}
+
 	return diags
 }

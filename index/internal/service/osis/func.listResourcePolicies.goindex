@@ -1,0 +1,44 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/osis
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/osis"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/osis/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func listResourcePolicies(ctx context.Context, conn *osis.Client, input *osis.ListPipelinesInput) iter.Seq2[*osis.GetResourcePolicyOutput, error] {
+	return func(yield func(*osis.GetResourcePolicyOutput, error) bool) {
+		for pipeline, err := range listPipelines(ctx, conn, input) {
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+
+			pipelineARN := aws.ToString(pipeline.PipelineArn)
+			output, err := findResourcePolicyByResourceARN(ctx, conn, pipelineARN)
+
+			if retry.NotFound(err) || errs.IsA[*awstypes.ResourceNotFoundException](err) {
+				continue
+			}
+
+			if err != nil {
+				yield(nil, fmt.Errorf("getting resource policy for pipeline %s: %w", pipelineARN, err))
+				return
+			}
+
+			if !yield(output, nil) {
+				return
+			}
+		}
+	}
+}
