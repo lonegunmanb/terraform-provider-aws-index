@@ -74,7 +74,20 @@ func resourceCatalogTableRead(ctx context.Context, d *schema.ResourceData, meta 
 		d.Set("target_table", nil)
 	}
 	if table.ViewDefinition != nil {
-		if err := d.Set("view_definition", []any{flattenViewDefinition(table.ViewDefinition)}); err != nil {
+		// Glue does not echo back ValidationConnection, ViewOriginalText, or
+		// ViewExpandedText for validated ATHENA views — GetTable returns them as
+		// null. Preserve user supplied values.
+		var priorRepresentations []any
+		if v, ok := d.GetOk("view_definition"); ok {
+			vdList := v.([]any)
+			if len(vdList) > 0 && vdList[0] != nil {
+				vdMap := vdList[0].(map[string]any)
+				if reps, ok := vdMap["representations"].([]any); ok {
+					priorRepresentations = reps
+				}
+			}
+		}
+		if err := d.Set("view_definition", []any{flattenViewDefinition(table.ViewDefinition, priorRepresentations)}); err != nil {
 			return sdkdiag.AppendErrorf(diags, "setting view_definition: %s", err)
 		}
 	} else {

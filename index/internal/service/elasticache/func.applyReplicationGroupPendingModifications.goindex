@@ -1,0 +1,121 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/elasticache
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/elasticache/types"
+	"github.com/hashicorp/go-cty/cty"
+	"github.com/hashicorp/go-cty/cty/gocty"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2/types/nullable"
+	"github.com/hashicorp/terraform-provider-aws/internal/semver"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func applyReplicationGroupPendingModifications(d *schema.ResourceData, rgp *awstypes.ReplicationGroup, c *awstypes.CacheCluster) error {
+	if c.PendingModifiedValues != nil {
+		nodeType := aws.ToString(c.PendingModifiedValues.CacheNodeType)
+		if nodeType != "" {
+			d.Set("node_type", nodeType)
+		}
+
+		if c.PendingModifiedValues.EngineVersion != nil {
+			switch aws.ToString(c.Engine) {
+			case engineRedis:
+				if err := setEngineVersionRedis(d, c.PendingModifiedValues.EngineVersion); err != nil {
+					return err
+				}
+			case engineValkey:
+				if err := setEngineVersionValkey(d, c.PendingModifiedValues.EngineVersion); err != nil {
+					return err
+				}
+			}
+		}
+
+		if c.PendingModifiedValues.TransitEncryptionEnabled != nil {
+			transitEncryptionEnabled := aws.ToBool(c.PendingModifiedValues.TransitEncryptionEnabled)
+			d.Set("transit_encryption_enabled", transitEncryptionEnabled)
+		}
+
+		if c.PendingModifiedValues.TransitEncryptionMode != "" {
+			d.Set("transit_encryption_mode", c.PendingModifiedValues.TransitEncryptionMode)
+		}
+	}
+
+	if rgp.PendingModifiedValues != nil {
+		if rgp.PendingModifiedValues.AutomaticFailoverStatus != "" {
+			switch rgp.PendingModifiedValues.AutomaticFailoverStatus {
+			case awstypes.PendingAutomaticFailoverStatusEnabled:
+				d.Set("automatic_failover_enabled", true)
+			case awstypes.PendingAutomaticFailoverStatusDisabled:
+				d.Set("automatic_failover_enabled", false)
+			}
+		}
+
+		if rgp.PendingModifiedValues.ClusterMode != "" {
+			d.Set("cluster_mode", rgp.PendingModifiedValues.ClusterMode)
+		}
+
+		// transit_encryption_enabled and transit_encryption_mode are written up to
+		// three times, and this ordering is intentional: first from the live cache
+		// cluster values in the Read function, then from the cache cluster's pending
+		// values above, and finally from the replication group's pending values here.
+		// The replication group-level pending values are authoritative, so they are
+		// applied last (last write wins). Do not reorder these writes.
+		if rgp.PendingModifiedValues.TransitEncryptionEnabled != nil {
+			transitEncryptionEnabled := aws.ToBool(rgp.PendingModifiedValues.TransitEncryptionEnabled)
+			d.Set("transit_encryption_enabled", transitEncryptionEnabled)
+		}
+
+		if rgp.PendingModifiedValues.TransitEncryptionMode != "" {
+			d.Set("transit_encryption_mode", rgp.PendingModifiedValues.TransitEncryptionMode)
+		}
+
+		// user_group_ids pending changes are expressed as add/remove deltas against
+		// the live UserGroupIds (see UserGroupsUpdateStatus), not as a full target
+		// set. Reconstruct the resulting set so state matches configuration while the
+		// change is applied during the next maintenance window.
+		if ug := rgp.PendingModifiedValues.UserGroups; ug != nil {
+			remove := make(map[string]struct{}, len(ug.UserGroupIdsToRemove))
+			for _, id := range ug.UserGroupIdsToRemove {
+				remove[id] = struct{}{}
+			}
+
+			userGroupIDs := make([]string, 0, len(rgp.UserGroupIds)+len(ug.UserGroupIdsToAdd))
+			for _, id := range rgp.UserGroupIds {
+				if _, ok := remove[id]; !ok {
+					userGroupIDs = append(userGroupIDs, id)
+				}
+			}
+			userGroupIDs = append(userGroupIDs, ug.UserGroupIdsToAdd...)
+
+			d.Set("user_group_ids", userGroupIDs)
+		}
+	}
+
+	return nil
+}

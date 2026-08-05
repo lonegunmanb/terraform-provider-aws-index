@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amp
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amp"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/amp/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfiter "github.com/hashicorp/terraform-provider-aws/internal/iter"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *scraperListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().AMPClient(ctx)
+
+	var query listScraperModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	tflog.Info(ctx, "Listing Resources")
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := amp.ListScrapersInput{
+			Filters: fwflex.ExpandFrameworkStringValueListMap(ctx, query.Filters),
+		}
+		for item, err := range listScrapers(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrARN), aws.ToString(item.Arn))
+
+			scraperID := aws.ToString(item.ScraperId)
+			result := request.NewListResult(ctx)
+
+			var data scraperResourceModel
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, &data, &result, func() {
+				data.ARN = fwflex.StringToFramework(ctx, item.Arn)
+				data.ID = fwflex.StringValueToFramework(ctx, scraperID)
+
+				if request.IncludeResource {
+					scraper, err := findScraperByID(ctx, conn, scraperID)
+					if retry.NotFound(err) {
+						return
+					}
+					if err != nil {
+						result = fwdiag.NewListResultErrorDiagnostic(err)
+						return
+					}
+
+					result.Diagnostics.Append(l.flatten(ctx, scraper, &data)...)
+					if result.Diagnostics.HasError() {
+						return
+					}
+				}
+
+				result.DisplayName = scraperID
+			})
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

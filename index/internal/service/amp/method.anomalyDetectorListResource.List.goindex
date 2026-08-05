@@ -1,0 +1,100 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/amp
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/amp"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/amp/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *anomalyDetectorListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().AMPClient(ctx)
+
+	var query listAnomalyDetectorModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	workspaceID := query.WorkspaceID.ValueString()
+
+	tflog.Info(ctx, "Listing AMP Anomaly Detectors", map[string]any{
+		logging.ResourceAttributeKey("workspace_id"): workspaceID,
+	})
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		input := amp.ListAnomalyDetectorsInput{
+			WorkspaceId: aws.String(workspaceID),
+		}
+		if !query.Alias.IsNull() {
+			input.Alias = query.Alias.ValueStringPointer()
+		}
+
+		for item, err := range listAnomalyDetectors(ctx, conn, &input) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			id := aws.ToString(item.AnomalyDetectorId)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrARN), aws.ToString(item.Arn))
+
+			result := request.NewListResult(ctx)
+
+			var data anomalyDetectorResourceModel
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, &data, &result, func() {
+				data.WorkspaceID = types.StringValue(workspaceID)
+
+				if request.IncludeResource {
+					out, err := findAnomalyDetectorByID(ctx, conn, id, workspaceID)
+					if retry.NotFound(err) {
+						return
+					}
+					if err != nil {
+						result = fwdiag.NewListResultErrorDiagnostic(err)
+						return
+					}
+
+					result.Diagnostics.Append(fwflex.Flatten(ctx, out, &data, fwflex.WithFieldNamePrefix("AnomalyDetector"))...)
+					if result.Diagnostics.HasError() {
+						return
+					}
+
+					setTagsOut(ctx, out.Tags)
+				} else {
+					result.Diagnostics.Append(l.flatten(ctx, &item, &data)...)
+					if result.Diagnostics.HasError() {
+						return
+					}
+				}
+
+				result.DisplayName = data.Alias.ValueString()
+			})
+
+			if result.Diagnostics.HasError() {
+				result = list.ListResult{Diagnostics: result.Diagnostics}
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

@@ -29,6 +29,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
@@ -43,7 +44,8 @@ func (r *scraperResource) Read(ctx context.Context, request resource.ReadRequest
 
 	conn := r.Meta().AMPClient(ctx)
 
-	scraper, err := findScraperByID(ctx, conn, data.ID.ValueString())
+	scraperID := fwflex.StringValueFromFramework(ctx, data.ID)
+	scraper, err := findScraperByID(ctx, conn, scraperID)
 
 	if retry.NotFound(err) {
 		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
@@ -53,23 +55,16 @@ func (r *scraperResource) Read(ctx context.Context, request resource.ReadRequest
 	}
 
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("reading Prometheus Scraper (%s)", data.ID.ValueString()), err.Error())
+		response.Diagnostics.AddError(fmt.Sprintf("reading Prometheus Scraper (%s)", scraperID), err.Error())
 
 		return
 	}
 
 	// Set attributes for import.
-	response.Diagnostics.Append(fwflex.Flatten(ctx, scraper, &data)...)
+	response.Diagnostics.Append(r.flatten(ctx, scraper, &data)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
-
-	// Additional fields.
-	if v, ok := scraper.ScrapeConfiguration.(*awstypes.ScrapeConfigurationMemberConfigurationBlob); ok {
-		data.ScrapeConfiguration = fwflex.StringValueToFramework(ctx, string(v.Value))
-	}
-
-	setTagsOut(ctx, scraper.Tags)
 
 	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
 }

@@ -54,7 +54,10 @@ func expandTableInput(d *schema.ResourceData) *awstypes.TableInput {
 		apiObject.Retention = int32(v.(int))
 	}
 
-	if v, ok := d.GetOk("storage_descriptor"); ok {
+	// For validated ATHENA views, Glue forbids StorageDescriptor on both
+	// CreateTable and UpdateTable. Skip it when any representation carries
+	// dialect = ATHENA, regardless of what is in state.
+	if v, ok := d.GetOk("storage_descriptor"); ok && !viewDefinitionHasDialect(d, awstypes.ViewDialectAthena) {
 		apiObject.StorageDescriptor = expandStorageDescriptor(v.([]any))
 	}
 
@@ -68,6 +71,16 @@ func expandTableInput(d *schema.ResourceData) *awstypes.TableInput {
 
 	if v, ok := d.GetOk("view_definition"); ok && len(v.([]any)) > 0 && v.([]any)[0] != nil {
 		apiObject.ViewDefinition = expandViewDefinitionInput(v.([]any)[0].(map[string]any))
+	}
+
+	// SPARK-dialect views require a StorageDescriptor with columns on both
+	// CreateTable and UpdateTable. If the user did not supply one explicitly,
+	// synthesise a minimal descriptor so Glue accepts the request. Glue will
+	// populate the actual columns after validating the view SQL.
+	if viewDefinitionHasDialect(d, awstypes.ViewDialectSpark) && apiObject.StorageDescriptor == nil {
+		apiObject.StorageDescriptor = &awstypes.StorageDescriptor{
+			Columns: []awstypes.Column{},
+		}
 	}
 
 	if v, ok := d.GetOk("view_expanded_text"); ok {

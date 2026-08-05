@@ -1,6 +1,7 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/apigateway
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -90,6 +91,11 @@ func resourceRestAPICreate(ctx context.Context, d *schema.ResourceData, meta any
 
 	d.SetId(aws.ToString(output.Id))
 
+	err = waitRestAPIAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutCreate))
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "waiting for API Gateway REST API (%s) to become available: %s", d.Id(), err)
+	}
+
 	if body, ok := d.GetOk("body"); ok {
 		// Terraform implementation uses the `overwrite` mode by default.
 		// Overwrite mode will delete existing literal properties if they are not explicitly set in the OpenAPI definition.
@@ -116,6 +122,11 @@ func resourceRestAPICreate(ctx context.Context, d *schema.ResourceData, meta any
 			return sdkdiag.AppendErrorf(diags, "creating API Gateway REST API (%s) specification: %s", d.Id(), err)
 		}
 
+		err = waitRestAPIAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate))
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for API Gateway REST API (%s) to become available: %s", d.Id(), err)
+		}
+
 		// Using PutRestApi with mode overwrite will remove any configuration
 		// that was done with CreateRestApi. Reconcile these changes by having
 		// any Terraform configured values overwrite imported configuration.
@@ -129,6 +140,11 @@ func resourceRestAPICreate(ctx context.Context, d *schema.ResourceData, meta any
 
 			if err != nil {
 				return sdkdiag.AppendErrorf(diags, "updating API Gateway REST API (%s) after OpenAPI import: %s", d.Id(), err)
+			}
+
+			err = waitRestAPIAvailable(ctx, conn, d.Id(), d.Timeout(schema.TimeoutUpdate))
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "waiting for API Gateway REST API (%s) to become available after OpenAPI import: %s", d.Id(), err)
 			}
 		}
 	}

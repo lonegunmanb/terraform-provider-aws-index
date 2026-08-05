@@ -40,12 +40,17 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func rollbackDeployment(ctx context.Context, conn *ecs.Client, primaryDeploymentArn *string) error {
-	// Check if deployment is already in terminal state, meaning rollback is not needed
-	deploymentStatus, err := findDeploymentStatus(ctx, conn, *primaryDeploymentArn)
+	// Check raw AWS deployment status. findDeploymentStatus maps SUCCESSFUL to
+	// the non-AWS sentinel "tfSTABLE", so it cannot be used with deploymentTerminalStates.
+	status, err := findRawServiceDeploymentStatus(ctx, conn, *primaryDeploymentArn)
 	if err != nil {
 		return err
 	}
-	if slices.Contains(deploymentTerminalStates, deploymentStatus) {
+	// Empty status means Describe returned no deployment; nothing to roll back.
+	if status == "" || slices.Contains(deploymentTerminalStates, status) {
+		if status != "" {
+			log.Printf("[INFO] Deployment %s already terminal (%s); skipping rollback", *primaryDeploymentArn, status)
+		}
 		return nil
 	}
 
