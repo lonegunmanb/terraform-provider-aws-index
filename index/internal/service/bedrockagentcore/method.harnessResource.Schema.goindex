@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -34,6 +35,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
@@ -54,7 +56,7 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 				},
 			},
 			names.AttrARN:         framework.ARNAttributeComputedOnly(),
-			names.AttrEnvironment: framework.ResourceOptionalComputedListOfObjectsAttribute[harnessEnvironmentProviderModel](ctx, 1, nil, listplanmodifier.UseStateForUnknown()),
+			names.AttrEnvironment: framework.ResourceOptionalComputedSingleNestedObjectAttribute[harnessEnvironmentProviderModel](ctx),
 			"environment_variables": schema.MapAttribute{
 				CustomType: fwtypes.MapOfStringType,
 				Optional:   true,
@@ -84,6 +86,7 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 			"max_tokens": schema.Int32Attribute{
 				Optional: true,
 			},
+			"memory_actual":   framework.ResourceComputedListOfObjectsAttribute[harnessMemoryConfigurationModel](ctx, tflistplanmodifier.UnknownWhenOtherValueChanges(path.Root("memory"))),
 			names.AttrTags:    tftags.TagsAttribute(),
 			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
 			"timeout_seconds": schema.Int32Attribute{
@@ -93,7 +96,7 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 					int32planmodifier.UseStateForUnknown(),
 				},
 			},
-			"truncation": framework.ResourceOptionalComputedListOfObjectsAttribute[harnessTruncationConfigurationModel](ctx, 1, nil, listplanmodifier.UseStateForUnknown()),
+			"truncation": framework.ResourceOptionalComputedSingleNestedObjectAttribute[harnessTruncationConfigurationModel](ctx),
 		},
 		Blocks: map[string]schema.Block{
 			"authorizer_configuration": authorizerConfigurationSchema(ctx),
@@ -170,6 +173,44 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 												},
 											},
 										},
+									},
+								},
+							},
+						},
+						"disabled": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessDisabledMemoryConfigurationModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{},
+						},
+						"managed_memory_configuration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessManagedMemoryConfigurationModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrARN: schema.StringAttribute{
+										CustomType: fwtypes.ARNType,
+										Computed:   true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseNonNullStateForUnknown(),
+										},
+									},
+									"encryption_key_arn": schema.StringAttribute{
+										CustomType: fwtypes.ARNType,
+										Optional:   true,
+									},
+									"event_expiry_duration": schema.Int32Attribute{
+										Optional: true,
+										Computed: true,
+									},
+									"strategies": schema.SetAttribute{
+										Optional:    true,
+										Computed:    true,
+										CustomType:  fwtypes.SetOfStringEnumType[awstypes.HarnessManagedMemoryStrategyType](),
+										ElementType: types.StringType,
 									},
 								},
 							},

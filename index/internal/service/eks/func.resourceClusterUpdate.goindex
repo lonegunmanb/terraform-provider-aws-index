@@ -121,6 +121,27 @@ func resourceClusterUpdate(ctx context.Context, d *schema.ResourceData, meta any
 		}
 	}
 
+	if d.HasChanges("kube_api_server_config", "kube_controller_manager_config", "kube_scheduler_config") {
+		input := eks.UpdateClusterConfigInput{
+			Name:                        aws.String(d.Id()),
+			KubeApiServerConfig:         expandKubeAPIServerConfigRequest(d.Get("kube_api_server_config").([]any)),
+			KubeControllerManagerConfig: expandKubeControllerManagerConfigRequest(d.Get("kube_controller_manager_config").([]any)),
+			KubeSchedulerConfig:         expandKubeSchedulerConfigRequest(d.Get("kube_scheduler_config").([]any)),
+		}
+
+		output, err := conn.UpdateClusterConfig(ctx, &input)
+
+		if err != nil {
+			return sdkdiag.AppendErrorf(diags, "updating EKS Cluster (%s) control plane component config: %s", d.Id(), err)
+		}
+
+		updateID := aws.ToString(output.Update.Id)
+
+		if _, err := waitClusterUpdateSuccessful(ctx, conn, d.Id(), updateID, d.Timeout(schema.TimeoutUpdate)); err != nil {
+			return sdkdiag.AppendErrorf(diags, "waiting for EKS Cluster (%s) control plane component config update (%s): %s", d.Id(), updateID, err)
+		}
+	}
+
 	if d.HasChange(names.AttrDeletionProtection) {
 		if err := updateClusterDeletionProtection(ctx, conn, d.Id(), d.Get(names.AttrDeletionProtection).(bool), d.Timeout(schema.TimeoutUpdate)); err != nil {
 			return sdkdiag.AppendFromErr(diags, err)

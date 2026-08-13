@@ -1,0 +1,47 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/neptunegraph
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/neptunegraph"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepPrivateGraphEndpoints(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.NeptuneGraphClient(ctx)
+	var sweepResources []sweep.Sweepable
+
+	graphPages := neptunegraph.NewListGraphsPaginator(conn, &neptunegraph.ListGraphsInput{})
+	for graphPages.HasMorePages() {
+		graphPage, err := graphPages.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, graph := range graphPage.Graphs {
+			endpointPages := neptunegraph.NewListPrivateGraphEndpointsPaginator(conn, &neptunegraph.ListPrivateGraphEndpointsInput{
+				GraphIdentifier: graph.Id,
+			})
+			for endpointPages.HasMorePages() {
+				endpointPage, err := endpointPages.NextPage(ctx)
+				if err != nil {
+					continue
+				}
+
+				for _, v := range endpointPage.PrivateGraphEndpoints {
+					sweepResources = append(sweepResources, framework.NewSweepResource(newResourcePrivateGraphEndpoint, client,
+						framework.NewAttribute("graph_identifier", aws.ToString(graph.Id)),
+						framework.NewAttribute(names.AttrVPCID, aws.ToString(v.VpcId))),
+					)
+				}
+			}
+		}
+	}
+
+	return sweepResources, nil
+}

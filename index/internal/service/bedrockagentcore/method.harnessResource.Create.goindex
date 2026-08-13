@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -34,6 +35,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
@@ -43,11 +45,14 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *harnessResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
-	var data harnessResourceModel
+	var config, data harnessResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Config.Get(ctx, &config))
 	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &data))
 	if response.Diagnostics.HasError() {
 		return
 	}
+
+	memoryIsConfigured := config.Memory.Length(fwtypes.CollectionLengthUnhandledAsZero) > 0
 
 	conn := r.Meta().BedrockAgentCoreClient(ctx)
 
@@ -88,15 +93,10 @@ func (r *harnessResource) Create(ctx context.Context, request resource.CreateReq
 
 	harnessID := aws.ToString(out.Harness.HarnessId)
 
-	if _, err := waitHarnessCreated(ctx, conn, harnessID, r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+	harness, err := waitHarnessCreated(ctx, conn, harnessID, r.CreateTimeout(ctx, data.Timeouts))
+	if err != nil {
 		// Taint the resource.
 		response.State.SetAttribute(ctx, path.Root("harness_id"), harnessID)
-		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, harnessID)
-		return
-	}
-
-	harness, err := findHarnessByID(ctx, conn, harnessID)
-	if err != nil {
 		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, harnessID)
 		return
 	}
@@ -104,7 +104,7 @@ func (r *harnessResource) Create(ctx context.Context, request resource.CreateReq
 	// Set values for unknowns. Capture the configured authorizer first so the API-omitted
 	// private_endpoint_overrides can be restored after Flatten.
 	plannedAuthorizerConfiguration := data.AuthorizerConfiguration
-	smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, harness, &data))
+	smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, harness, &data, memoryIsConfigured))
 	if response.Diagnostics.HasError() {
 		return
 	}

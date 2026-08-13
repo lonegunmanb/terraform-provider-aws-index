@@ -1,0 +1,353 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagentcore
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *gatewayRuleResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrDescription: schema.StringAttribute{
+				// Optional+Computed: The UpdateGatewayRule API treats a nil
+				// description as "leave unchanged" (it never clears), so removing
+				// the argument keeps the prior value rather than erroring with
+				// "inconsistent result after apply".
+				Optional: true,
+				Computed: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 256),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"gateway_arn": framework.ARNAttributeComputedOnly(),
+			"gateway_identifier": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			names.AttrPriority: schema.Int64Attribute{
+				Required: true,
+				Validators: []validator.Int64{
+					int64validator.Between(1, 1000000),
+				},
+			},
+			"rule_id": framework.IDAttribute(),
+			"system":  framework.ResourceComputedListOfObjectsAttribute[systemManagedBlockModel](ctx, listplanmodifier.UseStateForUnknown()),
+		},
+		Blocks: map[string]schema.Block{
+			names.AttrAction: schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[actionModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeBetween(1, 2),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"configuration_bundle": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[configurationBundleActionModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+								listvalidator.ExactlyOneOf(
+									path.MatchRelative().AtParent().AtName("route_to_target"),
+								),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"static_override": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[staticOverrideModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+											listvalidator.ExactlyOneOf(
+												path.MatchRelative().AtParent().AtName("weighted_override"),
+											),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"bundle_arn": schema.StringAttribute{
+													Required:   true,
+													CustomType: fwtypes.ARNType,
+													Validators: configurationBundleARNValidators(),
+												},
+												"bundle_version": schema.StringAttribute{
+													Required:   true,
+													Validators: configurationBundleVersionValidators(),
+												},
+											},
+										},
+									},
+									"weighted_override": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[weightedOverrideModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												"traffic_split": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[trafficSplitEntryModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeBetween(2, 2),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															names.AttrDescription: schema.StringAttribute{
+																Optional: true,
+																Validators: []validator.String{
+																	stringvalidator.LengthBetween(1, 200),
+																},
+															},
+															"metadata": schema.MapAttribute{
+																CustomType:  fwtypes.MapOfStringType,
+																ElementType: types.StringType,
+																Optional:    true,
+																Validators:  trafficSplitMetadataValidators(),
+															},
+															names.AttrName: schema.StringAttribute{
+																Required:   true,
+																Validators: trafficSplitNameValidators(),
+															},
+															names.AttrWeight: schema.Int64Attribute{
+																Required: true,
+																Validators: []validator.Int64{
+																	int64validator.Between(1, 99),
+																},
+															},
+														},
+														Blocks: map[string]schema.Block{
+															"configuration_bundle": schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[configurationBundleReferenceModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeBetween(1, 1),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Attributes: map[string]schema.Attribute{
+																		"bundle_arn": schema.StringAttribute{
+																			Required:   true,
+																			CustomType: fwtypes.ARNType,
+																			Validators: configurationBundleARNValidators(),
+																		},
+																		"bundle_version": schema.StringAttribute{
+																			Required:   true,
+																			Validators: configurationBundleVersionValidators(),
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"route_to_target": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[routeToTargetActionModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"static_route": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[staticRouteModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+											listvalidator.ExactlyOneOf(
+												path.MatchRelative().AtParent().AtName("weighted_route"),
+											),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"target_name": schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														stringvalidator.RegexMatches(regexache.MustCompile(`^([0-9a-zA-Z][-]?){1,100}$`), ""),
+													},
+												},
+											},
+										},
+									},
+									"weighted_route": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[weightedRouteModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												"traffic_split": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[targetTrafficSplitEntryModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeBetween(2, 2),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															names.AttrDescription: schema.StringAttribute{
+																Optional: true,
+																Validators: []validator.String{
+																	stringvalidator.LengthBetween(1, 200),
+																},
+															},
+															"metadata": schema.MapAttribute{
+																CustomType:  fwtypes.MapOfStringType,
+																ElementType: types.StringType,
+																Optional:    true,
+																Validators:  trafficSplitMetadataValidators(),
+															},
+															names.AttrName: schema.StringAttribute{
+																Required:   true,
+																Validators: trafficSplitNameValidators(),
+															},
+															"target_name": schema.StringAttribute{
+																Required: true,
+																Validators: []validator.String{
+																	stringvalidator.RegexMatches(regexache.MustCompile(`^([0-9a-zA-Z][-]?){1,100}$`), ""),
+																},
+															},
+															names.AttrWeight: schema.Int64Attribute{
+																Required: true,
+																Validators: []validator.Int64{
+																	int64validator.Between(1, 99),
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrCondition: schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[conditionModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(2),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"match_paths": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[matchPathsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+								listvalidator.ExactlyOneOf(
+									path.MatchRelative().AtParent().AtName("match_principals"),
+								),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"any_of": schema.ListAttribute{
+										CustomType:  fwtypes.ListOfStringType,
+										ElementType: types.StringType,
+										Required:    true,
+										Validators: []validator.List{
+											listvalidator.SizeBetween(1, 10),
+											listvalidator.ValueStringsAre(
+												stringvalidator.LengthAtMost(512),
+												stringvalidator.RegexMatches(regexache.MustCompile(`^/[\w\-.]+/\*$`), ""),
+											),
+										},
+									},
+								},
+							},
+						},
+						"match_principals": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[matchPrincipalsModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"any_of": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[matchPrincipalEntryModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeBetween(1, 100),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Blocks: map[string]schema.Block{
+												"iam_principal": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[iamPrincipalModel](ctx),
+													Validators: []validator.List{
+														listvalidator.IsRequired(),
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															names.AttrARN: schema.StringAttribute{
+																Required:   true,
+																CustomType: fwtypes.ARNType,
+																Validators: []validator.String{
+																	stringvalidator.LengthAtMost(2048),
+																	stringvalidator.RegexMatches(
+																		regexache.MustCompile(`^(arn:aws[a-zA-Z-]*:iam::(\d{12}|\*):(user|role)/[\w+=,.@*?/-]+|arn:aws[a-zA-Z-]*:sts::(\d{12}|\*):assumed-role/[\w+=,.@*?/-]+)$`),
+																		"",
+																	),
+																},
+															},
+															"operator": schema.StringAttribute{
+																Optional:   true,
+																Computed:   true,
+																CustomType: fwtypes.StringEnumType[awstypes.PrincipalMatchOperator](),
+																PlanModifiers: []planmodifier.String{
+																	stringplanmodifier.UseStateForUnknown(),
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+	}
+}

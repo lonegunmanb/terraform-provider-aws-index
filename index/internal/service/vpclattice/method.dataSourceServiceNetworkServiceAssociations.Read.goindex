@@ -1,0 +1,58 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/vpclattice
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/vpclattice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/vpclattice/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+)
+func (d *dataSourceServiceNetworkServiceAssociations) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	conn := d.Meta().VPCLatticeClient(ctx)
+
+	var data dataSourceServiceNetworkServiceAssociationsModel
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Config.Get(ctx, &data))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var input vpclattice.ListServiceNetworkServiceAssociationsInput
+	if !data.ServiceNetworkIdentifier.IsNull() {
+		snID := data.ServiceNetworkIdentifier.ValueString()
+		if _, err := findServiceNetworkByID(ctx, conn, snID); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID)
+			return
+		}
+		input.ServiceNetworkIdentifier = data.ServiceNetworkIdentifier.ValueStringPointer()
+	} else if !data.ServiceIdentifier.IsNull() {
+		sID := data.ServiceIdentifier.ValueString()
+		if _, err := findServiceByID(ctx, conn, sID); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID)
+			return
+		}
+		input.ServiceIdentifier = data.ServiceIdentifier.ValueStringPointer()
+	}
+
+	out, err := findServiceNetworkServiceAssociations(ctx, conn, &input)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Flatten(ctx, out, &data.Items))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &data))
+}

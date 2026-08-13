@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/neptunegraph
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/neptunegraph"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/neptunegraph/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourcePrivateGraphEndpoint) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().NeptuneGraphClient(ctx)
+
+	var plan resourcePrivateGraphEndpointModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var input neptunegraph.CreatePrivateGraphEndpointInput
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Expand(ctx, plan, &input))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	out, err := conn.CreatePrivateGraphEndpoint(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.GraphIdentifier.ValueString())
+		return
+	}
+	if out == nil {
+		smerr.AddError(ctx, &resp.Diagnostics, errors.New("empty output"), smerr.ID, plan.GraphIdentifier.ValueString())
+		return
+	}
+
+	plan.PrivateGraphEndpointIdentifier = types.StringValue(plan.GraphIdentifier.ValueString() + "_" + aws.ToString(out.VpcId))
+
+	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
+	_, err = waitPrivateGraphEndpointAvailable(ctx, conn, plan.GraphIdentifier.ValueString(), plan.VPCID.ValueString(), createTimeout)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.PrivateGraphEndpointIdentifier.ValueString())
+		return
+	}
+
+	out2, err := findPrivateGraphEndpointByTwoPartKey(ctx, conn, plan.GraphIdentifier.ValueString(), plan.VPCID.ValueString())
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.PrivateGraphEndpointIdentifier.ValueString())
+		return
+	}
+
+	plan.VPCEndpointID = types.StringValue(aws.ToString(out2.VpcEndpointId))
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, plan))
+}

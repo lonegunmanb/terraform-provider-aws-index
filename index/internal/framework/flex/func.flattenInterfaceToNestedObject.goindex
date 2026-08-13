@@ -20,10 +20,11 @@ import (
 	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	"github.com/shopspring/decimal"
 )
-func flattenInterfaceToNestedObject(ctx context.Context, _ *autoFlattener, vFrom reflect.Value, isNullFrom bool, tTo fwtypes.NestedObjectType, vTo reflect.Value) diag.Diagnostics {
+func flattenInterfaceToNestedObject(ctx context.Context, _ *autoFlattener, vFrom reflect.Value, tTo fwtypes.NestedObjectType, vTo reflect.Value) diag.Diagnostics {
 	var diags diag.Diagnostics
 
-	if isNullFrom {
+	if vFrom.IsNil() {
+		tflog.SubsystemTrace(ctx, subsystemName, "Flattening null value")
 		val, d := tTo.NullValue(ctx)
 		diags.Append(d...)
 		if diags.HasError() {
@@ -50,7 +51,7 @@ func flattenInterfaceToNestedObject(ctx context.Context, _ *autoFlattener, vFrom
 
 		vTo.Set(reflect.ValueOf(val))
 
-		tflog.SubsystemError(ctx, subsystemName, "Source does not implement flex.Flattener")
+		tflog.SubsystemError(ctx, subsystemName, "Target does not implement flex.Flattener")
 		// diags.Append(diagFlatteningTargetDoesNotImplementFlexFlattener(reflect.TypeOf(vTo.Interface())))
 		return diags
 	}
@@ -66,6 +67,18 @@ func flattenInterfaceToNestedObject(ctx context.Context, _ *autoFlattener, vFrom
 
 	diags.Append(flattenFlattener(ctx, vFrom, toFlattener)...)
 	if diags.HasError() {
+		return diags
+	}
+
+	if isZero(toFlattener) {
+		tflog.SubsystemWarn(ctx, subsystemName, "No values set by Flatten")
+		val, d := tTo.NullValue(ctx)
+		diags.Append(d...)
+		if diags.HasError() {
+			return diags
+		}
+
+		vTo.Set(reflect.ValueOf(val))
 		return diags
 	}
 

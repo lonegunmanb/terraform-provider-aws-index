@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pinpointsmsvoicev2
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *resourcePolicyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	conn := r.Meta().PinpointSMSVoiceV2Client(ctx)
+
+	var state resourcePolicyResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	input := pinpointsmsvoicev2.DeleteResourcePolicyInput{
+		ResourceArn: state.ResourceARN.ValueStringPointer(),
+	}
+	_, err := conn.DeleteResourcePolicy(ctx, &input)
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return
+	}
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, state.ResourceARN.ValueString())
+		return
+	}
+
+	// Post-Delete readback waits for AWS eventual-consistency propagation
+	// so a subsequent refresh does not observe the policy still attached.
+	if _, err := tfresource.RetryUntilNotFound(ctx, propagationTimeout, func(ctx context.Context) (any, error) {
+		return findResourcePolicyByARN(ctx, conn, state.ResourceARN.ValueString())
+	}); err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, state.ResourceARN.ValueString())
+		return
+	}
+}

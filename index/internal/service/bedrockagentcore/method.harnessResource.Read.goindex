@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -34,6 +35,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
@@ -48,6 +50,12 @@ func (r *harnessResource) Read(ctx context.Context, request resource.ReadRequest
 	if response.Diagnostics.HasError() {
 		return
 	}
+
+	// When importing, all attributes other than `harness_id` will be null.
+	// During a read of an existing resource, `harness_name` will be set as it is a required attribute.
+	isImport := data.HarnessName.IsNull()
+
+	memoryIsConfigured := data.Memory.Length(fwtypes.CollectionLengthUnhandledAsZero) > 0
 
 	conn := r.Meta().BedrockAgentCoreClient(ctx)
 
@@ -64,7 +72,7 @@ func (r *harnessResource) Read(ctx context.Context, request resource.ReadRequest
 	}
 
 	priorAuthorizerConfiguration := data.AuthorizerConfiguration
-	smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, harness, &data))
+	smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, harness, &data, memoryIsConfigured || isImport))
 	if response.Diagnostics.HasError() {
 		return
 	}

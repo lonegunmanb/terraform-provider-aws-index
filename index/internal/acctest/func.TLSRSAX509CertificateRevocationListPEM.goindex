@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/acctest
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/md5" // nosemgrep: go/sast/internal/crypto/md5 -- Test code generating public key fingerprints for acceptance tests
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1" // nosemgrep: go/sast/internal/crypto/sha1 -- SHA1 used for X.509 SubjectKeyId in test certificates, standard practice
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
+	"math/big"
+	"strings"
+	"testing"
+	"time"
+)
+func TLSRSAX509CertificateRevocationListPEM(t *testing.T, caKeyPem, caCertificatePem string) string {
+	t.Helper()
+
+	keyBlock, _ := pem.Decode([]byte(caKeyPem))
+
+	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certificateBlock, _ := pem.Decode([]byte(caCertificatePem))
+
+	caCertificate, err := x509.ParseCertificate(certificateBlock.Bytes)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	template := &x509.RevocationList{
+		Number:     big.NewInt(1),
+		ThisUpdate: time.Now(),
+		NextUpdate: time.Now().Add(hoursForCertificateValidity * time.Hour),
+	}
+
+	crlBytes, err := x509.CreateRevocationList(rand.Reader, template, caCertificate, key)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	crlBlock := &pem.Block{
+		Bytes: crlBytes,
+		Type:  PEMBlockTypeX509CRL,
+	}
+
+	return string(pem.EncodeToMemory(crlBlock))
+}

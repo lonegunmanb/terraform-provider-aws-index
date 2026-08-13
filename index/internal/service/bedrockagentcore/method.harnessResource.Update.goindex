@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -34,6 +35,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
@@ -43,25 +45,27 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *harnessResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
-	var new, old harnessResourceModel
-	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &new))
-	smerr.AddEnrich(ctx, &response.Diagnostics, request.State.Get(ctx, &old))
+	var config harnessResourceModel
+	var plan, state harnessResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Config.Get(ctx, &config))
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.State.Get(ctx, &state))
 	if response.Diagnostics.HasError() {
 		return
 	}
 
 	conn := r.Meta().BedrockAgentCoreClient(ctx)
 
-	diff, d := fwflex.Diff(ctx, new, old)
+	diff, d := fwflex.Diff(ctx, plan, state)
 	smerr.AddEnrich(ctx, &response.Diagnostics, d)
 	if response.Diagnostics.HasError() {
 		return
 	}
 
 	if diff.HasChanges() {
-		harnessID := fwflex.StringValueFromFramework(ctx, new.HarnessID)
+		harnessID := fwflex.StringValueFromFramework(ctx, plan.HarnessID)
 		var input bedrockagentcorecontrol.UpdateHarnessInput
-		smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Expand(ctx, new, &input))
+		smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Expand(ctx, plan, &input))
 		if response.Diagnostics.HasError() {
 			return
 		}
@@ -69,17 +73,31 @@ func (r *harnessResource) Update(ctx context.Context, request resource.UpdateReq
 		// Additional fields.
 		input.ClientToken = aws.String(create.UniqueId(ctx))
 
+		if !state.Memory.IsNull() && config.Memory.IsNull() {
+			// Clears configured value for memory
+			input.Memory = &awstypes.UpdatedHarnessMemoryConfiguration{
+				OptionalValue: nil,
+			}
+		}
+
 		_, err := conn.UpdateHarness(ctx, &input)
 		if err != nil {
 			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, harnessID)
 			return
 		}
 
-		if _, err := waitHarnessUpdated(ctx, conn, harnessID, r.UpdateTimeout(ctx, new.Timeouts)); err != nil {
+		harness, err := waitHarnessUpdated(ctx, conn, harnessID, r.UpdateTimeout(ctx, plan.Timeouts))
+		if err != nil {
 			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, harnessID)
+			return
+		}
+
+		memoryIsConfigured := config.Memory.Length(fwtypes.CollectionLengthUnhandledAsZero) > 0
+		smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, harness, &plan, memoryIsConfigured))
+		if response.Diagnostics.HasError() {
 			return
 		}
 	}
 
-	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, &new))
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, &plan))
 }

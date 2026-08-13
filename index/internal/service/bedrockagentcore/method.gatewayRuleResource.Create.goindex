@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagentcore
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *gatewayRuleResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data gatewayRuleResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().BedrockAgentCoreClient(ctx)
+
+	gatewayIdentifier := fwflex.StringValueFromFramework(ctx, data.GatewayIdentifier)
+	var input bedrockagentcorecontrol.CreateGatewayRuleInput
+	smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Expand(ctx, data, &input))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	input.ClientToken = aws.String(create.UniqueId(ctx))
+
+	// Prevent errors like
+	// "ConflictException: Failed to update the resource due to an existing lock. This means that there was a concurrent request that updated the resource. Retry the request after the other request has completed."
+	mutexKey := fmt.Sprintf("bedrockagentcore-gateway-%s", gatewayIdentifier)
+	conns.GlobalMutexKV.Lock(mutexKey)
+	defer conns.GlobalMutexKV.Unlock(mutexKey)
+
+	out, err := conn.CreateGatewayRule(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, gatewayIdentifier)
+		return
+	}
+
+	ruleID := aws.ToString(out.RuleId)
+
+	rule, err := waitGatewayRuleCreated(ctx, conn, gatewayIdentifier, ruleID, r.CreateTimeout(ctx, data.Timeouts))
+	if err != nil {
+		// Taint the resource so a follow-up plan can reconcile it.
+		response.State.SetAttribute(ctx, path.Root("gateway_identifier"), gatewayIdentifier)
+		response.State.SetAttribute(ctx, path.Root("rule_id"), ruleID)
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, ruleID)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, rule, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, data))
+}
