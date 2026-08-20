@@ -1,0 +1,49 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func listAMILaunchPermissions(ctx context.Context, conn *ec2.Client) iter.Seq2[amiLaunchPermission, error] {
+	return func(yield func(amiLaunchPermission, error) bool) {
+		input := ec2.DescribeImagesInput{
+			Owners: []string{"self"},
+		}
+		images, err := findImages(ctx, conn, &input)
+		if err != nil {
+			yield(amiLaunchPermission{}, fmt.Errorf("listing EC2 AMI Launch Permissions: listing AMIs: %w", err))
+			return
+		}
+		for _, image := range images {
+			imageID := aws.ToString(image.ImageId)
+			perms, err := findImageLaunchPermissionsByID(ctx, conn, imageID)
+			if err != nil {
+				// Image may have been deregistered between listing and fetching permissions.
+				continue
+			}
+
+			for _, perm := range perms {
+				p := amiLaunchPermission{
+					imageID:               imageID,
+					accountID:             aws.ToString(perm.UserId),
+					group:                 string(perm.Group),
+					organizationARN:       aws.ToString(perm.OrganizationArn),
+					organizationalUnitARN: aws.ToString(perm.OrganizationalUnitArn),
+				}
+				if !yield(p, nil) {
+					return
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dsql
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dsql"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dsql/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *clusterPolicyResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data clusterPolicyResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+	id := data.Identifier.ValueString()
+
+	conn := r.Meta().DSQLClient(ctx)
+	input := dsql.PutClusterPolicyInput{
+		BypassPolicyLockoutSafetyCheck: data.BypassPolicyLockoutSafetyCheck.ValueBool(),
+		ClientToken:                    aws.String(create.UniqueId(ctx)),
+		Identifier:                     aws.String(id),
+		Policy:                         data.Policy.ValueStringPointer(),
+	}
+
+	output, err := conn.PutClusterPolicy(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, data.Identifier.String())
+		return
+	}
+	if output == nil || output.PolicyVersion == nil {
+		smerr.AddError(ctx, &response.Diagnostics, errors.New("empty output"), smerr.ID, data.Identifier.String())
+		return
+	}
+	policyVersion := aws.ToString(output.PolicyVersion)
+
+	if err := syncClusterPolicyAfterPut(ctx, conn, &data, policyVersion, "create", r.CreateTimeout(ctx, data.Timeouts)); err != nil {
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, data.Identifier.String())
+		return
+	}
+
+	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+}

@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (amiLaunchPermissionImportID) Parse(id string) (string, map[string]any, error) {
+	const importIDSeparator = "/"
+	parts := strings.Split(id, importIDSeparator)
+	var imageID, accountID, group, organizationARN, organizationalUnitARN string
+	var ok bool
+	m := make(map[string]any)
+	if n := len(parts); n >= 2 {
+		permissionID, imgID := strings.Join(parts[:n-1], importIDSeparator), parts[n-1]
+		if permissionID != "" && imgID != "" {
+			imageID = imgID
+			if regexache.MustCompile(`^\d{12}$`).MatchString(permissionID) {
+				accountID = permissionID
+				m["image_id"] = imageID
+				m[names.AttrAccountID] = accountID
+				ok = true
+			} else if arn.IsARN(permissionID) {
+				if v, _ := arn.Parse(permissionID); v.Service == "organizations" {
+					if strings.HasPrefix(v.Resource, "organization/") {
+						organizationARN = permissionID
+						m["image_id"] = imageID
+						m["organization_arn"] = organizationARN
+						ok = true
+					} else if strings.HasPrefix(v.Resource, "ou/") {
+						organizationalUnitARN = permissionID
+						m["image_id"] = imageID
+						m["organizational_unit_arn"] = organizationalUnitARN
+						ok = true
+					}
+				}
+			} else {
+				group = permissionID
+				m["image_id"] = imageID
+				m["group"] = group
+				ok = true
+			}
+		}
+	}
+	if !ok {
+		return "", nil, fmt.Errorf("unexpected format for ID (%[1]s), expected [ACCOUNT-ID|GROUP-NAME|ORGANIZATION-ARN|ORGANIZATIONAL-UNIT-ARN]%[2]sIMAGE-ID", id, importIDSeparator)
+	}
+	resourceID := amiLaunchPermissionCreateResourceID(imageID, accountID, group, organizationARN, organizationalUnitARN)
+	return resourceID, m, nil
+}

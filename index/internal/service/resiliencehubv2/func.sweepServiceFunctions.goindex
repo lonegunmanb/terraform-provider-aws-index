@@ -1,0 +1,50 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/resiliencehubv2
+import (
+	"context"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/resiliencehubv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	"github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func sweepServiceFunctions(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
+	conn := client.ResilienceHubV2Client(ctx)
+	var input resiliencehubv2.ListServicesInput
+	var sweepResources []sweep.Sweepable
+
+	pages := resiliencehubv2.NewListServicesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, smarterr.NewError(err)
+		}
+
+		for _, v := range page.ServiceSummaries {
+			serviceARN := aws.ToString(v.ServiceArn)
+			input := resiliencehubv2.ListServiceFunctionsInput{
+				ServiceArn: aws.String(serviceARN),
+			}
+
+			pages := resiliencehubv2.NewListServiceFunctionsPaginator(conn, &input)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+				if err != nil {
+					return nil, smarterr.NewError(err)
+				}
+
+				for _, v := range page.ServiceFunctions {
+					sweepResources = append(sweepResources, framework.NewSweepResource(newServiceFunctionResource, client,
+						framework.NewAttribute("service_arn", serviceARN),
+						framework.NewAttribute("service_function_id", aws.ToString(v.ServiceFunctionId)),
+					))
+				}
+			}
+		}
+	}
+
+	return sweepResources, nil
+}

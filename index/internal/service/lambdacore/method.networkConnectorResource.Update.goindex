@@ -1,0 +1,89 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/lambdacore
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/lambdacore"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/lambdacore/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *networkConnectorResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().LambdaCoreClient(ctx)
+
+	var plan, state networkConnectorResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	diff, d := fwflex.Diff(ctx, plan, state)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		arn := fwflex.StringValueFromFramework(ctx, plan.ARN)
+		var input lambdacore.UpdateNetworkConnectorInput
+		smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, plan, &input))
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// Additional fields.
+		input.ClientToken = aws.String(create.UniqueId(ctx))
+		input.Identifier = aws.String(arn)
+
+		_, err := tfresource.RetryWhen(ctx, propagationTimeout,
+			func(ctx context.Context) (*lambdacore.UpdateNetworkConnectorOutput, error) {
+				return conn.UpdateNetworkConnector(ctx, &input)
+			},
+			func(err error) (bool, error) {
+				if errs.IsAErrorMessageContains[*awstypes.InvalidParameterValueException](err, "The service is unable to assume the provided NetworkConnectorOperatorRole") {
+					return true, err
+				}
+				if errs.IsAErrorMessageContains[*awstypes.InvalidParameterValueException](err, "Encountered unauthorized operation while calling EC2 due to invalid ConnectorOperatorRole permissions") {
+					return true, err
+				}
+				return false, err
+			},
+		)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+			return
+		}
+
+		if _, err := waitNetworkConnectorUpdated(ctx, conn, arn, r.UpdateTimeout(ctx, plan.Timeouts)); err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+			return
+		}
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

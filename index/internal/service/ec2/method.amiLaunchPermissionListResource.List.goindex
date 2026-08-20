@@ -1,0 +1,62 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *amiLaunchPermissionListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().EC2Client(ctx)
+
+	tflog.Info(ctx, "Listing resources")
+	stream.Results = func(yield func(list.ListResult) bool) {
+		for perm, err := range listAMILaunchPermissions(ctx, conn) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			imageID := perm.imageID
+			accountID := perm.accountID
+			group := perm.group
+			organizationARN := perm.organizationARN
+			organizationalUnitARN := perm.organizationalUnitARN
+
+			id := amiLaunchPermissionCreateResourceID(imageID, accountID, group, organizationARN, organizationalUnitARN)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrID), id)
+
+			result := request.NewListResult(ctx)
+
+			rd := l.ResourceData()
+			rd.SetId(id)
+
+			resourceAMILaunchPermissionFlatten(rd, imageID, accountID, group, organizationARN, organizationalUnitARN)
+
+			if request.IncludeResource { //nolint:revive,staticcheck // Be explicit about IncludeResource handling.
+				// No-op, all readable attributes are already populated above.
+			}
+
+			result.DisplayName = fmt.Sprintf("%s (%s)", imageID, id)
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -55,8 +56,8 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 					listplanmodifier.UseStateForUnknown(),
 				},
 			},
-			names.AttrARN:         framework.ARNAttributeComputedOnly(),
-			names.AttrEnvironment: framework.ResourceOptionalComputedSingleNestedObjectAttribute[harnessEnvironmentProviderModel](ctx),
+			names.AttrARN:        framework.ARNAttributeComputedOnly(),
+			"environment_actual": framework.ResourceComputedListOfObjectsAttribute[harnessEnvironmentProviderModel](ctx, tflistplanmodifier.UnknownWhenOtherValueChanges(path.Root(names.AttrEnvironment))),
 			"environment_variables": schema.MapAttribute{
 				CustomType: fwtypes.MapOfStringType,
 				Optional:   true,
@@ -100,6 +101,102 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 		},
 		Blocks: map[string]schema.Block{
 			"authorizer_configuration": authorizerConfigurationSchema(ctx),
+			names.AttrEnvironment: schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[harnessEnvironmentProviderModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"agentcore_runtime_environment": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessAgentCoreRuntimeEnvironmentModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"agent_runtime_arn": schema.StringAttribute{
+										CustomType: fwtypes.ARNType,
+										Computed:   true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseNonNullStateForUnknown(),
+										},
+									},
+									"agent_runtime_id": schema.StringAttribute{
+										Computed: true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseNonNullStateForUnknown(),
+										},
+									},
+									"agent_runtime_name": schema.StringAttribute{
+										Computed: true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseNonNullStateForUnknown(),
+										},
+									},
+									"lifecycle_configuration": schema.ListAttribute{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[lifecycleConfigurationModel](ctx),
+										Optional:   true,
+										Computed:   true,
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										PlanModifiers: []planmodifier.List{
+											listplanmodifier.UseStateForUnknown(),
+										},
+										ElementType: types.ObjectType{
+											AttrTypes: fwtypes.AttributeTypesMust[lifecycleConfigurationModel](ctx),
+										},
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"filesystem_configuration": filesystemConfigurationSchema(ctx),
+									names.AttrNetworkConfiguration: schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[networkConfigurationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"network_mode": schema.StringAttribute{
+													CustomType: fwtypes.StringEnumType[awstypes.NetworkMode](),
+													Required:   true,
+												},
+											},
+											Blocks: map[string]schema.Block{
+												"network_mode_config": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[vpcConfigModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"require_service_s3_endpoint": schema.BoolAttribute{
+																Computed: true,
+																PlanModifiers: []planmodifier.Bool{
+																	boolplanmodifier.UseStateForUnknown(),
+																},
+															},
+															names.AttrSecurityGroups: schema.SetAttribute{
+																CustomType: fwtypes.SetOfStringType,
+																Required:   true,
+															},
+															names.AttrSubnets: schema.SetAttribute{
+																CustomType: fwtypes.SetOfStringType,
+																Required:   true,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			"environment_artifact": schema.ListNestedBlock{
 				CustomType: fwtypes.NewListNestedObjectTypeOf[harnessEnvironmentArtifactModel](ctx),
 				Validators: []validator.List{

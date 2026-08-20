@@ -1,0 +1,40 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+)
+func waitNATGatewaySecondaryPrivateIPAddressCount(ctx context.Context, conn *ec2.Client, natGatewayID string, expectedCount int, timeout time.Duration) (*awstypes.NatGateway, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending:                   []string{"pending"},
+		Target:                    []string{"ready"},
+		Refresh:                   statusNATGatewaySecondaryPrivateIPAddressCount(conn, natGatewayID, expectedCount),
+		Timeout:                   timeout,
+		ContinuousTargetOccurence: 4,
+	}
+
+	outputRaw, err := stateConf.WaitForStateContext(ctx)
+
+	if output, ok := outputRaw.(*awstypes.NatGateway); ok {
+		for _, natGatewayAddress := range output.NatGatewayAddresses {
+			if !aws.ToBool(natGatewayAddress.IsPrimary) && natGatewayAddress.Status == awstypes.NatGatewayAddressStatusFailed {
+				retry.SetLastError(err, errors.New(aws.ToString(natGatewayAddress.FailureMessage)))
+				break
+			}
+		}
+
+		return output, err
+	}
+
+	return nil, err
+}

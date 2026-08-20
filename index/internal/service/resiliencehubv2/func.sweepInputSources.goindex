@@ -13,30 +13,35 @@ import (
 )
 func sweepInputSources(ctx context.Context, client *conns.AWSClient) ([]sweep.Sweepable, error) {
 	conn := client.ResilienceHubV2Client(ctx)
-
+	var input resiliencehubv2.ListServicesInput
 	var sweepResources []sweep.Sweepable
 
-	services := resiliencehubv2.NewListServicesPaginator(conn, &resiliencehubv2.ListServicesInput{})
-	for services.HasMorePages() {
-		page, err := services.NextPage(ctx)
+	pages := resiliencehubv2.NewListServicesPaginator(conn, &input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
 		if err != nil {
 			return nil, smarterr.NewError(err)
 		}
 
-		for _, svc := range page.ServiceSummaries {
-			listInputSourcesInput := resiliencehubv2.ListInputSourcesInput{
-				ServiceArn: svc.ServiceArn,
+		for _, v := range page.ServiceSummaries {
+			serviceARN := aws.ToString(v.ServiceArn)
+			input := resiliencehubv2.ListInputSourcesInput{
+				ServiceArn: aws.String(serviceARN),
 			}
-			output, err := conn.ListInputSources(ctx, &listInputSourcesInput)
-			if err != nil {
-				continue
-			}
-			for _, is := range output.InputSourceSummaries {
-				sweepResources = append(sweepResources, framework.NewSweepResource(newInputSourceResource, client,
-					framework.NewAttribute(names.AttrID, aws.ToString(svc.ServiceArn)+","+aws.ToString(is.InputSourceId)),
-					framework.NewAttribute("service_arn", aws.ToString(svc.ServiceArn)),
-					framework.NewAttribute("input_source_id", aws.ToString(is.InputSourceId)),
-				))
+
+			pages := resiliencehubv2.NewListInputSourcesPaginator(conn, &input)
+			for pages.HasMorePages() {
+				page, err := pages.NextPage(ctx)
+				if err != nil {
+					return nil, smarterr.NewError(err)
+				}
+
+				for _, v := range page.InputSourceSummaries {
+					sweepResources = append(sweepResources, framework.NewSweepResource(newInputSourceResource, client,
+						framework.NewAttribute("service_arn", serviceARN),
+						framework.NewAttribute("input_source_id", aws.ToString(v.InputSourceId)),
+					))
+				}
 			}
 		}
 	}

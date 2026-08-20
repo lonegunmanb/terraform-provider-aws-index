@@ -1,0 +1,78 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/odb
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/odb"
+	odbtypes "github.com/aws/aws-sdk-go-v2/service/odb/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func FindAssociatedDisassociatedIAMRoleOracleDBResource(ctx context.Context, conn *odb.Client, resourceARN string, roleARN string) (*odbtypes.IamRole, error) {
+	parsedResourceARN, err := arn.Parse(resourceARN)
+	if err != nil {
+		return nil, err
+	}
+	resourceType := strings.Split(parsedResourceARN.Resource, "/")[0]
+	resourceId := strings.Split(parsedResourceARN.Resource, "/")[1]
+	switch resourceType {
+	case "cloud-vm-cluster":
+		input := odb.GetCloudVmClusterInput{
+			CloudVmClusterId: &resourceId,
+		}
+		out, err := conn.GetCloudVmCluster(ctx, &input)
+		if err != nil {
+			return nil, err
+		}
+		iamRolesList := out.CloudVmCluster.IamRoles
+
+		for _, element := range iamRolesList {
+			if aws.ToString(element.IamRoleArn) == roleARN {
+				//we found the correct role
+				return &element, nil
+			}
+		}
+		err = errors.New("no IAM role found for the vm cluster : " + resourceARN)
+		return nil, &retry.NotFoundError{
+			LastError: err,
+		}
+
+	case "cloud-autonomous-vm-cluster":
+		input := odb.GetCloudAutonomousVmClusterInput{
+			CloudAutonomousVmClusterId: &resourceId,
+		}
+		out, err := conn.GetCloudAutonomousVmCluster(ctx, &input)
+		if err != nil {
+			return nil, err
+		}
+		for _, element := range out.CloudAutonomousVmCluster.IamRoles {
+			if aws.ToString(element.IamRoleArn) == roleARN {
+				//We found a match
+				return &element, nil
+			}
+		}
+		err = errors.New("no IAM role found for the cloud autonomous vm cluster : " + resourceARN)
+		return nil, &retry.NotFoundError{
+			LastError: err,
+		}
+	}
+	return nil, errors.New("IAM role association / disassociation not supported : " + resourceARN)
+}

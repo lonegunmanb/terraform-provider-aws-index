@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dsql
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dsql"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dsql/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func waitClusterPolicyUpdated(ctx context.Context, conn *dsql.Client, id, expectedPolicyVersion, expectedPolicy string, timeout time.Duration) (*dsql.GetClusterPolicyOutput, error) {
+	var policyOutput *dsql.GetClusterPolicyOutput
+
+	err := tfresource.WaitUntil(ctx, timeout, func(ctx context.Context) (bool, error) {
+		var err error
+		policyOutput, err = findClusterPolicyByID(ctx, conn, id)
+
+		if err != nil {
+			return false, err
+		}
+
+		return policyOutput != nil &&
+			aws.ToString(policyOutput.PolicyVersion) == expectedPolicyVersion &&
+			verify.PolicyStringsEquivalent(expectedPolicy, aws.ToString(policyOutput.Policy)), nil
+	}, tfresource.WaitOpts{
+		MinTimeout: 5 * time.Second,
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if policyOutput == nil {
+		return nil, tfresource.NewEmptyResultError()
+	}
+
+	return policyOutput, nil
+}
