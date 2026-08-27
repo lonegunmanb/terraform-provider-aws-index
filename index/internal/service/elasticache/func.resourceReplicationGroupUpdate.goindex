@@ -275,7 +275,7 @@ func resourceReplicationGroupUpdate(ctx context.Context, d *schema.ResourceData,
 			add, del := ns.Difference(os), os.Difference(ns)
 
 			if add.Len() > 0 {
-				if d.HasChanges("auth_token", "auth_token_update_strategy") && awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string)) == awstypes.AuthTokenUpdateStrategyTypeDelete {
+				if d.HasChanges("auth_token", "auth_token_wo_version", "auth_token_update_strategy") && awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string)) == awstypes.AuthTokenUpdateStrategyTypeDelete {
 					// Transitioning to RBAC.
 					input.AuthTokenUpdateStrategy = awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string))
 				}
@@ -304,12 +304,27 @@ func resourceReplicationGroupUpdate(ctx context.Context, d *schema.ResourceData,
 			})
 		}
 
-		if d.HasChanges("auth_token", "auth_token_update_strategy") {
+		if d.HasChanges("auth_token", "auth_token_wo_version", "auth_token_update_strategy") {
 			// AuthTokenUpdateStrategyTypeDelete only supported while transitioning to RBAC.
 			if awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string)) != awstypes.AuthTokenUpdateStrategyTypeDelete {
+				authToken := d.Get("auth_token").(string)
+
+				// When the write-only token version changes, source the new token
+				// from the write-only argument in configuration.
+				if d.HasChange("auth_token_wo_version") {
+					authTokenWO, di := flex.GetWriteOnlyStringValue(d, cty.GetAttrPath("auth_token_wo"))
+					diags = append(diags, di...)
+					if diags.HasError() {
+						return diags
+					}
+					if authTokenWO != "" {
+						authToken = authTokenWO
+					}
+				}
+
 				authInput := elasticache.ModifyReplicationGroupInput{
 					ApplyImmediately:        aws.Bool(true),
-					AuthToken:               aws.String(d.Get("auth_token").(string)),
+					AuthToken:               aws.String(authToken),
 					AuthTokenUpdateStrategy: awstypes.AuthTokenUpdateStrategyType(d.Get("auth_token_update_strategy").(string)),
 					ReplicationGroupId:      aws.String(d.Id()),
 				}

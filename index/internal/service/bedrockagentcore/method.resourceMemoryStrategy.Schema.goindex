@@ -3,6 +3,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -11,13 +12,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -33,18 +35,37 @@ import (
 	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
+			// Optional+Computed: The UpdateMemory API treats a nil
+			// description as "leave unchanged" (it never clears), so removing
+			// the argument keeps the prior value rather than erroring with
+			// "inconsistent result after apply".
 			names.AttrDescription: schema.StringAttribute{
+				// Optional+Computed: ModifyMemoryStrategyInput carries Description, but the
+				// PATCH-style API ignores a nil (cleared) value and retains the prior
+				// description. Absorbing the server value keeps state consistent instead of
+				// producing "inconsistent result after apply" and a perpetual diff. A
+				// description cannot be removed once set.
 				Optional: true,
+				Computed: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 4096),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"memory_execution_role_arn": schema.StringAttribute{
 				CustomType:         fwtypes.ARNType,
@@ -65,10 +86,13 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 				},
 			},
 			names.AttrName: schema.StringAttribute{
-				Validators: []validator.String{
-					stringvalidator.RegexMatches(regexache.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,47}$`), ""),
-				},
 				Required: true,
+				Validators: []validator.String{
+					validResourceName,
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"namespaces": schema.SetAttribute{
 				CustomType:         fwtypes.SetOfStringType,
@@ -83,12 +107,6 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 				CustomType: fwtypes.SetOfStringType,
 				Optional:   true,
 				Computed:   true,
-				Validators: []validator.Set{
-					setvalidator.ExactlyOneOf(
-						path.MatchRelative().AtParent().AtName("namespaces"),
-						path.MatchRelative().AtParent().AtName("namespace_templates"),
-					),
-				},
 				PlanModifiers: []planmodifier.Set{
 					tfsetplanmodifier.DefaultValueFromPath[fwtypes.SetOfString](path.Root("namespaces")),
 				},
@@ -97,6 +115,9 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 				Required:   true,
 				CustomType: fwtypes.StringEnumType[awstypes.MemoryStrategyType](),
 				Validators: []validator.String{
+					// - configuration {} is only valid and is required when type = "CUSTOM"
+					// - reflection_configuration {} is only valid when type = "EPISODIC"
+					// - Exactly one of namespaces or namespace_templates is required except when type = "CUSTOM" and configuration.type = "SELF_MANAGED"
 					tfstringvalidator.AlsoRequiresWhenEquals(
 						awstypes.MemoryStrategyTypeCustom,
 						path.MatchRelative().AtParent().AtName(names.AttrConfiguration),
@@ -108,6 +129,11 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 					tfstringvalidator.ConflictsWithWhenNotEquals(
 						awstypes.MemoryStrategyTypeEpisodic,
 						path.MatchRelative().AtParent().AtName("reflection_configuration"),
+					),
+					tfstringvalidator.ExactlyOneOfWhenNotEquals(
+						awstypes.MemoryStrategyTypeCustom,
+						path.MatchRoot("namespaces"),
+						path.MatchRoot("namespace_templates"),
 					),
 				},
 				PlanModifiers: []planmodifier.String{
@@ -127,9 +153,18 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 							Required:   true,
 							CustomType: fwtypes.StringEnumType[awstypes.OverrideType](),
 							Validators: []validator.String{
+								// - reflection {} is only valid and is required when type = "EPISODIC_OVERRIDE"
+								// - self_managed_configuration {} is only valid and is required when type = "SELF_MANAGED"
+								// - extraction {} is not valid when type = "SUMMARY_OVERRIDE" or type = "SELF_MANAGED"
+								// - consolidation {} is not valid when type = "SELF_MANAGED"
+								// - Exactly one of namespaces or namespace_templates is required except when type = "CUSTOM" and configuration.type = "SELF_MANAGED"
 								tfstringvalidator.AlsoRequiresWhenEquals(
 									awstypes.OverrideTypeEpisodicOverride,
 									path.MatchRelative().AtParent().AtName("reflection"),
+								),
+								tfstringvalidator.AlsoRequiresWhenEquals(
+									awstypes.OverrideTypeSelfManaged,
+									path.MatchRelative().AtParent().AtName("self_managed_configuration"),
 								),
 								tfstringvalidator.ConflictsWithWhenNotEquals(
 									awstypes.OverrideTypeEpisodicOverride,
@@ -138,6 +173,23 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 								tfstringvalidator.ConflictsWithWhenEquals(
 									awstypes.OverrideTypeSummaryOverride,
 									path.MatchRelative().AtParent().AtName("extraction"),
+								),
+								tfstringvalidator.ConflictsWithWhenEquals(
+									awstypes.OverrideTypeSelfManaged,
+									path.MatchRoot("namespaces"),
+									path.MatchRoot("namespace_templates"),
+									path.MatchRelative().AtParent().AtName("consolidation"),
+									path.MatchRelative().AtParent().AtName("extraction"),
+									// "reflection" is handled via the ConflictsWithWhenNotEquals above.
+								),
+								tfstringvalidator.ConflictsWithWhenNotEquals(
+									awstypes.OverrideTypeSelfManaged,
+									path.MatchRelative().AtParent().AtName("self_managed_configuration"),
+								),
+								tfstringvalidator.ExactlyOneOfWhenNotEquals(
+									awstypes.OverrideTypeSelfManaged,
+									path.MatchRoot("namespaces"),
+									path.MatchRoot("namespace_templates"),
 								),
 							},
 							PlanModifiers: []planmodifier.String{
@@ -201,6 +253,313 @@ func (r *resourceMemoryStrategy) Schema(ctx context.Context, request resource.Sc
 									"namespace_templates": schema.SetAttribute{
 										CustomType: fwtypes.SetOfStringType,
 										Required:   true,
+									},
+								},
+							},
+						},
+						"self_managed_configuration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[selfManagedConfigurationModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							PlanModifiers: []planmodifier.List{
+								tflistplanmodifier.RequiresReplaceIfEmptied,
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"historical_context_window_size": schema.Int32Attribute{
+										Optional: true,
+										Computed: true,
+										Validators: []validator.Int32{
+											int32validator.Between(0, 50),
+										},
+										PlanModifiers: []planmodifier.Int32{
+											int32planmodifier.UseStateForUnknown(),
+										},
+									},
+									"trigger_conditions_actual": framework.ResourceComputedListOfObjectsAttribute[triggerConditionsModel](ctx, tflistplanmodifier.UnknownWhenOtherValueChanges(r.triggerConditionsPath())),
+								},
+								Blocks: map[string]schema.Block{
+									"invocation_configuration": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[invocationConfigurationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.IsRequired(),
+											listvalidator.SizeAtLeast(1),
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"payload_delivery_bucket_name": schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														fwvalidators.S3BucketName,
+													},
+												},
+												names.AttrTopicARN: schema.StringAttribute{
+													CustomType: fwtypes.ARNType,
+													Required:   true,
+												},
+											},
+										},
+									},
+									"trigger_conditions": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[triggerConditionsModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Validators: []validator.Object{
+												tfobjectvalidator.AtLeastOneOfChildren(
+													path.MatchRelative().AtName("message_based_trigger"),
+													path.MatchRelative().AtName("time_based_trigger"),
+													path.MatchRelative().AtName("token_based_trigger"),
+												),
+											},
+											Blocks: map[string]schema.Block{
+												"message_based_trigger": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[messageBasedTriggerModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"message_count": schema.Int32Attribute{
+																Required: true,
+																Validators: []validator.Int32{
+																	int32validator.Between(1, 50),
+																},
+																PlanModifiers: []planmodifier.Int32{
+																	int32planmodifier.UseNonNullStateForUnknown(),
+																},
+															},
+														},
+													},
+												},
+												"time_based_trigger": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[timeBasedTriggerModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"idle_session_timeout": schema.Int32Attribute{
+																Required: true,
+																Validators: []validator.Int32{
+																	int32validator.Between(10, 3000),
+																},
+																PlanModifiers: []planmodifier.Int32{
+																	int32planmodifier.UseNonNullStateForUnknown(),
+																},
+															},
+														},
+													},
+												},
+												"token_based_trigger": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[tokenBasedTriggerModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"token_count": schema.Int32Attribute{
+																Required: true,
+																Validators: []validator.Int32{
+																	int32validator.Between(100, 500000),
+																},
+																PlanModifiers: []planmodifier.Int32{
+																	int32planmodifier.UseNonNullStateForUnknown(),
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"memory_record_schema": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[memoryRecordSchemaModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				PlanModifiers: []planmodifier.List{
+					tflistplanmodifier.RequiresReplaceIfEmptied,
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"metadata_schema": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[metadataSchemaEntryModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeBetween(1, 20),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"extraction_type": schema.StringAttribute{
+										// The API may populate this when unset, so it must be Computed.
+										Optional:   true,
+										Computed:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.ExtractionType](),
+									},
+									names.AttrKey: schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											validMemoryKey,
+										},
+									},
+									names.AttrType: schema.StringAttribute{
+										// The API may populate this when unset, so it must be Computed.
+										Optional:   true,
+										Computed:   true,
+										CustomType: fwtypes.StringEnumType[awstypes.MetadataValueType](),
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"extraction_config": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[extractionConfigModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Validators: []validator.Object{
+												tfobjectvalidator.AtLeastOneOfChildren(
+													path.MatchRelative().AtName("llm_extraction_config"),
+												),
+											},
+											Blocks: map[string]schema.Block{
+												"llm_extraction_config": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[llmExtractionConfigModel](ctx),
+													Validators: []validator.List{
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"definition": schema.StringAttribute{
+																Required: true,
+																Validators: []validator.String{
+																	stringvalidator.LengthBetween(1, 1000),
+																},
+															},
+															"llm_extraction_instruction": schema.StringAttribute{
+																// The API defaults this to "LATEST_VALUE" when unset, so it must be Computed.
+																Optional: true,
+																Computed: true,
+																Validators: []validator.String{
+																	stringvalidator.LengthBetween(1, 1000),
+																},
+															},
+														},
+														Blocks: map[string]schema.Block{
+															"validation": schema.ListNestedBlock{
+																CustomType: fwtypes.NewListNestedObjectTypeOf[validationModel](ctx),
+																Validators: []validator.List{
+																	listvalidator.SizeAtMost(1),
+																},
+																NestedObject: schema.NestedBlockObject{
+																	Validators: []validator.Object{
+																		tfobjectvalidator.ExactlyOneOfChildren(
+																			path.MatchRelative().AtName("number_validation"),
+																			path.MatchRelative().AtName("string_list_validation"),
+																			path.MatchRelative().AtName("string_validation"),
+																		),
+																	},
+																	Blocks: map[string]schema.Block{
+																		"number_validation": schema.ListNestedBlock{
+																			CustomType: fwtypes.NewListNestedObjectTypeOf[numberValidationModel](ctx),
+																			Validators: []validator.List{
+																				listvalidator.SizeAtMost(1),
+																			},
+																			NestedObject: schema.NestedBlockObject{
+																				Validators: []validator.Object{
+																					// Require at least one bound so an empty
+																					// number_validation {} is rejected at plan
+																					// instead of being discarded by the API ->
+																					// "inconsistent result after apply".
+																					tfobjectvalidator.AtLeastOneOfChildren(
+																						path.MatchRelative().AtName("max_value"),
+																						path.MatchRelative().AtName("min_value"),
+																					),
+																				},
+																				Attributes: map[string]schema.Attribute{
+																					"max_value": schema.Float64Attribute{
+																						Optional: true,
+																					},
+																					"min_value": schema.Float64Attribute{
+																						Optional: true,
+																					},
+																				},
+																			},
+																		},
+																		"string_list_validation": schema.ListNestedBlock{
+																			CustomType: fwtypes.NewListNestedObjectTypeOf[stringListValidationModel](ctx),
+																			Validators: []validator.List{
+																				listvalidator.SizeAtMost(1),
+																			},
+																			NestedObject: schema.NestedBlockObject{
+																				Validators: []validator.Object{
+																					// Require at least one field so an empty
+																					// string_list_validation {} is rejected at plan
+																					// instead of being discarded by the API ->
+																					// "inconsistent result after apply".
+																					tfobjectvalidator.AtLeastOneOfChildren(
+																						path.MatchRelative().AtName("allowed_values"),
+																						path.MatchRelative().AtName("max_items"),
+																					),
+																				},
+																				Attributes: map[string]schema.Attribute{
+																					"allowed_values": schema.ListAttribute{
+																						CustomType:  fwtypes.ListOfStringType,
+																						ElementType: types.StringType,
+																						Optional:    true,
+																						Validators: []validator.List{
+																							listvalidator.SizeBetween(1, 10),
+																							listvalidator.ValueStringsAre(
+																								stringvalidator.LengthBetween(1, 64),
+																							),
+																						},
+																					},
+																					"max_items": schema.Int32Attribute{
+																						Optional: true,
+																						Validators: []validator.Int32{
+																							int32validator.Between(1, 5),
+																						},
+																					},
+																				},
+																			},
+																		},
+																		"string_validation": schema.ListNestedBlock{
+																			CustomType: fwtypes.NewListNestedObjectTypeOf[stringValidationModel](ctx),
+																			Validators: []validator.List{
+																				listvalidator.SizeAtMost(1),
+																			},
+																			NestedObject: schema.NestedBlockObject{
+																				Attributes: map[string]schema.Attribute{
+																					"allowed_values": schema.ListAttribute{
+																						CustomType:  fwtypes.ListOfStringType,
+																						ElementType: types.StringType,
+																						Required:    true,
+																						Validators: []validator.List{
+																							listvalidator.SizeBetween(1, 10),
+																							listvalidator.ValueStringsAre(
+																								stringvalidator.LengthBetween(1, 256),
+																							),
+																						},
+																					},
+																				},
+																			},
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
 									},
 								},
 							},

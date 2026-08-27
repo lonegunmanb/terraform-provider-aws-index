@@ -3,6 +3,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -11,13 +12,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -33,11 +35,14 @@ import (
 	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *resourceMemoryStrategy) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -53,6 +58,13 @@ func (r *resourceMemoryStrategy) Update(ctx context.Context, request resource.Up
 
 	diff, d := fwflex.Diff(ctx, plan, state)
 	smerr.AddEnrich(ctx, &response.Diagnostics, d)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// flatten overwrites trigger_conditions with a null value (trigger_conditions_actual holds the value read from the API).
+	var plannedTriggerConditionsList fwtypes.ListNestedObjectValueOf[triggerConditionsModel]
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.GetAttribute(ctx, r.triggerConditionsPath(), &plannedTriggerConditionsList))
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -93,7 +105,7 @@ func (r *resourceMemoryStrategy) Update(ctx context.Context, request resource.Up
 				return
 			}
 
-			smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Flatten(ctx, found, &plan, fwflex.WithFieldNamePrefix("Memory")))
+			smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, found, &plan))
 			if response.Diagnostics.HasError() {
 				return
 			}
@@ -114,4 +126,12 @@ func (r *resourceMemoryStrategy) Update(ctx context.Context, request resource.Up
 	}
 
 	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, &plan))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// Restore any configured trigger_conditions.
+	if !plannedTriggerConditionsList.IsNull() {
+		smerr.AddEnrich(ctx, &response.Diagnostics, response.State.SetAttribute(ctx, r.triggerConditionsPath(), plannedTriggerConditionsList))
+	}
 }

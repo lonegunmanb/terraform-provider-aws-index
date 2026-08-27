@@ -3,6 +3,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -11,13 +12,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -33,11 +35,14 @@ import (
 	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *resourceMemoryStrategy) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -62,9 +67,18 @@ func (r *resourceMemoryStrategy) Read(ctx context.Context, request resource.Read
 		return
 	}
 
+	importing := state.Name.IsNull()
+
+	// flatten overwrites trigger_conditions with a null value (trigger_conditions_actual holds the value read from the API).
+	var configuredTriggerConditionsList fwtypes.ListNestedObjectValueOf[triggerConditionsModel]
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.State.GetAttribute(ctx, r.triggerConditionsPath(), &configuredTriggerConditionsList))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
 	nullReflectionConfiguration := state.ReflectionConfiguration.IsNull()
 
-	smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Flatten(ctx, out, &state, fwflex.WithFieldNamePrefix("Memory")))
+	smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, out, &state))
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -75,4 +89,51 @@ func (r *resourceMemoryStrategy) Read(ctx context.Context, request resource.Read
 	}
 
 	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, &state))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	var newTriggerConditionsActualList fwtypes.ListNestedObjectValueOf[triggerConditionsModel]
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.GetAttribute(ctx, r.triggerConditionsActualPath(), &newTriggerConditionsActualList))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	switch {
+	case importing && !newTriggerConditionsActualList.IsNull():
+		// Set trigger_conditions to trigger_conditions_actual.
+		smerr.AddEnrich(ctx, &response.Diagnostics, response.State.SetAttribute(ctx, r.triggerConditionsPath(), newTriggerConditionsActualList))
+	case !configuredTriggerConditionsList.IsNull() && !newTriggerConditionsActualList.IsNull():
+		// Case of configured trigger_conditions but null trigger_conditions_actual is taken care of in flatten.
+		configuredTriggerConditions, diags := configuredTriggerConditionsList.ToPtr(ctx)
+		smerr.AddEnrich(ctx, &response.Diagnostics, diags)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		newTriggerConditionsActual, diags := newTriggerConditionsActualList.ToPtr(ctx)
+		smerr.AddEnrich(ctx, &response.Diagnostics, diags)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		// Use the fact that each tigger conditions contains a single required attribute to just check for nullness of the block.
+		if configuredTriggerConditions.MessageBasedTrigger.IsNull() {
+			newTriggerConditionsActual.MessageBasedTrigger = fwtypes.NewListNestedObjectValueOfNull[messageBasedTriggerModel](ctx)
+		}
+		if configuredTriggerConditions.TimeBasedTrigger.IsNull() {
+			newTriggerConditionsActual.TimeBasedTrigger = fwtypes.NewListNestedObjectValueOfNull[timeBasedTriggerModel](ctx)
+		}
+		if configuredTriggerConditions.TokenBasedTrigger.IsNull() {
+			newTriggerConditionsActual.TokenBasedTrigger = fwtypes.NewListNestedObjectValueOfNull[tokenBasedTriggerModel](ctx)
+		}
+
+		newTriggerConditionsActualList, diags = fwtypes.NewListNestedObjectValueOfPtr(ctx, newTriggerConditionsActual)
+		smerr.AddEnrich(ctx, &response.Diagnostics, diags)
+		if response.Diagnostics.HasError() {
+			return
+		}
+
+		smerr.AddEnrich(ctx, &response.Diagnostics, response.State.SetAttribute(ctx, r.triggerConditionsPath(), newTriggerConditionsActualList))
+	}
 }

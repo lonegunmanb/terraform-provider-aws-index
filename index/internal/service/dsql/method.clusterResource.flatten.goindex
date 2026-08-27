@@ -1,0 +1,68 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dsql
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dsql"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dsql/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *clusterResource) flatten(ctx context.Context, conn *dsql.Client, output *dsql.GetClusterOutput, data *clusterResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	output.MultiRegionProperties = normalizeMultiRegionProperties(output)
+
+	diags.Append(fwflex.Flatten(ctx, output, data)...)
+	if diags.HasError() {
+		return diags
+	}
+
+	if v := output.EncryptionDetails; v != nil {
+		switch typ := v.EncryptionType; typ {
+		case awstypes.EncryptionTypeAwsOwnedKmsKey:
+			data.KMSEncryptionKey = fwflex.StringValueToFramework(ctx, typ)
+		case awstypes.EncryptionTypeCustomerManagedKmsKey:
+			data.KMSEncryptionKey = fwflex.StringToFramework(ctx, v.KmsKeyArn)
+		}
+	}
+
+	id := fwflex.StringValueFromFramework(ctx, data.Identifier)
+	vpcEndpointServiceName, err := findVPCEndpointServiceNameByID(ctx, conn, id)
+
+	if err != nil {
+		diags.AddError(fmt.Sprintf("reading Aurora DSQL Cluster (%s) VPC endpoint service name", id), err.Error())
+		return diags
+	}
+
+	data.VPCEndpointServiceName = fwflex.StringToFramework(ctx, vpcEndpointServiceName)
+	return diags
+}

@@ -2,7 +2,6 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/dsql
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -11,6 +10,7 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/dsql/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
@@ -38,26 +39,24 @@ func (r *clusterPolicyResource) Create(ctx context.Context, request resource.Cre
 	id := data.Identifier.ValueString()
 
 	conn := r.Meta().DSQLClient(ctx)
-	input := dsql.PutClusterPolicyInput{
-		BypassPolicyLockoutSafetyCheck: data.BypassPolicyLockoutSafetyCheck.ValueBool(),
-		ClientToken:                    aws.String(create.UniqueId(ctx)),
-		Identifier:                     aws.String(id),
-		Policy:                         data.Policy.ValueStringPointer(),
+
+	var input dsql.PutClusterPolicyInput
+	smerr.AddEnrich(ctx, &response.Diagnostics, flex.Expand(ctx, data, &input))
+	if response.Diagnostics.HasError() {
+		return
 	}
 
-	output, err := conn.PutClusterPolicy(ctx, &input)
+	// Additional fields
+	input.ClientToken = aws.String(create.UniqueId(ctx))
+
+	output, err := r.putClusterPolicyAndWait(ctx, conn, &input, r.CreateTimeout(ctx, data.Timeouts))
 	if err != nil {
-		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, data.Identifier.String())
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, id)
 		return
 	}
-	if output == nil || output.PolicyVersion == nil {
-		smerr.AddError(ctx, &response.Diagnostics, errors.New("empty output"), smerr.ID, data.Identifier.String())
-		return
-	}
-	policyVersion := aws.ToString(output.PolicyVersion)
 
-	if err := syncClusterPolicyAfterPut(ctx, conn, &data, policyVersion, "create", r.CreateTimeout(ctx, data.Timeouts)); err != nil {
-		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, data.Identifier.String())
+	smerr.AddEnrich(ctx, &response.Diagnostics, flex.Flatten(ctx, output, &data))
+	if response.Diagnostics.HasError() {
 		return
 	}
 

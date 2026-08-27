@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pinpointsmsvoicev2
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (r *keywordResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"keyword": schema.StringAttribute{
+				Description: "Keyword to configure. 1-30 characters, upper-case, and cannot start or end with a space.",
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 30),
+					stringvalidator.RegexMatches(regexache.MustCompile(`^\S([ \S]*\S)?$`), "must not start or end with a space, or contain tabs or newlines"),
+					stringvalidator.RegexMatches(regexache.MustCompile(`^[^a-z]*$`), "must be upper-case; AWS stores keywords in upper-case"),
+				},
+			},
+			"keyword_action": schema.StringAttribute{
+				Description: "Action to perform when the keyword is received.",
+				CustomType:  fwtypes.StringEnumType[awstypes.KeywordAction](),
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"keyword_message": schema.StringAttribute{
+				Description: "Message to send when the keyword is received.",
+				Required:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 1600),
+					stringvalidator.RegexMatches(regexache.MustCompile(`\S`), "must not be entirely whitespace"),
+				},
+			},
+			"origination_identity_arn": schema.StringAttribute{
+				Description: "ARN of the origination identity (phone number or pool) to attach the keyword to.",
+				CustomType:  fwtypes.ARNType,
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+		},
+	}
+}

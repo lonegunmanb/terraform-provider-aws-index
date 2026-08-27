@@ -3,6 +3,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -11,13 +12,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -33,11 +35,14 @@ import (
 	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	tfsetplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/setplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
 	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (m *customConfigurationModel) Flatten(ctx context.Context, v any) diag.Diagnostics {
@@ -46,51 +51,57 @@ func (m *customConfigurationModel) Flatten(ctx context.Context, v any) diag.Diag
 	case awstypes.StrategyConfiguration:
 		m.Type = fwtypes.StringEnumValue(t.Type)
 
-		if t.Consolidation != nil {
-			var consolidation overrideDetailsModel
-			smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, t.Consolidation, &consolidation))
+		if v := t.Consolidation; v != nil {
+			// Null out any phantom empty extraction.
+			consolidationList := fwtypes.NewListNestedObjectValueOfNull[overrideDetailsModel](ctx)
+			smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, v, &consolidationList))
 			if diags.HasError() {
 				return diags
 			}
-			if !consolidation.AppendToPrompt.IsNull() && !consolidation.ModelID.IsNull() {
-				var d diag.Diagnostics
-				m.Consolidation, d = fwtypes.NewListNestedObjectValueOfPtr(ctx, &consolidation)
-				smerr.AddEnrich(ctx, &diags, d)
-				if diags.HasError() {
-					return diags
-				}
+
+			consolidation, d := consolidationList.ToPtr(ctx)
+			smerr.AddEnrich(ctx, &diags, d)
+			if diags.HasError() {
+				return diags
+			}
+			if consolidation == nil || (consolidation.AppendToPrompt.IsNull() && consolidation.ModelID.IsNull()) {
+				m.Consolidation = fwtypes.NewListNestedObjectValueOfNull[overrideDetailsModel](ctx)
+			} else {
+				m.Consolidation = consolidationList
 			}
 		}
 
-		if t.Extraction != nil {
-			var extraction overrideDetailsModel
-			smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, t.Extraction, &extraction))
+		if v := t.Extraction; v != nil {
+			// Null out any phantom empty extraction.
+			extractionList := fwtypes.NewListNestedObjectValueOfNull[overrideDetailsModel](ctx)
+			smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, v, &extractionList))
 			if diags.HasError() {
 				return diags
 			}
-			if !extraction.AppendToPrompt.IsNull() && !extraction.ModelID.IsNull() {
-				var d diag.Diagnostics
-				m.Extraction, d = fwtypes.NewListNestedObjectValueOfPtr(ctx, &extraction)
-				smerr.AddEnrich(ctx, &diags, d)
-				if diags.HasError() {
-					return diags
-				}
+
+			extraction, d := extractionList.ToPtr(ctx)
+			smerr.AddEnrich(ctx, &diags, d)
+			if diags.HasError() {
+				return diags
+			}
+			if extraction == nil || (extraction.AppendToPrompt.IsNull() && extraction.ModelID.IsNull()) {
+				m.Extraction = fwtypes.NewListNestedObjectValueOfNull[overrideDetailsModel](ctx)
+			} else {
+				m.Extraction = extractionList
 			}
 		}
 
-		if t.Reflection != nil {
-			var reflection episodicReflectionOverrideDetailsModel
-			smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, t.Reflection, &reflection))
+		if v := t.Reflection; v != nil {
+			smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, v, &m.Reflection))
 			if diags.HasError() {
 				return diags
 			}
-			if !reflection.AppendToPrompt.IsNull() && !reflection.ModelID.IsNull() && !reflection.NamespaceTemplates.IsNull() {
-				var d diag.Diagnostics
-				m.Reflection, d = fwtypes.NewListNestedObjectValueOfPtr(ctx, &reflection)
-				smerr.AddEnrich(ctx, &diags, d)
-				if diags.HasError() {
-					return diags
-				}
+		}
+
+		if v := t.SelfManagedConfiguration; v != nil {
+			smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, v, &m.SelfManagedConfiguration))
+			if diags.HasError() {
+				return diags
 			}
 		}
 
