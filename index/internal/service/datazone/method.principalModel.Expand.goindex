@@ -1,0 +1,119 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datazone"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datazone/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (m principalModel) Expand(ctx context.Context) (any, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	switch {
+	case !m.DomainUnit.IsNull():
+		data, d := m.DomainUnit.ToPtr(ctx)
+		smerr.AddEnrich(ctx, &diags, d)
+		if diags.HasError() {
+			return nil, diags
+		}
+		result := awstypes.DomainUnitPolicyGrantPrincipal{
+			DomainUnitDesignation: awstypes.DomainUnitDesignation(data.DomainUnitDesignation.ValueString()),
+			DomainUnitIdentifier:  data.DomainUnitIdentifier.ValueStringPointer(),
+		}
+		if !data.AllDomainUnitsGrantFilter.IsNull() {
+			result.DomainUnitGrantFilter = &awstypes.DomainUnitGrantFilterMemberAllDomainUnitsGrantFilter{
+				Value: awstypes.AllDomainUnitsGrantFilter{},
+			}
+		}
+		return &awstypes.PolicyGrantPrincipalMemberDomainUnit{Value: result}, diags
+
+	case !m.Group.IsNull():
+		data, d := m.Group.ToPtr(ctx)
+		smerr.AddEnrich(ctx, &diags, d)
+		if diags.HasError() {
+			return nil, diags
+		}
+		return &awstypes.PolicyGrantPrincipalMemberGroup{
+			Value: &awstypes.GroupPolicyGrantPrincipalMemberGroupIdentifier{
+				Value: data.GroupIdentifier.ValueString(),
+			},
+		}, diags
+
+	case !m.Project.IsNull():
+		data, d := m.Project.ToPtr(ctx)
+		smerr.AddEnrich(ctx, &diags, d)
+		if diags.HasError() {
+			return nil, diags
+		}
+		result := awstypes.ProjectPolicyGrantPrincipal{
+			ProjectDesignation: awstypes.ProjectDesignation(data.ProjectDesignation.ValueString()),
+			ProjectIdentifier:  data.ProjectIdentifier.ValueStringPointer(),
+		}
+		if !data.DomainUnitFilter.IsNull() {
+			filter, d := data.DomainUnitFilter.ToPtr(ctx)
+			smerr.AddEnrich(ctx, &diags, d)
+			if diags.HasError() {
+				return nil, diags
+			}
+			result.ProjectGrantFilter = &awstypes.ProjectGrantFilterMemberDomainUnitFilter{
+				Value: awstypes.DomainUnitFilterForProject{
+					DomainUnit:              filter.DomainUnit.ValueStringPointer(),
+					IncludeChildDomainUnits: filter.IncludeChildDomainUnits.ValueBoolPointer(),
+				},
+			}
+		}
+		return &awstypes.PolicyGrantPrincipalMemberProject{Value: result}, diags
+
+	case !m.User.IsNull():
+		data, d := m.User.ToPtr(ctx)
+		smerr.AddEnrich(ctx, &diags, d)
+		if diags.HasError() {
+			return nil, diags
+		}
+		if !data.UserIdentifier.IsNull() && !data.UserIdentifier.IsUnknown() {
+			return &awstypes.PolicyGrantPrincipalMemberUser{
+				Value: &awstypes.UserPolicyGrantPrincipalMemberUserIdentifier{
+					Value: data.UserIdentifier.ValueString(),
+				},
+			}, diags
+		}
+		if !data.AllUsersGrantFilter.IsNull() {
+			return &awstypes.PolicyGrantPrincipalMemberUser{
+				Value: &awstypes.UserPolicyGrantPrincipalMemberAllUsersGrantFilter{
+					Value: awstypes.AllUsersGrantFilter{},
+				},
+			}, diags
+		}
+	}
+
+	diags.AddError("Invalid principal", "Exactly one principal variant block must be specified.")
+	return nil, diags
+}

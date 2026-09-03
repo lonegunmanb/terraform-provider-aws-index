@@ -1,0 +1,55 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/opensearchserverless
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/opensearchserverless"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/opensearchserverless/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfec2 "github.com/hashicorp/terraform-provider-aws/internal/service/ec2"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *vpcEndpointResource) flatten(ctx context.Context, meta *conns.AWSClient, output *awstypes.VpcEndpointDetail, data *vpcEndpointResourceModel) (diags diag.Diagnostics) {
+	smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, output, data))
+	if diags.HasError() {
+		return diags
+	}
+
+	// Security Group IDs are not returned by the OpenSearch Serverless API and must be retrieved from the EC2 API.
+	vpce, err := tfec2.FindVPCEndpointByID(ctx, meta.EC2Client(ctx), data.ID.ValueString())
+	if err != nil {
+		smerr.AddError(ctx, &diags, err, smerr.ID, data.ID.ValueString())
+		return diags
+	}
+
+	var securityGroupIDs []*string
+	for _, group := range vpce.Groups {
+		securityGroupIDs = append(securityGroupIDs, group.GroupId)
+	}
+
+	smerr.AddEnrich(ctx, &diags, fwflex.Flatten(ctx, securityGroupIDs, &data.SecurityGroupIDs))
+	return diags
+}

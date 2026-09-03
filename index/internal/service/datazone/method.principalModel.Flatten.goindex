@@ -1,0 +1,99 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datazone"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datazone/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (m *principalModel) Flatten(ctx context.Context, v any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Initialize all variants to null; the matching case below will set the active one.
+	m.DomainUnit = fwtypes.NewListNestedObjectValueOfNull[domainUnitPrincipalModel](ctx)
+	m.Group = fwtypes.NewListNestedObjectValueOfNull[groupPrincipalModel](ctx)
+	m.Project = fwtypes.NewListNestedObjectValueOfNull[projectPrincipalModel](ctx)
+	m.User = fwtypes.NewListNestedObjectValueOfNull[userPrincipalModel](ctx)
+
+	switch t := v.(type) {
+	case awstypes.PolicyGrantPrincipalMemberDomainUnit:
+		duModel := &domainUnitPrincipalModel{
+			DomainUnitDesignation:     fwtypes.StringEnumValue(t.Value.DomainUnitDesignation),
+			DomainUnitIdentifier:      fwflex.StringToFramework(ctx, t.Value.DomainUnitIdentifier),
+			AllDomainUnitsGrantFilter: fwtypes.NewListNestedObjectValueOfNull[unitModel](ctx),
+		}
+		if _, ok := t.Value.DomainUnitGrantFilter.(*awstypes.DomainUnitGrantFilterMemberAllDomainUnitsGrantFilter); ok {
+			duModel.AllDomainUnitsGrantFilter = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &unitModel{})
+		}
+		m.DomainUnit = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, duModel)
+
+	case awstypes.PolicyGrantPrincipalMemberGroup:
+		groupID := ""
+		if gm, ok := t.Value.(*awstypes.GroupPolicyGrantPrincipalMemberGroupIdentifier); ok {
+			groupID = gm.Value
+		}
+		m.Group = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &groupPrincipalModel{
+			GroupIdentifier: types.StringValue(groupID),
+		})
+
+	case awstypes.PolicyGrantPrincipalMemberProject:
+		projModel := &projectPrincipalModel{
+			ProjectDesignation: fwtypes.StringEnumValue(t.Value.ProjectDesignation),
+			ProjectIdentifier:  fwflex.StringToFramework(ctx, t.Value.ProjectIdentifier),
+			DomainUnitFilter:   fwtypes.NewListNestedObjectValueOfNull[domainUnitFilterModel](ctx),
+		}
+		if pf, ok := t.Value.ProjectGrantFilter.(*awstypes.ProjectGrantFilterMemberDomainUnitFilter); ok {
+			projModel.DomainUnitFilter = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &domainUnitFilterModel{
+				DomainUnit:              fwflex.StringToFramework(ctx, pf.Value.DomainUnit),
+				IncludeChildDomainUnits: types.BoolPointerValue(pf.Value.IncludeChildDomainUnits),
+			})
+		}
+		m.Project = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, projModel)
+
+	case awstypes.PolicyGrantPrincipalMemberUser:
+		userModel := &userPrincipalModel{
+			UserIdentifier:      types.StringNull(),
+			AllUsersGrantFilter: fwtypes.NewListNestedObjectValueOfNull[unitModel](ctx),
+		}
+		switch u := t.Value.(type) {
+		case *awstypes.UserPolicyGrantPrincipalMemberUserIdentifier:
+			userModel.UserIdentifier = types.StringValue(u.Value)
+		case *awstypes.UserPolicyGrantPrincipalMemberAllUsersGrantFilter:
+			userModel.AllUsersGrantFilter = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &unitModel{})
+		}
+		m.User = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, userModel)
+
+	default:
+		diags.AddError("Unsupported PolicyGrantPrincipal type", fmt.Sprintf("principal flatten: unexpected type %T", v))
+	}
+
+	return diags
+}

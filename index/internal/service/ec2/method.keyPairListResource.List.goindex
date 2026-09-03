@@ -1,0 +1,56 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (l *keyPairListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	conn := l.Meta().EC2Client(ctx)
+
+	tflog.Info(ctx, "Listing resources")
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		for item, err := range listKeyPairs(ctx, conn, &ec2.DescribeKeyPairsInput{}) {
+			if err != nil {
+				result := fwdiag.NewListResultErrorDiagnostic(err)
+				yield(result)
+				return
+			}
+
+			keyName := aws.ToString(item.KeyName)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey("key_name"), keyName)
+
+			result := request.NewListResult(ctx)
+
+			rd := l.ResourceData()
+			rd.SetId(keyName)
+			rd.Set("key_name", keyName)
+
+			if request.IncludeResource {
+				resourceKeyPairFlatten(ctx, l.Meta(), &item, rd)
+			}
+
+			result.DisplayName = keyName
+
+			l.SetResult(ctx, l.Meta(), request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

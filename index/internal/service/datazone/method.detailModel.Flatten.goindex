@@ -1,0 +1,131 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/datazone
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/datazone"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/datazone/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (m *detailModel) Flatten(ctx context.Context, v any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Initialize all variants to null; the matching case below will set the active one.
+	m.AddToProjectMemberPool = fwtypes.NewListNestedObjectValueOfNull[includeChildDomainUnitsDetailModel](ctx)
+	m.CreateAssetType = fwtypes.NewListNestedObjectValueOfNull[includeChildDomainUnitsDetailModel](ctx)
+	m.CreateDomainUnit = fwtypes.NewListNestedObjectValueOfNull[includeChildDomainUnitsDetailModel](ctx)
+	m.CreateEnvironment = fwtypes.NewListNestedObjectValueOfNull[unitModel](ctx)
+	m.CreateEnvironmentFromBlueprint = fwtypes.NewListNestedObjectValueOfNull[unitModel](ctx)
+	m.CreateEnvironmentProfile = fwtypes.NewListNestedObjectValueOfNull[domainUnitIDDetailModel](ctx)
+	m.CreateFormType = fwtypes.NewListNestedObjectValueOfNull[includeChildDomainUnitsDetailModel](ctx)
+	m.CreateGlossary = fwtypes.NewListNestedObjectValueOfNull[includeChildDomainUnitsDetailModel](ctx)
+	m.CreateProject = fwtypes.NewListNestedObjectValueOfNull[includeChildDomainUnitsDetailModel](ctx)
+	m.CreateProjectFromProjectProfile = fwtypes.NewListNestedObjectValueOfNull[createProjectFromProjectProfileDetailModel](ctx)
+	m.DelegateCreateEnvironmentProfile = fwtypes.NewListNestedObjectValueOfNull[unitModel](ctx)
+	m.OverrideDomainUnitOwners = fwtypes.NewListNestedObjectValueOfNull[includeChildDomainUnitsDetailModel](ctx)
+	m.OverrideProjectOwners = fwtypes.NewListNestedObjectValueOfNull[includeChildDomainUnitsDetailModel](ctx)
+	m.UseAssetType = fwtypes.NewListNestedObjectValueOfNull[domainUnitIDDetailModel](ctx)
+
+	switch t := v.(type) {
+	case awstypes.PolicyGrantDetailMemberAddToProjectMemberPool:
+		m.AddToProjectMemberPool = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &includeChildDomainUnitsDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+		})
+
+	case awstypes.PolicyGrantDetailMemberCreateAssetType:
+		m.CreateAssetType = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &includeChildDomainUnitsDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+		})
+
+	case awstypes.PolicyGrantDetailMemberCreateDomainUnit:
+		m.CreateDomainUnit = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &includeChildDomainUnitsDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+		})
+
+	case awstypes.PolicyGrantDetailMemberCreateEnvironment:
+		m.CreateEnvironment = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &unitModel{})
+
+	case awstypes.PolicyGrantDetailMemberCreateEnvironmentFromBlueprint:
+		m.CreateEnvironmentFromBlueprint = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &unitModel{})
+
+	case awstypes.PolicyGrantDetailMemberCreateEnvironmentProfile:
+		m.CreateEnvironmentProfile = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &domainUnitIDDetailModel{
+			DomainUnitID: fwflex.StringToFramework(ctx, t.Value.DomainUnitId),
+		})
+
+	case awstypes.PolicyGrantDetailMemberCreateFormType:
+		m.CreateFormType = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &includeChildDomainUnitsDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+		})
+
+	case awstypes.PolicyGrantDetailMemberCreateGlossary:
+		m.CreateGlossary = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &includeChildDomainUnitsDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+		})
+
+	case awstypes.PolicyGrantDetailMemberCreateProject:
+		m.CreateProject = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &includeChildDomainUnitsDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+		})
+
+	case awstypes.PolicyGrantDetailMemberCreateProjectFromProjectProfile:
+		ppModel := &createProjectFromProjectProfileDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+			ProjectProfiles:         fwtypes.NewListValueOfNull[types.String](ctx),
+		}
+		if len(t.Value.ProjectProfiles) > 0 {
+			ppModel.ProjectProfiles = fwflex.FlattenFrameworkStringValueListOfString(ctx, t.Value.ProjectProfiles)
+		}
+		m.CreateProjectFromProjectProfile = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, ppModel)
+
+	case awstypes.PolicyGrantDetailMemberDelegateCreateEnvironmentProfile:
+		m.DelegateCreateEnvironmentProfile = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &unitModel{})
+
+	case awstypes.PolicyGrantDetailMemberOverrideDomainUnitOwners:
+		m.OverrideDomainUnitOwners = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &includeChildDomainUnitsDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+		})
+
+	case awstypes.PolicyGrantDetailMemberOverrideProjectOwners:
+		m.OverrideProjectOwners = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &includeChildDomainUnitsDetailModel{
+			IncludeChildDomainUnits: types.BoolPointerValue(t.Value.IncludeChildDomainUnits),
+		})
+
+	case awstypes.PolicyGrantDetailMemberUseAssetType:
+		m.UseAssetType = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &domainUnitIDDetailModel{
+			DomainUnitID: fwflex.StringToFramework(ctx, t.Value.DomainUnitId),
+		})
+
+	default:
+		diags.AddError("Unsupported PolicyGrantDetail type", fmt.Sprintf("detail flatten: unexpected type %T", v))
+	}
+
+	return diags
+}
