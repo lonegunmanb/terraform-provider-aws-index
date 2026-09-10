@@ -1,0 +1,75 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/emr
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"math"
+	"net/http"
+	"os"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/emr"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
+	smithyjson "github.com/aws/smithy-go/encoding/json"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/structure"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	tfjson "github.com/hashicorp/terraform-provider-aws/internal/json"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func serializeScalingRule(v *awstypes.ScalingRule, value smithyjson.Value) {
+	o := value.Object()
+	defer o.Close()
+
+	if v.Action != nil {
+		a := o.Key("Action").Object()
+		if v.Action.Market != "" {
+			a.Key("Market").String(string(v.Action.Market))
+		}
+		if v := v.Action.SimpleScalingPolicyConfiguration; v != nil {
+			c := a.Key("SimpleScalingPolicyConfiguration").Object()
+			if v.AdjustmentType != "" {
+				c.Key("AdjustmentType").String(string(v.AdjustmentType))
+			}
+			if v.CoolDown != nil {
+				c.Key("CoolDown").Integer(*v.CoolDown)
+			}
+			if v.ScalingAdjustment != nil {
+				c.Key("ScalingAdjustment").Integer(*v.ScalingAdjustment)
+			}
+			c.Close()
+		}
+		a.Close()
+	}
+	if v.Description != nil {
+		o.Key("Description").String(*v.Description)
+	}
+	if v.Name != nil {
+		o.Key("Name").String(*v.Name)
+	}
+	if v.Trigger != nil {
+		t := o.Key("Trigger").Object()
+		if v.Trigger.CloudWatchAlarmDefinition != nil {
+			serializeCloudWatchAlarmDefinition(v.Trigger.CloudWatchAlarmDefinition, t.Key("CloudWatchAlarmDefinition"))
+		}
+		t.Close()
+	}
+}

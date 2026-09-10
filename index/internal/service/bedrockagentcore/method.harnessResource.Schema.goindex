@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/float32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -39,11 +40,15 @@ import (
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	tflistplanmodifier "github.com/hashicorp/terraform-provider-aws/internal/framework/planmodifiers/listplanmodifier"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
@@ -90,6 +95,14 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 			},
 			"max_tokens": schema.Int32Attribute{
 				Optional: true,
+				// The Update API retains the existing value when max_tokens is
+				// omitted ("if not specified, the existing value is retained"), so it
+				// cannot be cleared via update. Computed lets state absorb the retained
+				// server value instead of showing a perpetual "-> null" diff.
+				Computed: true,
+				PlanModifiers: []planmodifier.Int32{
+					int32planmodifier.UseStateForUnknown(),
+				},
 			},
 			"memory_actual":   framework.ResourceComputedListOfObjectsAttribute[harnessMemoryConfigurationModel](ctx, tflistplanmodifier.UnknownWhenOtherValueChanges(path.Root("memory"))),
 			names.AttrTags:    tftags.TagsAttribute(),
@@ -111,6 +124,11 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 					listvalidator.SizeAtMost(1),
 				},
 				NestedObject: schema.NestedBlockObject{
+					Validators: []validator.Object{
+						tfobjectvalidator.ExactlyOneOfChildren(
+							path.MatchRelative().AtName("agentcore_runtime_environment"),
+						),
+					},
 					Blocks: map[string]schema.Block{
 						"agentcore_runtime_environment": schema.ListNestedBlock{
 							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessAgentCoreRuntimeEnvironmentModel](ctx),
@@ -207,6 +225,11 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 					listvalidator.SizeAtMost(1),
 				},
 				NestedObject: schema.NestedBlockObject{
+					Validators: []validator.Object{
+						tfobjectvalidator.ExactlyOneOfChildren(
+							path.MatchRelative().AtName("container_configuration"),
+						),
+					},
 					Blocks: map[string]schema.Block{
 						"container_configuration": schema.ListNestedBlock{
 							CustomType: fwtypes.NewListNestedObjectTypeOf[containerConfigurationModel](ctx),
@@ -230,6 +253,13 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 					listvalidator.SizeAtMost(1),
 				},
 				NestedObject: schema.NestedBlockObject{
+					Validators: []validator.Object{
+						tfobjectvalidator.ExactlyOneOfChildren(
+							path.MatchRelative().AtName("agentcore_memory_configuration"),
+							path.MatchRelative().AtName("disabled"),
+							path.MatchRelative().AtName("managed_memory_configuration"),
+						),
+					},
 					Blocks: map[string]schema.Block{
 						"agentcore_memory_configuration": schema.ListNestedBlock{
 							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessAgentCoreMemoryConfigurationModel](ctx),
@@ -327,6 +357,14 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 					listvalidator.SizeAtMost(1),
 				},
 				NestedObject: schema.NestedBlockObject{
+					Validators: []validator.Object{
+						tfobjectvalidator.ExactlyOneOfChildren(
+							path.MatchRelative().AtName("bedrock_model_config"),
+							path.MatchRelative().AtName("gemini_model_config"),
+							path.MatchRelative().AtName("litellm_model_config"),
+							path.MatchRelative().AtName("openai_model_config"),
+						),
+					},
 					Blocks: map[string]schema.Block{
 						"bedrock_model_config": schema.ListNestedBlock{
 							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessBedrockModelConfigModel](ctx),
@@ -335,6 +373,18 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 							},
 							NestedObject: schema.NestedBlockObject{
 								Attributes: map[string]schema.Attribute{
+									"additional_params": schema.StringAttribute{
+										CustomType: fwtypes.NewSmithyJSONType(ctx, document.NewLazyDocument),
+										Optional:   true,
+									},
+									"api_format": schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.HarnessBedrockApiFormat](),
+										Optional:   true,
+										Computed:   true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseNonNullStateForUnknown(),
+										},
+									},
 									"max_tokens": schema.Int32Attribute{
 										Optional: true,
 										Validators: []validator.Int32{
@@ -344,16 +394,16 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 									"model_id": schema.StringAttribute{
 										Required: true,
 									},
-									"temperature": schema.Float32Attribute{
+									"temperature": schema.Float64Attribute{
 										Optional: true,
-										Validators: []validator.Float32{
-											float32validator.Between(0, 2),
+										Validators: []validator.Float64{
+											float64validator.Between(0, 2),
 										},
 									},
-									"top_p": schema.Float32Attribute{
+									"top_p": schema.Float64Attribute{
 										Optional: true,
-										Validators: []validator.Float32{
-											float32validator.Between(0, 1),
+										Validators: []validator.Float64{
+											float64validator.Between(0, 1),
 										},
 									},
 								},
@@ -366,6 +416,10 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 							},
 							NestedObject: schema.NestedBlockObject{
 								Attributes: map[string]schema.Attribute{
+									"additional_params": schema.StringAttribute{
+										CustomType: fwtypes.NewSmithyJSONType(ctx, document.NewLazyDocument),
+										Optional:   true,
+									},
 									"api_key_arn": schema.StringAttribute{
 										CustomType: fwtypes.ARNType,
 										Required:   true,
@@ -379,22 +433,67 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 									"model_id": schema.StringAttribute{
 										Required: true,
 									},
-									"temperature": schema.Float32Attribute{
+									"temperature": schema.Float64Attribute{
 										Optional: true,
-										Validators: []validator.Float32{
-											float32validator.Between(0, 2),
-										},
-									},
-									"top_p": schema.Float32Attribute{
-										Optional: true,
-										Validators: []validator.Float32{
-											float32validator.Between(0, 1),
+										Validators: []validator.Float64{
+											float64validator.Between(0, 2),
 										},
 									},
 									"top_k": schema.Int32Attribute{
 										Optional: true,
 										Validators: []validator.Int32{
 											int32validator.Between(0, 500),
+										},
+									},
+									"top_p": schema.Float64Attribute{
+										Optional: true,
+										Validators: []validator.Float64{
+											float64validator.Between(0, 1),
+										},
+									},
+								},
+							},
+						},
+						"litellm_model_config": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessLiteLLMModelConfigModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"additional_params": schema.StringAttribute{
+										CustomType: fwtypes.NewSmithyJSONType(ctx, document.NewLazyDocument),
+										Optional:   true,
+									},
+									"api_base": schema.StringAttribute{
+										Optional: true,
+										Validators: []validator.String{
+											stringvalidator.LengthBetween(1, 16383),
+										},
+									},
+									"api_key_arn": schema.StringAttribute{
+										CustomType: fwtypes.ARNType,
+										Optional:   true,
+									},
+									"max_tokens": schema.Int32Attribute{
+										Optional: true,
+										Validators: []validator.Int32{
+											int32validator.AtLeast(1),
+										},
+									},
+									"model_id": schema.StringAttribute{
+										Required: true,
+									},
+									"temperature": schema.Float64Attribute{
+										Optional: true,
+										Validators: []validator.Float64{
+											float64validator.Between(0, 2),
+										},
+									},
+									"top_p": schema.Float64Attribute{
+										Optional: true,
+										Validators: []validator.Float64{
+											float64validator.Between(0, 1),
 										},
 									},
 								},
@@ -407,6 +506,18 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 							},
 							NestedObject: schema.NestedBlockObject{
 								Attributes: map[string]schema.Attribute{
+									"additional_params": schema.StringAttribute{
+										CustomType: fwtypes.NewSmithyJSONType(ctx, document.NewLazyDocument),
+										Optional:   true,
+									},
+									"api_format": schema.StringAttribute{
+										CustomType: fwtypes.StringEnumType[awstypes.HarnessOpenAiApiFormat](),
+										Optional:   true,
+										Computed:   true,
+										PlanModifiers: []planmodifier.String{
+											stringplanmodifier.UseNonNullStateForUnknown(),
+										},
+									},
 									"api_key_arn": schema.StringAttribute{
 										CustomType: fwtypes.ARNType,
 										Required:   true,
@@ -420,16 +531,16 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 									"model_id": schema.StringAttribute{
 										Required: true,
 									},
-									"temperature": schema.Float32Attribute{
+									"temperature": schema.Float64Attribute{
 										Optional: true,
-										Validators: []validator.Float32{
-											float32validator.Between(0, 2),
+										Validators: []validator.Float64{
+											float64validator.Between(0, 2),
 										},
 									},
-									"top_p": schema.Float32Attribute{
+									"top_p": schema.Float64Attribute{
 										Optional: true,
-										Validators: []validator.Float32{
-											float32validator.Between(0, 1),
+										Validators: []validator.Float64{
+											float64validator.Between(0, 1),
 										},
 									},
 								},
@@ -441,19 +552,108 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 			"skill": schema.ListNestedBlock{
 				CustomType: fwtypes.NewListNestedObjectTypeOf[harnessSkillModel](ctx),
 				NestedObject: schema.NestedBlockObject{
+					Validators: []validator.Object{
+						tfobjectvalidator.ExactlyOneOfChildren(
+							path.MatchRelative().AtName("aws_skills"),
+							path.MatchRelative().AtName("git"),
+							path.MatchRelative().AtName(names.AttrPath),
+							path.MatchRelative().AtName("s3"),
+						),
+					},
 					Attributes: map[string]schema.Attribute{
 						names.AttrPath: schema.StringAttribute{
-							Required: true,
+							Optional: true,
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"aws_skills": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessSkillAWSSkillsSourceModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"paths": schema.ListAttribute{
+										CustomType: fwtypes.ListOfStringType,
+										Optional:   true,
+									},
+								},
+							},
+						},
+						"git": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessSkillGitSourceModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrPath: schema.StringAttribute{
+										Optional: true,
+									},
+									names.AttrURL: schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											stringvalidator.LengthAtLeast(8),
+											stringvalidator.RegexMatches(regexache.MustCompile(`^https://[^#@]+$`), "must be an HTTPS URL"),
+										},
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"auth": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[harnessSkillGitAuthModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"credential_arn": schema.StringAttribute{
+													CustomType: fwtypes.ARNType,
+													Required:   true,
+												},
+												names.AttrUsername: schema.StringAttribute{
+													Optional: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"s3": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[harnessSkillS3SourceModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									names.AttrURI: schema.StringAttribute{
+										Required: true,
+										Validators: []validator.String{
+											fwvalidators.S3URI(),
+										},
+									},
+								},
+							},
 						},
 					},
 				},
 			},
 			"system_prompt": schema.ListNestedBlock{
 				CustomType: fwtypes.NewListNestedObjectTypeOf[harnessSystemContentBlockModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtLeast(1),
+					listvalidator.SizeAtMost(1),
+				},
 				NestedObject: schema.NestedBlockObject{
+					Validators: []validator.Object{
+						tfobjectvalidator.ExactlyOneOfChildren(
+							path.MatchRelative().AtName("text"),
+						),
+					},
 					Attributes: map[string]schema.Attribute{
 						"text": schema.StringAttribute{
-							Required:  true,
+							Optional:  true,
 							Sensitive: true,
 						},
 					},
@@ -481,6 +681,15 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 								listvalidator.SizeAtMost(1),
 							},
 							NestedObject: schema.NestedBlockObject{
+								Validators: []validator.Object{
+									tfobjectvalidator.ExactlyOneOfChildren(
+										path.MatchRelative().AtName("agentcore_browser"),
+										path.MatchRelative().AtName("agentcore_code_interpreter"),
+										path.MatchRelative().AtName("agentcore_gateway"),
+										path.MatchRelative().AtName("inline_function"),
+										path.MatchRelative().AtName("remote_mcp"),
+									),
+								},
 								Blocks: map[string]schema.Block{
 									"agentcore_browser": schema.ListNestedBlock{
 										CustomType: fwtypes.NewListNestedObjectTypeOf[harnessAgentCoreBrowserConfigModel](ctx),
@@ -529,6 +738,13 @@ func (r *harnessResource) Schema(ctx context.Context, request resource.SchemaReq
 														listvalidator.SizeAtMost(1),
 													},
 													NestedObject: schema.NestedBlockObject{
+														Validators: []validator.Object{
+															tfobjectvalidator.ExactlyOneOfChildren(
+																path.MatchRelative().AtName("aws_iam"),
+																path.MatchRelative().AtName("none"),
+																path.MatchRelative().AtName("oauth"),
+															),
+														},
 														Attributes: map[string]schema.Attribute{
 															"aws_iam": schema.BoolAttribute{
 																Optional: true,

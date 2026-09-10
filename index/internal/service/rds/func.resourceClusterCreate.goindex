@@ -42,6 +42,8 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 		create.WithDefaultPrefix("tf-"),
 	).Generate(ctx)
 
+	createStart := time.Now().UTC()
+
 	// get write-only value from configuration
 	masterPasswordWO, di := flex.GetWriteOnlyStringValue(d, cty.GetAttrPath("master_password_wo"))
 	diags = append(diags, di...)
@@ -750,6 +752,11 @@ func resourceClusterCreate(ctx context.Context, d *schema.ResourceData, meta any
 		if _, err := waitDBClusterUpdated(ctx, conn, d.Id(), true, d.Timeout(schema.TimeoutCreate)); err != nil {
 			return sdkdiag.AppendErrorf(diags, "waiting for RDS Cluster (%s) update: %s", d.Id(), err)
 		}
+	}
+
+	if v, ok := d.GetOk("warning_event_categories"); ok {
+		diags = append(diags, surfaceEvents(ctx, conn, d.Id(), types.SourceTypeDbCluster, createStart,
+			flex.ExpandStringValueSet(v.(*schema.Set)))...)
 	}
 
 	return append(diags, resourceClusterRead(ctx, d, meta)...)

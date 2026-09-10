@@ -1,0 +1,323 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/dms
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/databasemigrationservice/types"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func dataProviderSettingsBlock(ctx context.Context) schema.ListNestedBlock {
+	certificateARN := schema.StringAttribute{
+		CustomType: fwtypes.ARNType,
+		Optional:   true,
+	}
+
+	accessRoleARN := schema.StringAttribute{
+		CustomType: fwtypes.ARNType,
+		Optional:   true,
+	}
+
+	port := schema.Int32Attribute{
+		Optional:   true,
+		Validators: []validator.Int32{int32validator.Between(1, 65535)},
+	}
+
+	sslMode := schema.StringAttribute{
+		CustomType: fwtypes.StringEnumType[awstypes.DmsSslModeValue](),
+		Optional:   true,
+		Computed:   true,
+	}
+
+	ibmDb2SSLMode := schema.StringAttribute{
+		CustomType: fwtypes.StringEnumType[awstypes.DmsSslModeValue](),
+		Optional:   true,
+		Computed:   true,
+		Validators: []validator.String{stringvalidator.OneOf("none", "verify-ca")},
+	}
+
+	return schema.ListNestedBlock{
+		CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderSettingsModel](ctx),
+		Validators: []validator.List{
+			listvalidator.IsRequired(),
+			listvalidator.SizeBetween(1, 1),
+		},
+		NestedObject: schema.NestedBlockObject{
+			Blocks: map[string]schema.Block{
+				"doc_db_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderDocDBSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrCertificateARN: certificateARN,
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							names.AttrPort: port,
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": sslMode,
+						},
+					},
+				},
+				"ibm_db2_luw_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderIBMDb2LUWSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrCertificateARN: certificateARN,
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							"encryption_algorithm": schema.Int32Attribute{
+								Optional: true,
+								Computed: true,
+							},
+							names.AttrPort:       port,
+							"s3_access_role_arn": accessRoleARN,
+							"s3_path": schema.StringAttribute{
+								Optional: true,
+							},
+							"security_mechanism": schema.Int32Attribute{
+								Optional: true,
+								Computed: true,
+							},
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": ibmDb2SSLMode,
+						},
+					},
+				},
+				"ibm_db2_zos_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderIBMDb2ZOSSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrCertificateARN: certificateARN,
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							names.AttrPort:       port,
+							"s3_access_role_arn": accessRoleARN,
+							"s3_path": schema.StringAttribute{
+								Optional: true,
+							},
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": ibmDb2SSLMode,
+						},
+					},
+				},
+				"maria_db_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderMariaDBSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrCertificateARN: certificateARN,
+							names.AttrPort:           port,
+							"s3_access_role_arn":     accessRoleARN,
+							"s3_path": schema.StringAttribute{
+								Optional: true,
+							},
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": sslMode,
+						},
+					},
+				},
+				"microsoft_sql_server_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderMicrosoftSQLServerSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrCertificateARN: certificateARN,
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							names.AttrPort:       port,
+							"s3_access_role_arn": accessRoleARN,
+							"s3_path": schema.StringAttribute{
+								Optional: true,
+							},
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": sslMode,
+						},
+					},
+				},
+				"mongo_db_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderMongoDBSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"auth_mechanism": schema.StringAttribute{
+								CustomType: fwtypes.StringEnumType[awstypes.AuthMechanismValue](),
+								Optional:   true,
+								Computed:   true,
+							},
+							"auth_source": schema.StringAttribute{
+								Optional: true,
+								Computed: true,
+							},
+							"auth_type": schema.StringAttribute{
+								CustomType: fwtypes.StringEnumType[awstypes.AuthTypeValue](),
+								Optional:   true,
+								Computed:   true,
+							},
+							names.AttrCertificateARN: certificateARN,
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							names.AttrPort: port,
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": sslMode,
+						},
+					},
+				},
+				"mysql_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderMySQLSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrCertificateARN: certificateARN,
+							names.AttrPort:           port,
+							"s3_access_role_arn":     accessRoleARN,
+							"s3_path": schema.StringAttribute{
+								Optional: true,
+							},
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": sslMode,
+						},
+					},
+				},
+				"oracle_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderOracleSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"asm_server": schema.StringAttribute{
+								Optional: true,
+							},
+							names.AttrCertificateARN: certificateARN,
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							names.AttrPort:       port,
+							"s3_access_role_arn": accessRoleARN,
+							"s3_path": schema.StringAttribute{
+								Optional: true,
+							},
+							"secrets_manager_oracle_asm_access_role_arn": accessRoleARN,
+							"secrets_manager_oracle_asm_secret_id": schema.StringAttribute{
+								Optional: true,
+							},
+							"secrets_manager_security_db_encryption_access_role_arn": accessRoleARN,
+							"secrets_manager_security_db_encryption_secret_id": schema.StringAttribute{
+								Optional: true,
+							},
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": sslMode,
+						},
+					},
+				},
+				"postgresql_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderPostgreSQLSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrCertificateARN: certificateARN,
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							names.AttrPort:       port,
+							"s3_access_role_arn": accessRoleARN,
+							"s3_path": schema.StringAttribute{
+								Optional: true,
+							},
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": sslMode,
+						},
+					},
+				},
+				"redshift_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderRedshiftSettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							names.AttrPort:       port,
+							"s3_access_role_arn": accessRoleARN,
+							"s3_path": schema.StringAttribute{
+								Optional: true,
+							},
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+						},
+					},
+				},
+				"sybase_ase_settings": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[dataProviderSybaseASESettingsModel](ctx),
+					Validators: dataProviderSettingsUnionValidators(),
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							names.AttrCertificateARN: certificateARN,
+							names.AttrDatabaseName: schema.StringAttribute{
+								Optional: true,
+							},
+							"encrypt_password": schema.BoolAttribute{
+								Optional: true,
+								Computed: true,
+							},
+							names.AttrPort: port,
+							"server_name": schema.StringAttribute{
+								Optional: true,
+							},
+							"ssl_mode": sslMode,
+						},
+					},
+				},
+			},
+		},
+	}
+}

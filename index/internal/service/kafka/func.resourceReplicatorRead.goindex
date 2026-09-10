@@ -42,7 +42,16 @@ func resourceReplicatorRead(ctx context.Context, d *schema.ResourceData, meta an
 	d.Set(names.AttrARN, output.ReplicatorArn)
 	d.Set("current_version", output.CurrentVersion)
 	d.Set(names.AttrDescription, output.ReplicatorDescription)
-	if err := d.Set("kafka_cluster", flattenKafkaClusterDescriptions(output.KafkaClusters)); err != nil {
+	// DescribeReplicator does not round-trip an Apache Kafka cluster faithfully: it omits the
+	// ApacheKafkaCluster, ClientAuthentication, and EncryptionInTransit details and echoes the
+	// VpcConfig onto every entry. Reconcile the flattened response against prior state so the
+	// post-apply plan is empty (kafka_cluster is entirely ForceNew, so this preserves the
+	// configured values). On import there is no prior state, so the raw response is used.
+	kafkaClusters := flattenKafkaClusterDescriptions(output.KafkaClusters)
+	if old, ok := d.Get("kafka_cluster").([]any); ok && len(old) > 0 {
+		kafkaClusters = reconcileKafkaClusters(old, kafkaClusters)
+	}
+	if err := d.Set("kafka_cluster", kafkaClusters); err != nil {
 		return sdkdiag.AppendErrorf(diags, "setting kafka_cluster: %s", err)
 	}
 	if err := d.Set("log_delivery", flattenLogDelivery(output.LogDelivery)); err != nil {
@@ -50,17 +59,18 @@ func resourceReplicatorRead(ctx context.Context, d *schema.ResourceData, meta an
 	}
 	if v := output.ReplicationInfoList; len(v) > 0 {
 		sourceAlias, targetAlias := aws.ToString(v[0].SourceKafkaClusterAlias), aws.ToString(v[0].TargetKafkaClusterAlias)
-		var sourceARN, targetARN *string
+		var sourceCluster, targetCluster *types.KafkaClusterDescription
 
-		for _, cluster := range output.KafkaClusters {
-			if clusterAlias := aws.ToString(cluster.KafkaClusterAlias); clusterAlias == sourceAlias {
-				sourceARN = cluster.AmazonMskCluster.MskClusterArn
-			} else if clusterAlias == targetAlias {
-				targetARN = cluster.AmazonMskCluster.MskClusterArn
+		for i := range output.KafkaClusters {
+			switch aws.ToString(output.KafkaClusters[i].KafkaClusterAlias) {
+			case sourceAlias:
+				sourceCluster = &output.KafkaClusters[i]
+			case targetAlias:
+				targetCluster = &output.KafkaClusters[i]
 			}
 		}
 
-		if err := d.Set("replication_info_list", flattenReplicationInfoDescriptions(v, sourceARN, targetARN)); err != nil {
+		if err := d.Set("replication_info_list", flattenReplicationInfoDescriptions(v, sourceCluster, targetCluster)); err != nil {
 			return sdkdiag.AppendErrorf(diags, "setting replication_info_list: %s", err)
 		}
 	} else {

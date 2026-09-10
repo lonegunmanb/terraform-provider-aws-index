@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"time"
-	_ "unsafe" // Required for go:linkname
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/emr"
@@ -35,4 +35,29 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func serializeConfigurations(v []awstypes.Configuration, value smithyjson.Value) error
+func serializeConfigurations(v []awstypes.Configuration, value smithyjson.Value) error {
+	a := value.Array()
+	defer a.Close()
+
+	for _, v := range v {
+		o := a.Value().Object()
+		if v.Classification != nil {
+			o.Key("Classification").String(*v.Classification)
+		}
+		if v.Configurations != nil {
+			if err := serializeConfigurations(v.Configurations, o.Key("Configurations")); err != nil {
+				return err
+			}
+		}
+		if v.Properties != nil {
+			p := o.Key("Properties").Object()
+			for k, s := range v.Properties {
+				p.Key(k).String(s)
+			}
+			p.Close()
+		}
+		o.Close()
+	}
+
+	return nil
+}
