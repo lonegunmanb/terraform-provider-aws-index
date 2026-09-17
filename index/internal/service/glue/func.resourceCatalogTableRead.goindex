@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/sdkv2"
 	tfsmithy "github.com/hashicorp/terraform-provider-aws/internal/smithy"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
@@ -49,69 +50,8 @@ func resourceCatalogTableRead(ctx context.Context, d *schema.ResourceData, meta 
 		return sdkdiag.AppendErrorf(diags, "reading Glue Catalog Table (%s): %s", d.Id(), err)
 	}
 
-	d.Set(names.AttrARN, tableARN(ctx, c, dbName, name))
-	d.Set(names.AttrCatalogID, catalogID)
-	d.Set(names.AttrDatabaseName, dbName)
-	d.Set(names.AttrDescription, table.Description)
-	d.Set(names.AttrName, table.Name)
-	d.Set(names.AttrOwner, table.Owner)
-	if err := d.Set(names.AttrParameters, flattenNonManagedParameters(table.Parameters)); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting parameters: %s", err)
-	}
-	if err := d.Set("partition_keys", flattenColumns(table.PartitionKeys)); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting partition_keys: %s", err)
-	}
-	d.Set("retention", table.Retention)
-	if err := d.Set("storage_descriptor", flattenStorageDescriptor(table.StorageDescriptor)); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting storage_descriptor: %s", err)
-	}
-	d.Set("table_type", table.TableType)
-	if table.TargetTable != nil {
-		if err := d.Set("target_table", []any{flattenTableIdentifier(table.TargetTable)}); err != nil {
-			return sdkdiag.AppendErrorf(diags, "setting target_table: %s", err)
-		}
-	} else {
-		d.Set("target_table", nil)
-	}
-	if table.ViewDefinition != nil {
-		// Glue does not echo back ValidationConnection, ViewOriginalText, or
-		// ViewExpandedText for validated ATHENA views — GetTable returns them as
-		// null. Preserve user supplied values.
-		var priorRepresentations []any
-		if v, ok := d.GetOk("view_definition"); ok {
-			vdList := v.([]any)
-			if len(vdList) > 0 && vdList[0] != nil {
-				vdMap := vdList[0].(map[string]any)
-				if reps, ok := vdMap["representations"].([]any); ok {
-					priorRepresentations = reps
-				}
-			}
-		}
-		if err := d.Set("view_definition", []any{flattenViewDefinition(table.ViewDefinition, priorRepresentations)}); err != nil {
-			return sdkdiag.AppendErrorf(diags, "setting view_definition: %s", err)
-		}
-	} else {
-		d.Set("view_definition", nil)
-	}
-	d.Set("view_expanded_text", table.ViewExpandedText)
-	d.Set("view_original_text", table.ViewOriginalText)
-
-	input := glue.GetPartitionIndexesInput{
-		CatalogId:    table.CatalogId,
-		DatabaseName: aws.String(dbName),
-		TableName:    aws.String(name),
-	}
-	partitionIndexes, err := findPartitionIndexes(ctx, conn, &input)
-	switch {
-	// e.g. "InvalidInputException: Operation not supported on Multi Dialect Views".
-	case errs.IsAErrorMessageContains[*awstypes.InvalidInputException](err, "Operation not supported"):
-		d.Set("partition_index", nil)
-	case err != nil:
-		return sdkdiag.AppendErrorf(diags, "reading Glue Catalog Table (%s) partition indexes: %s", d.Id(), err)
-	default:
-		if err := d.Set("partition_index", flattenPartitionIndexDescriptors(partitionIndexes)); err != nil {
-			return sdkdiag.AppendErrorf(diags, "setting partition_index: %s", err)
-		}
+	if err := resourceCatalogTableFlatten(ctx, c, catalogID, dbName, name, table, d); err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading Glue Catalog Table (%s): %s", d.Id(), err)
 	}
 
 	return diags

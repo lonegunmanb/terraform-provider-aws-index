@@ -1,0 +1,66 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *transitGatewayPolicyTableEntryResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var data transitGatewayPolicyTableEntryResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().EC2Client(ctx)
+
+	policyTableID := fwflex.StringValueFromFramework(ctx, data.TransitGatewayPolicyTableID)
+	var input ec2.CreateTransitGatewayPolicyTableEntryInput
+	smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Expand(ctx, data, &input))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	var priorMetaData *awstypes.TransitGatewayPolicyRuleMetaData
+	if v := input.PolicyRule; v != nil && v.MetaData != nil {
+		priorMetaData = new(awstypes.TransitGatewayPolicyRuleMetaData{
+			MetaDataKey:   v.MetaData.MetaDataKey,
+			MetaDataValue: v.MetaData.MetaDataValue,
+		})
+	}
+
+	output, err := conn.CreateTransitGatewayPolicyTableEntry(ctx, &input)
+
+	if err != nil {
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, policyTableID)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, output.TransitGatewayPolicyTableEntry, priorMetaData, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, data))
+}

@@ -1,0 +1,227 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockagentcore
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcorecontrol/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func customOAuth2ProviderConfigBlock(ctx context.Context) schema.Block {
+	block := basicOAuth2ProviderConfigBlock[customOAuth2ProviderConfigModel](ctx).(schema.ListNestedBlock)
+	// Replace the Computed oauth_discovery attribute with a configurable block.
+	delete(block.NestedObject.Attributes, "oauth_discovery")
+	maps.Copy(block.NestedObject.Attributes, map[string]schema.Attribute{
+		"client_authentication_method": schema.StringAttribute{
+			CustomType: fwtypes.StringEnumType[awstypes.ClientAuthenticationMethodType](),
+			Optional:   true,
+			Validators: []validator.String{
+				tfstringvalidator.ExactlyOneOfWhenEquals(
+					awstypes.ClientAuthenticationMethodTypeClientSecretBasic,
+					path.MatchRelative().AtParent().AtName(names.AttrClientID),
+					path.MatchRelative().AtParent().AtName("client_id_wo"),
+				),
+				tfstringvalidator.ExactlyOneOfWhenEquals(
+					awstypes.ClientAuthenticationMethodTypeClientSecretPost,
+					path.MatchRelative().AtParent().AtName(names.AttrClientID),
+					path.MatchRelative().AtParent().AtName("client_id_wo"),
+				),
+			},
+		},
+	})
+	maps.Copy(block.NestedObject.Blocks, map[string]schema.Block{
+		"oauth_discovery": schema.ListNestedBlock{
+			CustomType: fwtypes.NewListNestedObjectTypeOf[oauth2DiscoveryModel](ctx),
+			Validators: []validator.List{
+				listvalidator.IsRequired(),
+				listvalidator.SizeAtLeast(1),
+				listvalidator.SizeAtMost(1),
+			},
+			NestedObject: schema.NestedBlockObject{
+				Validators: []validator.Object{
+					tfobjectvalidator.ExactlyOneOfChildren(
+						path.MatchRelative().AtName("authorization_server_metadata"),
+						path.MatchRelative().AtName("discovery_url"),
+					),
+				},
+				Attributes: map[string]schema.Attribute{
+					"discovery_url": schema.StringAttribute{
+						Optional: true,
+					},
+				},
+				Blocks: map[string]schema.Block{
+					"authorization_server_metadata": schema.ListNestedBlock{
+						CustomType: fwtypes.NewListNestedObjectTypeOf[oauth2AuthorizationServerMetadataModel](ctx),
+						Validators: []validator.List{
+							listvalidator.SizeAtMost(1),
+						},
+						NestedObject: schema.NestedBlockObject{
+							Attributes: map[string]schema.Attribute{
+								"authorization_endpoint": schema.StringAttribute{
+									Required: true,
+								},
+								names.AttrIssuer: schema.StringAttribute{
+									Required: true,
+								},
+								"response_types": schema.SetAttribute{
+									CustomType: fwtypes.SetOfStringType,
+									Optional:   true,
+								},
+								"token_endpoint": schema.StringAttribute{
+									Required: true,
+								},
+								"token_endpoint_auth_methods": schema.ListAttribute{
+									CustomType: fwtypes.ListOfStringType,
+									Optional:   true,
+									Validators: []validator.List{
+										listvalidator.SizeBetween(1, 2),
+										listvalidator.ValueStringsAre(
+											stringvalidator.RegexMatches(regexache.MustCompile(`^(client_secret_post|client_secret_basic)$`), ""),
+										),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"on_behalf_of_token_exchange_config": schema.ListNestedBlock{
+			CustomType: fwtypes.NewListNestedObjectTypeOf[onBehalfOfTokenExchangeConfigTypeModel](ctx),
+			Validators: []validator.List{
+				listvalidator.SizeAtMost(1),
+			},
+			NestedObject: schema.NestedBlockObject{
+				Attributes: map[string]schema.Attribute{
+					"grant_type": schema.StringAttribute{
+						CustomType: fwtypes.StringEnumType[awstypes.OnBehalfOfTokenExchangeGrantTypeType](),
+						Required:   true,
+						Validators: []validator.String{
+							tfstringvalidator.AlsoRequiresWhenEquals(
+								awstypes.OnBehalfOfTokenExchangeGrantTypeTypeTokenExchange,
+								path.MatchRelative().AtParent().AtName("token_exchange_grant_type_config"),
+							),
+						},
+					},
+				},
+				Blocks: map[string]schema.Block{
+					"token_exchange_grant_type_config": schema.ListNestedBlock{
+						CustomType: fwtypes.NewListNestedObjectTypeOf[tokenExchangeGrantTypeConfigTypeModel](ctx),
+						Validators: []validator.List{
+							listvalidator.SizeAtMost(1),
+						},
+						NestedObject: schema.NestedBlockObject{
+							Attributes: map[string]schema.Attribute{
+								"actor_token_content": schema.StringAttribute{
+									CustomType: fwtypes.StringEnumType[awstypes.ActorTokenContentType](),
+									Required:   true,
+									Validators: []validator.String{
+										tfstringvalidator.ConflictsWithWhenNotEquals(
+											awstypes.ActorTokenContentTypeM2m,
+											path.MatchRelative().AtParent().AtName("actor_token_scopes"),
+										),
+									},
+								},
+								"actor_token_scopes": schema.SetAttribute{
+									CustomType: fwtypes.SetOfStringType,
+									Optional:   true,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"private_endpoint": privateEndpointBlock(ctx),
+		"private_endpoint_override": privateEndpointOverrideBlock(ctx, listvalidator.AlsoRequires(
+			path.MatchRelative().AtParent().AtName("private_endpoint"),
+		)),
+		"private_key_jwt_config": schema.ListNestedBlock{
+			CustomType: fwtypes.NewListNestedObjectTypeOf[privateKeyJWTConfigModel](ctx),
+			Validators: []validator.List{
+				listvalidator.SizeAtMost(1),
+			},
+			NestedObject: schema.NestedBlockObject{
+				Attributes: map[string]schema.Attribute{
+					"additional_header_claims": schema.MapAttribute{
+						CustomType: fwtypes.MapOfStringType,
+						Optional:   true,
+					},
+					"additional_payload_claims": schema.MapAttribute{
+						CustomType: fwtypes.MapOfStringType,
+						Optional:   true,
+					},
+					"signing_algorithm": schema.StringAttribute{
+						CustomType: fwtypes.StringEnumType[awstypes.SigningAlgorithm](),
+						Optional:   true,
+					},
+				},
+				Blocks: map[string]schema.Block{
+					"private_key_source": schema.ListNestedBlock{
+						CustomType: fwtypes.NewListNestedObjectTypeOf[privateKeySourceModel](ctx),
+						Validators: []validator.List{
+							listvalidator.SizeAtMost(1),
+						},
+						NestedObject: schema.NestedBlockObject{
+							Validators: []validator.Object{
+								tfobjectvalidator.ExactlyOneOfChildren(
+									path.MatchRelative().AtName("kms_key_source"),
+								),
+							},
+							Blocks: map[string]schema.Block{
+								"kms_key_source": schema.ListNestedBlock{
+									CustomType: fwtypes.NewListNestedObjectTypeOf[kmsKeySourceTypeModel](ctx),
+									Validators: []validator.List{
+										listvalidator.SizeAtMost(1),
+									},
+									NestedObject: schema.NestedBlockObject{
+										Attributes: map[string]schema.Attribute{
+											names.AttrKMSKeyARN: schema.StringAttribute{
+												CustomType: fwtypes.ARNType,
+												Required:   true,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	return block
+}

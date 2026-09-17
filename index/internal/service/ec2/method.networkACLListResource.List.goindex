@@ -1,0 +1,82 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	listschema "github.com/hashicorp/terraform-plugin-framework/list/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (l *networkACLListResource) List(ctx context.Context, request list.ListRequest, stream *list.ListResultsStream) {
+	awsClient := l.Meta()
+	conn := awsClient.EC2Client(ctx)
+
+	var query networkACLListResourceModel
+	if request.Config.Raw.IsKnown() && !request.Config.Raw.IsNull() {
+		if diags := request.Config.Get(ctx, &query); diags.HasError() {
+			stream.Results = list.ListResultsStreamDiagnostics(diags)
+			return
+		}
+	}
+
+	var input ec2.DescribeNetworkAclsInput
+	if diags := fwflex.Expand(ctx, query, &input); diags.HasError() {
+		stream.Results = list.ListResultsStreamDiagnostics(diags)
+		return
+	}
+
+	tflog.Info(ctx, "Listing resources")
+
+	stream.Results = func(yield func(list.ListResult) bool) {
+		for networkACL, err := range listNetworkACLs(ctx, conn, &input) {
+			if err != nil {
+				yield(fwdiag.NewListResultErrorDiagnostic(err))
+				return
+			}
+
+			if aws.ToBool(networkACL.IsDefault) {
+				continue
+			}
+
+			id := aws.ToString(networkACL.NetworkAclId)
+			ctx := tflog.SetField(ctx, logging.ResourceAttributeKey(names.AttrID), id)
+
+			result := request.NewListResult(ctx)
+			rd := l.ResourceData()
+			rd.SetId(id)
+
+			if request.IncludeResource {
+				if diags := resourceNetworkACLFlatten(ctx, awsClient, rd, &networkACL); diags.HasError() {
+					tflog.Error(ctx, "Flattening EC2 Network ACL", map[string]any{
+						"diags": diags,
+					})
+					continue
+				}
+			}
+
+			result.DisplayName = id
+
+			l.SetResult(ctx, awsClient, request.IncludeResource, rd, &result)
+			if result.Diagnostics.HasError() {
+				yield(result)
+				return
+			}
+
+			if !yield(result) {
+				return
+			}
+		}
+	}
+}

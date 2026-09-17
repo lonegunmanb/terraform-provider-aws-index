@@ -1,0 +1,59 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ec2
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *transitGatewayPolicyTableEntryResource) flatten(ctx context.Context, entry *awstypes.TransitGatewayPolicyTableEntry, priorMetaData *awstypes.TransitGatewayPolicyRuleMetaData, data *transitGatewayPolicyTableEntryResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// Corrects two AWS API quirks:
+	//   - AWS always returns a PolicyRule, even when no policy_rule block was configured,
+	//     reporting every unset match criterion as "*" (all) rather than omitting it. Such
+	//     an all-wildcard rule carries no configuration, so it's restored to the prior
+	//     value; returning it verbatim would make Terraform report "block count changed
+	//     from 0 to 1" after apply. A rule that wildcards only some criteria (e.g.
+	//     protocol = "*" alongside real CIDRs) is a real rule and is kept.
+	//   - The API never returns the rule's metadata, so it's restored from the prior value
+	//     (unavailable, e.g. on import, it's simply left null).
+	if v := entry.PolicyRule; v != nil {
+		// transitGatewayPolicyRuleWildcard is how AWS reports a policy rule match criterion
+		// that matches everything, including one that was never configured.
+		const transitGatewayPolicyRuleWildcard = "*"
+		if aws.ToString(v.DestinationCidrBlock) == transitGatewayPolicyRuleWildcard &&
+			aws.ToString(v.DestinationPortRange) == transitGatewayPolicyRuleWildcard &&
+			aws.ToString(v.Protocol) == transitGatewayPolicyRuleWildcard &&
+			aws.ToString(v.SourceCidrBlock) == transitGatewayPolicyRuleWildcard &&
+			aws.ToString(v.SourcePortRange) == transitGatewayPolicyRuleWildcard {
+			entry.PolicyRule = nil
+		} else {
+			entry.PolicyRule.MetaData = priorMetaData
+		}
+	}
+
+	diags.Append(fwflex.Flatten(ctx, entry, data)...)
+
+	return diags
+}

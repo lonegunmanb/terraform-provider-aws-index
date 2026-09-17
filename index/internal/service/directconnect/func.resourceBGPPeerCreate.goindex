@@ -24,11 +24,12 @@ func resourceBGPPeerCreate(ctx context.Context, d *schema.ResourceData, meta any
 
 	vifID := d.Get("virtual_interface_id").(string)
 	addrFamily := awstypes.AddressFamily(d.Get("address_family").(string))
-	asn := int32(d.Get("bgp_asn").(int))
+	asn, asnLong := expandBGPASN(d)
 	input := &directconnect.CreateBGPPeerInput{
 		NewBGPPeer: &awstypes.NewBGPPeer{
 			AddressFamily: addrFamily,
 			Asn:           asn,
+			AsnLong:       asnLong,
 		},
 		VirtualInterfaceId: aws.String(vifID),
 	}
@@ -49,9 +50,10 @@ func resourceBGPPeerCreate(ctx context.Context, d *schema.ResourceData, meta any
 		return sdkdiag.AppendErrorf(diags, "creating Direct Connect BGP Peer: %s", err)
 	}
 
-	d.SetId(fmt.Sprintf("%s-%s-%d", vifID, addrFamily, asn))
+	effectiveASN := effectiveBGPASN(asn, asnLong)
+	d.SetId(fmt.Sprintf("%s-%s-%d", vifID, addrFamily, effectiveASN))
 
-	if _, err = waitBGPPeerCreated(ctx, conn, vifID, addrFamily, asn, d.Timeout(schema.TimeoutCreate)); err != nil {
+	if _, err = waitBGPPeerCreated(ctx, conn, vifID, addrFamily, effectiveASN, d.Timeout(schema.TimeoutCreate)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "waiting for Direct Connect BGP Peer (%s) create: %s", d.Id(), err)
 	}
 

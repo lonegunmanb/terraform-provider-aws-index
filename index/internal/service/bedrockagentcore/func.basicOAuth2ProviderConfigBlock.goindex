@@ -3,6 +3,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/YakDriver/regexache"
@@ -29,6 +30,8 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfobjectvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/objectvalidator"
+	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -36,9 +39,11 @@ import (
 	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func basicOAuth2ProviderConfigBlock[T any](ctx context.Context) schema.ListNestedBlock {
-	attrs := oauth2ClientCredentialsAttributes(ctx)
-	attrs["oauth_discovery"] = framework.ResourceComputedListOfObjectsAttribute[oauth2DiscoveryModel](ctx)
+func basicOAuth2ProviderConfigBlock[T any](ctx context.Context) schema.Block {
+	attrs := oauth2ProviderClientCredentialsAttributes(ctx)
+	maps.Copy(attrs, map[string]schema.Attribute{
+		"oauth_discovery": framework.ResourceComputedListOfObjectsAttribute[oauth2DiscoveryModel](ctx),
+	})
 
 	return schema.ListNestedBlock{
 		CustomType: fwtypes.NewListNestedObjectTypeOf[T](ctx),
@@ -47,6 +52,30 @@ func basicOAuth2ProviderConfigBlock[T any](ctx context.Context) schema.ListNeste
 		},
 		NestedObject: schema.NestedBlockObject{
 			Attributes: attrs,
+			Blocks: map[string]schema.Block{
+				"client_secret_config": schema.ListNestedBlock{
+					CustomType: fwtypes.NewListNestedObjectTypeOf[secretReferenceModel](ctx),
+					Validators: []validator.List{
+						listvalidator.SizeAtMost(1),
+					},
+					NestedObject: schema.NestedBlockObject{
+						Attributes: map[string]schema.Attribute{
+							"json_key": schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.LengthBetween(1, 128),
+								},
+							},
+							"secret_id": schema.StringAttribute{
+								Required: true,
+								Validators: []validator.String{
+									stringvalidator.LengthBetween(1, 2048),
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
