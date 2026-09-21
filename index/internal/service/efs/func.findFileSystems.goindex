@@ -2,6 +2,8 @@ package github.com/hashicorp/terraform-provider-aws/internal/service/efs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"iter"
 	"log"
 	"time"
 
@@ -23,28 +25,17 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func findFileSystems(ctx context.Context, conn *efs.Client, input *efs.DescribeFileSystemsInput, filter tfslices.Predicate[*awstypes.FileSystemDescription]) ([]awstypes.FileSystemDescription, error) {
-	var output []awstypes.FileSystemDescription
+func findFileSystems(ctx context.Context, conn *efs.Client, input *efs.DescribeFileSystemsInput, optFns ...tfslices.FinderOptionsFunc[awstypes.FileSystemDescription]) ([]awstypes.FileSystemDescription, error) {
+	output, err := tfslices.CollectAndConcatWithError(listFileSystemPages(ctx, conn, input), optFns...)
 
-	pages := efs.NewDescribeFileSystemsPaginator(conn, input)
-	for pages.HasMorePages() {
-		page, err := pages.NextPage(ctx)
-
-		if errs.IsA[*awstypes.FileSystemNotFound](err) {
-			return nil, &retry.NotFoundError{
-				LastError: err,
-			}
+	if errs.IsA[*awstypes.FileSystemNotFound](err) {
+		return nil, &retry.NotFoundError{
+			LastError: err,
 		}
+	}
 
-		if err != nil {
-			return nil, err
-		}
-
-		for _, v := range page.FileSystems {
-			if filter(&v) {
-				output = append(output, v)
-			}
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	return output, nil

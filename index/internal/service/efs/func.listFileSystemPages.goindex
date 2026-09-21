@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/efs
+import (
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"log"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/efs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/hashicorp/terraform-provider-aws/internal/conns"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/internal/verify"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func listFileSystemPages(ctx context.Context, conn *efs.Client, input *efs.DescribeFileSystemsInput, optFns ...func(*efs.Options)) iter.Seq2[[]awstypes.FileSystemDescription, error] {
+	return func(yield func([]awstypes.FileSystemDescription, error) bool) {
+		pages := efs.NewDescribeFileSystemsPaginator(conn, input)
+		for pages.HasMorePages() {
+			page, err := pages.NextPage(ctx, optFns...)
+			if err != nil {
+				yield(nil, fmt.Errorf("listing EFS File Systems: %w", err))
+				return
+			}
+
+			if !yield(page.FileSystems, nil) {
+				return
+			}
+		}
+	}
+}

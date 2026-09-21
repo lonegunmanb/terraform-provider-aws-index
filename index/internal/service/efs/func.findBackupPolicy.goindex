@@ -1,15 +1,13 @@
-package github.com/hashicorp/terraform-provider-aws/internal/service/redshiftserverless
+package github.com/hashicorp/terraform-provider-aws/internal/service/efs
 import (
 	"context"
 	"fmt"
 	"log"
-	"slices"
 	"time"
 
-	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/redshiftserverless"
-	awstypes "github.com/aws/aws-sdk-go-v2/service/redshiftserverless/types"
+	"github.com/aws/aws-sdk-go-v2/service/efs"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -17,22 +15,26 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
-	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
-	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func flattenConfigParameters(apiObjects []awstypes.ConfigParameter) []any {
-	if len(apiObjects) == 0 {
-		return nil
+func findBackupPolicy(ctx context.Context, conn *efs.Client, input *efs.DescribeBackupPolicyInput) (*awstypes.BackupPolicy, error) {
+	output, err := conn.DescribeBackupPolicy(ctx, input)
+
+	if errs.IsA[*awstypes.FileSystemNotFound](err) {
+		return nil, &retry.NotFoundError{
+			LastError: err,
+		}
 	}
 
-	var tfList []any
-
-	for _, apiObject := range apiObjects {
-		tfList = append(tfList, flattenConfigParameter(apiObject))
+	if err != nil {
+		return nil, err
 	}
 
-	return tfList
+	if output == nil || output.BackupPolicy == nil {
+		return nil, tfresource.NewEmptyResultError()
+	}
+
+	return output.BackupPolicy, nil
 }

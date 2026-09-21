@@ -1,6 +1,8 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/efs
 import (
 	"context"
+	"fmt"
+	"iter"
 	"log"
 	"time"
 
@@ -20,28 +22,17 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func findAccessPoints(ctx context.Context, conn *efs.Client, input *efs.DescribeAccessPointsInput, filter tfslices.Predicate[awstypes.AccessPointDescription]) ([]awstypes.AccessPointDescription, error) {
-	var output []awstypes.AccessPointDescription
+func findAccessPoints(ctx context.Context, conn *efs.Client, input *efs.DescribeAccessPointsInput) ([]awstypes.AccessPointDescription, error) {
+	output, err := tfslices.CollectAndConcatWithError(listAccessPointPages(ctx, conn, input))
 
-	pages := efs.NewDescribeAccessPointsPaginator(conn, input)
-	for pages.HasMorePages() {
-		page, err := pages.NextPage(ctx)
-
-		if errs.IsA[*awstypes.AccessPointNotFound](err) {
-			return nil, &retry.NotFoundError{
-				LastError: err,
-			}
+	if errs.IsA[*awstypes.AccessPointNotFound](err) {
+		return nil, &retry.NotFoundError{
+			LastError: err,
 		}
+	}
 
-		if err != nil {
-			return nil, err
-		}
-
-		for _, v := range page.AccessPoints {
-			if filter(v) {
-				output = append(output, v)
-			}
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	return output, nil
