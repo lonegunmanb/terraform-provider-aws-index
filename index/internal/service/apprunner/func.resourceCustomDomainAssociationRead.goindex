@@ -1,11 +1,13 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/apprunner
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/apprunner"
 	"github.com/aws/aws-sdk-go-v2/service/apprunner/types"
@@ -16,7 +18,6 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
-	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -31,7 +32,7 @@ func resourceCustomDomainAssociationRead(ctx context.Context, d *schema.Resource
 		return sdkdiag.AppendFromErr(diags, err)
 	}
 
-	customDomain, err := findCustomDomainByTwoPartKey(ctx, conn, domainName, serviceArn)
+	output, customDomain, err := findCustomDomainByTwoPartKey(ctx, conn, domainName, serviceArn)
 
 	if !d.IsNewResource() && retry.NotFound(err) {
 		log.Printf("[WARN] App Runner Custom Domain Association (%s) not found, removing from state", d.Id())
@@ -46,9 +47,12 @@ func resourceCustomDomainAssociationRead(ctx context.Context, d *schema.Resource
 	if err := d.Set("certificate_validation_records", flattenCustomDomainCertificateValidationRecords(customDomain.CertificateValidationRecords)); err != nil {
 		return sdkdiag.AppendErrorf(diags, "setting certificate_validation_records: %s", err)
 	}
+
+	d.Set("dns_target", output.DNSTarget)
+	d.Set("service_arn", output.ServiceArn)
+
 	d.Set(names.AttrDomainName, customDomain.DomainName)
 	d.Set("enable_www_subdomain", customDomain.EnableWWWSubdomain)
-	d.Set("service_arn", serviceArn)
 	d.Set(names.AttrStatus, customDomain.Status)
 
 	return diags

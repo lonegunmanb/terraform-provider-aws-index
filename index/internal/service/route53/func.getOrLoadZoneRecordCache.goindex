@@ -1,0 +1,31 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	tfsync "github.com/hashicorp/terraform-provider-aws/internal/sync"
+)
+func getOrLoadZoneRecordCache(ctx context.Context, conn *route53.Client, zoneID string) (*zoneRecordCache, error) {
+	c, _ := recordCacheZones.LoadOrStore(zoneID, &zoneRecordCache{records: make(map[string]awstypes.ResourceRecordSet)})
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.loaded {
+		return c, nil
+	}
+
+	if err := c.load(ctx, conn, zoneID); err != nil {
+		clear(c.records)
+		return nil, err
+	}
+	c.loaded = true
+
+	return c, nil
+}

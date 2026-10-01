@@ -1,0 +1,128 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directoryservicedata
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservicedata"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservicedata/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().DirectoryServiceDataClient(ctx)
+
+	var plan, state userResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	id := userResourceID(plan.DirectoryID.ValueString(), plan.SAMAccountName.ValueString())
+
+	diff, d := flex.Diff(ctx, plan, state)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		updateInputs := map[awstypes.UpdateType]*directoryservicedata.UpdateUserInput{}
+
+		getUpdateInput := func(updateType awstypes.UpdateType) *directoryservicedata.UpdateUserInput {
+			if input, ok := updateInputs[updateType]; ok {
+				return input
+			}
+
+			input := &directoryservicedata.UpdateUserInput{
+				DirectoryId:    plan.DirectoryID.ValueStringPointer(),
+				SAMAccountName: plan.SAMAccountName.ValueStringPointer(),
+				UpdateType:     updateType,
+			}
+			updateInputs[updateType] = input
+			return input
+		}
+
+		// Choose the API operation based on whether an optional value is being added, removed, or replaced.
+		updateType := func(planValue, stateValue types.String) awstypes.UpdateType {
+			switch {
+			case stateValue.IsNull():
+				return awstypes.UpdateTypeAdd
+			case planValue.IsNull():
+				return awstypes.UpdateTypeRemove
+			default:
+				return awstypes.UpdateTypeReplace
+			}
+		}
+
+		if !plan.EmailAddress.Equal(state.EmailAddress) {
+			changeType := updateType(plan.EmailAddress, state.EmailAddress)
+			input := getUpdateInput(changeType)
+
+			input.EmailAddress = plan.EmailAddress.ValueStringPointer()
+			if changeType == awstypes.UpdateTypeRemove {
+				input.EmailAddress = state.EmailAddress.ValueStringPointer()
+			}
+		}
+
+		if !plan.GivenName.Equal(state.GivenName) {
+			changeType := updateType(plan.GivenName, state.GivenName)
+			input := getUpdateInput(changeType)
+
+			input.GivenName = plan.GivenName.ValueStringPointer()
+			if changeType == awstypes.UpdateTypeRemove {
+				input.GivenName = state.GivenName.ValueStringPointer()
+			}
+		}
+
+		if !plan.Surname.Equal(state.Surname) {
+			changeType := updateType(plan.Surname, state.Surname)
+			input := getUpdateInput(changeType)
+
+			input.Surname = plan.Surname.ValueStringPointer()
+			if changeType == awstypes.UpdateTypeRemove {
+				input.Surname = state.Surname.ValueStringPointer()
+			}
+		}
+
+		for _, input := range updateInputs {
+			_, err := conn.UpdateUser(ctx, input)
+			if err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, id)
+				return
+			}
+		}
+	}
+
+	out, err := findUserByTwoPartKey(ctx, conn, plan.DirectoryID.ValueString(), plan.SAMAccountName.ValueString())
+
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, id)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Flatten(ctx, out, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, plan))
+}

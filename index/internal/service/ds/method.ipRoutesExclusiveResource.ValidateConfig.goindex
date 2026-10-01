@@ -1,0 +1,81 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *ipRoutesExclusiveResource) ValidateConfig(ctx context.Context, request resource.ValidateConfigRequest, response *resource.ValidateConfigResponse) {
+	var data ipRoutesExclusiveResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Config.Get(ctx, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if data.IPRoutes.IsNull() || data.IPRoutes.IsUnknown() {
+		return
+	}
+
+	routes, diags := data.IPRoutes.ToSlice(ctx)
+	smerr.AddEnrich(ctx, &response.Diagnostics, diags)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	// A set only deduplicates whole objects, so two blocks with the same CIDR
+	// but different descriptions would both be kept. Routes are keyed by CIDR,
+	// so require each CIDR to be unique.
+	seen := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		// Re-checked once known.
+		if route.CidrIP.IsUnknown() || route.CidrIPv6.IsUnknown() {
+			continue
+		}
+
+		// An object-level validator cannot read sibling values inside a set
+		// nested block, so exactly-one-of is enforced here.
+		hasV4, hasV6 := !route.CidrIP.IsNull(), !route.CidrIPv6.IsNull()
+		if hasV4 == hasV6 {
+			smerr.AddOne(ctx, &response.Diagnostics, diag.NewAttributeErrorDiagnostic(
+				path.Root("ip_route"),
+				"Invalid Attribute Combination",
+				"Each ip_route block must configure exactly one of cidr_ip or cidr_ipv6.",
+			))
+			return
+		}
+
+		cidr := route.routeKey()
+		if _, ok := seen[cidr]; ok {
+			smerr.AddOne(ctx, &response.Diagnostics, diag.NewAttributeErrorDiagnostic(
+				path.Root("ip_route"),
+				"Duplicate CIDR",
+				fmt.Sprintf("CIDR %q is configured in more than one ip_route block; each cidr_ip/cidr_ipv6 must be unique.", cidr),
+			))
+			return
+		}
+		seen[cidr] = struct{}{}
+	}
+}

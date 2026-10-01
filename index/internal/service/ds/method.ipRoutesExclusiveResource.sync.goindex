@@ -1,0 +1,141 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *ipRoutesExclusiveResource) sync(ctx context.Context, plan ipRoutesExclusiveResourceModel, timeout time.Duration) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	deadline := time.Now().Add(timeout)
+
+	conn := r.Meta().DSClient(ctx)
+	directoryID := fwflex.StringValueFromFramework(ctx, plan.DirectoryID)
+
+	planRoutes, d := plan.IPRoutes.ToSlice(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+
+	current, err := findIPRoutesByDirectoryID(ctx, conn, directoryID)
+	if retry.NotFound(err) {
+		// Distinguish "no routes" from "no directory"; the latter must fail.
+		if _, err = findDirectoryByID(ctx, conn, directoryID); err == nil {
+			current = nil
+		}
+	}
+	if err != nil {
+		smerr.AddError(ctx, &diags, err, smerr.ID, directoryID)
+		return diags
+	}
+
+	// There is no update API, so a changed description is a remove + add.
+	planByCIDR := make(map[string]*ipRouteModel, len(planRoutes))
+	for _, v := range planRoutes {
+		cidr := v.routeKey()
+		// ValidateConfig cannot check CIDRs that are unknown until apply.
+		if _, ok := planByCIDR[cidr]; ok {
+			smerr.AddOne(ctx, &diags, diag.NewAttributeErrorDiagnostic(
+				path.Root("ip_route"),
+				"Duplicate CIDR",
+				fmt.Sprintf("CIDR %q is configured in more than one ip_route block; each cidr_ip/cidr_ipv6 must be unique.", cidr),
+			))
+			return diags
+		}
+		planByCIDR[cidr] = v
+	}
+	currentByCIDR := make(map[string]awstypes.IpRouteInfo, len(current))
+	for _, v := range current {
+		currentByCIDR[ipRouteInfoKey(v)] = v
+	}
+
+	var add []awstypes.IpRoute
+	for cidr, pr := range planByCIDR {
+		if cr, ok := currentByCIDR[cidr]; ok && aws.ToString(cr.Description) == pr.Description.ValueString() {
+			continue
+		}
+		var route awstypes.IpRoute
+		diags.Append(fwflex.Expand(ctx, pr, &route)...)
+		if diags.HasError() {
+			return diags
+		}
+		add = append(add, route)
+	}
+
+	var removeV4, removeV6 []string
+	for cidr, cr := range currentByCIDR {
+		if pr, ok := planByCIDR[cidr]; ok && aws.ToString(cr.Description) == pr.Description.ValueString() {
+			continue
+		}
+		if cr.CidrIp != nil {
+			removeV4 = append(removeV4, aws.ToString(cr.CidrIp))
+		} else {
+			removeV6 = append(removeV6, aws.ToString(cr.CidrIpv6))
+		}
+	}
+
+	if len(removeV4) > 0 || len(removeV6) > 0 {
+		input := directoryservice.RemoveIpRoutesInput{
+			DirectoryId: aws.String(directoryID),
+			CidrIps:     removeV4,
+			CidrIpv6s:   removeV6,
+		}
+		if err := removeIPRoutes(ctx, conn, &input, time.Until(deadline)); err != nil {
+			smerr.AddError(ctx, &diags, err, smerr.ID, directoryID)
+			return diags
+		}
+
+		var keys []string
+		for _, v := range slices.Concat(removeV4, removeV6) {
+			keys = append(keys, inttypes.CanonicalCIDRBlock(v))
+		}
+		if err := waitIPRoutesRemoved(ctx, conn, directoryID, keys, time.Until(deadline)); err != nil {
+			smerr.AddError(ctx, &diags, err, smerr.ID, directoryID)
+			return diags
+		}
+	}
+
+	if len(add) > 0 {
+		input := directoryservice.AddIpRoutesInput{
+			DirectoryId: aws.String(directoryID),
+			IpRoutes:    add,
+			UpdateSecurityGroupForDirectoryControllers: fwflex.BoolValueFromFramework(ctx, plan.UpdateSecurityGroupForDirectoryControllers),
+		}
+		if err := addIPRoutes(ctx, conn, &input, time.Until(deadline)); err != nil {
+			smerr.AddError(ctx, &diags, err, smerr.ID, directoryID)
+			return diags
+		}
+
+		if err := waitIPRoutesAdded(ctx, conn, directoryID, ipRoutesCIDRs(add), time.Until(deadline)); err != nil {
+			smerr.AddError(ctx, &diags, err, smerr.ID, directoryID)
+			return diags
+		}
+	}
+
+	return diags
+}

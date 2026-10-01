@@ -1,0 +1,115 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrockruntime
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (e *applyGuardrailEphemeralResource) Schema(ctx context.Context, _ ephemeral.SchemaRequest, resp *ephemeral.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrAction: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.GuardrailAction](),
+				Computed:   true,
+			},
+			"action_reason": schema.StringAttribute{
+				Computed: true,
+			},
+			"assessments": schema.ListAttribute{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailAssessmentModel](ctx),
+				Computed:   true,
+				Sensitive:  true,
+				ElementType: types.ObjectType{
+					AttrTypes: fwtypes.AttributeTypesMust[guardrailAssessmentModel](ctx),
+				},
+			},
+			"guardrail_coverage": schema.ListAttribute{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailCoverageModel](ctx),
+				Computed:   true,
+				ElementType: types.ObjectType{
+					AttrTypes: fwtypes.AttributeTypesMust[guardrailCoverageModel](ctx),
+				},
+			},
+			"guardrail_identifier": schema.StringAttribute{
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 2048),
+				},
+			},
+			"guardrail_version": schema.StringAttribute{
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(1, 8),
+				},
+			},
+			"output": schema.ListAttribute{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailOutputModel](ctx),
+				Computed:   true,
+				Sensitive:  true,
+				ElementType: types.ObjectType{
+					AttrTypes: fwtypes.AttributeTypesMust[guardrailOutputModel](ctx),
+				},
+			},
+			names.AttrSource: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.GuardrailContentSource](),
+				Required:   true,
+			},
+			"usage": schema.ListAttribute{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailUsageModel](ctx),
+				Computed:   true,
+				ElementType: types.ObjectType{
+					AttrTypes: fwtypes.AttributeTypesMust[guardrailUsageModel](ctx),
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			names.AttrContent: schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailContentModel](ctx),
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtLeast(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"text": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[guardrailTextModel](ctx),
+							Validators: []validator.List{
+								listvalidator.IsRequired(),
+								listvalidator.SizeBetween(1, 1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"qualifiers": schema.ListAttribute{
+										CustomType: fwtypes.ListOfStringEnumType[awstypes.GuardrailContentQualifier](),
+										Optional:   true,
+									},
+									"text": schema.StringAttribute{
+										Required:  true,
+										Sensitive: true,
+										Validators: []validator.String{
+											stringvalidator.LengthAtLeast(1),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

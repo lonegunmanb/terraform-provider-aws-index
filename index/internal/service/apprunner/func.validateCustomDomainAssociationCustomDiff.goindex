@@ -1,11 +1,13 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/apprunner
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/apprunner"
 	"github.com/aws/aws-sdk-go-v2/service/apprunner/types"
@@ -16,25 +18,24 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
-	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/internal/verify"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func findCustomDomains(ctx context.Context, conn *apprunner.Client, input *apprunner.DescribeCustomDomainsInput, filter tfslices.Predicate[*types.CustomDomain]) ([]types.CustomDomain, error) {
-	var output []types.CustomDomain
-
-	err := forEachCustomDomainPage(ctx, conn, input, func(page *apprunner.DescribeCustomDomainsOutput) {
-		for _, v := range page.CustomDomains {
-			if filter(&v) {
-				output = append(output, v)
-			}
-		}
-	})
-
-	if err != nil {
-		return nil, err
+func validateCustomDomainAssociationCustomDiff(_ context.Context, d *schema.ResourceDiff, _ any) error {
+	if !d.NewValueKnown(names.AttrDomainName) || !d.NewValueKnown("enable_www_subdomain") {
+		return nil
 	}
 
-	return output, nil
+	domainName := d.Get(names.AttrDomainName).(string)
+	if !strings.HasPrefix(domainName, "*.") {
+		return nil
+	}
+
+	enableWWW := d.Get("enable_www_subdomain").(bool)
+	if enableWWW {
+		return errors.New("enable_www_subdomain must be false for wildcard domains")
+	}
+
+	return nil
 }

@@ -1,0 +1,33 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	tfsync "github.com/hashicorp/terraform-provider-aws/internal/sync"
+)
+func (c *zoneRecordCache) load(ctx context.Context, conn *route53.Client, zoneID string) error {
+	zone, err := findHostedZoneByID(ctx, conn, zoneID)
+	if err != nil {
+		return err
+	}
+	c.zoneName = aws.ToString(zone.HostedZone.Name)
+
+	input := &route53.ListResourceRecordSetsInput{
+		HostedZoneId: aws.String(zoneID),
+	}
+	for rrs, err := range listRecords(ctx, conn, input) {
+		if err != nil {
+			return err
+		}
+		key := c.key(zoneID, aws.ToString(rrs.Name), string(rrs.Type), aws.ToString(rrs.SetIdentifier))
+		c.records[key] = rrs
+	}
+
+	return nil
+}

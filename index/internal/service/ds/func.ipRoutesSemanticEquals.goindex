@@ -1,0 +1,65 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/ds
+import (
+	"context"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservice"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservice/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func ipRoutesSemanticEquals(ctx context.Context, a, b fwtypes.NestedCollectionValue[ipRouteModel]) (bool, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if a.Equal(b) {
+		return true, diags
+	}
+
+	aSlice, d := a.ToSlice(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return false, diags
+	}
+	bSlice, d := b.ToSlice(ctx)
+	diags.Append(d...)
+	if diags.HasError() {
+		return false, diags
+	}
+
+	if len(aSlice) != len(bSlice) {
+		return false, diags
+	}
+
+	aByKey := make(map[string]*ipRouteModel, len(aSlice))
+	for _, r := range aSlice {
+		aByKey[r.routeKey()] = r
+	}
+
+	for _, r := range bSlice {
+		if other, ok := aByKey[r.routeKey()]; !ok || !other.Description.Equal(r.Description) {
+			return false, diags
+		}
+	}
+
+	return true, diags
+}

@@ -1,0 +1,32 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53
+import (
+	"context"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	tfsync "github.com/hashicorp/terraform-provider-aws/internal/sync"
+)
+func readFromZoneRecordCache(ctx context.Context, conn *route53.Client, zoneID, name, rrType, setIdentifier string) (*awstypes.ResourceRecordSet, error) {
+	cache, err := getOrLoadZoneRecordCache(ctx, conn, zoneID)
+	if err != nil {
+		return nil, err
+	}
+
+	key := cache.key(zoneID, name, rrType, setIdentifier)
+	rrs, ok := cache.get(key)
+	if !ok {
+		record, err := findResourceRecordSetByFourPartKey(ctx, conn, zoneID, name, rrType, setIdentifier)
+		if err != nil {
+			return nil, err
+		}
+		cache.put(key, *record)
+		return record, nil
+	}
+
+	return &rrs, nil
+}

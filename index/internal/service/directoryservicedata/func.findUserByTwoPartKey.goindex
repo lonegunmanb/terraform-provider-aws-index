@@ -1,0 +1,48 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directoryservicedata
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservicedata"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservicedata/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func findUserByTwoPartKey(ctx context.Context, conn *directoryservicedata.Client, directoryID, samAccountName string) (*directoryservicedata.DescribeUserOutput, error) {
+	input := directoryservicedata.DescribeUserInput{
+		DirectoryId:    aws.String(directoryID),
+		SAMAccountName: aws.String(samAccountName),
+	}
+
+	out, err := conn.DescribeUser(ctx, &input)
+	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+		return nil, smarterr.NewError(&retry.NotFoundError{
+			LastError: err,
+		})
+	}
+	if err != nil {
+		return nil, smarterr.NewError(err)
+	}
+	if out == nil {
+		return nil, smarterr.NewError(tfresource.NewEmptyResultError())
+	}
+	return out, nil
+}
