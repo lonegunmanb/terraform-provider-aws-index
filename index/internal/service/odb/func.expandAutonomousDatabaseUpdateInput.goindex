@@ -1,0 +1,207 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/odb
+import (
+	"context"
+	"math"
+	"reflect"
+	"slices"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/odb"
+	odbtypes "github.com/aws/aws-sdk-go-v2/service/odb/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	fwvalidators "github.com/hashicorp/terraform-provider-aws/internal/framework/validators"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func expandAutonomousDatabaseUpdateInput(ctx context.Context, plan, state, config autonomousDatabaseResourceModel, diags *diag.Diagnostics) odb.UpdateAutonomousDatabaseInput {
+	input := odb.UpdateAutonomousDatabaseInput{
+		AutonomousDatabaseId: state.AutonomousDatabaseID.ValueStringPointer(),
+	}
+	smerr.AddEnrich(ctx, diags, flex.Expand(ctx, plan, &input))
+	if diags.HasError() {
+		return input
+	}
+
+	if !config.AdminPasswordWO.IsNull() && !plan.AdminPasswordWOVersion.Equal(state.AdminPasswordWOVersion) {
+		input.AdminPassword = config.AdminPasswordWO.ValueStringPointer()
+	} else if !plan.AdminPassword.Equal(state.AdminPassword) {
+		input.AdminPassword = plan.AdminPassword.ValueStringPointer()
+	}
+	if !plan.AdminPasswordSource.Equal(state.AdminPasswordSource) {
+		if plan.AdminPasswordSource.IsNull() {
+			input.AdminPasswordSource = odbtypes.AdminPasswordSourceApiRequestParameter
+		} else {
+			input.AdminPasswordSource, input.AdminPasswordSourceConfiguration = expandAutonomousDatabaseAdminPasswordSource(ctx, plan.AdminPasswordSource, diags)
+		}
+	}
+	if plan.AllowlistedIps.Equal(state.AllowlistedIps) {
+		input.AllowlistedIps = nil
+	}
+	if plan.AutoRefreshFrequencyInSeconds.Equal(state.AutoRefreshFrequencyInSeconds) {
+		input.AutoRefreshFrequencyInSeconds = nil
+	}
+	if plan.AutoRefreshPointLagInSeconds.Equal(state.AutoRefreshPointLagInSeconds) {
+		input.AutoRefreshPointLagInSeconds = nil
+	}
+	if plan.AutonomousMaintenanceScheduleType.Equal(state.AutonomousMaintenanceScheduleType) {
+		input.AutonomousMaintenanceScheduleType = ""
+	}
+	if plan.BackupRetentionPeriodInDays.Equal(state.BackupRetentionPeriodInDays) {
+		input.BackupRetentionPeriodInDays = nil
+	}
+	if plan.ByolComputeCountLimit.Equal(state.ByolComputeCountLimit) {
+		input.ByolComputeCountLimit = nil
+	}
+	if plan.ComputeCount.Equal(state.ComputeCount) {
+		input.ComputeCount = nil
+	}
+	if plan.CpuCoreCount.Equal(state.CpuCoreCount) {
+		input.CpuCoreCount = nil
+	}
+	if plan.CustomerContactsToSendToOCI.Equal(state.CustomerContactsToSendToOCI) {
+		input.CustomerContactsToSendToOCI = nil
+	} else if !plan.CustomerContactsToSendToOCI.IsUnknown() && !isConfiguredAutonomousDatabaseBlock(plan.CustomerContactsToSendToOCI) && isConfiguredAutonomousDatabaseBlock(state.CustomerContactsToSendToOCI) {
+		input.CustomerContactsToSendToOCI = []odbtypes.CustomerContact{}
+		tflog.Debug(ctx, "Clearing ODB Autonomous Database customer contacts")
+	}
+	if plan.DataStorageSizeInGBs.Equal(state.DataStorageSizeInGBs) {
+		input.DataStorageSizeInGBs = nil
+	}
+	// AWS reads fractional TB values (for GB-sized storage), but accepts only integer TB writes.
+	// A computed value must not be sent back when another attribute changes.
+	if !config.DataStorageSizeInTBs.IsNull() && !plan.DataStorageSizeInTBs.Equal(state.DataStorageSizeInTBs) {
+		var err error
+		input.DataStorageSizeInTBs, err = expandAutonomousDatabaseDataStorageSizeInTBs(plan.DataStorageSizeInTBs)
+		if err != nil {
+			smerr.AddError(ctx, diags, err, smerr.ID, state.AutonomousDatabaseID.ValueString())
+			return input
+		}
+	}
+	if plan.DatabaseEdition.Equal(state.DatabaseEdition) {
+		input.DatabaseEdition = ""
+	}
+	if plan.DbName.Equal(state.DbName) {
+		input.DbName = nil
+	}
+	if plan.DbToolsDetails.Equal(state.DbToolsDetails) {
+		input.DbToolsDetails = nil
+	}
+	if plan.DbVersion.Equal(state.DbVersion) {
+		input.DbVersion = nil
+	}
+	if plan.DbWorkload.Equal(state.DbWorkload) {
+		input.DbWorkload = ""
+	}
+	if plan.DisplayName.Equal(state.DisplayName) {
+		input.DisplayName = nil
+	}
+	if plan.EncryptionKeyProvider.Equal(state.EncryptionKeyProvider) && plan.KMSKeyID.Equal(state.KMSKeyID) {
+		input.EncryptionKeyProvider = ""
+		input.EncryptionKeyConfiguration = nil
+	} else {
+		input.EncryptionKeyProvider, input.EncryptionKeyConfiguration = expandAutonomousDatabaseEncryption(plan.EncryptionKeyProvider, plan.KMSKeyID)
+	}
+	if plan.IsAutoScalingEnabled.Equal(state.IsAutoScalingEnabled) {
+		input.IsAutoScalingEnabled = nil
+	}
+	if plan.IsAutoScalingForStorageEnabled.Equal(state.IsAutoScalingForStorageEnabled) {
+		input.IsAutoScalingForStorageEnabled = nil
+	}
+	if plan.IsBackupRetentionLocked.Equal(state.IsBackupRetentionLocked) {
+		input.IsBackupRetentionLocked = nil
+	}
+	if plan.IsLocalDataGuardEnabled.Equal(state.IsLocalDataGuardEnabled) {
+		input.IsLocalDataGuardEnabled = nil
+	}
+	if plan.IsMtlsConnectionRequired.Equal(state.IsMtlsConnectionRequired) {
+		input.IsMtlsConnectionRequired = nil
+	}
+	if plan.IsRefreshableClone.Equal(state.IsRefreshableClone) {
+		input.IsRefreshableClone = nil
+	}
+	if plan.LicenseModel.Equal(state.LicenseModel) {
+		input.LicenseModel = ""
+	}
+	if plan.LocalAdgAutoFailoverMaxDataLossLimit.Equal(state.LocalAdgAutoFailoverMaxDataLossLimit) {
+		input.LocalAdgAutoFailoverMaxDataLossLimit = nil
+	}
+	if plan.LongTermBackupSchedule.Equal(state.LongTermBackupSchedule) {
+		input.LongTermBackupSchedule = nil
+	} else if !plan.LongTermBackupSchedule.IsUnknown() && !isConfiguredAutonomousDatabaseBlock(plan.LongTermBackupSchedule) && isConfiguredAutonomousDatabaseBlock(state.LongTermBackupSchedule) {
+		input.LongTermBackupSchedule = &odbtypes.LongTermBackupSchedule{IsDisabled: aws.Bool(true)}
+		tflog.Debug(ctx, "Disabling ODB Autonomous Database long-term backup schedule")
+	}
+	if plan.OpenMode.Equal(state.OpenMode) {
+		input.OpenMode = ""
+	}
+	if plan.PermissionLevel.Equal(state.PermissionLevel) {
+		input.PermissionLevel = ""
+	}
+	if plan.PrivateEndpointIp.Equal(state.PrivateEndpointIp) {
+		input.PrivateEndpointIp = nil
+	}
+	if plan.PrivateEndpointLabel.Equal(state.PrivateEndpointLabel) {
+		input.PrivateEndpointLabel = nil
+	}
+	if plan.RefreshableMode.Equal(state.RefreshableMode) {
+		input.RefreshableMode = ""
+	}
+	if plan.ResourcePoolLeaderId.Equal(state.ResourcePoolLeaderId) {
+		input.ResourcePoolLeaderId = nil
+	}
+	if plan.ResourcePoolSummary.Equal(state.ResourcePoolSummary) {
+		input.ResourcePoolSummary = nil
+	} else if !plan.ResourcePoolSummary.IsUnknown() && !isConfiguredAutonomousDatabaseBlock(plan.ResourcePoolSummary) && isConfiguredAutonomousDatabaseBlock(state.ResourcePoolSummary) {
+		input.ResourcePoolSummary = &odbtypes.ResourcePoolSummary{IsDisabled: aws.Bool(true)}
+		tflog.Debug(ctx, "Disabling ODB Autonomous Database resource pool")
+	}
+	if plan.ScheduledOperations.Equal(state.ScheduledOperations) {
+		input.ScheduledOperations = nil
+	} else if !plan.ScheduledOperations.IsUnknown() && !isConfiguredAutonomousDatabaseBlock(plan.ScheduledOperations) && isConfiguredAutonomousDatabaseBlock(state.ScheduledOperations) {
+		input.ScheduledOperations = []odbtypes.ScheduledOperationDetails{}
+		tflog.Debug(ctx, "Clearing ODB Autonomous Database scheduled operations")
+	} else {
+		input.ScheduledOperations = expandAutonomousDatabaseScheduledOperations(ctx, plan.ScheduledOperations, diags)
+	}
+	if plan.StandbyAllowlistedIps.Equal(state.StandbyAllowlistedIps) {
+		input.StandbyAllowlistedIps = nil
+	}
+	if plan.StandbyAllowlistedIpsSource.Equal(state.StandbyAllowlistedIpsSource) {
+		input.StandbyAllowlistedIpsSource = ""
+	}
+	if plan.TimeOfAutoRefreshStart.Equal(state.TimeOfAutoRefreshStart) {
+		input.TimeOfAutoRefreshStart = nil
+	}
+
+	return input
+}
