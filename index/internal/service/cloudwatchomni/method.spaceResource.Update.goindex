@@ -1,0 +1,92 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatchomni
+import (
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchomni"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchomni/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *spaceResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var old, new spaceResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.State.Get(ctx, &old))
+	if response.Diagnostics.HasError() {
+		return
+	}
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.Plan.Get(ctx, &new))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudWatchOmniClient(ctx)
+
+	diff, d := fwflex.Diff(ctx, new, old)
+	smerr.AddEnrich(ctx, &response.Diagnostics, d)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		spaceID := fwflex.StringValueFromFramework(ctx, new.SpaceID)
+		input := cloudwatchomni.UpdateSpaceInput{
+			SpaceId: aws.String(spaceID),
+		}
+
+		if !new.Name.Equal(old.Name) {
+			input.Name = fwflex.StringFromFramework(ctx, new.Name)
+		}
+
+		if !new.EncryptionConfiguration.Equal(old.EncryptionConfiguration) {
+			var encryptionConfig awstypes.EncryptionConfiguration
+			if new.EncryptionConfiguration.Length(fwtypes.CollectionLengthUnhandledAsZero) == 0 {
+				encryptionConfig.EncryptionStrategy = awstypes.EncryptionStrategyAwsOwned
+			} else {
+				smerr.AddEnrich(ctx, &response.Diagnostics, fwflex.Expand(ctx, new.EncryptionConfiguration, &encryptionConfig))
+				if response.Diagnostics.HasError() {
+					return
+				}
+			}
+			input.EncryptionConfiguration = &encryptionConfig
+		}
+
+		output, err := conn.UpdateSpace(ctx, &input)
+		if err != nil {
+			smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, spaceID)
+			return
+		}
+
+		smerr.AddEnrich(ctx, &response.Diagnostics, r.flatten(ctx, output.Space, &new))
+		if response.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	smerr.AddEnrich(ctx, &response.Diagnostics, response.State.Set(ctx, &new))
+}

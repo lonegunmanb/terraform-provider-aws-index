@@ -1,39 +1,55 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
 import (
 	"context"
-	"errors"
+	"fmt"
 	"time"
 
+	"github.com/YakDriver/regexache"
 	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
 	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-func waitOTelEnrichmentDeleted(ctx context.Context, conn *cloudwatch.Client, _ time.Duration) (*cloudwatch.GetOTelEnrichmentOutput, error) { //nolint:unparam
-	var input cloudwatch.GetOTelEnrichmentInput
-	out, err := findOTelEnrichmentStatus(ctx, conn, &input)
-	if retry.NotFound(err) {
-		return nil, smarterr.NewError(err)
-	}
-	if err != nil {
-		return nil, smarterr.NewError(err)
+func waitOTelEnrichmentDeleted(ctx context.Context, conn *cloudwatch.Client, timeout time.Duration) (*cloudwatch.GetOTelEnrichmentOutput, error) {
+	stateConf := &retry.StateChangeConf{
+		Pending: enum.Slice(awstypes.OTelEnrichmentStatusRunning),
+		Target:  []string{},
+		Refresh: func(ctx context.Context) (any, string, error) {
+			out, err := findOTelEnrichment(ctx, conn)
+			if retry.NotFound(err) {
+				return nil, "", nil
+			}
+			if err != nil {
+				return nil, "", smarterr.NewError(err)
+			}
+
+			return out, string(out.Status), nil
+		},
+		Timeout:    timeout,
+		MinTimeout: 2 * time.Second,
 	}
 
-	if out.Status == awstypes.OTelEnrichmentStatusStopped {
-		return nil, smarterr.NewError(err)
+	out, err := stateConf.WaitForStateContext(ctx)
+	if v, ok := out.(*cloudwatch.GetOTelEnrichmentOutput); ok {
+		return v, smarterr.NewError(err)
 	}
 
-	return nil, smarterr.NewError(errors.New("OTel enrichment still running"))
+	return nil, smarterr.NewError(err)
 }

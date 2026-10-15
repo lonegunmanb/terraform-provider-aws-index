@@ -1,0 +1,57 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatch
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *otelEnrichmentResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data otelEnrichmentResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Config.Get(ctx, &data))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Maximum selectors allowed across include_filter and exclude_filter
+	// combined. The service enforces the combined total, not a per-list budget, so
+	// two lists of 60 satisfy each list's own limit but are rejected together.
+	const otelEnrichmentMaxFilters = 100
+
+	// Unknown values are only resolved at apply time, so the total cannot be
+	// checked yet.
+	if data.IncludeFilters.IsUnknown() || data.ExcludeFilters.IsUnknown() {
+		return
+	}
+
+	total := data.IncludeFilters.Length(fwtypes.CollectionLengthUnhandledAsZero) +
+		data.ExcludeFilters.Length(fwtypes.CollectionLengthUnhandledAsZero)
+	if total > otelEnrichmentMaxFilters {
+		smerr.AddOne(ctx, &resp.Diagnostics, diag.NewErrorDiagnostic(
+			"Too many enrichment filters",
+			fmt.Sprintf("CloudWatch allows at most %d selectors across include_filter and exclude_filter combined, but %d were configured.",
+				otelEnrichmentMaxFilters, total),
+		))
+	}
+}

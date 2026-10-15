@@ -1,0 +1,174 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/pricingplanmanager
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pricingplanmanager"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/pricingplanmanager/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *subscriptionResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state subscriptionResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().PricingPlanManagerClient(ctx)
+
+	arn := fwflex.StringValueFromFramework(ctx, state.ARN)
+
+	// Re-read for the current entity tag and any pending scheduled change.
+	// Every mutation invalidates the entity tag, so each successive call must
+	// use the value returned by the previous one.
+	current, err := findSubscriptionByARN(ctx, conn, arn)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+		return
+	}
+	etag := current.ETag
+
+	updateTimeout := r.UpdateTimeout(ctx, plan.Timeouts)
+
+	// usage_level is Optional+Computed: when it is not set in configuration it
+	// is unknown in the plan and must not trigger an update by itself.
+	usageLevelChanged := !plan.UsageLevel.IsUnknown() && !plan.UsageLevel.Equal(state.UsageLevel)
+
+	if !plan.PlanTier.Equal(state.PlanTier) || usageLevelChanged {
+		// A pending scheduled change (e.g. an earlier downgrade) blocks
+		// further modifications and must be reverted first.
+		if current.Subscription.ScheduledChange != nil {
+			input := pricingplanmanager.CancelSubscriptionChangeInput{
+				Arn:     aws.String(arn),
+				IfMatch: etag,
+			}
+
+			_, err := conn.CancelSubscriptionChange(ctx, &input)
+			if err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+
+			if _, err := waitSubscriptionSynced(ctx, conn, arn, updateTimeout); err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+
+			current, err = findSubscriptionByARN(ctx, conn, arn)
+			if err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+			etag = current.ETag
+		}
+
+		// Reverting a pending change may already have restored the desired
+		// tier; only call UpdateSubscription when the actual values still
+		// differ.
+		if aws.ToString(current.Subscription.PlanTier) != plan.PlanTier.ValueString() ||
+			(!plan.UsageLevel.IsUnknown() && aws.ToString(current.Subscription.UsageLevel) != plan.UsageLevel.ValueString()) {
+			input := pricingplanmanager.UpdateSubscriptionInput{
+				Arn:      aws.String(arn),
+				IfMatch:  etag,
+				PlanTier: fwflex.StringFromFramework(ctx, plan.PlanTier),
+				// Omitting usageLevel resets it to the plan tier's default.
+				UsageLevel: fwflex.StringFromFramework(ctx, plan.UsageLevel),
+			}
+
+			out, err := conn.UpdateSubscription(ctx, &input)
+			if err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+
+			etag = out.ETag
+
+			if _, err := waitSubscriptionSynced(ctx, conn, arn, updateTimeout); err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+		}
+	}
+
+	if !plan.ResourceARNs.Equal(state.ResourceARNs) {
+		os := fwflex.ExpandFrameworkStringValueSet(ctx, state.ResourceARNs)
+		ns := fwflex.ExpandFrameworkStringValueSet(ctx, plan.ResourceARNs)
+
+		if del := os.Difference(ns); len(del) > 0 {
+			input := pricingplanmanager.DisassociateResourcesFromSubscriptionInput{
+				Arn:          aws.String(arn),
+				IfMatch:      etag,
+				ResourceArns: del,
+			}
+
+			out, err := conn.DisassociateResourcesFromSubscription(ctx, &input)
+			if err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+
+			etag = out.ETag
+
+			if _, err := waitSubscriptionSynced(ctx, conn, arn, updateTimeout); err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+		}
+
+		if add := ns.Difference(os); len(add) > 0 {
+			input := pricingplanmanager.AssociateResourcesToSubscriptionInput{
+				Arn:          aws.String(arn),
+				IfMatch:      etag,
+				ResourceArns: add,
+			}
+
+			_, err := conn.AssociateResourcesToSubscription(ctx, &input)
+			if err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+
+			if _, err := waitSubscriptionSynced(ctx, conn, arn, updateTimeout); err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+				return
+			}
+		}
+	}
+
+	output, err := findSubscriptionByARN(ctx, conn, arn)
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, r.flatten(ctx, output, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

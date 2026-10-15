@@ -1,0 +1,77 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatchomni
+import (
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"strings"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchomni"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchomni/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	tfstringvalidator "github.com/hashicorp/terraform-provider-aws/internal/framework/validators/stringvalidator"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *spaceResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var data spaceResourceModel
+	smerr.AddEnrich(ctx, &response.Diagnostics, request.State.Get(ctx, &data))
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudWatchOmniClient(ctx)
+
+	spaceID := fwflex.StringValueFromFramework(ctx, data.SpaceID)
+	input := cloudwatchomni.DeleteSpaceInput{
+		SpaceId: aws.String(spaceID),
+	}
+	if _, err := conn.DeleteSpace(ctx, &input); err != nil {
+		// DeleteSpace cannot report "already gone" distinguishably (see
+		// findSpaceByID), so confirm absence before surfacing the error.
+		_, ferr := findSpaceByID(ctx, conn, spaceID)
+
+		if retry.NotFound(ferr) {
+			return
+		}
+
+		if ferr != nil {
+			smerr.AddError(ctx, &response.Diagnostics, errors.Join(err, ferr), smerr.ID, spaceID)
+			return
+		}
+
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, spaceID)
+		return
+	}
+
+	const timeout = 5 * time.Minute
+	_, err := tfresource.RetryUntilNotFound(ctx, timeout, func(ctx context.Context) (any, error) {
+		return findSpaceByID(ctx, conn, spaceID)
+	})
+
+	if err != nil {
+		smerr.AddError(ctx, &response.Diagnostics, err, smerr.ID, spaceID)
+		return
+	}
+}
