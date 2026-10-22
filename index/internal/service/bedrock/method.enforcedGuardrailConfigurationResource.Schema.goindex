@@ -1,0 +1,90 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrock
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrock"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *enforcedGuardrailConfigurationResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"config_id": framework.IDAttribute(),
+			"guardrail_arn": schema.StringAttribute{
+				CustomType: fwtypes.ARNType,
+				Required:   true,
+			},
+			"guardrail_id": schema.StringAttribute{
+				Computed: true,
+			},
+			"guardrail_version": schema.StringAttribute{
+				Required: true,
+			},
+			names.AttrOwner: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.ConfigurationOwner](),
+				Computed:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"model_enforcement": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[modelEnforcementModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"excluded_models": schema.ListAttribute{
+							CustomType: fwtypes.ListOfStringType,
+							Required:   true,
+						},
+						"included_models": schema.ListAttribute{
+							CustomType: fwtypes.ListOfStringType,
+							Required:   true,
+						},
+					},
+				},
+			},
+			"selective_content_guarding": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[selectiveContentGuardingModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"messages": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.SelectiveGuardingMode](),
+							Optional:   true,
+						},
+						"system": schema.StringAttribute{
+							CustomType: fwtypes.StringEnumType[awstypes.SelectiveGuardingMode](),
+							Optional:   true,
+						},
+					},
+				},
+			},
+		},
+	}
+}

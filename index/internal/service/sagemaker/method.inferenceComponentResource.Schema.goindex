@@ -1,0 +1,232 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/float32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float32planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *inferenceComponentResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			names.AttrARN: framework.ARNAttributeComputedOnly(),
+			names.AttrCreationTime: schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			"endpoint_arn": framework.ARNAttributeComputedOnly(),
+			"endpoint_name": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					inferenceComponentNameValidator,
+				},
+			},
+			"failure_reason": schema.StringAttribute{
+				Computed: true,
+			},
+			"last_modified_time": schema.StringAttribute{
+				CustomType: timetypes.RFC3339Type{},
+				Computed:   true,
+			},
+			names.AttrName: schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					inferenceComponentNameValidator,
+				},
+			},
+			names.AttrStatus: schema.StringAttribute{
+				CustomType: fwtypes.StringEnumType[awstypes.InferenceComponentStatus](),
+				Computed:   true,
+			},
+			names.AttrTags:    tftags.TagsAttribute(),
+			names.AttrTagsAll: tftags.TagsAttributeComputedOnly(),
+			// variant_name is conditionally required: the CreateInferenceComponent API
+			// rejects a null value for a standard inference component but forbids it for
+			// an adapter inference component (one that sets base_inference_component_name),
+			// which instead inherits -- and echoes back on read -- the base component's
+			// variant. It is therefore Optional (requirement enforced server-side) and
+			// Computed (absorbs the inherited value so the adapter case does not force
+			// replacement or produce a perpetual diff).
+			"variant_name": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.String{
+					inferenceComponentNameValidator,
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"deployment_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentDeploymentConfigModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Blocks: map[string]schema.Block{
+						"auto_rollback_configuration": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentAutoRollbackConfigModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Blocks: map[string]schema.Block{
+									"alarms": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentAlarmModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(10),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"alarm_name": schema.StringAttribute{
+													Required: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"rolling_update_policy": schema.ListNestedBlock{
+							CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentRollingUpdatePolicyModel](ctx),
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(1),
+								listvalidator.IsRequired(),
+							},
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"maximum_execution_timeout_in_seconds": schema.Int32Attribute{
+										Optional: true,
+										Validators: []validator.Int32{
+											int32validator.Between(600, 28800),
+										},
+									},
+									"wait_interval_in_seconds": schema.Int32Attribute{
+										Required: true,
+										Validators: []validator.Int32{
+											int32validator.Between(0, 3600),
+										},
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"maximum_batch_size": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentCapacitySizeModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+											listvalidator.IsRequired(),
+										},
+										NestedObject: inferenceComponentCapacitySizeSchema(),
+									},
+									"rollback_maximum_batch_size": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentCapacitySizeModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(1),
+										},
+										NestedObject: inferenceComponentCapacitySizeSchema(),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"runtime_config": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentRuntimeConfigModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+				},
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"copy_count": schema.Int32Attribute{
+							Required: true,
+							Validators: []validator.Int32{
+								int32validator.AtLeast(0),
+							},
+						},
+						"current_copy_count": schema.Int32Attribute{
+							Computed: true,
+						},
+						"desired_copy_count": schema.Int32Attribute{
+							Computed: true,
+						},
+						// Modeled as a computed list attribute rather than a nested block.
+						// A block's cardinality is controlled by configuration, and nothing
+						// ever configures this read-only value, so a block would be planned
+						// with a count of zero and then fail the apply with an
+						// inconsistent-result error once the service returned entries.
+						"placement_status": schema.ListAttribute{
+							CustomType:  fwtypes.NewListNestedObjectTypeOf[inferenceComponentPlacementStatusModel](ctx),
+							ElementType: fwtypes.NewObjectTypeOf[inferenceComponentPlacementStatusModel](ctx),
+							Computed:    true,
+						},
+					},
+				},
+			},
+			"specification": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentSpecificationModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtMost(1),
+					listvalidator.ExactlyOneOf(
+						path.MatchRoot("specification"),
+						path.MatchRoot("specifications"),
+					),
+				},
+				NestedObject: inferenceComponentSpecificationSchema(ctx),
+			},
+			"specifications": schema.ListNestedBlock{
+				CustomType: fwtypes.NewListNestedObjectTypeOf[inferenceComponentSpecificationModel](ctx),
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(2),
+				},
+				NestedObject: inferenceComponentSpecificationSchema(ctx),
+			},
+			names.AttrTimeouts: timeouts.Block(ctx, timeouts.Opts{
+				Create: true,
+				Update: true,
+				Delete: true,
+			}),
+		},
+	}
+}

@@ -1,0 +1,71 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/route53domains
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/route53domains"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/route53domains/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func delegationSignerDigest(domainName string, flags, algorithm int32, publicKey string) string {
+	var buf bytes.Buffer
+
+	// 1. Convert domain name to DNS wire-format labels (lowercase per RFC 4034)
+	domain := strings.ToLower(strings.TrimSuffix(domainName, "."))
+	if domain != "" {
+		for label := range strings.SplitSeq(domain, ".") {
+			buf.WriteByte(byte(len(label)))
+			buf.WriteString(label)
+		}
+	}
+	buf.WriteByte(0) // Root label terminator
+
+	// 2. Append Flags (16-bit, Big Endian)
+	flagsBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(flagsBytes, uint16(flags))
+	buf.Write(flagsBytes)
+
+	// 3. Append Protocol (8-bit, always 3 for DNSSEC)
+	buf.WriteByte(dnssecProtocol)
+
+	// 4. Append Algorithm (8-bit)
+	buf.WriteByte(byte(algorithm))
+
+	// 5. Append Public Key (Base64 decoded)
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(publicKey)
+	if err == nil {
+		buf.Write(pubKeyBytes)
+	}
+
+	// 6. Compute SHA-256 and return as uppercase hex
+	hash := sha256.Sum256(buf.Bytes())
+	return strings.ToUpper(hex.EncodeToString(hash[:]))
+}

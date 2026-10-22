@@ -1,0 +1,117 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/float32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float32planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *inferenceComponentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().SageMakerClient(ctx)
+
+	var plan, state inferenceComponentResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	name := plan.InferenceComponentName.ValueString()
+
+	// UpdateInferenceComponent requires RuntimeConfig or a Specification; it rejects a
+	// request that carries only a DeploymentConfig. A deployment_config-only change
+	// therefore does not trigger an API call -- the directive only governs how a future
+	// spec/runtime change rolls out, so the new value is simply persisted to state.
+	//
+	// The comparison is made on the expanded request structures rather than on the models.
+	// Read-only attributes such as placement_status, the copy count summaries and
+	// container.resolved_image are Computed without a plan modifier, so the Framework
+	// marks them unknown in every plan. Comparing models would then report a change for
+	// any update at all, including a tags-only one, and needlessly redeploy the model. The
+	// request types carry only configurable fields, so read-only values are excluded
+	// structurally rather than by a list that has to be maintained by hand.
+	var input, stateInput sagemaker.UpdateInferenceComponentInput
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, plan, &input), smerr.ID, name)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, state, &stateInput), smerr.ID, name)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	specOrRuntimeChanged := !reflect.DeepEqual(input.RuntimeConfig, stateInput.RuntimeConfig) ||
+		!reflect.DeepEqual(input.Specification, stateInput.Specification) ||
+		!reflect.DeepEqual(input.Specifications, stateInput.Specifications)
+
+	if specOrRuntimeChanged {
+		_, err := conn.UpdateInferenceComponent(ctx, &input)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, name)
+			return
+		}
+
+		updateTimeout := r.UpdateTimeout(ctx, plan.Timeouts)
+		out, err := waitInferenceComponentInService(ctx, conn, name, updateTimeout)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, name)
+			return
+		}
+
+		r.flatten(ctx, out, &plan, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	} else {
+		// Nothing is sent to the API for a deployment_config-only change, but the
+		// Framework marks every Computed attribute with a null configuration value as
+		// unknown in the plan, and unknown values cannot be written to state. Refresh to
+		// resolve them; otherwise Terraform rejects the result object after apply.
+		out, err := findInferenceComponentByName(ctx, conn, name)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, name)
+			return
+		}
+
+		r.flatten(ctx, out, &plan, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

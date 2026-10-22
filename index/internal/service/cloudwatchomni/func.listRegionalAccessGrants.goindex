@@ -1,0 +1,43 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatchomni
+import (
+	"context"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchomni"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchomni/types"
+	"github.com/hashicorp/terraform-plugin-framework/list"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	tfiter "github.com/hashicorp/terraform-provider-aws/internal/iter"
+	"github.com/hashicorp/terraform-provider-aws/internal/logging"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func listRegionalAccessGrants(ctx context.Context, conn *cloudwatchomni.Client) iter.Seq2[awstypes.AccessGrantSummary, error] {
+	return func(yield func(awstypes.AccessGrantSummary, error) bool) {
+		var inputLS cloudwatchomni.ListSpacesInput
+		for space, err := range listSpaces(ctx, conn, &inputLS) {
+			if err != nil {
+				yield(awstypes.AccessGrantSummary{}, err)
+				return
+			}
+
+			if aws.ToString(space.Region) != conn.Options().Region {
+				continue
+			}
+
+			inputLAG := cloudwatchomni.ListAccessGrantsInput{
+				SpaceId: space.SpaceId,
+			}
+			for grant, err := range tfiter.ConcatValuesWithError(listAccessGrantPages(ctx, conn, &inputLAG)) {
+				if !yield(grant, err) || err != nil {
+					return
+				}
+			}
+		}
+	}
+}

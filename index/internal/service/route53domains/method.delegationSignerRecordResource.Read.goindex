@@ -1,7 +1,13 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/route53domains
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -9,6 +15,7 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/route53domains/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -19,7 +26,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
-	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
@@ -35,37 +42,38 @@ func (r *delegationSignerRecordResource) Read(ctx context.Context, request resou
 		return
 	}
 
-	if err := data.InitFromID(); err != nil {
-		response.Diagnostics.AddError("parsing resource ID", err.Error())
-
-		return
-	}
-
 	conn := r.Meta().Route53DomainsClient(ctx)
 
-	dnssecKey, err := findDNSSECKeyByTwoPartKey(ctx, conn, data.DomainName.ValueString(), data.DNSSECKeyID.ValueString())
-
-	if retry.NotFound(err) {
-		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
-		response.State.RemoveResource(ctx)
-
-		return
-	}
-
-	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("reading Route 53 Domains Domain (%s) DNSSEC key", data.DomainName.ValueString()), err.Error())
-
-		return
-	}
-
-	// Set attributes for import.
-	var signingAttributes delegationSignerRecordSigningAttributesModel
-	response.Diagnostics.Append(fwflex.Flatten(ctx, dnssecKey, &signingAttributes)...)
+	domainName := fwflex.StringValueFromFramework(ctx, data.DomainName)
+	signingAttributes, diags := data.SigningAttributes.ToPtr(ctx)
+	response.Diagnostics.Append(diags...)
 	if response.Diagnostics.HasError() {
 		return
 	}
+	digest := signingAttributes.digest(ctx, domainName)
 
-	data.SigningAttributes = fwtypes.NewListNestedObjectValueOfPtrMust(ctx, &signingAttributes)
+	// Look up DNSSEC key by digest (deterministic across registrars).
+	// Ensures stable state tracking regardless of registry (Gandi vs Amazon Registrar, etc).
+	dnssecKey, err := findDNSSECKeyByDomainNameAndDigest(ctx, conn, domainName, digest)
+	if retry.NotFound(err) {
+		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		response.State.RemoveResource(ctx)
+		return
+	}
+	if err != nil {
+		response.Diagnostics.AddError(fmt.Sprintf("reading Route 53 Domains Domain (%s) DNSSEC key (%s)", domainName, digest), err.Error())
+		return
+	}
 
-	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+	keyID := aws.ToString(dnssecKey.Id)
+	resourceID, err := delegationSignerRecordCreateResourceID(domainName, keyID)
+	if err != nil {
+		response.Diagnostics.Append(fwdiag.NewCreatingResourceIDErrorDiagnostic(err))
+		return
+	}
+
+	data.DNSSECKeyID = fwflex.StringValueToFramework(ctx, keyID)
+	data.ID = fwflex.StringValueToFramework(ctx, resourceID)
+
+	response.Diagnostics.Append(response.State.Set(ctx, data)...)
 }

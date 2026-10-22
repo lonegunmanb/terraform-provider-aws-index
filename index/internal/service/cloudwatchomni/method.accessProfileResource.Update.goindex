@@ -1,0 +1,88 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/cloudwatchomni
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchomni"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchomni/types"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *accessProfileResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state accessProfileResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := r.Meta().CloudWatchOmniClient(ctx)
+
+	diff, d := fwflex.Diff(ctx, plan, state)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		profileID := fwflex.StringValueFromFramework(ctx, plan.ProfileID)
+		var input cloudwatchomni.UpdateAccessProfileInput
+		smerr.AddEnrich(ctx, &resp.Diagnostics, fwflex.Expand(ctx, plan, &input))
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// An omitted description leaves the existing value unchanged, so clear it explicitly.
+		if plan.Description.IsNull() && !state.Description.IsNull() {
+			input.Description = aws.String("")
+		}
+
+		_, err := conn.UpdateAccessProfile(ctx, &input)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, profileID)
+			return
+		}
+
+		// The UpdateAccessProfile response omits some fields (e.g. profileType), so re-read the profile.
+		spaceID := fwflex.StringValueFromFramework(ctx, plan.SpaceID)
+		profile, err := findAccessProfileByTwoPartKey(ctx, conn, spaceID, profileID)
+		if err != nil {
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, profileID)
+			return
+		}
+
+		smerr.AddEnrich(ctx, &resp.Diagnostics, r.flatten(ctx, profile, &plan))
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	} else {
+		// Computed attributes without UseStateForUnknown are unknown in the plan.
+		plan.AssumeStatus = state.AssumeStatus
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

@@ -1,0 +1,98 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/directoryservicedata
+import (
+	"context"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/directoryservicedata"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/directoryservicedata/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	inttypes "github.com/hashicorp/terraform-provider-aws/internal/types"
+)
+func (r *groupResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	conn := r.Meta().DirectoryServiceDataClient(ctx)
+
+	var plan, state groupResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	id := groupResourceID(plan.DirectoryID.ValueString(), plan.SAMAccountName.ValueString())
+
+	diff, d := flex.Diff(ctx, plan, state)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		// AWS requires group scope and type changes to be sent in separate requests.
+		var inputs []directoryservicedata.UpdateGroupInput
+
+		if !plan.GroupScope.IsUnknown() && !plan.GroupScope.Equal(state.GroupScope) {
+			if plan.GroupScope.IsNull() {
+				smerr.AddError(ctx, &resp.Diagnostics, smarterr.Errorf("cannot update group scope to a null value"), smerr.ID, id)
+				return
+			}
+			inputs = append(inputs, directoryservicedata.UpdateGroupInput{
+				DirectoryId:    plan.DirectoryID.ValueStringPointer(),
+				SAMAccountName: plan.SAMAccountName.ValueStringPointer(),
+				GroupScope:     plan.GroupScope.ValueEnum(),
+				UpdateType:     awstypes.UpdateTypeReplace,
+			})
+		}
+		if !plan.GroupType.IsUnknown() && !plan.GroupType.Equal(state.GroupType) {
+			if plan.GroupType.IsNull() {
+				smerr.AddError(ctx, &resp.Diagnostics, smarterr.Errorf("cannot update group type to a null value"), smerr.ID, id)
+				return
+			}
+			inputs = append(inputs, directoryservicedata.UpdateGroupInput{
+				DirectoryId:    plan.DirectoryID.ValueStringPointer(),
+				SAMAccountName: plan.SAMAccountName.ValueStringPointer(),
+				GroupType:      plan.GroupType.ValueEnum(),
+				UpdateType:     awstypes.UpdateTypeReplace,
+			})
+		}
+
+		for _, input := range inputs {
+			_, err := conn.UpdateGroup(ctx, &input)
+			if err != nil {
+				smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, id)
+				return
+			}
+		}
+	}
+
+	out, err := findGroupByTwoPartKey(ctx, conn, plan.DirectoryID.ValueString(), plan.SAMAccountName.ValueString())
+
+	if err != nil {
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, id)
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, flex.Flatten(ctx, out, &plan))
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
+}

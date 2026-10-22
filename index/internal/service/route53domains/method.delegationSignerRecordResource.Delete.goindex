@@ -1,7 +1,13 @@
 package github.com/hashicorp/terraform-provider-aws/internal/service/route53domains
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -9,6 +15,7 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/route53domains/types"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -19,7 +26,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
-	"github.com/hashicorp/terraform-provider-aws/internal/flex"
+	intflex "github.com/hashicorp/terraform-provider-aws/internal/flex"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
 	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
@@ -37,21 +44,19 @@ func (r *delegationSignerRecordResource) Delete(ctx context.Context, request res
 
 	conn := r.Meta().Route53DomainsClient(ctx)
 
-	output, err := conn.DisassociateDelegationSignerFromDomain(ctx, &route53domains.DisassociateDelegationSignerFromDomainInput{
-		DomainName: data.DomainName.ValueStringPointer(),
-		Id:         data.DNSSECKeyID.ValueStringPointer(),
-	})
-
+	input := route53domains.DisassociateDelegationSignerFromDomainInput{
+		DomainName: fwflex.StringFromFramework(ctx, data.DomainName),
+		Id:         fwflex.StringFromFramework(ctx, data.DNSSECKeyID),
+	}
+	output, err := conn.DisassociateDelegationSignerFromDomain(ctx, &input)
 	if err != nil {
 		response.Diagnostics.AddError(fmt.Sprintf("deleting Route 53 Domains Delegation Signer Record (%s)", data.ID.ValueString()), err.Error())
-
 		return
 	}
 
 	if _, err := waitOperationSucceeded(ctx, conn, aws.ToString(output.OperationId), r.DeleteTimeout(ctx, data.Timeouts)); err != nil {
 		if !errs.Contains(err, "The DNSSEC you specified is not found on domain") {
 			response.Diagnostics.AddError("waiting for Route 53 Domains Delegation Signer Record delete", err.Error())
-
 			return
 		}
 	}

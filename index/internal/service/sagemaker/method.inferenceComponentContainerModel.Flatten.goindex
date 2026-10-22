@@ -1,0 +1,73 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/sagemaker
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"time"
+
+	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/tfawserr"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/float32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int32validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float32planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (m *inferenceComponentContainerModel) Flatten(ctx context.Context, v any) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	switch t := v.(type) {
+	case awstypes.InferenceComponentContainerSpecificationSummary:
+		m.ArtifactURL = types.StringPointerValue(t.ArtifactUrl)
+
+		if t.DeployedImage != nil {
+			m.Image = types.StringPointerValue(t.DeployedImage.SpecifiedImage)
+			m.ResolvedImage = types.StringPointerValue(t.DeployedImage.ResolvedImage)
+		} else {
+			m.Image = types.StringNull()
+			m.ResolvedImage = types.StringNull()
+		}
+
+		if len(t.Environment) > 0 {
+			diags.Append(fwflex.Flatten(ctx, t.Environment, &m.Environment)...)
+		} else {
+			m.Environment = fwtypes.NewMapValueOfNull[types.String](ctx)
+		}
+
+		if t.ContainerMetricsConfig != nil {
+			diags.Append(fwflex.Flatten(ctx, t.ContainerMetricsConfig, &m.ContainerMetricsConfig)...)
+		} else {
+			m.ContainerMetricsConfig = fwtypes.NewListNestedObjectValueOfNull[inferenceComponentContainerMetricsConfigModel](ctx)
+		}
+	default:
+		diags.AddError("Unexpected Type", fmt.Sprintf("container flatten: %T", v))
+	}
+
+	return diags
+}

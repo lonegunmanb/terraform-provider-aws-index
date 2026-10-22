@@ -1,0 +1,52 @@
+package github.com/hashicorp/terraform-provider-aws/internal/service/bedrock
+import (
+	"context"
+	"fmt"
+	"iter"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrock"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs"
+	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework"
+	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	tfslices "github.com/hashicorp/terraform-provider-aws/internal/slices"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
+	"github.com/hashicorp/terraform-provider-aws/names"
+)
+func (r *enforcedGuardrailConfigurationResource) putEnforcedGuardrailConfiguration(ctx context.Context, conn *bedrock.Client, data *enforcedGuardrailConfigurationResourceModel) (*string, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	var inferenceConfig awstypes.AccountEnforcedGuardrailInferenceInputConfiguration
+	diags.Append(fwflex.Expand(ctx, data, &inferenceConfig)...)
+	if diags.HasError() {
+		return nil, diags
+	}
+	inferenceConfig.GuardrailIdentifier = fwflex.StringFromFramework(ctx, data.GuardrailARN)
+
+	input := bedrock.PutEnforcedGuardrailConfigurationInput{
+		GuardrailInferenceConfig: &inferenceConfig,
+	}
+	// Pass configId on update.
+	if configID := fwflex.StringValueFromFramework(ctx, data.ConfigID); configID != "" {
+		input.ConfigId = aws.String(configID)
+	}
+	output, err := conn.PutEnforcedGuardrailConfiguration(ctx, &input)
+	if err != nil {
+		smerr.AddError(ctx, &diags, err)
+		return nil, diags
+	}
+
+	return output.ConfigId, diags
+}
